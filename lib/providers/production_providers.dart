@@ -39,3 +39,28 @@ final currentScriptProvider = StateProvider<ParsedScript?>((ref) => null);
 final scriptImportServiceProvider = Provider<ScriptImportService>((ref) {
   return ScriptImportService();
 });
+
+/// All recordings for the current production, keyed by script line ID.
+final recordingsProvider =
+    StateNotifierProvider<RecordingsNotifier, Map<String, Recording>>((ref) {
+  return RecordingsNotifier();
+});
+
+class RecordingsNotifier extends StateNotifier<Map<String, Recording>> {
+  RecordingsNotifier() : super({});
+
+  void add(Recording recording) {
+    state = {...state, recording.scriptLineId: recording};
+  }
+
+  void remove(String scriptLineId) {
+    state = Map.from(state)..remove(scriptLineId);
+  }
+
+  void clear() {
+    state = {};
+  }
+}
+
+/// Character being recorded in the recording studio.
+final recordingCharacterProvider = StateProvider<String?>((ref) => null);

@@ -6,6 +6,8 @@ import 'features/home/home_screen.dart';
 import 'features/script_import/script_import_screen.dart';
 import 'features/script_editor/script_editor_screen.dart';
 import 'features/script_editor/scene_editor_screen.dart';
+import 'features/recording_studio/recording_character_screen.dart';
+import 'features/recording_studio/recording_studio_screen.dart';
 import 'features/rehearsal/scene_selector_screen.dart';
 import 'features/rehearsal/rehearsal_screen.dart';
 import 'features/settings/settings_screen.dart';
@@ -37,6 +39,14 @@ final _router = GoRouter(
     GoRoute(
       path: '/scenes',
       builder: (context, state) => const SceneEditorScreen(),
+    ),
+    GoRoute(
+      path: '/record',
+      builder: (context, state) => const RecordingCharacterScreen(),
+    ),
+    GoRoute(
+      path: '/recording-studio',
+      builder: (context, state) => const RecordingStudioScreen(),
     ),
     GoRoute(
       path: '/practice',

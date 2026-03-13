@@ -168,6 +168,47 @@ class ScriptScene {
       );
 }
 
+/// A recording of a single script line by a cast member.
+class Recording {
+  final String id;
+  final String scriptLineId;
+  final String character;
+  final String localPath; // local file path for playback
+  final String? remoteUrl; // Supabase storage URL (null if not uploaded yet)
+  final int durationMs;
+  final DateTime recordedAt;
+
+  const Recording({
+    required this.id,
+    required this.scriptLineId,
+    required this.character,
+    required this.localPath,
+    this.remoteUrl,
+    required this.durationMs,
+    required this.recordedAt,
+  });
+
+  Recording copyWith({
+    String? id,
+    String? scriptLineId,
+    String? character,
+    String? localPath,
+    String? remoteUrl,
+    int? durationMs,
+    DateTime? recordedAt,
+  }) {
+    return Recording(
+      id: id ?? this.id,
+      scriptLineId: scriptLineId ?? this.scriptLineId,
+      character: character ?? this.character,
+      localPath: localPath ?? this.localPath,
+      remoteUrl: remoteUrl ?? this.remoteUrl,
+      durationMs: durationMs ?? this.durationMs,
+      recordedAt: recordedAt ?? this.recordedAt,
+    );
+  }
+}
+
 /// A complete parsed script.
 class ParsedScript {
   final String title;
