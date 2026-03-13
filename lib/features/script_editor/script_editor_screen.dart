@@ -11,6 +11,7 @@ import '../../core/theme/app_theme.dart';
 import '../../data/models/script_models.dart';
 import '../../data/services/script_export.dart';
 import '../../providers/production_providers.dart';
+import 'validation_panel.dart';
 
 class ScriptEditorScreen extends ConsumerStatefulWidget {
   const ScriptEditorScreen({super.key});
@@ -51,8 +52,18 @@ class _ScriptEditorScreenState extends ConsumerState<ScriptEditorScreen> {
         ),
         actions: [
           IconButton(
+            icon: const Icon(Icons.checklist),
+            tooltip: 'Validate Script',
+            onPressed: () => showValidationPanel(context, script),
+          ),
+          IconButton(
+            icon: const Icon(Icons.person_search),
+            tooltip: 'Characters (${script.characters.length})',
+            onPressed: () => context.push('/characters'),
+          ),
+          IconButton(
             icon: const Icon(Icons.auto_awesome_mosaic),
-            tooltip: 'Edit Scenes (${script.scenes.length})',
+            tooltip: 'Scenes (${script.scenes.length})',
             onPressed: () => context.push('/scenes'),
           ),
           IconButton(
@@ -346,19 +357,75 @@ class _ScriptEditorScreenState extends ConsumerState<ScriptEditorScreen> {
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            Text(
-              'Edit Line #${line.orderIndex}',
-              style: Theme.of(context).textTheme.titleMedium,
+            Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    'Edit Line #${line.orderIndex}',
+                    style: Theme.of(context).textTheme.titleMedium,
+                  ),
+                ),
+                // Line type toggle
+                PopupMenuButton<String>(
+                  icon: Icon(_lineTypeIcon(line.lineType), size: 20),
+                  tooltip: 'Change line type',
+                  onSelected: (type) {
+                    _changeLineType(line, type);
+                    Navigator.pop(context);
+                  },
+                  itemBuilder: (context) => [
+                    const PopupMenuItem(
+                      value: 'dialogue',
+                      child: Text('Dialogue'),
+                    ),
+                    const PopupMenuItem(
+                      value: 'stageDirection',
+                      child: Text('Stage Direction'),
+                    ),
+                    const PopupMenuItem(
+                      value: 'header',
+                      child: Text('Header'),
+                    ),
+                    const PopupMenuItem(
+                      value: 'song',
+                      child: Text('Song'),
+                    ),
+                  ],
+                ),
+                // Split line
+                IconButton(
+                  icon: const Icon(Icons.splitscreen, size: 20),
+                  tooltip: 'Split line',
+                  onPressed: () {
+                    Navigator.pop(context);
+                    _splitLine(context, line);
+                  },
+                ),
+                // Delete line
+                IconButton(
+                  icon: const Icon(Icons.delete_outline,
+                      size: 20, color: Colors.red),
+                  tooltip: 'Delete line',
+                  onPressed: () {
+                    _deleteLine(line);
+                    Navigator.pop(context);
+                  },
+                ),
+              ],
             ),
             const SizedBox(height: 16),
-            TextField(
-              controller: charController,
-              decoration: const InputDecoration(
-                labelText: 'Character',
-                border: OutlineInputBorder(),
+            if (line.lineType == LineType.dialogue ||
+                line.lineType == LineType.song)
+              TextField(
+                controller: charController,
+                decoration: const InputDecoration(
+                  labelText: 'Character',
+                  border: OutlineInputBorder(),
+                ),
               ),
-            ),
-            const SizedBox(height: 12),
+            if (line.lineType == LineType.dialogue ||
+                line.lineType == LineType.song)
+              const SizedBox(height: 12),
             TextField(
               controller: textController,
               maxLines: 4,
@@ -393,6 +460,152 @@ class _ScriptEditorScreenState extends ConsumerState<ScriptEditorScreen> {
           ],
         ),
       ),
+    );
+  }
+
+  IconData _lineTypeIcon(LineType type) {
+    switch (type) {
+      case LineType.dialogue:
+        return Icons.chat_bubble_outline;
+      case LineType.stageDirection:
+        return Icons.directions_walk;
+      case LineType.header:
+        return Icons.title;
+      case LineType.song:
+        return Icons.music_note;
+    }
+  }
+
+  void _changeLineType(ScriptLine line, String typeStr) {
+    final script = ref.read(currentScriptProvider);
+    if (script == null) return;
+
+    final newType = LineType.values.byName(typeStr);
+    final updatedLines = script.lines.map((l) {
+      if (l.id == line.id) {
+        return l.copyWith(
+          lineType: newType,
+          character: newType == LineType.stageDirection ||
+                  newType == LineType.header
+              ? ''
+              : l.character,
+        );
+      }
+      return l;
+    }).toList();
+
+    _rebuildScript(script, updatedLines);
+  }
+
+  void _splitLine(BuildContext context, ScriptLine line) {
+    final controller = TextEditingController(text: line.text);
+
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Split Line'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Text('Place your cursor where you want to split, '
+                'then tap Split.'),
+            const SizedBox(height: 12),
+            TextField(
+              controller: controller,
+              maxLines: 4,
+              decoration: const InputDecoration(
+                border: OutlineInputBorder(),
+                hintText: 'Tap to position cursor at split point',
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () {
+              final pos = controller.selection.baseOffset;
+              if (pos > 0 && pos < line.text.length) {
+                _applySplit(line, pos);
+              }
+              Navigator.pop(context);
+            },
+            child: const Text('Split'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _applySplit(ScriptLine line, int splitPos) {
+    final script = ref.read(currentScriptProvider);
+    if (script == null) return;
+
+    final firstText = line.text.substring(0, splitPos).trim();
+    final secondText = line.text.substring(splitPos).trim();
+    if (firstText.isEmpty || secondText.isEmpty) return;
+
+    final newLine = ScriptLine(
+      id: '${line.id}_split',
+      act: line.act,
+      scene: line.scene,
+      lineNumber: line.lineNumber + 1,
+      orderIndex: line.orderIndex + 1,
+      character: line.character,
+      text: secondText,
+      lineType: line.lineType,
+      stageDirection: '',
+    );
+
+    final updatedLines = <ScriptLine>[];
+    for (final l in script.lines) {
+      if (l.id == line.id) {
+        updatedLines.add(l.copyWith(text: firstText));
+        updatedLines.add(newLine);
+      } else {
+        updatedLines.add(l);
+      }
+    }
+
+    _rebuildScript(script, updatedLines);
+  }
+
+  void _deleteLine(ScriptLine line) {
+    final script = ref.read(currentScriptProvider);
+    if (script == null) return;
+
+    final updatedLines =
+        script.lines.where((l) => l.id != line.id).toList();
+    _rebuildScript(script, updatedLines);
+  }
+
+  void _rebuildScript(ParsedScript script, List<ScriptLine> updatedLines) {
+    final charCounts = <String, int>{};
+    for (final line in updatedLines) {
+      if (line.lineType == LineType.dialogue && line.character.isNotEmpty) {
+        charCounts[line.character] = (charCounts[line.character] ?? 0) + 1;
+      }
+    }
+    var colorIdx = 0;
+    final characters = charCounts.entries.toList()
+      ..sort((a, b) => b.value.compareTo(a.value));
+    final charList = characters
+        .map((e) => ScriptCharacter(
+              name: e.key,
+              colorIndex: colorIdx++,
+              lineCount: e.value,
+            ))
+        .toList();
+
+    ref.read(currentScriptProvider.notifier).state = ParsedScript(
+      title: script.title,
+      lines: updatedLines,
+      characters: charList,
+      scenes: script.scenes,
+      rawText: script.rawText,
     );
   }
 

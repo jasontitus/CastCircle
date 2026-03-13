@@ -3,6 +3,7 @@ import 'package:lineguide/data/services/script_parser.dart';
 import 'package:lineguide/data/services/script_export.dart';
 import 'package:lineguide/data/services/stt_service.dart';
 import 'package:lineguide/data/models/script_models.dart';
+import 'package:lineguide/features/script_editor/validation_panel.dart';
 
 const _sampleScript = '''
 ACT I
@@ -302,6 +303,43 @@ void main() {
       );
       // 8 of 9 words
       expect(score, greaterThanOrEqualTo(0.7));
+    });
+  });
+
+  group('Script Validation', () {
+    late ParsedScript script;
+
+    setUp(() {
+      final parser = ScriptParser();
+      script = parser.parse(_sampleScript, title: 'Test Play');
+    });
+
+    test('validates a well-formed script', () {
+      final checks = validateScript(script);
+
+      // Should have characters
+      final charCheck = checks.firstWhere((c) => c.label == 'Cast list detected');
+      expect(charCheck.passed, isTrue);
+
+      // Should have scenes
+      final sceneCheck = checks.firstWhere((c) => c.label == 'Scenes detected');
+      expect(sceneCheck.passed, isTrue);
+
+      // Should have act structure
+      final actCheck = checks.firstWhere((c) => c.label == 'Act structure detected');
+      expect(actCheck.passed, isTrue);
+    });
+
+    test('detects healthy dialogue ratio', () {
+      final checks = validateScript(script);
+      final ratioCheck = checks.firstWhere((c) => c.label == 'Healthy dialogue ratio');
+      expect(ratioCheck.passed, isTrue);
+    });
+
+    test('all lines attributed', () {
+      final checks = validateScript(script);
+      final attrCheck = checks.firstWhere((c) => c.label == 'All lines attributed');
+      expect(attrCheck.passed, isTrue);
     });
   });
 }

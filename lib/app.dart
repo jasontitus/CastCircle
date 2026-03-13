@@ -5,11 +5,13 @@ import 'core/theme/app_theme.dart';
 import 'features/home/home_screen.dart';
 import 'features/script_import/script_import_screen.dart';
 import 'features/script_editor/script_editor_screen.dart';
+import 'features/script_editor/character_manager_screen.dart';
 import 'features/script_editor/scene_editor_screen.dart';
 import 'features/cast_manager/cast_manager_screen.dart';
 import 'features/recording_studio/recording_character_screen.dart';
 import 'features/recording_studio/recording_studio_screen.dart';
 import 'features/rehearsal/scene_selector_screen.dart';
+import 'features/rehearsal/rehearsal_history_screen.dart';
 import 'features/rehearsal/rehearsal_screen.dart';
 import 'features/settings/settings_screen.dart';
 
@@ -38,6 +40,10 @@ final _router = GoRouter(
       builder: (context, state) => const ScriptEditorScreen(),
     ),
     GoRoute(
+      path: '/characters',
+      builder: (context, state) => const CharacterManagerScreen(),
+    ),
+    GoRoute(
       path: '/scenes',
       builder: (context, state) => const SceneEditorScreen(),
     ),
@@ -60,6 +66,10 @@ final _router = GoRouter(
     GoRoute(
       path: '/rehearsal',
       builder: (context, state) => const RehearsalScreen(),
+    ),
+    GoRoute(
+      path: '/history',
+      builder: (context, state) => const RehearsalHistoryScreen(),
     ),
   ],
 );

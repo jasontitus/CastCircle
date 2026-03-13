@@ -12,6 +12,9 @@ final rehearsalCharacterProvider = StateProvider<String?>((ref) => null);
 /// Provider for the selected scene to rehearse.
 final selectedSceneProvider = StateProvider<ScriptScene?>((ref) => null);
 
+/// Cue-to-cue mode: skip to just before each of the actor's lines.
+final cueToCueModeProvider = StateProvider<bool>((ref) => false);
+
 class SceneSelectorScreen extends ConsumerStatefulWidget {
   const SceneSelectorScreen({super.key});
 
@@ -48,6 +51,8 @@ class _SceneSelectorScreenState extends ConsumerState<SceneSelectorScreen> {
           // Character selector
           _buildCharacterSelector(context, script, myCharacter),
           const Divider(height: 1),
+          // Rehearsal mode toggle
+          if (myCharacter != null) _buildModeToggle(context),
           // Act filter
           if (script.acts.length > 1) _buildActFilter(context, script),
           // Scene list
@@ -107,6 +112,39 @@ class _SceneSelectorScreenState extends ConsumerState<SceneSelectorScreen> {
             onChanged: (value) {
               ref.read(rehearsalCharacterProvider.notifier).state = value;
             },
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildModeToggle(BuildContext context) {
+    final cueToCue = ref.watch(cueToCueModeProvider);
+
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+      child: Row(
+        children: [
+          Expanded(
+            child: SegmentedButton<bool>(
+              segments: const [
+                ButtonSegment(
+                  value: false,
+                  label: Text('Full Scene'),
+                  icon: Icon(Icons.playlist_play),
+                ),
+                ButtonSegment(
+                  value: true,
+                  label: Text('Cue-to-Cue'),
+                  icon: Icon(Icons.skip_next),
+                ),
+              ],
+              selected: {cueToCue},
+              onSelectionChanged: (selected) {
+                ref.read(cueToCueModeProvider.notifier).state =
+                    selected.first;
+              },
+            ),
           ),
         ],
       ),
