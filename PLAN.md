@@ -103,6 +103,35 @@ The parser is the trickiest part of this phase. Strategy:
 
 The parser should be configurable (regex patterns for character detection) so the organizer can adjust for unusual script formats.
 
+### Lessons from Real Script (Pride & Prejudice by Jon Jory)
+
+We parsed the actual 82-page script PDF through OCR + the reference parser (`scripts/parse_script.py`). Key findings:
+
+**Format observed:** `CHARACTER NAME. Dialogue text` — standard American play format. Inline stage directions appear as `(Direction:)` within dialogue. Standalone directions in parens on their own lines.
+
+**OCR challenges:**
+- Image-based PDF (no embedded text) — required page-to-image conversion + tesseract
+- Handwritten margin notes (blocking/staging annotations) get picked up as noise — need aggressive filtering
+- Page headers ("Pride and Prejudice 17", "12 Jon Jory") appear as dialogue if not stripped
+- Line-wrapping from OCR introduces mid-word breaks ("con-\nstruct", "de-\nlighted")
+- Some pages have worse OCR quality (bleed-through, margin notes) — the script editor phase is essential
+
+**Parse results:**
+- 1,067 dialogue lines, 159 stage directions across 2 acts
+- 17 unique speaking roles (some with aliases like "MR. DARCY" / "DARCY")
+- Multi-character lines exist: "MARY, KITTY, LYDIA. (To the audience:) ..."
+- Character aliases must be normalized (MR. DARCY → DARCY, MR. COLLINS → COLLINS)
+- Elizabeth has 321 lines (30%), Darcy 103 (10%), Mrs. Bennet 111 (10%)
+
+**Parser architecture that worked:**
+- Single-pass with state machine (not multi-pass) — simpler and handles OCR messiness better
+- Known character list + longest-match-first for detection
+- Noise filtering via regex patterns for page headers/footers
+- Margin noise detection for handwritten annotations
+- Inline direction extraction via `(Text:)` pattern at start of dialogue
+
+See `examples/pride_and_prejudice_parsed.md` and `.json` for the full output.
+
 ---
 
 ## Phase 2: Script Editor & Validation
