@@ -14,6 +14,7 @@ import '../../core/constants.dart';
 import '../../core/theme/app_theme.dart';
 import '../../data/models/script_models.dart';
 import '../../providers/production_providers.dart';
+import '../../features/settings/settings_screen.dart';
 
 /// Recording state for the studio.
 enum RecordingStatus {
@@ -465,6 +466,8 @@ class _RecordingStudioScreenState extends ConsumerState<RecordingStudioScreen> {
 
     try {
       await _player.setFilePath(path);
+      final speed = ref.read(playbackSpeedProvider);
+      await _player.setSpeed(speed);
       setState(() => _status = RecordingStatus.playing);
       await _player.play();
     } catch (e) {

@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:go_router/go_router.dart';
 
+import '../../app.dart';
 import '../../data/services/supabase_service.dart';
 
 /// Auth state provider — tracks whether user is signed in.
@@ -162,6 +164,8 @@ class _AuthScreenState extends ConsumerState<AuthScreen> {
       }
       if (mounted) {
         ref.read(authStateProvider.notifier).state = true;
+        ref.read(authGatePassedProvider.notifier).state = true;
+        context.go('/');
       }
     } catch (e) {
       if (mounted) {
@@ -176,5 +180,7 @@ class _AuthScreenState extends ConsumerState<AuthScreen> {
 
   void _skipAuth() {
     ref.read(authStateProvider.notifier).state = true;
+    ref.read(authGatePassedProvider.notifier).state = true;
+    context.go('/');
   }
 }

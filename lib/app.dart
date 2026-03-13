@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
 import 'core/theme/app_theme.dart';
+import 'features/auth/auth_screen.dart';
 import 'features/home/home_screen.dart';
 import 'features/script_import/script_import_screen.dart';
 import 'features/script_editor/script_editor_screen.dart';
@@ -15,9 +17,23 @@ import 'features/rehearsal/rehearsal_history_screen.dart';
 import 'features/rehearsal/rehearsal_screen.dart';
 import 'features/settings/settings_screen.dart';
 
-final _router = GoRouter(
+/// Whether the user has passed the auth gate (signed in or skipped).
+final authGatePassedProvider = StateProvider<bool>((ref) => false);
+
+GoRouter _buildRouter(Ref ref) => GoRouter(
   initialLocation: '/',
+  redirect: (context, state) {
+    final authed = ref.read(authGatePassedProvider);
+    final onAuth = state.uri.toString() == '/auth';
+    if (!authed && !onAuth) return '/auth';
+    if (authed && onAuth) return '/';
+    return null;
+  },
   routes: [
+    GoRoute(
+      path: '/auth',
+      builder: (context, state) => const AuthScreen(),
+    ),
     ShellRoute(
       builder: (context, state, child) => AppShell(child: child),
       routes: [
@@ -74,17 +90,20 @@ final _router = GoRouter(
   ],
 );
 
-class LineGuideApp extends StatelessWidget {
+final _routerProvider = Provider<GoRouter>((ref) => _buildRouter(ref));
+
+class LineGuideApp extends ConsumerWidget {
   const LineGuideApp({super.key});
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
+    final router = ref.watch(_routerProvider);
     return MaterialApp.router(
       title: 'LineGuide',
       theme: AppTheme.lightTheme,
       darkTheme: AppTheme.darkTheme,
       themeMode: ThemeMode.dark,
-      routerConfig: _router,
+      routerConfig: router,
       debugShowCheckedModeBanner: false,
     );
   }

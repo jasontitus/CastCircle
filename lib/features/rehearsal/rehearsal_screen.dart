@@ -812,6 +812,8 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen> {
       _recognizedText = '';
     });
 
+    final speed = ref.read(playbackSpeedProvider);
+
     // Check for a recording first
     final recordings = ref.read(recordingsProvider);
     final recording = recordings[line.id];
@@ -819,6 +821,7 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen> {
     if (recording != null) {
       try {
         await _player.setFilePath(recording.localPath);
+        await _player.setSpeed(speed);
         await _player.play();
         // Completion handled by playerStateStream listener
         return;
@@ -827,7 +830,8 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen> {
       }
     }
 
-    // Fall back to TTS
+    // Fall back to TTS — map speed (0.5x–2.0x) to TTS rate (0.25–1.0)
+    await _tts.setRate(speed * 0.5);
     await _tts.speak(line.text, character: line.character);
     // Completion handled by TTS completion handler
   }
