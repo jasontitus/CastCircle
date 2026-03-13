@@ -1,0 +1,1555 @@
+============================================================
+ELIZABETH — Pride and Prejudice
+============================================================
+
+Total lines: 321
+
+  [the windows lit up, it was wonderful) and the silhouettes of danc-]
+  [At the back of the stage a sky with clouds, In the sky six doors, three]
+  MR. BENNET: You are very punctual to your time I see. Very glad indeed. Delighted to have...
+  LYDIA: The eldest, Though I cannot see why she must always have the chair nearest th...
+  >>> YOU: Hush Lydia.
+
+  MARY: And the prettiest of all.
+  JANE: Mary, for goodness sake.
+  MR. BENNET: The next, Elizabeth.
+  MARY: Wittiest of all.
+  LYDIA: Though Captain Talley of the regiment expressed her to be the most critical y...
+  >>> YOU: In the only complete sentence I ever heard him con- struct.
+
+  LYDIA: La.
+  MR. BENNET: And book in hand, as always, Mary.
+  KITTY: The proudest.
+  MARY: Pride is a very common failing, I be- lieve. By all that I have ever read, I ...
+  MR. BENNET: And last, but—
+  MARY: Vanity and pride are different things, though the words are often used synony...
+  MR. BENNET: I—
+  MARY: Pride relates more to our opinion of ourselves; vanity to what we would have ...
+  [Curtseys and returns to her chair to read.]
+  MR. BENNET: Well. Yes. Quite so. And the two young- est, of course, Kitty and Lydia.
+  KITTY: Are we to be only “the youngest,” have we no qualities?
+  LYDIA: We are the best dancers with the prettiest hats.
+  KITTY: And sing most charmingly...well, I do.
+  MRS. BENNET: My dear Mr. Bennet...
+  MR. BENNET: Mrs. Bennet, to be sure. (She pays no attention but knows the matter at hand ...
+  MRS. BENNET: My dear Mr. Bennet, have you heard that Nether- field Park is let at last?
+  MR. BENNET: I have not.
+  MRS. BENNET: But it is, for Mrs. Long has just been there and she told me all about it.
+  LYDIA: Probably an elderly bachelor with a King Charles spaniel.
+  MRS. BENNET: Indeed Mr. Bennet, do not you want to know who has taken it?
+  MR. BENNET: You want to tell me, and I have no objection to hear- ing it. '
+  MRS. BENNET: Mrs. Long says that Netherfield is taken by a young man of large fortune...
+  KITTY: Really?
+  MRS. BENNET: That he came down on Monday and was so de- lighted with it that he is to take...
+  LYDIA: Married or single?
+  MR. BENNET: We might first enquire of the gentleman’s name, Lydia.
+  MRS. BENNET: Bingley.
+  [BINGLEY is revealed on second level.]
+  KITTY: But, married or single?
+  MRS. BENNET: Oh, single, my dears, to be sure! A single man of large fortune; four or five...
+  MARY, KITTY, LYDIA: It is a truth universally ac- knowledged that a single man in possession of a...
+  >>> YOU: (To the audience) However little known the feelings or views of such a man may be, this truth is so well fixed in the minds of the surrounding families...
+
+  [Now speaks to JANE:]
+  JANE: Oh dear.
+  MRS. BENNET: Hush, Lizzy. What a fine thing for our girls.
+  MR. BENNET: How so?
+  KITTY: That he might marry one of us, Papa.
+  MR. BENNET: And is that his design in settling here?
+  MRS. BENNET: Design? Nonsense. But it is not unusual that a young man may fall in love.
+  LYDIA: Though he must be a solider in a red regimental jacket.
+  MRS. BENNET: You must visit him as soon as he comes.
+  MR. BENNET: I see no occasion for that. You and the girls may go, or send them by themsel...
+  MRS. BENNET: Well, I certainly have my share of beauty but when a woman has five grown up ...
+  MR. BENNET: In such cases, a woman has not often much beauty to think of.
+  MRS. BENNET: But consider your daughters, think what an estab- lishment it would be for on...
+  MR. BENNET: You are over scrupulous surely. I will send a few lines by you to assure him ...
+  MRS. BENNET: Mr. Bennet, you take delight in vexing me. You have no compassion on my poor ...
+  MR. BENNET: My dear, I have a high respect for your nerves. They are my old friends.
+  MRS. BENNET: Ah, you do not know what I suffer.
+  MR. BENNET: But I hope you will get over it, and live to see many young men of four thous...
+  MRS. BENNET: It will be of no use to us, if twenty such should come, since you will not vi...
+  MR. BENNET: Depend upon it, my dear, when there are twenty, I will visit them all.
+  JANE: Despite his protestations, Papa was among the earliest of those who waited on...
+  [LYDIA is trimming a hat.]
+  MR. BENNET: Capital Lydia, I hope Mr. Bingley will like it.
+  MRS. BENNET: We are not in a way to know what Mr. Bingley likes, since we are not to visit.
+  KITTY: It isn’t fair Papa, really it isn’t.
+  >>> YOU: You forget that we shall meet him at the assemblies, and that Mrs. Long has promised to introduce him.
+
+  MRS. BENNET: I do not believe Mrs. Long will do any such thing. She has two nieces of her ...
+  LYDIA: And plain as cake, both of them.
+  MRS. BENNET: She is a selfish, hypocritical woman, and IJ have no opinion of her.
+  MR. BENNET: Indeed, but let us return to Mr. Bingley.
+  MRS. BENNET: And I say I am sick of Mr. Bingley!
+  MR. BENNET: My dear, why did you not tell me so before? If I had known as much this morni...
+  MRS. BENNET: Called on him. Called on him!?
+  LYDIA: Oh Papa!
+  KITTY: Truly Father? 7 MRS. BENNET. Now see what an excellent father you have girls....
+  MR. BENNET: If he had any compassion for me, he would not have danced half so much. (The ...
+  JANE: He is just what a young man ought to be, sensible, good hu- moured, lively; a...
+  >>> YOU: He is also handsome which a young man should be if he possibly can.
+
+  MRS. BENNET: I can hardly explain to you the shocking rudeness of Mr. Darcy.
+  MR. BENNET: Then how wise not to try, my love.
+  JANE: I was very much flattered by his asking me to dance a second time. I did not ...
+  >>> YOU: Did not you? Compliments always take you by sur- prise and me never.
+
+  MRS. BENNET: I can assure you that Lizzy loses nothing by not suiting that Mr. Darcy’s fan...
+  MR. BENNET: But tall my dear, tolerably tall.
+  >>> YOU: You are a great deal too apt to like péople in general. You never see a fault in anybody. I swear, Jane, that I never heard you speak ill of a human being in my life.
+
+  JANE: I would not wish to be hasty in censuring anyone.
+  MRS. BENNET: Your Mr. Darcy is so high and conceited that there is no enduring him. Lizzy ...
+  JANE: I always speak what I think.
+  >>> YOU: With your good sense, to be so honestly blind to the follies and nonsense of others.
+
+  [BINGLEY approaches.]
+  BINGLEY: Miss Bennet, might you consider a stroll about the room? (She takes his arm a...
+  LYDIA: Within a short walk of Longbourn lived a family with whom we were particularl...
+  MRS. BENNET: Sir William Lucas, formerly in trade in Meryton, had made a tolerable fortune...
+  KITTY: ...and gives two balls a season.
+  MRS. BENNET: Lady Lucas was a very good woman and not too clever which I find restful.
+  >>> YOU: And their daughter Charlotte...
+
+  [She appears.]
+  LYDIA: Truly, an assembly ball is a paradise to me!
+  CHARLOTTE: (To ELIZABETH. The bail begins behind them.) Occu- pied as you are in observi...
+  >>> YOU: Indeed? Where?
+
+  SIR WILLIAM LUCAS: Welcome ladies and gentlemen all to my hearth and home. What more charming am...
+  DARCY: Any savage can dance sir.
+  SIR WILLIAM LUCAS: Wit, sir. Wit indeed. My dear, iF ypu will. Lad Lucas (MR. DARCY moves to whe...
+  CHARLOTTE: Do you not notice that Mr. Darcy seems always on the fringes of your conversa...
+  >>> YOU: Mrs. Long told me last night that he sat close to her for half an hour without once opening his lips. ,
+
+  JANE: Miss Bingley told me that he never speaks much unless among his intimate acqu...
+  [LYDIA dances by.]
+  LYDIA: You waste the ball in idle chatter.
+  CHARLOTTE: Note him.
+  >>> YOU: He has an extremely critical eye, and if I do not begin by being impertinent myself, I shall soon grow afraid of him. (Turn- ing to DARCY:) Did you not think Mr. Darcy, that I expressed myself uncommonly well just now when I was teasing Colonel Forster to give us a ball at Meryton?
+
+  DARCY: With great energy; but it is a subject which always makes a lady energetic.
+  SIR WILLIAM LUCAS: My dear Eliza, why are you not dancing? Mr. Darcy, you cannot refuse to dance...
+  >>> YOU: Indeed sir, I have not the least intention of dancing. I entreat you not to suppose I moved this way in order to beg for a partner.
+
+  DARCY: Might I have the honour of your hand for the next, Miss Bennet?
+  >>> YOU: Mr. Darcy is all politeness but I must deny myself the pleasure. (The ball begins. She moves to talk to one of her sisters. DARCY looks after her. MISS BINGLEY moves to him as he regards the dancers.)
+
+  DARCY: Miss Bingley.
+  MISS BINGLEY: Mr. Darcy. I can guess the subject of your reverie.
+  DARCY: I should imagine not.
+  MISS BINGLEY: You are considering how insupportable it would be to pass many evenings in su...
+  LYDIA: La, I once wore a gown with twelve ribbons and a double rosette.
+  MISS BINGLEY: The insipidity, the noise, the nothingness and yet the self-importance of all...
+  DARCY: Your conjecture is totally wrong, I assure you.
+  MISS BINGLEY: Oh?
+  DARCY: I have been meditating on the very great pleasure which a pair of fine eyes i...
+  MISS BINGLEY: Truly? Pray tell me what lady has the credit of in- spiring such reflections?
+  DARCY: Miss Elizabeth Bennet. } Pride and Prejudice 17 o MISS BINGLEY. I confess I a...
+  [More laughter.]
+  >>> YOU: But she does help him on, as much as her nature will allow.
+
+  CHARLOTTE: Remember, Eliza, that he does not know Jane’s dis- position as you do. Though...
+  >>> YOU: Your plan is a good one, where nothing is in question but the determination to get a rich husband. These are not Jane's feelings and she has no such design. She takes time, I think to study his character.
+
+  CHARLOTTE: Well, I wish her success with all my heart; and if she married him tomorrow, ...
+  >>> YOU: You make me laugh, Charlotte; but it is not sound and you know, full well, you would never act in such a way yourself.
+
+  CHARLOTTE: You are being watched. (ELIZABETH turns just in time to see DARCY turning awa...
+  >>> YOU: Soon enough, at Longbourn, Jane found herself in re- M iSS Oo ane . ceipt of an invitation from...
+
+  JANE: “My dear friend, if you are not so compassionate as to dine today with me...”
+  [MISS BINGLEY appears behind her on the second level.]
+  MISS BINGLEY: ...we shall be in danger of hating each other for the rest of our lives. Come...
+  MISS BINGLEY, JANE: ...as well as other gentlemen...
+  MISS BINGLEY: ...and sundry officers...
+  JANE: “Yours ever...
+  MISS BINGLEY, JANE: ...Caroline Bingley.”
+  [MISS BINGLEY’s reveal ends.]
+  LYDIA: With the officers! May Kitty and I go as well, Mamma?
+  KITTY: We should like to meet sundry officers.
+  MR. BENNET: Am I mistaken that there was but one name on the invitation? Pride and Prejud...
+  >>> YOU: (To audience) Mamma’s hopes were answered. Jane had not been gone long when it rained torrents. . (Sound of thunder.)
+
+  MRS. BENNET: That was a lucky idea of mine indeed. \: ESSEX. (Bringing a letter to ELIZABE...
+  [As ELIZABETH reads, JANE says the letter.]
+  >>> YOU: My dearest Lizzy...
+
+  JANE: ...I find myself very unwell this morning, which I suppose is to be imputed t...
+  >>> YOU: (Picking up the thread) ”.. thou gh excepting a sore throat and headache, there is not much the matter with me. Yours, Jane.”
+
+  MR. BENNET: Well my dear, if your daughter should have a dan- gerous fit of illness and d...
+  MRS. BENNET: Nonsense, people do not die of little trifling colds, and the inconvenience, ...
+  >>> YOU: She feels ill and I will go to her.
+
+  MR. BENNET: Is this a hint to me Lizzy to send for the horses?
+  >>> YOU: The horses are wanted on the farm, I will walk. The distance is nothing when one has a motive; only 3 miles.
+
+  MRS. BENNET: You cannot go Jumping over stiles and arrive with dirty stockings.
+  >>> YOU: Jane, at least, will forgive me Mother. (She turns out of the scene and meets BINGLEY. She is now at Netherfield.)
+
+  MRS. BENNET: Mr. Bennet... Nicholl: A Miss Elizabeth Bennet has arrived, Sir.
+  [Shift begins out of Longbourn.]
+  BINGLEY: Miss Elizabeth, how remarkably good of you to come.
+  >>> YOU: A pleasure, of course, Mr. Bingley. You can imagine that my sister’s letter gave me some cause for concern.
+
+  BINGLEY: Of course. I wish I could answer that concern more fa- vourably. Miss Bennet ...
+  [They move to JANE lying on the chaise.]
+  JANE: Lizzy!
+  >>> YOU: Jane, you are flushed. Should not you be in bed?
+
+  BINGLEY: We have sent for the apothecary. I would be most grate- ful, Miss Elizabeth, ...
+  JANE: Yes, do stay.
+  BINGLEY: I will dispatch a servant to acquaint your family and re- turn with any neces...
+  JANE: Mr. Bingley, I cannot attempt to thank you. iF You please.
+  BINGLEY: Any thanks are far beyond the occasion, Miss Bennet. (Takes her hand.) Mes. N...
+  [He exits.]
+  >>> YOU: (Looking after him with a smile) Well... (Shift begins into Netherfield drawing room, which appears on the other side of the stage during the following scene. MISS BINGLEY, take their seats at a table with four chairs. A piano-forte stands at one side.)
+
+  JANE: He is most attentive.
+  >>> YOU: Indeed he is. You look quite drawn Jane, but I might say it serves you exactly for falling in with mother’s advice.
+
+  JANE: Lizzy, how did you get here?
+  >>> YOU: The carriage horses were commandeered for the fields so I walked.
+
+  JANE: Through the mud?
+  >>> YOU: Through the mud, yes. Te ems (The chaise, with JANE on it, exits, ) 1S adven* unr MISS BINGLEY. To walk three miles, or four miles, or five miles or Mi ary must whatever it is, above her ankles in mud and alone, quite alone, what Me ‘ pgm could she mean by it? It seems to me to show an abominable sort of wer WON «ack conceited independence and complete indifference to decorum. your TT ened . BINGLEY. It shows an affection for her sister that is very pleasing. o¥ yor MISS BINGLEY. I have an excessive regard for Jane Bennet, and I : wish she were well settled. But with such a father and mother, and My PONYSS- Ae such low connections, I am afraid there is no chance of it. Their uncle is & Jnr au an attorney in Meryton and another lives somewhere near Cheapside. : NY +t Cow & bys Wt BINGLEY, If they had uncles enough to fill all Cheapside, it would bi anne not make them one jot less agreeable. exer (ELIZABETH enters with a book.)
+
+  BINGLEY: Ah Miss Elizabeth a pleasure. Your sister improves I hope?
+  >>> YOU: She is resting, but hopes not to be thought unsociable.
+
+  BINGLEY: Indeed not.
+  [She smiles and sits away from the group.]
+  BINGLEY: I find it singular and intriguing that you prefer reading to cards Miss Bennet.
+  MISS BINGLEY: Miss Elizabeth Bennet despises cards. She is a great reader with little pleas...
+  >>> YOU: I deserve neither such praise nor such censure. I am not a great reader, and I have pleasure in many things.
+
+  MISS BINGLEY: In nursing your sister you have pleasure I am sure.
+  BINGLEY: Hear, hear!
+  MISS BINGLEY: Is Miss Darcy much grown since the spring?
+  [He nods.]
+  MISS BINGLEY: How I long to see your charming sister again, such manners and so accomplishe...
+  BINGLEY: It is amazing to me how young ladies can have patience to be so very accompli...
+  MISS BINGLEY: All? My dear Charles what do you mean?
+  BINGLEY: Yes, Caroline, all. I have never heard a young lady spo- ken of for the first...
+  DARCY: I fear I cannot boast of knowing more than a half dozen in the whole range of...
+  >>> YOU: Then you must comprehend a great deal in your idea of an accomplished woman.
+
+  MISS BINGLEY: She must have a thorough knowledge of music, singing, drawing, dancing, langu...
+  DARCY: And to all this she must yet add something more substan- tial in the improvem...
+  >>> YOU: I am no longer surprised at your knowing only six accomplished women. I rather wonder now at your knowing any,
+
+  BINGLEY: I say, sister, wontd you per- haps‘ake to the pianoforte and favour us with a...
+  DARCY: Splendid. And perhaps Miss BenngrWwill then seize the op- me) . Gg portunity ...
+  [MISS BINGLEY begipetaplay the piano-forte.]
+  DARCY: Will you essa iss Bennet?
+  >>> YOU: Ob-T heard you before. You wanted me, I know, to say “yes” that yeti might have the pleasure of despising my taste, but I always délight in cheating a person of their premeditated contempt. I hayétherefore made up my mind to tell you I do not waxt to dance feel at all: and new despisemeifyou_dare.
+
+  BINGLEY: (Taken aback he laughs and then stops.) Oh, very sorry Darcy.
+  >>> YOU: And is Mr. Darcy not to be laughed at?
+
+  DARCY: The wisest and best of men may be rendered ridiculous by a person whose first...
+  >>> YOU: Certainly there are such people, but I hope I am not one of them. I hope I never ridicule what is wise and good. Follies and nonsense, whims and inconsistencies, do divert me, I own, and I laugh at them whenever can. But these, I suppose, are precisely what you are without. —. NAN
+
+  DARCY: Perhaps that is not possible for anyone. But it has been the study of my life...
+  >>> YOU: Such as vanity and pride?
+
+  DARCY: Yes, vanity is a weakness indeed. But pride — where there is a real superiori...
+  >>> YOU: And your defect is a propensity to hate everybody.
+
+  DARCY: And yours is willfully to misunderstand them. us (Shift begins, bringing us b...
+  JANE: I wasn’t rushed Mamma.
+  MR. BENNET: Well, I for one am gratified, our evening conversa- tion had lost much of its...
+  MRS. BENNET: Mr. Bennet ...
+  LYDIA: Oh, poo...
+  MR. BENNET: My dear, I hope that you have ordered a good dinner today, because I have rea...
+  MRS. BENNET: Is it Mr. Bingley? Why Jane, you never dropped a word of this— you sly thing.
+  MR. BENNET: It is not Mr. Bingley, it is my cousin Mr. Collins, who when I am dead may tu...
+  KITTY: But why Papa?
+  >>> YOU: I am no longer surprised at your knowing only six accomplished women. I rather wonder now at your knowing any. —
+
+  MISS BINGLEY: Miss Elizabeth, let me persuade you to follow my example and take a turn abou...
+  DARCY: You can have only two motives for walking about the room together, and my joi...
+  MISS BINGLEY: What on earth can you mean, sif?
+  DARCY: Either you are in each other’s confidence and have secret affairs to discuss,...
+  MISS BINGLEY: Shocking reply! How shall we punish him for such a speech, Miss Elizabeth?
+  >>> YOU: Nothing so easy. We can all plague one another. Tease him, laugh at him.
+
+  BINGLEY: (Taken aback he laughs and then stops) Oh. Very sorry, Darcy.
+  MR. BENNET: It is the entail Kitty, the entail of which I often re- mind you. The inherit...
+  MRS. BENNET: Pray do not talk of that odious man and this odious legality. It is monstrous...
+  KITTY: Mr. Collins was punctual to his time. Hall’ (ol r , : (An ominous knock. The ...
+  COLLINS: Ah, Mrs. Bennet, Mr. Bennet, as a pastor of the Church of England I flatter m...
+  MRS. BENNET: You are very kind, sir, and I wish with all my heart it may prove so; for els...
+  COLLINS: I am very sensible, madam, of the hardship of my fair cousins, but I can assu...
+  COLLINS: Thus, in conclusion I may say that having a good house and good living as a c...
+  MRS. BENNET: Indeed.
+  COLLINS: I very much approve your eldest...
+  MRS. BENNET: Jane.
+  COLLINS: Indeed. I conceive her both fetching and decorous. She should do quite nicely...
+  MRS. BENNET: Jane. Sir, as to my younger daughters I cannot take it upon myself to say but...
+  COLLINS: Jane?
+  MRS. BENNET: Jane.
+  COLLINS: Jane.
+  MRS. BENNET: I feel it incumbent to say she is very likely to be soon engaged.
+  COLLINS: I see. And the next in age?
+  MRS. BENNET: Elizabeth.
+  COLLINS: Elizabeth, yes. Very forthright and not at all unpresentable.
+  MRS. BENNET: (Taps his chest.) Done. (Shift begins out of Longbourn, leaving us with a bar...
+  LYDIA: To escape Mr. Collins’ lectures... MR. BENNET., On the high quality and moral...
+  KITTY: Papa suggested a stroll to Meryton.
+  MR. BENNET: For I supposed him better fitted for a walker than a talker. (They set off. ....
+  COLLINS: Indeed, one must first learn that the highest laws for the governance of a Ch...
+  LYDIA: And no sooner had I arrived at the regimental trumpetry than three ensigns bo...
+  COLLINS: ...and discovered from within not from without ...
+  LYDIA: And all three asked me to walk out with them...
+  COLLINS: ...that no man can become a serviceable servant solely by obedience to writte...
+  LYDIA: La, said I, lam but one young lady as you can plainly...
+  KITTY: When we soon espied...
+  [LYDIA follows her gaze.]
+  LYDIA: Oh. Yoo hoo.
+  KITTY: Assewlpantined-eficersfitheveqimens . q Dennul Onambirlaynel, Low was Londo -...
+  KITTY: His appearance was greatly in his favour.
+  LYDIA: He had all the best parts of beauty...
+  KITTY: A fine countenance...
+  LYDIA: A good figure...
+  KITTY: And very pleasing address.
+  WICKHAM: How do you do. This is a lucky chance indeed. At the of- ficers’ table the Be...
+  [Turns to the younger sisters.]
+  [They laugh merrily.]
+  KITTY: Quite topsy turvy.
+  WICKHAM: Profoundly sorry. I hope to be correct in addressing you as Miss Elizabeth Be...
+  >>> YOU: Yes, quite correct.
+
+  WICKHAM: I solicit your further acquaintance Miss Bennet.
+  >>> YOU: Our society sir is not extensive, I venture we will meet i again.
+
+  LYDIA: La, we were talking oh so very agreeably when the sound of horses drew our no...
+  KITTY: And Mr. Bingley and Darcy came riding by...
+  >>> YOU: (To audience) Mr. Wickham barely touched his hat which Mr. Darcy hardly deigned to return.
+
+  KITTY, LYDIA, ELIZABETH: What could be the meaning of it?
+  LYDIA: Before walking on we naturally enjoined Mr. Wickham to pay us a visit.
+  WICKHAM: With very great pleasure indeed. I fear we poor souls in the army lack greatl...
+  [laugh merrily.]
+  WICKHAM: Miss Elizabeth.
+  >>> YOU: Mr. Wickham.
+
+  LYDIA: La, but our sister has made a conquest.
+  [She giggles with KITTY.]
+  >>> YOU: Lydia. ; (Shift begins into Longbourn. The ladies and MR. BENNET filter ‘ 4 back into the parlor where COLLINS is holding forth.)
+
+  COLLINS: I am very fortunate in my patroness the nonpareil Lady Catherine de Bourgh wh...
+  [LADY CATHERINE appears on second level.]
+  COLLINS: What beauty! What elevated style and affability! She is, of course, the propr...
+  MR. BENNET: Absolutely splendid!
+  [LYDIA enters excited. LADY CATHERINE’s reveal ends.]
+  LYDIA: Mr. Wickham has arrived!
+  [He enters.]
+  LYDIA: Mr. George Wickham, Papa.
+  MRS. BENNET: Pleased.
+  MR. BENNET: Delighted.
+  >>> YOU: Parson Collins, Mr. Wickham.
+
+  WICKHAM: Always a pleasure to meet a gentleman of the cloth. I had a near miss myself....
+  MARY: As Mr. Collins once again held forth.
+  COLLINS: I have more than once observed to Lady Catherine that her charming daughter s...
+  >>> YOU: Mr. Wickham suggested that I show him around the grounds. (The shift is complete, and are left a q alone on the grounds.)
+
+  WICKHAM: Please excuse my temerity in accepting your sisters’ kind invitation with an ...
+  >>> YOU: It is a great kindness to seek us out. The regiment, hope, is not unhappily quartered here?
+
+  WICKHAM: I cannot speak for the regiment but I may say Iam per- sonally improved by ac...
+  >>> YOU: A courtesy very prettily put.
+
+  WICKHAM: And sincerely meant.
+  >>> YOU: I could not help noticing, sir, a certain coolness of re- gard passing between yourself and Mr. Darcy.
+
+  WICKHAM: You have a keen eye Miss Bennet.
+  >>> YOU: And a curious one, sir.
+
+  WICKHAM: Might you tell me how far Netherfield is from Meryton?
+  >>> YOU: Three miles perhaps.
+
+  WICKHAM: Indeed? How long has Mr. Darcy been staying there?
+  >>> YOU: About a month. He is a man of very large property in Derbyshire, I understand. ‘
+
+  WICKHAM: His estate there is a noble one. In fact I have been con- nected with his fam...
+  >>> YOU: I have spent four days in the same house with him, and I think him very disagreeable.
+
+  WICKHAM: I believe your opinion of him would in general astonish.
+  >>> YOU: Really? He is not at all liked in Hertfordshire.
+
+  WICKHAM: May I express surprise? The world is perhaps blinded by his fortune and conse...
+  >>> YOU: I should take him even on my slight acquaintance to be an ill-tempered man. Pride and Prejudice 29
+
+  WICKHAM: I fear I have considerable knowledge of him. The late Mr. Darcy, his father, ...
+  >>> YOU: On what grounds?
+
+  WICKHAM: Had the late Mr. Darcy liked me less, his son might have borne with me better...
+  >>> YOU: I had not thought Mr. Darcy as bad as this.
+
+  WICKHAM: I do feel that almost all his actions may be traced to his considerable pride.
+  >>> YOU: But can such abominable pride as his have ever done him good?
+
+  [A park bench is brought on.]
+  WICKHAM: I must own him to be liberal and generous, display hospitality, assist his te...
+  >>> YOU: I am astonished at his intimacy with Mr. Bingley. Do you know him?
+
+  WICKHAM: Not at all.
+  >>> YOU: He is a sweet tempered, amiable, charming man. He cannot know what Mr. Darcy is.
+
+  WICKHAM: Mr. Darcy can please where he chooses. He does not want abilities.
+  >>> YOU: My judgment would be that he deserves to be publicly disgraced.
+
+  WICKHAM: Sometime or other he will be—but it shall not be by me. Miss Bennet, allow me...
+  >>> YOU: I must suppose that the relationship you have de- scribed will not allow your presence at the coming ball at Netherfield.
+
+  WICKHAM: I would fear a discomfort for all involved, but make no mistake Miss Bennet, ...
+  [He bows and departs.]
+  >>> YOU: (To the audience) Well, whatever he said was well said and whatever he did was done gracefully. re) (Park bench and bushes are struck, leaving us with a bare stage. + JANE enters to ELIZABETH.)
+
+  JANE: But dear sister, I am all astonishment and concern I know not how to believe ...
+  >>> YOU: I can much more easily believe Mr. Bingley’s being im- posed on than Mr. Wickham should invent such a history of himself.
+
+  JANE: But it is so distressing. One does not know what to think.
+  >>> YOU: I beg your pardon; one knows exactly what to think.
+
+  JANE: I know only with certainty that poor Mr. Bingley would have much to suffer if...
+  >>> YOU: “Poor Mr. Bingley?”
+
+  JANE: speak only as an observer.
+  [JANE moves away, we are at Longbourn.]
+  >>> YOU: (As BINGLEY and his sister appear, revealed on the first level.) Back at home Mr. Bingley and his sister came to give their per- sonal invitation for the long expected ball at Netherfield which was fixed for the following Tuesday. ( an invitation, bows and disap- pears. COLLINS appears.)
+
+  >>> YOU: While Mr. Collins...
+
+  COLLINS: I am by no means of the opinion, I assure you, that a ball of this kind, give...
+  >>> YOU: (Back to audience as COLLINS disappears) And it struck me that I had been selected from among my sisters as worthy of be- ing the mistress of Hunsford Parsonage. Dentiy ep Pride and Prejudice 31 ee ENDO MiSs a Ene CS (Shift begins into ball at Netherfield. Music begins. Dancers enter. k ww 10 any ELIZABETH dances with COLLINS. JANE speaks to the audi- we Ww erice.) ated ow cn yo JANE. I perceived that Elizabeth still longed to see Mr. Wickham co ge sw O among those assembled... “ ¢ 0 oe ye KITTY. Seeking the conquest of all that remained unsubdued of his nN wr heart. Aw one *0 b0 ( away and another young man, KITTY. WiS IN a ow Wo and speaks to us.) oD we © ph y i ELIZABETH. I might title them “dances of mortification.” ore xo me oo (.) . NN drt xo” DARCY. May I hope for the next Miss Bennet? al ELIZABETH. (Taken aback:) Well, I hardly think... (But before she can finish the sentence she is taken aside by CHARLOTTE.)
+
+  CHARLOTTE: Do not be a simpleton and allow your fancy for Wickham to make you appear unp...
+  DARCY: Well then. (They tye
+  >>> YOU: The music is well played do you not think?
+
+  [He nods. After they dance silently for a moment.]
+  >>> YOU: It is your turn to say something now, Mr. Darcy. I talk- ed about the dance, and you ought to make some kind of remark on the size of the room, or the number of couples.
+
+  DARCY: I quite assure you that whatever you wish me to say will be said.
+  >>> YOU: Very well, that reply will do for the present, now we may be silent.
+
+  DARCY: Do you talk by the rule then when you are dancing?
+  >>> YOU: I have always, Mr. Darcy, seen a great similarity in the turn of our minds. We are each of an unsocial taciturn disposi- tion, unwilling to speak unless we expect to say something that will amaze the whole room, and be handed down to posterity with all the éclat of a proverb. .
+
+  DARCY: This is no very striking resemblance of your own character, Iam sure. How nea...
+  >>> YOU: I have recently had the pleasure of forming a new ac- quaintance with a childhood friend of yours.
+
+  [They stop dancing.]
+  >>> YOU: A Mr. Wickham.
+
+  DARCY: Mr. Wickham is blessed with such happy manners as may ensure his making frien...
+  >>> YOU: He has been so unlucky as to lose your friendship, and in a manner which he is likely to suffer from all his life.
+
+  [A silence.]
+  DARCY: What think you of books Miss Elizabeth?
+  >>> YOU: I cannot talk of books in a ballroom, my head is full of something else.
+
+  [DARCY inclines his head civilly and begins to turn away.]
+  >>> YOU: I remember hearing you say Mr. Darcy that you hardly ever forgave, that your resentment once created was unappeasable. You are very cautious, I suppose as to its being created?
+
+  DARCY: Iam.
+  >>> YOU: And never allow yourself to be blinded by prejudice?
+
+  DARCY: May I ask to what these questions tend?
+  >>> YOU: Merely to the illustration of your character. I am try- \ ing to make it out. “J DARCY. And what is your success?
+
+  >>> YOU: I do not get on at all. I hear such different accounts of you as to puzzle me exceedingly.
+
+  DARCY: I can readily believe that reports may vary greatly with respect to me; and I...
+  [COLLINS enters to them.]
+  COLLINS: Ah, Mr. Darcy, you are if I am not mistaken the nephew of my eminent patrones...
+  DARCY: You have neglected your name sir.
+  COLLINS: Have I?
+  DARCY: You have.
+  COLLINS: Mr. Collins, sir.
+  DARCY: Delighted.
+  [He moves away. ELIZABETH stares in wonderment at COLLINS.]
+  COLLINS: Excellent, most excellent. I have no reason, I assure you, to be dissatisfied...
+  >>> YOU: Though he neglected his name?
+
+  [She leaves him.]
+  COLLINS: Did he?
+  MISS BINGLEY: So, Miss Eliza, I hear you are quite delighted with George Wickham... Oh yes,...
+  >>> YOU: I believe he so asserted.
+
+  MISS BINGLEY: Let me recommend you, however, as a friend, not to give implicit confidence t...
+  >>> YOU: Well...
+
+  MISS BINGLEY: George Wickham has treated Mr. Darcy in a most infamous manner. I do not know...
+  >>> YOU: His guilt and his descent appear by your account to be one and the same, for I have heard you accuse him of nothing worse than of being the son of Mr. Darcy’s steward, and of that, I can assure you, he informed me himself.
+
+  MISS BINGLEY: I beg your pardon. Please excuse my interference, it was kindly meant.
+  [She coldly moves away.]
+  >>> YOU: (To herself) Insolent girl.
+
+  [She watches dance.]
+  BINGLEY: By heavens, you step it wonderfully!
+  JANE: Under your instruction, sir.
+  >>> YOU: (Watching them) Well, that at least promises the felic- ity which a marriage of true affection can bestow.
+
+  [MRS. BENNET has cornered MISS BINGLEY.]
+  MRS. BENNET: Ah, Miss Bingley...
+  [Who is watching her brother dance.]
+  MRS. BENNET: I’m sure J needn't enumerate the advantages of such a match...
+  >>> YOU: Mamma...
+
+  MRS. BENNET: Such an advantage living but three miles apart, and such a comfort knowing ho...
+  >>> YOU: (Taking her mother’s arm) Sadly, our carriage waits...
+
+  MRS. BENNET: But...
+  >>> YOU: And we must go. (Moves her mother away from MISS BINGLEY who departs. They are immediately stopped by COLLINS.)
+
+  COLLINS: Ah Miss Elizabeth, it is a great shame we footed it but once. (ELIZABETH esca...
+  LYDIA: When at last the guests and officers quitted the house, Mam- ma spoke all the...
+  [Starts to leave; turns back.]
+  COLLINS: May I hope, Madam, for your in- terest in the matter of your penultimate elde...
+  MRS. BENNET: What? Oh yes, I see... dear me.., yes, certainly... A private audience, I see...
+  >>> YOU: Dear Madam, do not go. .
+
+  MRS. BENNET: Not go?
+  >>> YOU: Mr. Collins must excuse me. He can have nothing to say to me that anybody need not hear. I am going away myself.
+
+  MRS. BENNET: Nonsense Lizzy. I desire you will stay where you are.
+  [ELIZABETH turns to go.]
+  MRS. BENNET: Lizzy, I insist upon your staying and hearing Mr. Collins. Come Kitty. (Fale ...
+  [Grabs her by the arms and exits with her.]
+  MRS. BENNET: Stay!
+  COLLINS: Your modesty adds only to your other perfections, for my attentions have been...
+  >>> YOU: Of course.
+
+  COLLINS: Secondly, it greatly adds to a man’s well being. And thirdly by the particula...
+  >>> YOU: (Fuming) Hmmmm.
+
+  COLLINS: And now nothing remains for me but to assure you in the most animated languag...
+  >>> YOU: No.
+
+  COLLINS: No?
+  >>> YOU: I am very sensible of the honour of your proposals but it is impossible for me to do otherwise than decline them.
+
+  COLLINS: Oh, it is usual with young ladies to reject at first the ad- dresses of the m...
+  >>> YOU: I do assure you that I am not one of those young la- dies. You could not make me happy and J am convinced that I am the last woman in the world who would make you so. Were your friend Lady Catherine to know me, she would find me in every re- spect ill qualified. This matter may be considered, therefore, as fi- nally settled.
+
+  COLLINS: Naturally you cannot be serious in your rejection of me. Good sense and finan...
+  >>> YOU: I am not, Mr. Collins, an elegant female intending to plague you. I am a rational creature speaking the truth from her heart. I will not have you. Can I speak plainer?
+
+  COLLINS: You are uniformly charming!
+  [ELIZABETH exits. MRS. BENNET enters.]
+  MRS. BENNET: Dear Mr. Collins, allow me to be the first to con- gratulate you!
+  COLLINS: She has begun delightfully with a refusal.
+  MRS. BENNET: A refusal?!
+  COLLINS: Out of bashful modesty and the genuine delicacy of her character.
+  MRS. BENNET: Mr. Bennet you are wanted immediately!
+  [To COLLINS:]
+  COLLINS: Headstrong...
+  MRS. BENNET: ...but I will make her know it.
+  COLLINS: Headstrong? Foolish? Dear me, if so it were better not to force her acceptanc...
+  [MR. BENNET enters.]
+  MRS. BENNET: Mr. Bennet, you must come and make Lizzy marry Mr. Collins for she vows she w...
+  COLLINS: Pray, excuse me.
+  [He exits.]
+  MR. BENNET: I have not the pleasure of understanding you.
+  MRS. BENNET: ...and Mr. Collins begins to say he will not have Lizzy. Lizzy!
+  MR. BENNET: And what am I to do on the occasion?
+  MRS. BENNET: Why tell her you insist upon her marrying him.
+  [ELIZABETH enters.]
+  MR. BENNET: Come here child. Is it true Mr. Collins has made you an offer of marriage?
+  >>> YOU: It is. :
+
+  MR. BENNET: And this offer of marriage you have refused?
+  >>> YOU: I have sir.
+
+  MR. BENNET: An unhappy alternative is before you Elizabeth. Your mother will never see yo...
+  MRS. BENNET: I tell you what Miss Lizzy, go on in this way and you will never get a husban...
+  [MR. COLLINS enters.]
+  MRS. BENNET: Oh, Mr. Collins.
+  COLLINS: Please excuse me, but] wish to withdraw my pretensions to your daughter’s fav...
+  [He exits.]
+  MRS. BENNET: Miss Lizzy, I shall simply say that I will never speak to you again and you w...
+  KITTY: The discussion of Mr. Collin’s offer was now nearly at an end; but rather tha...
+  LYDIA: ...that he was always to have gone on Saturday and to Sat- urday he still mea...
+  KITTY: And...
+  LYDIA: ...the assiduous attentions paid to Lizzy were transferred...
+  [CHARLOTTE LUCAS is revealed.]
+  KITTY: ...to Charlotte Lucas who was visiting...
+  LYDIA: ...whose civility in listening to him...
+  KITTY, LYDIA: ...was a seasonable relief to us all. ( walk off arm in arm. KITTY immediatel...
+  JANE: (Unfolds the note.) From Netherfield?
+  KITTY: Caroline Bingley says their whole party are leaving for town without any inte...
+  JANE: “I do not pretend to regret anything I shall leave in Hertfordshire except yo...
+  >>> YOU: It is only evident that Miss Bingley does not mean he should.
+
+  JANE: I will read you the passage which particularly hurts me. I will have no reser...
+  >>> YOU: Foolishness, she is a child.
+
+  JANE: Is it not clear enough? Does it not expressly declare that Caro- line neither...
+  >>> YOU: Yes, there can; for mine is totally different. Will you hear it?
+
+  JANE: Most willingly.
+  >>> YOU: It is this, Miss Bingley sees that her brother is in love with you and wants him to marry Georgiana Darcy. I also suspect that Mr. Bingley’s regard was further suppressed by his friend, Mr. Darcy’s, interference. He watched you most narrowly as you danced.
+
+  JANE: You must not criticize, Lizzy. Perhaps I have imagined Mr. Bingley’s regard. ...
+  >>> YOU: And men take care that it should. His sister has influ- enced him as well Jane, in conjunction with his friend.
+
+  JANE: Surely she only wishes his happiness.
+  >>> YOU: Oh, she may wish many things beside his happiness. Such as an increase in wealth, consequence and great connections.
+
+  JANE: No, Lizzy. I think no ill of him or his sister. Let me take it in the best li...
+  >>> YOU: Really, you are too good. You wish to think all the world respectable. The more I see of the world the more I am dissat- isfied with it; and every day confirms my belief of the inconsistency of all human characters. I have come to distrust the appearance of either merit or sense.
+
+  JANE: You must not hinder your happiness on my behalf.
+  [She exits and MR. BENNET enters.]
+  MR. BENNET: So Lizzy, your sister is crossed in love, I find. I con- gratulate her. Next ...
+  >>> YOU: Thank you, sir, but a less agreeable man would satisfy me. We must not all expect Jane’s good fortune. (ELIZABETH exits one way, MR. BENNET another, and LYD- IA moves to the audience.)
+
+  LYDIA: Amazement! Within the very week and in as short a time as Mr. Collin’s long s...
+  JANE: (Revealed on first level.) Domestic arrangement...
+  LYDIA: And Lizzy feels she accepted him solely from...
+  >>> YOU: (Poking her head in) The pure and disinterested desire of an establishment...
+
+  LYDIA: And as Mamma said...
+  MRS. BENNET: Cared not how that establishment was gained! meet.)
+  >>> YOU: Charlotte’s marriage is unaccountable! In every view unaccountable!
+
+  JANE: My dear Lizzy, do not give way to such feelings as these. They will ruin your...
+  [JANE leaves and CHARLOTTE enters to ELIZABETH.]
+  >>> YOU: Engaged to Mr. Collins! My dear Charlotte, impossi- ble!
+
+  CHARLOTTE: Why should you be so surprised, my dear Eliza? Do you think it incredible tha...
+  >>> YOU: Indeed not, but two offers of marriage in three days?
+
+  CHARLOTTE: Dear Eliza, I am sure when you have had time to think it all over that you wi...
+  MRS. BENNET: And I tell you Mr. Collins has been taken in! Worse, one of our Party: Elizab...
+  MR. BENNET: No.
+  MRS. BENNET: I tell you we are in a pitiable state. Because of the entail Charlotte Lucas ...
+  MR. BENNET: Let us hope for better things. Let us flatter ourselves that I may be the sur...
+  [Shift to different Longbourn configuration.]
+  KITTY: In our gloom, Mr. Wickham’s society was of material service, and his betrayal...
+  KITTY, LYDIA, ELIZABETH: Mr. Darcy was the worst of men.
+  [exit.]
+  >>> YOU: On the following Monday the Gardiners, my mother’s brother and his wife arrived.
+
+  [We see them at the back of the stage.]
+  [MR. GARDINER exits. MRS. GARDINER moves down to]
+  MRS. GARDINER: A young man such as you describe Mr. Bingley so easily falls in love with a p...
+  >>> YOU: Oh, he shall not be in love with me if I can prevent it.
+
+  MRS. GARDINER: Do not involve yourself in an affection which the want of fortune should make...
+  >>> YOU: At present I am not in love with Mr. Wickham but I count him as the most agreeable man I ever saw.
+
+  MRS. GARDINER: Unwise.
+  >>> YOU: But how can I be wiser than so many of my fellow- creatures if I am tempted, or how am I even to know that it would be wisdom to resist? All that I can promise you therefore, is not to be ina hurry.
+
+  MRS. GARDINER: I say no more. I shall take Jane with me to Lon- don, poor girl, as a change ...
+  >>> YOU: Jane! Look now, I see London is agreeable to you.
+
+  JANE: My dearest Lizzy. Sit with me.
+  >>> YOU: With every pleasure. You look so well.
+
+  JANE: I confess myself to have been entirely deceived in Miss Bing- ley’s regard fo...
+  MRS. GARDINER: All gentlemen are held in my lowest repute. It is said that Mr. Wickham is no...
+  >>> YOU: Oh.
+
+  MRS. GARDINER: Whose most remarkable charm, I might add, seems to be the acquisition through...
+  >>> YOU: A man in distressed circumstances has not time for the elegant decorums which others might observe. If she does not object to it, why should we?
+
+  MRS. GARDINER: Her not objecting to it does not justify him.
+  >>> YOU: (Pacing) I have a very poor opinion of young men who live in Derbyshire; and their intimate friends who live in Hert- fordshire are not much better. I am sick of them all. Thank heaven I am going tomorrow to the Collinses’ parsonage where I shall find a man who has not one agreeable quality, who has neither manner nor sense to recommend him. Perhaps stupid men are the only ones worth knowing after all.
+
+  MRS. GARDINER: Bravo. You must accompany Mr. Gardiner and myself on a tour of pleasure this ...
+  >>> YOU: My dear aunt, what delight, what felicity! You give me fresh life and vigor. Adieu to disappointment and spleen. What are men to rocks and mountains! ——— __ (Shift out of Mrs. Gardiner’s house to a bare stage. ELIZABETH speaks to the audience.) Every object in my next day’s journey was new and interesting, the chaise comfortable, the weather delightful and all conspired for the pleasure of the traveler. At length, the parsonage was discernible and Mr. Collins and Charlotte appeared at the gate. ’ (An actor appears, as the “gate.” appear.)
+
+  CHARLOTTE: Dearest Eliza, you are welcome and then welcome again! Come in immediately yo...
+  COLLINS: I have news of Lady Catherine's delicate consideration and civility in inviti...
+  >>> YOU: The dinner was exceedingly handsome and there were all the servants and each article of plate which Mr. Collins had promised and elaborately described.
+
+  [CHARLOTTE joins her.]
+  [COLLINS enters with LADY CATHERINE.) hi? a to Patna.]
+  COLLINS: It is my pleasure to introduce the Right Honourable Lady . Catherine de Bourg...
+  LADY CATHERINE: (Stopping him with a gesture.) Yes, yes, quite so, You are, I believe, Elizab...
+  >>> YOU: I am.
+
+  LADY CATHERINE: Your father’s estate is entailed on Mr. Collins, I think?
+  [To CHARLOTTE:]
+  [To COLLINS, undispaked hey to Rosings Tae: . ay,]
+  [Takes him away as enter.) :]
+  DARCY: Miss ne had not hoped to meet you here. ‘a boug ‘ She 100KS Sovnewnat
+  >>> YOU: Nor I. S oly ana cwoss:
+
+  DARCY: Allow me to present Colonel Fitzwilliam. V£5, She will do
+  FITZWILLIAM: Your beauty, oft reported, exceeds, Miss Bennet. for Darw vy well.
+  >>> YOU: This has not been true Colonel Fitzwilliam in all quarters.
+
+  LADY CATHERINE: Miss Bennet, your family?
+  >>> YOU: My family?
+
+  LADY CATHERINE: How many sisters have you, Miss Bennet?
+  >>> YOU: I have four sisters.
+
+  LADY CATHERINE: That is a great many. Are you the eldest?
+  >>> YOU: J am the second.
+
+  LADY CATHERINE: Are they handsome?
+  >>> YOU: Indeed.
+
+  LADY CATHERINE: Do your sisters play and sing? Do you draw?
+  >>> YOU: No, not at all.
+
+  LADY CATHERINE: What, none of you?
+  [ELIZABETH shakes her head.]
+  LADY CATHERINE: That is very strange. Has your governess left you?
+  >>> YOU: We never had a governess.
+
+  LADY CATHERINE: No governess! How was that possible? Five daughters brought up at home withou...
+  >>> YOU: Not perhaps as you might think. PNne- ESS SSESEEEESE, Then who taught you? Who attended to you?
+
+  >>> YOU: Such of us as wished to learn never wanted the means. We were always encouraged to read, and books were always pro- vided. Those who chose to be idle certainly might.
+
+  LADY CATHERINE: Aye, no doubt; but that is what a governess will prevent; had I known your mo...
+  >>> YOU: Yes, ma’am, all.
+
+  LADY CATHERINE: All! All five out at once? Very odd! The young- er ones out before the eldest...
+  >>> YOU: But really, ma’am, I think it would be very hard upon younger sisters that they should not have their share of society and amusement, because the elder may not have the means or inclination to marry early.
+
+  LADY CATHERINE: Upon my word, you give your opinion very decidedly for so young a person. Pra...
+  >>> YOU: With three younger sisters grown up, your ladyship can hardly expect me to own it.
+
+  [FITZWILLIAM leans over to talk to her.]
+  LADY CATHERINE: What is that you are saying Fitzwilliam? What are you telling Miss Bennet?
+  FITZWILLIAM: We are speaking of music, madam.
+  LADY CATHERINE: Of music? Then pray speak aloud.
+  FITZWILLIAM: I am reminding Miss Bennet of her earlier promise to favour us at the pianofo...
+  >>> YOU: (To LADY CATHERINE) Ah, yes. Pray excuse me.
+
+  [Moves to the piano.]
+  [Begins to play.]
+  LADY CATHERINE: (Listens for a moment as ELIZABETH plays.) I often tell young ladies, that no...
+  LADY CATHERINE: Do cmbinue, Miss Bennet-
+  >>> YOU: (ELIZABETH seated at the pianoforte finds DARCY sta- tioned where he may closely observe her.) You mean to frighten me, Mr. Darcy but my courage always rises with every attempt to intimidate me.
+
+  DARCY: You could not really believe me to entertain any design of alarming you. I ha...
+  [ELIZABETH stops playing, laughs.]
+  >>> YOU: (To FITZWILLIAM.) Your cousin will give you a very pretty notion of me and teach you not to believe a word I say. Take care sir, for you are provoking me to retaliate and such things may come out as will shock your relations to hear.
+
+  DARCY: 1am not afraid of you.
+  FITZWILLIAM: Pray let me hear what you accuse him of? I should like to know how such a par...
+  >>> YOU: You shall hear then, but prepare for something very dreadful. The first time of ever my seeing him was at a ball and he refused to dance, and more than one young lady was sitting down in want of a partner.
+
+  DARCY: I had not at that time the honour of knowing any lady in the assembly and I a...
+  >>> YOU: Shall we ask him why a man of sense and education who has lived in the world is ill qualified to recommend himself to strangers?
+
+  DARCY: I have not the talent of conversing easily with those I have never seen befor...
+  >>> YOU: Weeleertenatebciorall-precont thatisrettheessehere, masren, to pla +hiS (ELIZABETH moves down to the audience.) inStrument 4s I mif ht. Strangely and unexpectedly after our...delightful evening...at Lady But I ha ve alw M4 Catherine de Bourgh’s, Supposed i+ +40 be my (Shift begins out of Lady Catherine’s, to a bare stage.) ouek Foul + = because the two cousins came often, of an afternoon, to the parsonage. It EL will riot prache . was plain that Colonel Fitzwilliam came because he took pleasure in Charlotte’s and mty society but why Mr. Darcy came so often was more difficult to understand.
+
+  [.]
+  CHARLOTTE: If you would not laugh me to scorn Eliza, I might suggest the possibility of ...
+  >>> YOU: (Startled into laughter) The gentleman seldom meets my eyes and frequently sits there ten minutes together without opening his lips.
+
+  CHARLOTTE: Ah, but he often looks at you quite appraisingly when your look is engaged el...
+  FITZWILLIAM: Ah, Miss Bennet.
+  >>> YOU: Colonel Fitzwilliam, I did not know you ever walked this way.
+
+  FITZWILLIAM: Are you going much further?
+  >>> YOU: No, I should have turned in a moment.
+
+  [He joins her.]
+  FITZWILLIAM: Yes, if Darcy does not put it off again.
+  >>> YOU: I do not know anybody who seems more to enjoy the power of doing what he likes than Mr. Darcy.
+
+  FITZWILLIAM: But so we all do. It is only that he has better means of having it than many ...
+  >>> YOU: I imagine your cousin brought you down with him for the sake of having somebody at his disposal. I wonder he does not marry, to secure a lasting convenience of that kind. But perhaps his sister does as well for the present as she is under his sole care.
+
+  FITZWILLIAM: In fact I am joined with him in the guardianship of Miss Darcy.
+  >>> YOU: Are you indeed? Young ladies of her age are some- times a little difficult to manage; and if she has true Darcy spirit, she may like to have her own way.
+
+  FITZWILLIAM: Indeed she is one of the most tractable creatures in the world and a great fa...
+  >>> YOU: A little. Darcy is uncommonly kind to Mr. Bingley, and takes a prodigious deal of care of him.
+
+  FITZWILLIAM: From something Darcy said, I have reason to think Bingley very much indebted ...
+  >>> YOU: You may, of course, depend on my not mentioning it.
+
+  FITZWILLIAM: He told me merely that he congratulated himself on having lately saved a frie...
+  >>> YOU: Please pardon me, but I do not see what right Mr. Dar- cy had to decide on the propriety of a friend’s inclination.
+
+  FITZWILLIAM: As I recall there were some very strong objections to the lady’s family. I be...
+  >>> YOU: To Jane herself there could be no possibility of objec- tion—all loveliness and goodness as she is! Neither could anything be urged against my father, who though with some peculiarities, has abilities Mr. Darcy himself need not disdain. Of course my mother... But Mr. Darcy would receive a deeper wound from the want of im- portance in his friend’s connections than from their want of sense. He has been governed by this worst kind of pride, and partly from the wish of retaining Mr. Bingley for his sister. (On the phrase “worst kind of pride,” a chair enters for Elizabeth. I, } vi She is now back at the parsonage. DARCY enters.)
+
+  DARCY: Miss Bennet.
+  >>> YOU: Mr. Darcy.
+
+  DARCY: May I...would it be suitable if I...enquired of your health.
+  >>> YOU: My health?
+
+  DARCY: As I’ve not...encountered you these past days I thought...1 come to...enquire...
+  >>> YOU: My health, Mr. Darcy, meets all the usual standards.
+
+  DARCY: Ah. AAR
+  >>> YOU: Yes.
+
+  DARCY: Ah.
+  [A silence.]
+  DARCY: In vain have I struggled. It will not do. My feelings will not be repressed. ...
+  [ELIZABETH, startled, looks down.]
+  DARCY: I see I dismay you. I am slow, even dilatory. I should have declared myself a...
+  [She doesn’t speak.]
+  DARCY: I have spoken ill but mean well, Miss Bennet.
+  >>> YOU: In such cases as this, it is, I believe, the established mode to express a sense of obligation for the sentiments avowed however unequally they may be returned. It is natural that obliga- tion should be felt, and if I could feel gratitude I would now thank you. But I cannot—I have never desired your good opinion, and you have certainly bestowed it most unwillingly. The feelings which you tell me have long prevented the acknowledgment of your regard can have little difficulty in overcoming it after this explanation.
+
+  DARCY: And this is all the reply which I am to have the honour of expecting! I might...
+  >>> YOU: I might as well enquire, why, with so evident a design of offending and insulting me you chose to tell me that you liked me against your will, against your reason and even against your char- acter? Was not this some excuse for incivility, if I was uncivil? But I have other provocations. You know I have. Do you think that any consideration would tempt me to accept the man who has been the means of ruining, perhaps forever, the happiness of a beloved sister? You divided Mr. Bingley and Jane from each other, or at the very least yours was the principal means, involving them both in misery of the acutest kind. Can you deny that you have done it?
+
+  DARCY: I have no wish to deny that I did everything in my power to separate my frien...
+  >>> YOU: Quite clearly said. But it is not merely this affair on which my dislike is founded. Your character was unfolded in the recital which I received many months ago from Mr. Wickham.
+
+  DARCY: You take an eager interest in that gentleman’s concerns.
+  >>> YOU: Knowing his misfortunes who would not feel an in- terest in him?
+
+  DARCY: His misfortunes!
+  >>> YOU: And of your infliction. You have withheld the ad- vantages which you must know to have been designed for him and yet you treat the mention of his misfortunes with contempt.
+
+  DARCY: And this is your opinion of me! I thank you for explaining it so fully. These...
+  >>> YOU: The mode of your declaration has not affected me Mr. Darcy. You could not have made me the offer of your hand in any possible way that would have tempted me to accept it. From the very beginning your arrogance and selfish disdain for the feelings of others have built an immovable dislike. You are Mr. Darcy the last man in the world whom I could ever be prevailed on to marry.
+
+  DARCY: You have said quite enough, Madam. I perfectly compre- hend your feelings. Fo...
+  [He exits. ELIZABETH moves downstage as the lights fade.]
+--- ACT II ---
+
+  [She walks. DARCY blocks her path.]
+  DARCY: I have been wandering in the grove some time in the hope of meeting you. Will...
+  >>> YOU: (Reading) “Two offences you last night laid to my charge. First that I had detached Mr. Bingley from your sister (Throughout the reading of the letter characters appear and disap- pear in the six openings of the sky. Some on the first level, some on the second.) and the other that I had in defiance of honour blasted the prospects of Mr. Wickham.”
+
+  [WICKHAM appears.]
+  WICKHAM: Ah, Miss Bennet, you are well known in Hertfordshire...
+  >>> YOU: “...I had not been long in Hertfordshire...”
+
+  [BINGLEY appears.]
+  BINGLEY: Will you think me too forward if I apply to you for a second dance?
+  [dance together across the stage.]
+  >>> YOU: “Before I observed my friend’s behaviour and per- ceived his most surprising partiality...”
+
+  DARCY: Your sister I also watched... SERABEEE. “And though her manners were open and...
+  [finish dancing and exit.]
+  DARCY: My objections to the marriage proceeded also from other causes of repugnance....
+  >>> YOU: ”...that I must preserve my friend from a most un- happy connection.”
+
+  [MISS BINGLEY appears.]
+  DARCY: In London I found his sister's uneasiness...
+  MISS BINGLEY: Has been greatly excited.
+  DARCY: And we were alike sensible that...
+  DARCY, MISS BINGLEY: No time should be lost in detaching him.
+  >>> YOU: “Bingley has great natural modestly with a stronger dependence on my judgment than on his own.”
+
+  DARCY: To convince him he had deceived himself was not difficult.
+  ELIZABETH, DARCY: “On this subject I have nothing more to say and no apology to offer.”
+  DARCY: With respect to that other, more weighty accusation of hav- ing injured Mr. W...
+  WICKHAM: In short, his behavior to me has been scandalous.
+  DARCY: My father was not only fond of this young man’s society but hoped the church ...
+  >>> YOU: (Still reading) “And intended to provide for him in it. He would situate him at the family parsonage and provide a legacy of one thousand pounds. On my father’s death Mr. Wickham wrote to inform me that...
+
+  WICKHAM: I have resolved not to pursue a church living but to study law for which the ...
+  >>> YOU: “The business was soon settled. He resigned all claim to assistance in the church...”
+
+  DARCY: ...and accepted in return three thousand pounds. Three years later he applied...
+  >>> YOU: (Looking away from the letter) This must be false! This cannot be! (Back to the letter.) “He assured me his circumstances were...”
+
+  WICKHAM: ...exceedingly bad.
+  >>> YOU: (Away from the letter) Indeed on both sides this is only an assertion and yet every line confuses my belief in Mr. Darcy’s in- famy.
+
+  [Back to the letter.]
+  DARCY: You will hardly blame me for refusing his entreaty and his resentment was so ...
+  WICKHAM: You betray your father’s wishes and your own honour sir.
+  DARCY: ...that every appearance of acquaintance was dropped.
+  >>> YOU: (Reading) “Last summer he again, most painfully ob- truded on my notice. My sister Georgiana...
+
+  [She appears.]
+  [.) 40VLIV89, Migs Nownne ype = el’]
+  WICKHAM: Ah, Miss Darcy, it is my pleasure to renew your charnuret a acquaintance. woo...
+  >>> YOU: “She was then but fifteen and was persuaded to be- ere ; lieve herself in love and consented to an elopement.”
+
+  [kiss.]
+  DARCY: Fortunately, regarding me as almost a second father, she confessed her plans.
+  >>> YOU: “You may imagine what I felt and how I acted.”
+
+  DARCY: I wrote to Mr. Wickham in undisguised heat and he left London immediately and...
+  [exit in different directions.]
+  DARCY: His chief object had unquestionably been my sister’s for- tune of thirty thou...
+  >>> YOU: (To herself) In this light his attentions to Miss King seem now the consequence of views solely and hatefully mercenary.
+
+  DARCY: (Moves close behind ELIZABETH. ) This Madam, is a faithful narrative of every...
+  [DARCY exits.]
+  >>> YOU: (Folds the letter.) How humiliating is this discovery, yet how just a humiliation. Had I been in love I could not have been more wretchedly blind, but vanity, not love has been my folly.
+
+  [All the BENNETS appear behind her in tableau.]
+  [The family disappears, leaving ELIZABETH alone.]
+  [Shift back into the BENNETS at Longbourn.) a i A]
+  MARY: lam glad you are back Lizzy.
+  LYDIA: Have you had any flirting? I was in great hopes you would have got a husband ...
+  MARY: Our sisters have been more than ordinarily silly.
+  LYDIA: Oh poo. Aunt Phillips says Lizzy had better taken Mr. Col- tins; but I do not...
+  KITTY: I do wish you had gone along with us Mary, for we had such fun. We talked and...
+  MARY: Far be it from me, my dear sister, to depreciate such pleas- ures. But I conf...
+  LYDIA: Look here, I have bought this bonnet. I do not think it is very pretty; but I...
+  MARY: You see?
+  LYDIA: Oh, but there were two or three much uglier in the shop; and when I have boug...
+  [She exits with KITTY trailing.]
+  JANE: Sister, I am heartily sorry that Mr. Darcy should have delivered his sentimen...
+  >>> YOU: You do not blame me, however, for refusing him?
+
+  JANE: Blame you! Oh no. But Wickham so very bad! It is almost past belief. How unfo...
+  >>> YOU: My belief...
+
+  MRS. BENNET: He is a very undeserving young man, I don’t be- lieve she shall ever get him ...
+  >>> YOU: Mamma...
+
+  MRS. BENNET: Weil, my comfort is, I am sure Jane will die of a broken heart, and then he w...
+  [LYDIA rushes in followed by KITTY.]
+  LYDIA: News! Ecstatic, delicious...
+  KITTY: Wonderful...
+  LYDIA: News!
+  KITTY: Hearing the regiment would leave for Brighton...
+  LYDIA: J thought my heart should have broken...
+  KITTY: My heart!
+  LYDIA: Mine! But, oh Mamma, J have received an invitation...
+  [MR. BENNET enters.]
+  KITTY: Brighton. For iis EEBRA. To Brighton!
+  KITTY: And I cannot see why I should not be asked as well.
+  LYDIA: Shan’t. Ate Forsy LYDIA: Mrs. Forster has asked me...
+  KITTY: Shall. MRS. FORSTER. AS my particular fiend:
+  LYDIA: You confuse your steps to the Danse Espanél and you've but one dress for the ...
+  [KITTY offended moves away.]
+  MR. BENNET: Lydia will never be easy ‘til she has exposed her qualities in some public pl...
+  LYDIA: Oh, Papa!
+  >>> YOU: Were you aware of the very great disadvantage to us all which must arise from the public notice of Lydia’s unguarded and imprudent manner, nay, which has already arisen from it.
+
+  MR. BENNET: What, has she frightened away some of your lovers?
+  >>> YOU: I have no such injuries to resent but, dear Father, if there is no check to her exuberant spirits she will soon be beyond the reach of amendment.
+
+  LYDIA: Oh poo.
+  KITTY: Yes, poo.
+  >>> YOU: And Kitty will follow wherever Lydia leads.
+
+  LYDIA: Papa has said I may. Indeed a visit to Brighton comprises every possibility o...
+  >>> YOU: Where you may play the common flirt with at least six officers at once.
+
+  LYDIA: I tell you all I shan’t dine or ever leave my room if...
+  MR. BENNET: We shall have no peace at Longbourn if Lydia does not go to Brighton.
+  MRS. BENNET: Mr. Wickham has arrived to say his goodbyes as the regiment tomorrow decamps ...
+  WICKHAM: It will be my pleasure, if asked, to iv\Vitation for am introduce you in Brig...
+  WICKHAM: Miss Bennet.
+  >>> YOU: Mr. Wickham.
+
+  WICKHAM: Am I in disgrace Miss Bennet?
+  >>> YOU: I do not rightly understand you.
+
+  WICKHAM: I have always admired your understanding.
+  >>> YOU: Have I mentioned J met Colonel Fitzwilliam and Mr. : Darcy at Rosings? You know Colonel Fitzwilliam I believe?
+
+  WICKHAM: In passing: You saw Mr. Darcy frequently? - ; ELIZABETH. Yes, almost every da...
+  WICKHAM: Indeed! Is it in address he improves? For I dare not hope he is improved in e...
+  >>> YOU: I mean that from knowing him better, his disposition was better understood.
+
+  WICKHAM: I must rejoice that he is wise enough to assume even the appearance of what i...
+  WICKHAM: But I fear I must leave you. We are on the march. A last word on Mr. Darcy. H...
+  >>> YOU: The departure of the regiment, including many ac- quaintances, wrapped a cloak of gloom and disinclination around our domestic circle.
+
+  MRS. BENNET: Lydia has promised to write very often but her letters are always very short.
+  KITTY: Where such and such officers had attended them...
+  MARY: Where she had seen such beautiful ornaments as made her quite wild...
+  MR. BENNET: And how she had purchased another new gown and another new parasol.
+  >>> YOU: And my constant hope of a tour to the lakes with the Gardiners was now the object of my happiest thoughts. (The family exits. MRS. GARDINER enters to her.) FS
+
+  MRS. GARDINER: My dear Elizabeth our plans, due to Mr. Gar- diner’s business must be somewha...
+  >>> YOU: Well, I own they were an attraction.
+
+  MRS. GARDINER: I fear we are confined to Derbyshire though it leaves us the delights of Warw...
+  >>> YOU: Oh, Pemberley.
+
+  MRS. GARDINER: The Darcy estate?
+  >>> YOU: Yes, I recall.
+
+  MRS. GARDINER: If it were merely a fine house richly furnished I should not care about it my...
+  >>> YOU: (Lost in thought) The grounds, yes. But is not the fam- ily down for the summer?
+
+  MRS. GARDINER: Indeed not, you goose, for they summer always in London. Elizabeth? a re (A c...
+  >>> YOU: The journey was, for scenery splendid, and when we turned in at the lodge we saw that Pemberley Park was large...
+
+  MR. GARDINER: Contains quite a variety of ground.
+  MRS. GARDINER: Glorious woods.
+  MR. GARDINER: Eh?
+  MRS. GARDINER: Woods.
+  MR. GARDINER: Good stream for fishing. '
+  >>> YOU: The house sits well on rising ground.
+
+  [The GARDINERS agree.]
+  >>> YOU: I own, I have never seen natural beauty so little con- tradicted by an awkward taste.
+
+  MR. GARDINER: Whoa there, Alexander. (A HOUSEKEEPER approaches, they exit the carriage. The...
+  HOUSEKEEPER: You are very welcome. The master is, of course, absent but we expect him tomo...
+  MRS. GARDINER: Most kind indeed.
+  MR. GARDINER: Your master much at Pemberley, is he?
+  HOUSEKEEPER: Not so much as I could wish sir.
+  MR. GARDINER: Have a look at the stream, eh?
+  HOUSEKEEPER: Please to step in. (. GARDINER do so, by literally taking a “step.”)
+  HOUSEKEEPER: That above the grand fireplace would be my mas- ter, drawn perhaps eight year...
+  MRS. GARDINER: A handsome face, but Lizzy you can tell us whether it is like or not?
+  HOUSEKEEPER: Does the young lady know Mr. Darcy?
+  >>> YOU: I do.
+
+  HOUSEKEEPER: And do you not think him a very handsome gen- tleman, Ma’am?
+  >>> YOU: Yes, very handsome.
+
+  HOUSEKEEPER: He is the best master as have ever lived. I have never had a cross word from ...
+  >>> YOU: Mr. Darcy, you mean?
+
+  HOUSEKEEPER: Yes Ma’am. Go as you please, see what you like.
+  [She departs.]
+  MRS. GARDINER: In what an amiable light does this place him, though not quite consistent wit...
+  >>> YOU: It is possible we are deceived. Perhaps Aunt we may view the grounds.
+
+  MRS. GARDINER: Ah, with the greatest pleasure.
+  [They are now outside.]
+  [DARCY suddenly appears.) fiat th]]
+  DARCY: Oh. And of al\ this
+  >>> YOU: Oh. L might have
+
+  MRS. GARDINER: Ah. been ymistress!
+  [An uncomfortable pause.]
+  DARCY: Miss Bennet, this is a...most welcome surprise.
+  >>> YOU: Indeed...most welcome.
+
+  DARCY: May I enquire of your well being and that of your family?
+  >>> YOU: In all regards...well.
+
+  DARCY: I am very pleased to hear so. Would you do me the honour of introducing me to...
+  >>> YOU: Mr. and Mrs. Gardiner may I present Mr. Darcy.
+
+  MRS. GARDINER: Charmed.
+  MR. GARDINER: Delighted.
+  >>> YOU: My uncle and aunt. $Ra9 CD
+
+  DARCY: That, of course, only adds to the honour.
+  [ELIZABETH does a double take.]
+  MR. GARDINER: Wonderful stream Mr. Darcy, capital angling I suspect?
+  DARCY: Quite satisfactory Mr. Gardiner, should you continue in the neighbourhood ple...
+  MR. GARDINER: (Hardoftrenrings Eh?
+  DARCY: Best sport.
+  MR. GARDINER: Very generous, sir. Look forward to it.
+  >>> YOU: (A bit taken aback) Very generous indeed.
+
+  MRS. GARDINER: Please exempt our forwardness in walking the grounds. Your housekeeper inform...
+  DARCY: I have preceded my party to arrange their comfort. (To ELIZABETH:) ; Among th...
+  >>> YOU: I am delighted by this compliment.
+
+  DARCY: Ah.
+  >>> YOU: Yes.
+
+  MRS. GARDINER: Great pleasure. (DARCY, at a loss, bows and moves on. The “Pemberley” pull to...
+  MR. GARDINER: Perfectly well behaved, polite and unassuming.
+  MRS. GARDINER: There is something a little aloof in him. To be sure, Lizzy, he is not handso...
+  >>> YOU: Well...
+
+  MR. GARDINER: Eh?
+  MRS. GARDINER: Disagreeable.
+  MR. GARDINER: Indeed not. At the worst a little whimsical in his civilities. Add G2 7 5 (Ch...
+  MRS. GARDINER: My dearest daughter: The meetings and intro- ductions suggested by Mr. Darcy ...
+  >>> YOU: Thus, dearest Jane, in speaking of your supposed rival Miss Darcy I saw no looks between her and Mr. Bingley that spoke of particular regard. He also asked of me with great interest if all my sisters were still at Longbourn which J took to be an enquiry as to your married state. Miss Bingley continues in her dislike of me. Georgiana Darcy was greatly civil but very shy. (MRS. GARDINER exits and the HOUSEKEEPER brings a let- ter to ELIZABETH.)
+
+  HOUSEKEEPER: Something come for you Miss.
+  >>> YOU: Oh.
+
+  HOUSEKEEPER: Thought you might be wanting it.
+  >>> YOU: News from Jane and very welcome.
+
+  [The chairs and lap tables are removed.]
+  HOUSEKEEPER: Brought it to you then.
+  >>> YOU: (Reading. JANE appears.) “Dearest Lizzy, something has occurred of a most serious and unexpected nature.” JANE..Colonel Forster informed us that Lydia has run off to Scotland with one of his officers; to own the truth, Lizzy, it is with Wickham.
+
+  >>> YOU: “Worse still...”
+
+  JANE: ...imprudent as a marriage between Mr. Wickham and our poor Lydia would be......
+  MRS. BENNET: We are now frantic to be assured it has taken place at all, for we now hear t...
+  JANE: And there is reason to believe... ;
+  >>> YOU: That he never intended to marry Lydia at all...
+
+  JANE: And Colonel Forster...
+  MRS. BENNET: ...fears Wickham is not a man to be trusted!
+  JANE: Father is going to London with Colonel Forster to try to dis- cover her, and ...
+  MRS. BENNET: He shall shoot the scoundrel through the heart and we shall all be ruined! oO
+  [Exits.]
+  JANE: Adieu! I cannot help earnest begging you... JANE AND ELIZABETH. ...to come as...
+  [JANE exits. ELIZABETH rises and rushes into DARCY.]
+  >>> YOU: Oh! Where, where is my aunt? I must find her this mo- ment on business that cannot be delayed.
+
+  DARCY: Good God, what is the matter?
+  >>> YOU: I have not an instant to lose.
+
+  DARCY: I will send a servant, you cannot go yourself. A glass of wine; shall I get y...
+  >>> YOU: No...I...no...
+
+  DARCY: You are very ill.
+  >>> YOU: No, I thank you, Only dreadful news. My younger sister has left all her friends, has eloped, under the power of...of Mr. Wickham. You know him too well to doubt the rest...she is lost forever.
+
+  DARCY: Jam grieved...shocked, but is it absolutely certain?
+  >>> YOU: Certain. My father is gone to London and I am sure Mr. Gardiner will assist but how is such a man to be worked on, how are they even to be discovered?
+
+  DARCY: If there is anything...
+  >>> YOU: Most kind but...
+
+  DARCY: Would to heaven that anything could be said or done on my part, that might of...
+  MR. GARDINER: Indeed-not.' At thé worst a little whimsical in his civilities. (We transitio...
+  >>> YOU: I now feel extremely sorry for your brother. He once had to put up with my playing. GEORGIANA. Oh, but he says you play so well. I should love to hear you.
+
+  >>> YOU: I'matfraid thafis a gross exaggeration. GEORGIANA. It cannot be. I’ve never heard my brother tell a lie.
+
+  >>> YOU: It is a beautiful instrument. And you play it so well. GEORGIANA. My brother sae it to me last year. He is so good to me and I don't deserve it.
+
+  >>> YOU: You most certainly do. He believe you do, and didn’t you just tell me that he is ; incapable of lying? Do play another, please.
+
+  [GEORGIANA does so as BINGLEY approaches.]
+  BINGLEY: It has been a very long time, Miss Elizabeth.
+  >>> YOU: Quite so; Mr. Bingley.
+
+  BINGLEY: Since the 26th of November — when we all danced at Netherfield.
+  >>> YOU: Your memory is very exact.
+
+  BINGLEY: And if your family well?
+  >>> YOU: Quite.
+
+  BINGLEY: And...are all of your sisters still at Longbourn?
+  >>> YOU: All but one.
+
+  BINGLEY: Ah...
+  >>> YOU: My sister Lydia has gone to Brighton for the summer with Colonel and Mrs. - Forster,
+
+  MISS BINGLEY: Ah, the militia has left Hertfordshire? That must be such a loss to your fami...
+  >>> YOU: I can’t imagine to whom you refer.
+
+  MISS BINGLEY: I thought I had understood you to be quite taken with a certain Mr. W...
+  [GEORGIANA falters at the piano.]
+  >>> YOU: Forgive me; Miss Darcy. T have neglected to turn your pages for you. Do begin again. . , GEORGIANA. (whispering) Thank you.
+
+  [GEORGIANA finishes the song as BINGLEY a warning glare.]
+  >>> YOU: Nothing would delight me more.
+
+  [MRS. turn to address the audience, as though voicing letters.]
+  >>> YOU: We must go at once. Pray apologize for us to Miss Darcy. . Ve must § Y apologi2 *__Me. Hurst: S Wer (She exits. MISS BINGLEY enters to DARCY.) — = yw : MISS-BINGEEY Dear me, your company seems to have fled the Shameful mannes. grounds in disarray. But now a move + Zyemv! TOUS,
+
+  [DARCY who was inomentarily lost in thought.) p leasan v]
+  DARCY: Your pardon?
+  MISS BINGLEY: How very ill Eliza Bennet looked this morning, Mr. Darcy. I never in my life ...
+  DARCY: It is, perhaps, no miraculous consequence of traveling in the summer.
+  MISS BINGLEY: (She looks for agreement to DARCY. He remains silent.) I particularly recolle...
+  DARCY: Yes, but that was only when I first knew her, for Inow con- sider her the han...
+  MISS BINGLEY: Oh. (DARY exits. MISS BINGLEY looks after him a moment as ELIZABETH moves dow...
+  >>> YOU: I had never perceived while the regiment was in Hert- fordshire, that Lydia had any partiality for Wickham but she only wanted encouragement to attach herself to anybody. The mischief of neglect and mistaken indulgence towards such a girl! A family so deranged, a father absent, a mother incapable of exertion. And it is all my fault that knowing what I did of Wickham that I had not the foresight to make that knowledge public! (ELIZABETH now enters into the scene with her family at Long- bourn.)
+
+  >>> YOU: Has anything been heard of the fugitives?
+
+  JANE: Not yet. But now that my dear uncle is come I hope all will be well.
+  >>> YOU: Is Father in London?
+
+  JANE: Yes, he went on Tuesday.
+  MRS. BENNET: If I had been able to carry my point in going to Brighton with all the family...
+  >>> YOU: Mother...
+
+  MRS. BENNET: And now Mr. Bennet will fight Wickham wherever he meets him...1 do not know w...
+  MR. GARDINER: Eh?
+  MRS. BENNET: Not know what we shall do?
+  MR. GARDINER: Ah. Do not give way to useless alarm. I shall go to London, calm my brother a...
+  MARY: This is a most unfortunate affair but we must stem the tide of malice and pou...
+  KITTY: You see? Mary thinks it’s all a book!
+  [MARY exits.]
+  JANE: Lydia wrote saying if we knew where she was going... LYDIA, (Appearing in the...
+  [Disappears.]
+  >>> YOU: Thoughtless, thoughtless Lydia! But at least it shows that she was serious in the object of her journey. Whatever he might afterwards persuade her to, it was not on her side a scheme of in- famy. My poor father! How he must have felt it!
+
+  JANE: I never saw anyone so shocked. He could not speak a word.
+  MRS. BENNET: Mr. Bennet shocked? I was taken ill immediately. Indeed I had to be carried t...
+  >>> YOU: Oh Jane!
+
+  [They embrace. MR. BENNET enters.]
+  KITTY: Father!
+  MRS. BENNET: Mr. Bennet, dear Mr. Bennet.
+  >>> YOU: Father, what you must have endured.
+
+  MR. BENNET: It has been my own doing and I ought to feel it.
+  >>> YOU: You must not be too severe upon yourself.
+
+  MR. BENNET: No Lizzy, let me once in my life feel how much I have been to blame...or perh...
+  KITTY: I am not going to run away, Papa. If I should ever go to Brighton, I would be...
+  >>> YOU: Do you suppose them to be in London?
+
+  MR. BENNET: Yes, where else can they be so well concealed?
+  MARY: Father, from Uncle Gardiner in London.
+  [Hands him a letter.]
+  MRS. BENNET: Indeed I have palpitations.
+  MR. BENNET: “I have seen them both!”
+  JANE: Thank heaven.
+  [MR. GARDINER appears above them.]
+  MR. GARDINER: They are not married nor can I find there was any intention of being so.
+  MRS. BENNET: Water! Hi]! (She is attended by--ASHE)-
+  MR. GARDINER: However I hope it will not be long before they are.
+  MRS. BENNET: Not long! See there, she is a good girl. Not long! !
+  MR. BENNET: Hush, Mrs. Bennet.
+  MR. GARDINER: All that is required of you is, to assure your daughter, by settlement, her e...
+  MR. BENNET: “...and enter into an engagement of allowing her, during your life, one hundr...
+  [MR. GARDINER exits.]
+  >>> YOU: Is it possible? Can it be possible he will marry her?
+
+  JANE: So, Wickham is not so undeserving as we have thought him.
+  >>> YOU: But the terms, I suppose, must be complied with.
+
+  MRS. BENNET: Exactly! You must write him on the moment, Mr. Bennet. They must marry!
+  MR. BENNET: And write I will, but there are two things I want very much to know...how muc...
+  JANE: Money! My uncle! What do you mean sir?
+  MR. BENNET: I mean that no man in his senses would marry Lydia for a hundred a year durin...
+  >>> YOU: And Mr. Gardiner could pay such a sum?
+
+  MR. BENNET: Indeed he could not, nor I repay it.
+  MRS. BENNET: You must write Mr. Bennet, inscribe this minute! This is delightful indeed! S...
+  >>> YOU: Dear Wickham?
+
+  MRS. BENNET: But the clothes, the wedding clothes. We must see to it. I will make the arra...
+  WICKHAM: OIN Ee.
+  KITTY: Mr. Gardiner wrotefnat Wass had resolved on quitting the militia but would en...
+  MARY: After our sister's wedding day, the couple returned to Longbourn...
+  KITTY: ...and the family assembled to receive them. ( are revealed in a momentary ta...
+  LYDIA: Congratulate me sisters, it is a great while since I’ve been here. Good graci...
+  >>> YOU: I thank you for my share of the favour but I do not particularly like your way of getting husbands.
+
+  LYDIA: La! You are so strange. But I must tell you how it went off. (WICKHAM leaves ...
+  LYDIA: We were married, you know, at St. Clements, because Wickham’s lodgings were i...
+  >>> YOU: Mr. Darcy!
+
+  JANE: Give you away?
+  LYDIA: Oh yes! He was to come there with Wickham you know. But gracious me! I quite ...
+  JANE: If it was to be secret say not another word.
+  >>> YOU: Most certainly, we will ask you no questions.
+
+  LYDIA: Indeed, for then I should tell all and Wickham would be so angry.
+  MRS. BENNET: Lydia!
+  LYDIA: Coming Mamma. (Exits. exchange glances. JANE ex- its. Shift begins, striking ...
+  >>> YOU: But are my suspicions concerning Mr. Darcy's actions correct?
+
+  MRS. GARDINER: Lizzie, really, if you are indeed so innocent and ignorant I must be more exp...
+  >>> YOU: Oh dear.
+
+  MRS. GARDINER: Mr. Darcy called to tell Mr. Gardiner he had through the Same found out where...
+  >>> YOU: But not brought on by himself. Lydia...
+
+  MRS. GARDINER: Lydia indeed. He called on her but found her resolved on remaining.
+  >>> YOU: Lydia would be Lydia still.
+
+  MRS. GARDINER: Mr. Darcy asked why he did not marry your sister at once.
+  >>> YOU: Because we are not rich.
+
+  MRS. GARDINER: Indeed Wickham still cherished the hope of making his fortune by marriage in ...
+  >>> YOU: I knew it!
+
+  MRS. GARDINER: And made Mr. Gardiner acquainted with it. Lizzy, where are you going?
+  >>> YOU: To speak with Father.
+
+  MRS. GARDINER: This must go, Lizzy, no further than yourself or Jane at most. Mr. Darcy want...
+  >>> YOU: But you have told me.
+
+  MRS. GARDINER: have, yes. (She exits. ELIZABETH turns to go and is hailed by WICK- HAM.)
+  WICKHAM: Miss Elizabeth. I fear I interrupt your solitary ramble.
+  >>> YOU: You do, yes.
+
+  WICKHAM: Ah.
+  >>> YOU: But it does not follow that the interruption must be unwelcome.
+
+  WICKHAM: I should be sorry indeed if it were. I fnd from your aunt you have seen Pembe...
+  [She nods.]
+  >>> YOU: ¥8s. MyS- Reynolds. Yes.
+
+  WICKHAM: And what did she say?
+  >>> YOU: That you were gone into the army and, she was afraid, had not turned out well.
+
+  WICKHAM: I see. Did Darcy introduce you to his sister?
+  >>> YOU: He did.
+
+  WICKHAM: And do you like her?
+  >>> YOU: Very much.
+
+  WICKHAM: I hope she will turn out well.
+  >>> YOU: I dare say she will. She has got over the most trying age.
+
+  WICKHAM: You think ill of me, do you not Miss Elizabeth?
+  >>> YOU: am very glad you have married my sister, Mr. Wick- ham.
+
+  [A pause.]
+  WICKHAM: Exceedingly well, but it was not to be.
+  [An uncomfortable moment.]
+  [He starts to go.]
+  >>> YOU: Come Mr. Wickham, we are brother and sister, you know. Do not let us quarrel about the past. In the future I hope we shall always be of one mind.
+
+  WICKHAM: (Kisses her hand.) You are a generous spirit, sister. (He turns to go. LYDIA ...
+  MR. BENNET: He is as fine a fellow as I ever saw. He simpers and smirks and makes love to...
+  MRS. BENNET: I often think there is nothing so bad as parting with friends. One seems so f...
+  >>> YOU: This is the consequence, Madam, of marrying a daugh- ter. It must make you better satisfied that your other four are single.
+
+  KITTY: (Entering with a letter.) Mr. Bingley is coming down Mamma.
+  [MRS. BENNET takes the letter.]
+  MRS. BENNET: Wonderful news!
+  [Shift begins as Longbourn is reassembled.]
+  MRS. BENNET: I mean...he is nothing to us and I am sure I never want to see him again. But...
+  [Looking at JANE.]
+  MRS. BENNET: And who knows what might happen.
+  JANE: I assure you that the news does not affect me with either plea- sure or pain.
+  MR. BENNET: If he wants our society let him seek it, He knows where we live.
+  MRS. BENNET: But you will wait on him, of course.
+  MR. BENNET: I will not spend my hours running after neighbours every time they go away an...
+  [KITTY moves down to look out over the audience.]
+  JANE: I begin to worry that he comes at all. I could see him with a perfect indiffe...
+  KITTY: Mr. Bingley has entered the paddock and is riding toward the house.
+  >>> YOU: (To JANE) Do you contradict yourself with a smile of expectation?
+
+  JANE: Let me first see how he behaves, it will then be early enough for expectation.
+  KITTY: And there is a gentleman with him, Mamma.
+  MRS. BENNET: Some acquaintance or other, my dear, I am sure J do not know.
+  KITTY: La! It looks just like that Mr., what's his name—that tall proud man?
+  MRS. BENNET: Good gracious! Mr. Darcy! And so it does, I vow. Well, any friend of Mr. Bing...
+  JANE: Ah.
+  [She looks at ELIZABETH.]
+  [enter to the assembled BENNETS.]
+  MARY: The gentlemen were received with tolerable ease and a pro- priety of behaviou...
+  [The picture at the BENNETS is complete and MARY joins it.]
+  MRS. BENNET: It is a long time, Mr. Bingley, since you went away.
+  BINGLEY: Good gracious, yes. Far too long in my own opinion.
+  MRS. BENNET: I began to be afraid you would never come back again.
+  MR. BENNET: Mrs. Bennet.
+  MRS. BENNET: Miss Lucas is married and settled: and one of my own daughters.
+  BINGLEY: A matter for the greatest congratulation.
+  MRS. BENNET: It is a delightful thing, to be sure, to have a daugh- ter well married. Mr. ...
+  BINGLEY: Indeed.
+  [A change of subject.]
+  MRS. BENNET: When you have killed all your own birds Mr. Bing- ley I beg you will come her...
+  BINGLEY: To be remedied at the first opportunity, eh Darcy?
+  MR. BENNET: You have been quite silent, Mr. Darcy, I hope you are well.
+  DARCY: Quite well.
+  [A pause.]
+  MARY: And then they went away.
+  [They do. The fantily exits leaving alone.]
+  >>> YOU: Why if Darcy came only to be silent, grave and indif- ferent, did he come at all?
+
+  JANE: Now that this first meeting is over, I feel perfectly easy. Ob- viously on bo...
+  >>> YOU: (Laughing) Oh Jane, take care.
+
+  JANE: My dear Lizzy, you cannot think me so weak as to be in dan- ger now?
+  >>> YOU: I think you are in very great danger of making him as much in love with you as ever.
+
+  [She turns to the audience.]
+  [She moves upstage. KITTY moves down.]
+  KITTY: Mr. Bingley called again on Friday.
+  [He enters. A dumb show.]
+  >>> YOU: (To the audience) Having once set on this road to hap- piness there was nothing on the side of prudence to stop him or make his progress slow.
+
+  [BINGLEY leaves.]
+  KITTY: He called again on the following Tuesday.
+  [He enters. A dumb show.]
+  >>> YOU: She was, of course, only too good for him but as no- body minds having what is too good for them, he was very earnest in the pursuit of the blessing.
+
+  [BINGLEY leaves.]
+  KITTY: And yet again Thursday a week.
+  [He enters and then leaves.]
+  MRS. BENNET: I begin to think there is something in this, Jane.
+  >>> YOU: And it was not possible that encouragement from Jane should be long wanting.
+
+  KITTY: Mr. Bingley is come and he looks quite serious.
+  MRS. BENNET: Ah, Mr. Bingley...
+  [He enters.]
+  MRS. BENNET: What a memorable surprise.
+  [MRS. BENNET turns and winks at all the girls.]
+  KITTY: What is the matter Mamma? What do you keep winking at me for?
+  MRS. BENNET: I did not wink at you. Come Kitty, Mary, I want to speak to you.
+  [Takes them off.]
+  >>> YOU: Mr. Bingley, you ride excellently. I—
+
+  MRS. BENNET: Elizabeth, I very much wish to consult you as to the...well, I want to talk t...
+  [ELIZABETH ts forced to leave with her mother.]
+  BINGLEY: My dear Miss Bennet...I say, might I venture your given name? QO. x JANE. Ind...
+  JANE: I see.
+  BINGLEY: By heavens, esteem won't do, I must say affection I really must. Dear Miss Be...
+  [He kneels.]
+  JANE: I will, and with a very full heart...but perhaps, before a fuller expression,...
+  BINGLEY: Your father. Well this is top-of-the-hill and no mistaking! 1 will speak with...
+  JANE: I will endeavour to be very, very still.
+  [He leaves.]
+  [She explodes out of her chair.]
+  >>> YOU: (Enters smiling) Lizzy what?
+
+  JANE: "Tis too much! By far too much. I do not deserve it. Oh why is everybody not ...
+  [MRS. BENNET enters.]
+  MRS. BENNET: A catch! A veritable catch, I am...ecstatic,
+  [MR. BENNET enters.]
+  MR. BENNET: You are a good girl.
+  [JANE goes to him for a kiss.]
+  MR. BENNET: J have not a doubt of your doing well together. You are each of you so comply...
+  MRS. BENNET: Exceed their income! My dear Mr. Bennet what are you talking of? Why he has f...
+  JANE: Oh Lizzy, why am I thus singled out from my family and blessed above them all...
+  >>> YOU: If you were to give me forty such men I never could be so happy as you. ‘Til I have your disposition, your goodness, I never can have your happiness. No, let me shift for myself and, perhaps if I have very good luck I may meet with another Mr. Collins in time.
+
+  MRS. BENNET: Indeed. Mes: Ben vat? Will “KEEFE (Entering:) Mamma_Marnma, have no notion ho...
+  MRS. BENNET: No. Hil EFS. Yes.
+  MRS. BENNET: I am astonished beyond all expectation!
+  [LADY CATHERINE enters.]
+  LADY CATHERINE: I have shown myself in.
+  MRS. BENNET: Well 1...1...1...
+  >>> YOU: You are very welcome Lady Catherine.
+
+  LADY CATHERINE: I hope you are well Miss Bennet. That lady I suppose is your mother?
+  >>> YOU: Lady Catherine de Bourgh, Mr. and Mrs. Bennet.
+
+  LADY CATHERINE: And these I suppose are your sisters?
+  MRS. BENNET: Yes Madam. My youngest of all is lately married and...
+  LADY CATHERINE: This must be a most inconvenient sitting room for the evening in- summer: the...
+  MRS. BENNET: Indeed we never sit here after dinner and...
+  LADY CATHERINE: Miss Bennet, there seems to be a prettyish kind of little wilderness on one s...
+  LADY CATHERINE: You can be at no loss, Miss Bennet, to under- stand the reason of my journey ...
+  >>> YOU: Indeed you are mistaken, I cannot account for the honour.
+
+  LADY CATHERINE: However insincere you may choose to be, you will not find me so. My character...
+  >>> YOU: If you believed it untrue, I wonder you took the trou- ble of coming so far.
+
+  LADY CATHERINE: To have the report universally contradicted — can you declare there is no fou...
+  >>> YOU: Your ladyship may ask questions which I shall not choose to answer.
+
+  LADY CATHERINE: This is not to be borne.
+  >>> YOU: Your ladyship has declared it impossible.
+
+  LADY CATHERINE: But your arts and allurements may, in a mo- ment of infatuation, make him for...
+  >>> YOU: If I have, I shall be the last person to confess it.
+
+  LADY CATHERINE: Miss Bennet, I am unaccustomed to such lan- guage as this. I am entitled to k...
+  >>> YOU: But you are not entitled to know mine.
+
+  LADY CATHERINE: Mr. Darcy is engaged to my daughter. Now what have you to say?
+  >>> YOU: Thus you have no reason to suppose he would make an offer to me.
+
+  LADY CATHERINE: From his earliest hours his mother and J planned the union and he is destined...
+  >>> YOU: But what is that to me? If there is no other objection to my marrying your nephew, I shall certainly not be kept from it by knowing his mother and aunt wished him to marry Miss de Bourgh.
+
+  LADY CATHERINE: Honour, decorum, prudence, nay interest, forbid it. Your alliance will be a d...
+  >>> YOU: These are heavy misfortunes, but the wife of Mr. Dar- cy will have no cause to repine.
+
+  LADY CATHERINE: Obstinate, headstrong girl! I have not been in the habit of brooking disappoi...
+  >>> YOU: That will make your ladyship’s situation more piti- able; but it will have no effect on me.
+
+  LADY CATHERINE: Tell me, once and for all, are you engaged to him?
+  >>> YOU: I am not.
+
+  LADY CATHERINE: And will you promise me never to enter into such an engagement?
+  >>> YOU: I will make no promise of the kind. I must beg, there- fore, to be importuned no farther on the subject.
+
+  LADY CATHERINE: Not so hasty, if you please. To the objections I have already urged J have an...
+  >>> YOU: Lady Catherine —
+
+  LADY CATHERINE: A patched up business at the expense of your father and uncle.
+  >>> YOU: I must ask you—
+
+  LADY CATHERINE: Is such a girl to be my nephew’s sister? Is her husband, who is the son of hi...
+  >>> YOU: You have insulted me in every possible method. I must beg to return to the house.
+
+  LADY CATHERINE: You are resolved to ruin him in the opinion of all his friends, and make him ...
+  >>> YOU: Neither duty, honour nor gratitude has any possible claim on me in the present instance. And with regard to the resent- ment of his family, or the indignation of the world, if the former were excited by his marrying me, it would not give me one moments concern—and the world in general would have too much sense to join in the scorn.
+
+  LADY CATHERINE: Very well. I shall now know how to act. Do not imagine, Miss Bennet, that you...
+  [She exits. MRS. BENNET enters.]
+  MRS. BENNET: Will Lady Catherine not come in again and rest her- self?
+  >>> YOU: She did not choose it, she would go.
+
+  MRS. BENNET: She is a fine looking woman and prodigiously civil. She only came, I suppose,...
+  >>> YOU: (Looking off) Nothing particular.
+
+  [A moment. MRS. BENNET exits as MR. BENNET enters.]
+  MR. BENNET: Lizzy, I have received a letter this morning that has astonished me. I did no...
+  [LIZZY turns.]
+  MR. BENNET: The letter is from Mr. Collins.
+  >>> YOU: Mr. Collins?
+
+  MR. BENNET: “Your daughter Elizabeth, it is presumed, will not long bear the name of Benn...
+  [MR. COLLINS appears above.]
+  COLLINS: And the chosen partner of her fate may be rea- sonably looked up to as one of...
+  [COLLINS disappears.]
+  MR. BENNET: Can you possibly guess, Lizzy, who is meant by this? Mr. Darcy, you see is th...
+  >>> YOU: Oh, I am excessively diverted. But it is so strange!
+
+  MR. BENNET: Yes, that is what makes it amusing. His perfect in- difference and your point...
+  DARCY: Miss Bennet.
+  >>> YOU: Mr. Darcy, I am a very selfish creature, and for the sake of giving relief to my own feelings care not how much I may be wounding yours. I can no longer help thanking you for your un- exampled kindness to my poor sister. Were it known to the rest of my family I should not have merely my own gratitude to express.
+
+  DARCY: I am sorry, exceedingly sorry that you have been informed of what may, in a m...
+  >>> YOU: You must not blame my aunt. Lydia’s thoughtlessness first betrayed to me your involvement. Let me thank you again and again.
+
+  DARCY: If you will thank me, let it be for yourself alone. Your fam- ily owes me not...
+  [ELIZABETH, embarrassed, does not speak.]
+  DARCY: So. Indeed. Well.
+  [A pause.]
+  DARCY: You are too generous to trifle with me. If your feelings are still what they ...
+  >>> YOU: Mr. Darcy.
+
+  [A pause.]
+  >>> YOU: Mz. Darcy, my feelings...
+
+  [A pause.]
+  >>> YOU: have undergone so material a change since the period you allude to as to...as to make me receive with gratitude yout... your...
+
+  DARCY: Present assurances.
+  >>> YOU: Exactly.
+
+  DARCY: Iam... .
+  >>> YOU: You are?
+
+  DARCY: I am...yes, very much so.
+  [They both smile.]
+  DARCY: I believe my aunt has been to see you.
+  >>> YOU: She has.
+
+  DARCY: My feelings, you may know, are exactly contrariwise. hope you spoke to her qu...
+  >>> YOU: (Colours and laughs) Yes, you know enough of my frankness to believe me capable of that. After abusing you so abomi- nably to your face, I could have no scruple in abusing you to all your relations.
+
+  DARCY: What did you say of me that I did not deserve? My previ- ous behaviour to you...
+  >>> YOU: The conduct of neither, if strictly examined, will be irreproachable; but since then we have both, I hope, improved in civility.
+
+  DARCY: Asa child I was taught what was right but I was not taught to correct my temp...
+  >>> YOU: I am almost afraid of asking you what you thought of me when we met at Pemberley. You blamed me for coming?
+
+  DARCY: I felt only the pleasure of surprise. My object then was to show you by every...
+  >>> YOU: Other wishes?
+
+  DARCY: Other wishes, yes.
+  [ELIZABETH smiles.]
+  >>> YOU: And Mr. Bingley?
+
+  DARCY: On the evening before my going to London, I told him all that had occurred to...
+  >>> YOU: Did you speak from your own observation, or merely from my information last spring?
+
+  DARCY: I had narrowly observed her, and I was convinced of her affection.
+  >>> YOU: And what do you narrowly observe in me, Mr. Darcy?
+
+  DARCY: That something, I am not sure what, is expected.
+  [ELIZABETH laughs.]
+  DARCY: What have I done?
+  >>> YOU: I sincerely beg your pardon. You have not yet learned to be laughed at, but it was rather too early to begin.
+
+  [She kisses him. He kisses her.]
+  DARCY: Ah. Pray excuse me, I must speak to your father. (DARCY freezes. The family e...
+  MR. BENNET: I have given him my consent. I now give it to you if you are resolved to have...
+  >>> YOU: I do esteem him Father, he has grown exceedingly in my estimation, and his own affection is not the work of a day but has stood the test of many months suspense. He is...the object of my choice.
+
+  MR. BENNET: This is an evening of wonders indeed.
+  MRS. BENNET: Good gracious! Lord bless me! Only think! Dear me! Mr. Darcy! Who would have ...
+  JANE: Now I am quite happy, for you will be as happy as myself. Were it for nothing...
+  >>> YOU: And now Mr. Darcy, pray continue.
+
+  [A rapturous kiss as the lights fade.]
