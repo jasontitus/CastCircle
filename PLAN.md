@@ -161,6 +161,25 @@ See `examples/pride_and_prejudice_parsed.md` and `.json` for the full output.
 - [ ] "Preview" mode: full script rendered like a script document with character colors and proper formatting
 - [ ] "Approve script" action that locks the script and moves to cast assignment
 
+### Scene Editing (Critical Workflow)
+
+Scenes are the primary unit actors use for rehearsal. The organizer must be able to:
+
+1. **Review auto-detected scenes** — The parser auto-detects scenes from:
+   - Explicit `SCENE N` headers
+   - `"Shift begins..."` stage directions (common in Jon Jory and similar adaptations)
+   - Location keywords (Longbourn, Netherfield, Pemberley, etc.)
+2. **Rename scenes** — Give them descriptive names: "The Proposal", "Lady Catherine's Interrogation"
+3. **Set locations** — "Longbourn Drawing Room", "Netherfield Ball"
+4. **Split long scenes** — Choose a line to break at, creates two scenes from one
+5. **Merge short scenes** — Combine two adjacent scenes into one
+6. **Add new scene breaks** — As the director blocks the show, new scene breaks may emerge
+7. **Re-edit later** — The script is living: as the production evolves, scenes can be adjusted
+
+The scene editor is a separate screen from the line editor, focused on the high-level structure.
+
+For the Pride & Prejudice test script, the parser detected ~20 scenes across 2 acts using the "Shift begins" pattern, with locations like Ball, Longbourn, Netherfield, Pemberley, Collins' Parsonage, etc.
+
 ---
 
 ## Phase 3: Recording Studio
@@ -270,41 +289,138 @@ See `examples/pride_and_prejudice_parsed.md` and `.json` for the full output.
 
 ---
 
-## Phase 5: Supabase Backend & Collaboration
+## Phase 5: Backend & Collaboration
+
 **Goal:** Multi-user: invitations, cloud sync of recordings, real-time updates.
+**Requirement:** Scale-to-zero, easy to set up and manage, low ops burden.
+
+### Backend Decision: Firebase (Recommended)
+
+After evaluating the options:
+
+| Criteria | Firebase | Supabase | Docker on Cloud Run |
+|----------|----------|----------|---------------------|
+| **Scale to zero** | Yes (Firestore, Functions, Storage all serverless) | Partially (DB always on, ~$25/mo minimum for hosted) | Yes (Cloud Run scales to zero) |
+| **Setup effort** | Very low — `flutterfire configure` | Low — dashboard + SQL | Medium — Dockerfile, Cloud SQL, etc. |
+| **Ops burden** | Near-zero (fully managed) | Low for hosted, medium for self-hosted | Medium (container updates, DB management) |
+| **Flutter SDK** | First-class (`cloud_firestore`, `firebase_auth`, `firebase_storage`) | Good (`supabase_flutter`) | Roll your own REST/gRPC client |
+| **Auth** | Firebase Auth (email, magic link, Google, Apple) — best-in-class | GoTrue — good but fewer providers | Custom auth or Firebase Auth anyway |
+| **File storage** | Firebase Storage (GCS-backed, generous free tier) | Supabase Storage (S3-compatible) | Cloud Storage (manual setup) |
+| **Realtime** | Firestore real-time listeners (built-in) | Supabase Realtime (good) | WebSockets (build it yourself) |
+| **Offline** | Firestore has built-in offline persistence | No built-in offline | No built-in offline |
+| **Cost at low scale** | Free tier: 1GB Firestore, 5GB Storage, 50K reads/day | Free tier: 500MB DB, 1GB storage | Free tier: 2M requests/month |
+| **Cost at moderate scale** | ~$5-15/mo for a few productions | ~$25/mo (always-on Postgres) | ~$5-10/mo (scale-to-zero) |
+| **Deep links** | Firebase Dynamic Links / App Check | Manual deep link setup | Manual |
+
+**Verdict: Firebase** wins on scale-to-zero, zero ops, first-class Flutter support, and built-in offline persistence (critical for rehearsal). The key advantage over Supabase is that Firebase has **no always-on component** — a production with 15 actors who use it for 6 weeks costs almost nothing.
+
+Docker on Cloud Run is more flexible but requires more setup/maintenance. If we outgrow Firebase or need more complex server logic later, we can add a Cloud Run service alongside Firebase.
+
+### Firebase Architecture
+
+```
+┌─────────────────────────────────────────────────┐
+│                  Firebase Project                │
+│                                                  │
+│  ┌──────────────┐  ┌──────────────────────────┐ │
+│  │  Firebase     │  │  Cloud Firestore         │ │
+│  │  Auth         │  │                          │ │
+│  │  (email,      │  │  /productions/{id}       │ │
+│  │   magic link, │  │    /script               │ │
+│  │   Google,     │  │    /scenes/{id}          │ │
+│  │   Apple)      │  │    /characters/{id}      │ │
+│  └──────────────┘  │    /cast/{userId}         │ │
+│                     │    /recordings/{lineId}   │ │
+│  ┌──────────────┐  └──────────────────────────┘ │
+│  │  Firebase     │                               │
+│  │  Storage      │  ┌──────────────────────────┐ │
+│  │  (GCS)        │  │  Cloud Functions (opt.)  │ │
+│  │               │  │  - Send invite emails    │ │
+│  │  /recordings/ │  │  - Audio normalization   │ │
+│  │    {prod}/    │  │  - TTS pre-generation    │ │
+│  │    {lineId}/  │  └──────────────────────────┘ │
+│  │    {userId}.  │                               │
+│  │    m4a        │                               │
+│  └──────────────┘                                │
+└─────────────────────────────────────────────────┘
+```
+
+### Firestore Data Model
+
+```
+/users/{userId}
+  - name, email, photoUrl
+  - joinedAt
+
+/productions/{productionId}
+  - title, organizerId, status, createdAt
+  - scriptRawText (or reference to Storage)
+
+  /scenes/{sceneId}
+    - sceneName, location, description
+    - act, startLineIndex, endLineIndex
+    - characters: [string array]
+
+  /scriptLines/{lineId}
+    - act, scene, lineNumber, orderIndex
+    - character, text, lineType, stageDirection
+
+  /cast/{userId}
+    - role: "organizer" | "primary" | "understudy"
+    - characterName
+    - joinedAt, invitedAt
+
+  /recordings/{lineId_userId}
+    - lineId, userId, characterName
+    - audioUrl (Storage path)
+    - durationMs, recordedAt
+    - isPrimary: bool
+```
+
+### Security Rules (Firestore)
+```
+- /productions/{id}: read if user is in /cast subcollection
+- /productions/{id}: write if user is organizer
+- /productions/{id}/cast: read by any cast member, write by organizer
+- /productions/{id}/recordings: read by any cast member, write by recording user
+- /productions/{id}/scenes: read by any cast member, write by organizer
+- /productions/{id}/scriptLines: read by any cast member, write by organizer
+```
 
 ### Tasks
-- [ ] Set up Supabase project:
-  - Auth (email + magic link for easy onboarding)
-  - Postgres tables mirroring local Drift schema
-  - Row Level Security policies per production
-  - Storage buckets for audio recordings
-- [ ] User authentication:
-  - Sign up / sign in screen
-  - Profile (name, photo)
-  - Auth state managed via Riverpod
-- [ ] Production sharing:
-  - Organizer creates production (synced to Supabase)
-  - Generate invite links (deep links) with production ID + role suggestion
-  - Send invites via share sheet (email, SMS, messaging apps)
-  - Invitee opens link → app opens → joins production with suggested role
-- [ ] Cast assignment:
+- [ ] Set up Firebase project with `flutterfire configure`
+- [ ] Firebase Auth integration:
+  - Email + magic link sign-in (easiest for actors to onboard)
+  - Optional Google/Apple sign-in
+  - Auth state managed via Riverpod + `firebase_auth`
+- [ ] Firestore data layer:
+  - Mirror local Drift models to Firestore documents
+  - Real-time listeners for production updates
+  - Offline persistence enabled (built-in with Firestore)
+- [ ] Production sharing & invitations:
+  - Organizer creates production → Firestore document
+  - Generate invite share links with production ID + suggested role
+  - Send via system share sheet (email, SMS, WhatsApp, etc.)
+  - Deep link handling: invitee opens link → app → join production
+- [ ] Cast management:
   - Organizer assigns primary + understudy per character
-  - Cast members see their assigned roles
+  - Cast members see their assigned roles on join
   - Role acceptance flow
 - [ ] Recording sync:
-  - Upload recordings to Supabase Storage on completion
-  - Download other cast members' recordings on demand / wifi
-  - Background sync with progress indicator
-  - Conflict resolution: latest recording wins (per line per user)
-- [ ] Real-time updates:
-  - Supabase Realtime for recording availability
-  - When a cast member finishes recording a line, others see it immediately
-  - Production status updates (script approved, new cast member joined)
-- [ ] Offline support:
-  - Local-first with Drift database
-  - Queue changes when offline, sync when back online
-  - Pre-download all recordings for a scene before rehearsal
+  - Record locally → upload to Firebase Storage on complete
+  - Other cast members download recordings on demand / wifi
+  - Firestore document tracks recording metadata (availability, duration)
+  - Background upload with retry
+  - Conflict resolution: latest recording wins per (line, user)
+- [ ] Real-time recording availability:
+  - Firestore real-time listeners on /recordings collection
+  - When cast member records a line → others see it instantly
+  - Recording progress percentage per character
+- [ ] Offline-first architecture:
+  - Local Drift DB remains source of truth during rehearsal
+  - Firestore offline persistence for metadata
+  - Pre-download all recordings for a scene before going offline
+  - Sync queue for changes made offline
 
 ---
 
@@ -422,7 +538,7 @@ Phase 7 (Watch)              Phase 8 (Polish)
 | Question | Options | Recommendation |
 |----------|---------|----------------|
 | State management | Riverpod vs Bloc | **Riverpod** — less boilerplate, great for dependency injection |
-| Backend | Supabase vs Firebase | **Supabase** — open source, Postgres, better RLS, generous free tier |
+| Backend | Firebase vs Supabase vs Cloud Run | **Firebase** — scale-to-zero, zero ops, first-class Flutter SDK, built-in offline (see Phase 5 analysis) |
 | TTS fallback before Kokoro | `flutter_tts` (system TTS) | Yes, ship with system TTS first, upgrade to Kokoro in Phase 6 |
 | STT fallback before Whisper | `speech_to_text` (system STT) | Yes, ship with system STT first, upgrade to Whisper in Phase 6 |
 | Script format support | Play, screenplay, musical | Start with standard play format, expand based on user scripts |

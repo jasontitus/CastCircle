@@ -5,6 +5,9 @@ import 'core/theme/app_theme.dart';
 import 'features/home/home_screen.dart';
 import 'features/script_import/script_import_screen.dart';
 import 'features/script_editor/script_editor_screen.dart';
+import 'features/script_editor/scene_editor_screen.dart';
+import 'features/rehearsal/scene_selector_screen.dart';
+import 'features/rehearsal/rehearsal_screen.dart';
 import 'features/settings/settings_screen.dart';
 
 final _router = GoRouter(
@@ -30,6 +33,18 @@ final _router = GoRouter(
     GoRoute(
       path: '/editor',
       builder: (context, state) => const ScriptEditorScreen(),
+    ),
+    GoRoute(
+      path: '/scenes',
+      builder: (context, state) => const SceneEditorScreen(),
+    ),
+    GoRoute(
+      path: '/practice',
+      builder: (context, state) => const SceneSelectorScreen(),
+    ),
+    GoRoute(
+      path: '/rehearsal',
+      builder: (context, state) => const RehearsalScreen(),
     ),
   ],
 );

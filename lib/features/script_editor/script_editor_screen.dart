@@ -51,6 +51,16 @@ class _ScriptEditorScreenState extends ConsumerState<ScriptEditorScreen> {
         ),
         actions: [
           IconButton(
+            icon: const Icon(Icons.auto_awesome_mosaic),
+            tooltip: 'Edit Scenes (${script.scenes.length})',
+            onPressed: () => context.push('/scenes'),
+          ),
+          IconButton(
+            icon: const Icon(Icons.play_circle_outline),
+            tooltip: 'Practice',
+            onPressed: () => context.push('/practice'),
+          ),
+          IconButton(
             icon: const Icon(Icons.visibility),
             tooltip: _showDirections
                 ? 'Hide stage directions'
@@ -410,6 +420,7 @@ class _ScriptEditorScreenState extends ConsumerState<ScriptEditorScreen> {
       title: script.title,
       lines: updatedLines,
       characters: charList,
+      scenes: script.scenes,
       rawText: script.rawText,
     );
   }

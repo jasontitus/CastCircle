@@ -34,7 +34,33 @@ class ScriptExporter {
     buf.writeln('=' * 60);
     buf.writeln();
 
+    // Scene index
+    if (script.scenes.isNotEmpty) {
+      buf.writeln('SCENES');
+      buf.writeln('-' * 40);
+      for (var i = 0; i < script.scenes.length; i++) {
+        final s = script.scenes[i];
+        final charList = s.characters.take(4).join(', ');
+        final more = s.characters.length > 4
+            ? ' +${s.characters.length - 4} more'
+            : '';
+        buf.writeln('  ${i + 1}. ${s.displayLabel} [$charList$more]');
+      }
+      buf.writeln();
+      buf.writeln('=' * 60);
+      buf.writeln();
+    }
+
+    String currentScene = '';
     for (final line in script.lines) {
+      // Insert scene headers
+      if (line.scene != currentScene && line.scene.isNotEmpty) {
+        currentScene = line.scene;
+        buf.writeln();
+        buf.writeln('=== $currentScene ===');
+        buf.writeln();
+      }
+
       switch (line.lineType) {
         case LineType.header:
           buf.writeln();
@@ -57,6 +83,50 @@ class ScriptExporter {
 
         case LineType.song:
           buf.writeln('♪ ${line.character}: ${line.text}');
+          buf.writeln();
+          break;
+      }
+    }
+
+    return buf.toString();
+  }
+
+  /// Export a single scene.
+  static String toSceneText(ParsedScript script, ScriptScene scene) {
+    final buf = StringBuffer();
+
+    buf.writeln('=' * 60);
+    buf.writeln('${scene.displayLabel} — ${script.title}');
+    buf.writeln('=' * 60);
+    buf.writeln();
+
+    if (scene.description.isNotEmpty) {
+      buf.writeln('[${scene.description}]');
+      buf.writeln();
+    }
+
+    buf.writeln('Characters: ${scene.characters.join(", ")}');
+    buf.writeln();
+    buf.writeln('-' * 40);
+    buf.writeln();
+
+    final lines = script.linesInScene(scene);
+    for (final line in lines) {
+      switch (line.lineType) {
+        case LineType.stageDirection:
+          buf.writeln('  [${_stripParens(line.text)}]');
+          buf.writeln();
+          break;
+        case LineType.dialogue:
+        case LineType.song:
+          final direction = line.stageDirection.isNotEmpty
+              ? ' (${line.stageDirection})'
+              : '';
+          buf.writeln('${line.character}:$direction ${line.text}');
+          buf.writeln();
+          break;
+        case LineType.header:
+          buf.writeln('--- ${line.text} ---');
           buf.writeln();
           break;
       }
