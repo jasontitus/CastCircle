@@ -1,6 +1,7 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:lineguide/data/services/script_parser.dart';
 import 'package:lineguide/data/services/script_export.dart';
+import 'package:lineguide/data/services/stt_service.dart';
 import 'package:lineguide/data/models/script_models.dart';
 
 const _sampleScript = '''
@@ -243,6 +244,64 @@ void main() {
 
       expect(text, contains(scene.sceneName));
       expect(text, contains('Characters:'));
+    });
+  });
+
+  group('SttService.matchScore', () {
+    test('exact match returns 1.0', () {
+      final score = SttService.matchScore(
+        'You are very punctual I see',
+        'You are very punctual I see',
+      );
+      expect(score, 1.0);
+    });
+
+    test('case-insensitive match returns 1.0', () {
+      final score = SttService.matchScore(
+        'You Are Very Punctual',
+        'you are very punctual',
+      );
+      expect(score, 1.0);
+    });
+
+    test('partial match returns proportional score', () {
+      final score = SttService.matchScore(
+        'You are very punctual I see',
+        'You are punctual',
+      );
+      // 3 of 6 words match
+      expect(score, closeTo(0.5, 0.1));
+    });
+
+    test('no match returns 0', () {
+      final score = SttService.matchScore(
+        'You are very punctual',
+        'something completely different',
+      );
+      expect(score, 0.0);
+    });
+
+    test('ignores punctuation', () {
+      final score = SttService.matchScore(
+        "It is tolerable, I suppose!",
+        "it is tolerable I suppose",
+      );
+      expect(score, 1.0);
+    });
+
+    test('empty expected returns 1.0', () {
+      final score = SttService.matchScore('', 'anything');
+      expect(score, 1.0);
+    });
+
+    test('threshold of 70% works for reasonable delivery', () {
+      // Actor says most of the line but misses a word or two
+      final score = SttService.matchScore(
+        'I have been a selfish being all my life',
+        'I have been a selfish being my life',
+      );
+      // 8 of 9 words
+      expect(score, greaterThanOrEqualTo(0.7));
     });
   });
 }

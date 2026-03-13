@@ -1,20 +1,26 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
+import 'package:just_audio/just_audio.dart';
 
 import '../../core/theme/app_theme.dart';
 import '../../data/models/script_models.dart';
+import '../../data/services/tts_service.dart';
+import '../../data/services/stt_service.dart';
 import '../../providers/production_providers.dart';
 import '../../features/settings/settings_screen.dart';
 import 'scene_selector_screen.dart';
 
 /// Rehearsal state machine.
 enum RehearsalState {
-  ready,
-  playingOther,
-  listeningForMe,
-  paused,
-  sceneComplete,
+  ready, // waiting to start or between lines
+  playingOther, // playing another character's recording/TTS
+  listeningForMe, // STT active, waiting for actor to speak
+  paused, // user paused
+  sceneComplete, // all lines done
 }
 
 /// Provider tracking the rehearsal engine state.
@@ -33,21 +39,66 @@ class RehearsalScreen extends ConsumerStatefulWidget {
 
 class _RehearsalScreenState extends ConsumerState<RehearsalScreen> {
   late ScrollController _scrollController;
+  final AudioPlayer _player = AudioPlayer();
+  final TtsService _tts = TtsService.instance;
+  final SttService _stt = SttService.instance;
+
+  final bool _autoPlay = true; // auto-advance through other characters' lines
+  String _recognizedText = '';
+  double _matchScore = 0.0;
+  bool _showMatchFeedback = false;
 
   @override
   void initState() {
     super.initState();
     _scrollController = ScrollController();
+
     // Reset to beginning
     WidgetsBinding.instance.addPostFrameCallback((_) {
       ref.read(currentLineIndexProvider.notifier).state = 0;
       ref.read(rehearsalStateProvider.notifier).state = RehearsalState.ready;
+      _initAudio();
     });
+
+    // Listen for playback completion to auto-advance
+    _player.playerStateStream.listen((state) {
+      if (state.processingState == ProcessingState.completed &&
+          _autoPlay &&
+          mounted) {
+        _onOtherLineFinished();
+      }
+    });
+  }
+
+  Future<void> _initAudio() async {
+    await _tts.init();
+
+    // Assign voices to characters for variety
+    final script = ref.read(currentScriptProvider);
+    if (script != null) {
+      for (var i = 0; i < script.characters.length; i++) {
+        _tts.assignVoice(script.characters[i].name, i);
+      }
+    }
+
+    _tts.setCompletionHandler(() {
+      if (_autoPlay && mounted) {
+        _onOtherLineFinished();
+      }
+    });
+
+    // Auto-start if enabled
+    if (_autoPlay) {
+      _processCurrentLine();
+    }
   }
 
   @override
   void dispose() {
     _scrollController.dispose();
+    _player.dispose();
+    _tts.stop();
+    _stt.stop();
     super.dispose();
   }
 
@@ -57,7 +108,7 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen> {
     final scene = ref.watch(selectedSceneProvider);
     final myCharacter = ref.watch(rehearsalCharacterProvider);
     final currentIdx = ref.watch(currentLineIndexProvider);
-    final state = ref.watch(rehearsalStateProvider);
+    final rehearsalState = ref.watch(rehearsalStateProvider);
     final jumpBackLines = ref.watch(jumpBackLinesProvider);
 
     if (script == null || scene == null) {
@@ -72,8 +123,7 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen> {
         sceneLines.where((l) => l.lineType == LineType.dialogue).toList();
 
     final isComplete = currentIdx >= dialogueLines.length;
-    final currentLine =
-        isComplete ? null : dialogueLines[currentIdx];
+    final currentLine = isComplete ? null : dialogueLines[currentIdx];
     final isMyLine = currentLine?.character == myCharacter;
     final progress = dialogueLines.isEmpty
         ? 0.0
@@ -84,9 +134,7 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen> {
       body: SafeArea(
         child: Column(
           children: [
-            // Top bar: scene name + progress + close
-            _buildTopBar(context, scene, progress),
-            // Progress bar
+            _buildTopBar(context, scene, progress, rehearsalState),
             LinearProgressIndicator(
               value: progress,
               backgroundColor: Colors.grey[900],
@@ -94,27 +142,19 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen> {
                   ? Theme.of(context).colorScheme.primary
                   : Colors.grey[600],
             ),
-            // Main content: scrolling script
             Expanded(
               child: isComplete
                   ? _buildCompletionView(context, scene, dialogueLines.length)
                   : _buildScriptView(
-                      context,
-                      script,
-                      dialogueLines,
-                      currentIdx,
-                      myCharacter,
-                    ),
+                      context, script, dialogueLines, currentIdx, myCharacter,
+                      rehearsalState),
             ),
-            // Bottom controls
+            // Match feedback for STT
+            if (_showMatchFeedback && isMyLine)
+              _buildMatchFeedback(context),
             _buildControls(
-              context,
-              state,
-              isMyLine,
-              isComplete,
-              currentIdx,
-              dialogueLines.length,
-              jumpBackLines,
+              context, rehearsalState, isMyLine, isComplete,
+              currentIdx, dialogueLines.length, jumpBackLines,
             ),
           ],
         ),
@@ -122,15 +162,20 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen> {
     );
   }
 
-  Widget _buildTopBar(
-      BuildContext context, ScriptScene scene, double progress) {
+  Widget _buildTopBar(BuildContext context, ScriptScene scene, double progress,
+      RehearsalState rehearsalState) {
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
       child: Row(
         children: [
           IconButton(
             icon: const Icon(Icons.close, color: Colors.white70),
-            onPressed: () => context.pop(),
+            onPressed: () {
+              _tts.stop();
+              _stt.stop();
+              _player.stop();
+              context.pop();
+            },
           ),
           Expanded(
             child: Column(
@@ -147,18 +192,63 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen> {
                 if (scene.location.isNotEmpty)
                   Text(
                     scene.location,
-                    style: TextStyle(
-                      color: Colors.grey[500],
-                      fontSize: 12,
-                    ),
+                    style: TextStyle(color: Colors.grey[500], fontSize: 12),
                   ),
               ],
             ),
           ),
+          // State indicator
+          _buildStateChip(rehearsalState),
+          const SizedBox(width: 8),
           Text(
             '${(progress * 100).toInt()}%',
             style: TextStyle(color: Colors.grey[500], fontSize: 12),
           ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildStateChip(RehearsalState state) {
+    String label;
+    Color color;
+    IconData icon;
+
+    switch (state) {
+      case RehearsalState.playingOther:
+        label = 'Playing';
+        color = Colors.green;
+        icon = Icons.volume_up;
+      case RehearsalState.listeningForMe:
+        label = 'Listening';
+        color = Colors.orange;
+        icon = Icons.mic;
+      case RehearsalState.paused:
+        label = 'Paused';
+        color = Colors.grey;
+        icon = Icons.pause;
+      case RehearsalState.sceneComplete:
+        label = 'Done';
+        color = Colors.blue;
+        icon = Icons.check;
+      case RehearsalState.ready:
+        label = 'Ready';
+        color = Colors.grey;
+        icon = Icons.hourglass_empty;
+    }
+
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.2),
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, size: 12, color: color),
+          const SizedBox(width: 4),
+          Text(label, style: TextStyle(color: color, fontSize: 10)),
         ],
       ),
     );
@@ -170,8 +260,8 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen> {
     List<ScriptLine> dialogueLines,
     int currentIdx,
     String? myCharacter,
+    RehearsalState rehearsalState,
   ) {
-    // Show a window of lines: past lines (faded), current (bright), upcoming (dim)
     return ListView.builder(
       controller: _scrollController,
       padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
@@ -182,8 +272,8 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen> {
         final isPast = index < currentIdx;
         final isMe = line.character == myCharacter;
 
-        final charIdx = script.characters
-            .indexWhere((c) => c.name == line.character);
+        final charIdx =
+            script.characters.indexWhere((c) => c.name == line.character);
         final color = charIdx >= 0
             ? AppTheme.colorForCharacter(charIdx)
             : Colors.grey;
@@ -245,20 +335,25 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen> {
                     ),
                     if (isCurrent && isMe) ...[
                       const Spacer(),
-                      Icon(
-                        Icons.mic,
-                        size: 16,
-                        color: Theme.of(context).colorScheme.primary,
-                      ),
-                      const SizedBox(width: 4),
-                      Text(
-                        'YOUR LINE',
-                        style: TextStyle(
-                          color: Theme.of(context).colorScheme.primary,
-                          fontSize: 10,
-                          fontWeight: FontWeight.bold,
+                      if (rehearsalState == RehearsalState.listeningForMe) ...[
+                        _pulsingMic(context),
+                      ] else ...[
+                        Icon(Icons.mic, size: 16,
+                            color: Theme.of(context).colorScheme.primary),
+                        const SizedBox(width: 4),
+                        Text('YOUR LINE',
+                          style: TextStyle(
+                            color: Theme.of(context).colorScheme.primary,
+                            fontSize: 10,
+                            fontWeight: FontWeight.bold,
+                          ),
                         ),
-                      ),
+                      ],
+                    ],
+                    if (isCurrent && !isMe &&
+                        rehearsalState == RehearsalState.playingOther) ...[
+                      const Spacer(),
+                      Icon(Icons.volume_up, size: 14, color: Colors.green[400]),
                     ],
                   ],
                 ),
@@ -283,11 +378,81 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen> {
                     height: 1.4,
                   ),
                 ),
+                // Show recognized text under current line if listening
+                if (isCurrent && isMe && _recognizedText.isNotEmpty)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 8),
+                    child: Text(
+                      _recognizedText,
+                      style: TextStyle(
+                        color: Colors.grey[400],
+                        fontSize: 14,
+                        fontStyle: FontStyle.italic,
+                      ),
+                    ),
+                  ),
               ],
             ),
           ),
         );
       },
+    );
+  }
+
+  Widget _pulsingMic(BuildContext context) {
+    return TweenAnimationBuilder<double>(
+      tween: Tween(begin: 0.5, end: 1.0),
+      duration: const Duration(milliseconds: 800),
+      builder: (context, value, child) {
+        return Opacity(
+          opacity: value,
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(Icons.mic, size: 16,
+                  color: Colors.orange[400]),
+              const SizedBox(width: 4),
+              Text('LISTENING...',
+                style: TextStyle(
+                  color: Colors.orange[400],
+                  fontSize: 10,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _buildMatchFeedback(BuildContext context) {
+    final threshold = ref.read(matchThresholdProvider) / 100.0;
+    final matched = _matchScore >= threshold;
+    final percentage = (_matchScore * 100).toInt();
+
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+      color: matched
+          ? Colors.green.withValues(alpha: 0.2)
+          : Colors.orange.withValues(alpha: 0.2),
+      child: Row(
+        children: [
+          Icon(
+            matched ? Icons.check_circle : Icons.info_outline,
+            color: matched ? Colors.green : Colors.orange,
+            size: 18,
+          ),
+          const SizedBox(width: 8),
+          Text(
+            matched ? 'Match! $percentage%' : '$percentage% — try again or tap Next',
+            style: TextStyle(
+              color: matched ? Colors.green : Colors.orange,
+              fontSize: 13,
+            ),
+          ),
+        ],
+      ),
     );
   }
 
@@ -320,7 +485,6 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen> {
               style: TextStyle(color: Colors.grey[500], fontSize: 16),
             ),
             const SizedBox(height: 32),
-            // Big "Run Again" button
             FilledButton.icon(
               onPressed: _restartScene,
               icon: const Icon(Icons.replay),
@@ -333,7 +497,12 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen> {
             ),
             const SizedBox(height: 12),
             OutlinedButton(
-              onPressed: () => context.pop(),
+              onPressed: () {
+                _tts.stop();
+                _stt.stop();
+                _player.stop();
+                context.pop();
+              },
               child: const Text('Choose Another Scene'),
             ),
           ],
@@ -362,7 +531,6 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen> {
       child: Row(
         mainAxisAlignment: MainAxisAlignment.spaceEvenly,
         children: [
-          // Jump back
           _controlButton(
             context,
             icon: Icons.replay,
@@ -371,33 +539,64 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen> {
                 ? () => _jumpBack(jumpBackLines, totalLines)
                 : null,
           ),
-          // Restart scene
           _controlButton(
             context,
             icon: Icons.restart_alt,
             label: 'Restart',
             onTap: _restartScene,
           ),
-          // Next line (manual advance)
+          // Main action button changes based on state
           _controlButton(
             context,
-            icon: isMyLine ? Icons.mic : Icons.skip_next,
-            label: isMyLine ? 'Done' : 'Next',
-            onTap: () => _advanceLine(totalLines),
+            icon: _mainActionIcon(state, isMyLine),
+            label: _mainActionLabel(state, isMyLine),
+            onTap: () => _mainAction(state, isMyLine, totalLines),
             primary: true,
           ),
-          // Pause
           _controlButton(
             context,
             icon: state == RehearsalState.paused
                 ? Icons.play_arrow
                 : Icons.pause,
             label: state == RehearsalState.paused ? 'Resume' : 'Pause',
-            onTap: _togglePause,
+            onTap: () => _togglePause(totalLines),
           ),
         ],
       ),
     );
+  }
+
+  IconData _mainActionIcon(RehearsalState state, bool isMyLine) {
+    if (state == RehearsalState.ready && isMyLine) return Icons.mic;
+    if (state == RehearsalState.listeningForMe) return Icons.check;
+    if (state == RehearsalState.ready) return Icons.play_arrow;
+    return Icons.skip_next;
+  }
+
+  String _mainActionLabel(RehearsalState state, bool isMyLine) {
+    if (state == RehearsalState.ready && isMyLine) return 'Speak';
+    if (state == RehearsalState.listeningForMe) return 'Done';
+    if (state == RehearsalState.ready) return 'Play';
+    return 'Next';
+  }
+
+  void _mainAction(RehearsalState state, bool isMyLine, int totalLines) {
+    switch (state) {
+      case RehearsalState.ready:
+        _processCurrentLine();
+      case RehearsalState.playingOther:
+        // Skip to next
+        _tts.stop();
+        _player.stop();
+        _advanceLine(totalLines);
+      case RehearsalState.listeningForMe:
+        // Accept whatever was said and advance
+        _stt.stop();
+        _advanceLine(totalLines);
+      case RehearsalState.paused:
+      case RehearsalState.sceneComplete:
+        break;
+    }
   }
 
   Widget _controlButton(
@@ -423,7 +622,10 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen> {
             height: primary ? 56 : 44,
             decoration: BoxDecoration(
               color: primary
-                  ? Theme.of(context).colorScheme.primary.withValues(alpha: 0.2)
+                  ? Theme.of(context)
+                      .colorScheme
+                      .primary
+                      .withValues(alpha: 0.2)
                   : Colors.grey[850],
               shape: BoxShape.circle,
               border: primary
@@ -440,43 +642,261 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen> {
     );
   }
 
-  void _advanceLine(int totalLines) {
-    final current = ref.read(currentLineIndexProvider);
-    if (current < totalLines) {
-      ref.read(currentLineIndexProvider.notifier).state = current + 1;
+  // ── Engine Logic ──────────────────────────────────────
+
+  /// Process the current line: play audio/TTS for others, or start listening for me.
+  void _processCurrentLine() {
+    final script = ref.read(currentScriptProvider);
+    final scene = ref.read(selectedSceneProvider);
+    final myCharacter = ref.read(rehearsalCharacterProvider);
+    final currentIdx = ref.read(currentLineIndexProvider);
+
+    if (script == null || scene == null) return;
+
+    final sceneLines = script.linesInScene(scene);
+    final dialogueLines =
+        sceneLines.where((l) => l.lineType == LineType.dialogue).toList();
+
+    if (currentIdx >= dialogueLines.length) {
+      ref.read(rehearsalStateProvider.notifier).state =
+          RehearsalState.sceneComplete;
+      return;
+    }
+
+    final line = dialogueLines[currentIdx];
+    final isMyLine = line.character == myCharacter;
+
+    if (isMyLine) {
+      _startListeningForMyLine(line);
+    } else {
+      _playOtherLine(line);
+    }
+  }
+
+  /// Play another character's line via recording or TTS.
+  Future<void> _playOtherLine(ScriptLine line) async {
+    ref.read(rehearsalStateProvider.notifier).state =
+        RehearsalState.playingOther;
+    setState(() {
+      _showMatchFeedback = false;
+      _recognizedText = '';
+    });
+
+    // Check for a recording first
+    final recordings = ref.read(recordingsProvider);
+    final recording = recordings[line.id];
+
+    if (recording != null) {
+      try {
+        await _player.setFilePath(recording.localPath);
+        await _player.play();
+        // Completion handled by playerStateStream listener
+        return;
+      } catch (_) {
+        // Fall through to TTS
+      }
+    }
+
+    // Fall back to TTS
+    await _tts.speak(line.text, character: line.character);
+    // Completion handled by TTS completion handler
+  }
+
+  /// Called when another character's line finishes playing.
+  void _onOtherLineFinished() {
+    if (!mounted) return;
+    final rehearsalState = ref.read(rehearsalStateProvider);
+    if (rehearsalState == RehearsalState.paused) return;
+
+    final script = ref.read(currentScriptProvider);
+    final scene = ref.read(selectedSceneProvider);
+    if (script == null || scene == null) return;
+
+    final sceneLines = script.linesInScene(scene);
+    final dialogueLines =
+        sceneLines.where((l) => l.lineType == LineType.dialogue).toList();
+    final currentIdx = ref.read(currentLineIndexProvider);
+
+    if (currentIdx + 1 >= dialogueLines.length) {
+      ref.read(currentLineIndexProvider.notifier).state = currentIdx + 1;
+      ref.read(rehearsalStateProvider.notifier).state =
+          RehearsalState.sceneComplete;
       _scrollToCurrentLine();
+      return;
+    }
+
+    // Advance and process next
+    ref.read(currentLineIndexProvider.notifier).state = currentIdx + 1;
+    _scrollToCurrentLine();
+
+    // Small delay between lines for natural pacing
+    Future.delayed(const Duration(milliseconds: 400), () {
+      if (mounted) _processCurrentLine();
+    });
+  }
+
+  /// Start STT listening for the actor's line.
+  Future<void> _startListeningForMyLine(ScriptLine line) async {
+    ref.read(rehearsalStateProvider.notifier).state =
+        RehearsalState.listeningForMe;
+    setState(() {
+      _recognizedText = '';
+      _showMatchFeedback = false;
+    });
+
+    // Haptic feedback: it's your turn
+    HapticFeedback.mediumImpact();
+
+    final available = await _stt.isAvailable;
+    if (!available) {
+      // STT not available — just wait for manual advance
+      ref.read(rehearsalStateProvider.notifier).state = RehearsalState.ready;
+      return;
+    }
+
+    final threshold = ref.read(matchThresholdProvider) / 100.0;
+
+    await _stt.listen(
+      onResult: (recognized) {
+        if (!mounted) return;
+        setState(() {
+          _recognizedText = recognized;
+          _matchScore = SttService.matchScore(line.text, recognized);
+          _showMatchFeedback = recognized.isNotEmpty;
+        });
+
+        // Auto-advance if match exceeds threshold
+        if (_matchScore >= threshold) {
+          _stt.stop();
+          HapticFeedback.lightImpact();
+
+          // Brief delay so user sees the "Match!" feedback
+          Future.delayed(const Duration(milliseconds: 600), () {
+            if (mounted) {
+              final script = ref.read(currentScriptProvider);
+              final scene = ref.read(selectedSceneProvider);
+              if (script == null || scene == null) return;
+              final dialogueLines = script
+                  .linesInScene(scene)
+                  .where((l) => l.lineType == LineType.dialogue)
+                  .toList();
+              _advanceLine(dialogueLines.length);
+            }
+          });
+        }
+      },
+      onDone: () {
+        if (!mounted) return;
+        // Listening ended but no match — stay on this line, let user retry or skip
+        if (ref.read(rehearsalStateProvider) == RehearsalState.listeningForMe) {
+          ref.read(rehearsalStateProvider.notifier).state =
+              RehearsalState.ready;
+        }
+      },
+    );
+  }
+
+  void _advanceLine(int totalLines) {
+    _tts.stop();
+    _stt.stop();
+    _player.stop();
+
+    final current = ref.read(currentLineIndexProvider);
+    if (current + 1 >= totalLines) {
+      ref.read(currentLineIndexProvider.notifier).state = current + 1;
+      ref.read(rehearsalStateProvider.notifier).state =
+          RehearsalState.sceneComplete;
+      _scrollToCurrentLine();
+      return;
+    }
+
+    ref.read(currentLineIndexProvider.notifier).state = current + 1;
+    ref.read(rehearsalStateProvider.notifier).state = RehearsalState.ready;
+    _scrollToCurrentLine();
+
+    setState(() {
+      _showMatchFeedback = false;
+      _recognizedText = '';
+    });
+
+    // Auto-play next line after short delay
+    if (_autoPlay) {
+      Future.delayed(const Duration(milliseconds: 400), () {
+        if (mounted) _processCurrentLine();
+      });
     }
   }
 
   void _jumpBack(int jumpCount, int totalLines) {
+    _tts.stop();
+    _stt.stop();
+    _player.stop();
+
     final current = ref.read(currentLineIndexProvider);
     final newIdx = (current - jumpCount).clamp(0, totalLines - 1);
     ref.read(currentLineIndexProvider.notifier).state = newIdx;
+    ref.read(rehearsalStateProvider.notifier).state = RehearsalState.ready;
     _scrollToCurrentLine();
+
+    setState(() {
+      _showMatchFeedback = false;
+      _recognizedText = '';
+    });
+
+    // Haptic on jump back
+    HapticFeedback.heavyImpact();
+
+    // Auto-play from new position
+    if (_autoPlay) {
+      Future.delayed(const Duration(milliseconds: 300), () {
+        if (mounted) _processCurrentLine();
+      });
+    }
   }
 
   void _restartScene() {
+    _tts.stop();
+    _stt.stop();
+    _player.stop();
+
     ref.read(currentLineIndexProvider.notifier).state = 0;
     ref.read(rehearsalStateProvider.notifier).state = RehearsalState.ready;
+
+    setState(() {
+      _showMatchFeedback = false;
+      _recognizedText = '';
+    });
+
     _scrollController.animateTo(
       0,
       duration: const Duration(milliseconds: 300),
       curve: Curves.easeOut,
     );
+
+    if (_autoPlay) {
+      Future.delayed(const Duration(milliseconds: 400), () {
+        if (mounted) _processCurrentLine();
+      });
+    }
   }
 
-  void _togglePause() {
+  void _togglePause(int totalLines) {
     final current = ref.read(rehearsalStateProvider);
-    ref.read(rehearsalStateProvider.notifier).state =
-        current == RehearsalState.paused
-            ? RehearsalState.ready
-            : RehearsalState.paused;
+    if (current == RehearsalState.paused) {
+      ref.read(rehearsalStateProvider.notifier).state = RehearsalState.ready;
+      if (_autoPlay) _processCurrentLine();
+    } else {
+      _tts.stop();
+      _stt.stop();
+      _player.pause();
+      ref.read(rehearsalStateProvider.notifier).state = RehearsalState.paused;
+    }
   }
 
   void _scrollToCurrentLine() {
     final idx = ref.read(currentLineIndexProvider);
-    // Approximate scroll position
-    final offset = (idx * 100.0).clamp(0.0, _scrollController.position.maxScrollExtent);
+    final offset =
+        (idx * 100.0).clamp(0.0, _scrollController.position.maxScrollExtent);
     _scrollController.animateTo(
       offset,
       duration: const Duration(milliseconds: 300),

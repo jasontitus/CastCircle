@@ -58,10 +58,11 @@ class SttService {
 
   /// Simple fuzzy match: what percentage of expected words were spoken.
   static double matchScore(String expected, String spoken) {
-    final expectedWords = _normalize(expected).split(RegExp(r'\s+'));
-    final spokenWords = _normalize(spoken).split(RegExp(r'\s+'));
+    final normalizedExpected = _normalize(expected);
+    if (normalizedExpected.isEmpty) return 1.0;
 
-    if (expectedWords.isEmpty) return 1.0;
+    final expectedWords = normalizedExpected.split(RegExp(r'\s+'));
+    final spokenWords = _normalize(spoken).split(RegExp(r'\s+'));
 
     int matched = 0;
     for (final word in expectedWords) {
