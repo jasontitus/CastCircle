@@ -4,6 +4,7 @@ import 'package:go_router/go_router.dart';
 
 import '../../app.dart';
 import '../../core/constants.dart';
+import '../../data/services/model_download_service.dart';
 import '../../data/services/supabase_service.dart';
 import '../../main.dart';
 import '../auth/auth_screen.dart';
@@ -140,6 +141,14 @@ class SettingsScreen extends ConsumerWidget {
             onChanged: (v) =>
                 ref.read(understudyFallbackProvider.notifier).state = v,
             secondary: const Icon(Icons.people_outline),
+          ),
+          _sectionHeader(context, 'AI Models'),
+          ListTile(
+            leading: const Icon(Icons.smart_toy),
+            title: const Text('AI Models'),
+            subtitle: const Text('Download on-device AI models'),
+            trailing: const Icon(Icons.chevron_right),
+            onTap: () => context.push('/ai-models'),
           ),
           _sectionHeader(context, 'Account'),
           ListTile(

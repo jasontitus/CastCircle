@@ -19,6 +19,7 @@ import 'features/recording_studio/voice_profile_screen.dart';
 import 'features/rehearsal/scene_selector_screen.dart';
 import 'features/rehearsal/rehearsal_history_screen.dart';
 import 'features/rehearsal/rehearsal_screen.dart';
+import 'features/settings/ai_models_screen.dart';
 import 'features/settings/settings_screen.dart';
 import 'features/settings/model_download_screen.dart';
 
@@ -108,6 +109,10 @@ GoRouter _buildRouter(Ref ref) => GoRouter(
     GoRoute(
       path: '/history',
       builder: (context, state) => const RehearsalHistoryScreen(),
+    ),
+    GoRoute(
+      path: '/ai-models',
+      builder: (context, state) => const AiModelsScreen(),
     ),
     GoRoute(
       path: '/models',
