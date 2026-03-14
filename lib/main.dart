@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:sherpa_onnx/sherpa_onnx.dart' as sherpa;
 
 import 'app.dart';
@@ -13,6 +14,11 @@ final databaseProvider = Provider<AppDatabase>((ref) {
   final db = AppDatabase();
   ref.onDispose(() => db.close());
   return db;
+});
+
+/// SharedPreferences instance, initialized before runApp.
+final sharedPreferencesProvider = Provider<SharedPreferences>((ref) {
+  throw UnimplementedError('Must be overridden in ProviderScope');
 });
 
 void main() async {
@@ -41,9 +47,24 @@ void main() async {
     await SttService.instance.init();
   });
 
+  final prefs = await SharedPreferences.getInstance();
+
+  // Determine if user already has a persisted session (Supabase login or
+  // previously skipped auth). This lets the app skip the login screen on
+  // subsequent launches — users only need to authenticate once per device.
+  final hasPersistedSession =
+      (SupabaseService.instance.isInitialized &&
+          SupabaseService.instance.isSignedIn) ||
+      (prefs.getBool('auth_skipped') ?? false);
+
   runApp(
-    const ProviderScope(
-      child: LineGuideApp(),
+    ProviderScope(
+      overrides: [
+        sharedPreferencesProvider.overrideWithValue(prefs),
+        if (hasPersistedSession)
+          authGatePassedProvider.overrideWith((ref) => true),
+      ],
+      child: const LineGuideApp(),
     ),
   );
 }

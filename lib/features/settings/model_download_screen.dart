@@ -65,18 +65,9 @@ class _ModelDownloadScreenState extends ConsumerState<ModelDownloadScreen> {
         },
       );
 
-      // Reload services with new models (may fail if model files are large)
-      try {
-        await TtsService.instance.reloadKokoro();
-      } catch (e) {
-        debugPrint('Kokoro reload failed (will retry on next app launch): $e');
-      }
-      try {
-        await SttService.instance.reloadWhisper();
-      } catch (e) {
-        debugPrint('STT reload failed (will retry on next app launch): $e');
-      }
-
+      // Don't reload models here — loading large ONNX files into memory
+      // right after downloading can exceed iOS memory limits and crash.
+      // Models will be loaded on next app launch.
       await _checkStatus();
     } catch (e) {
       if (mounted) {
@@ -126,9 +117,9 @@ class _ModelDownloadScreenState extends ConsumerState<ModelDownloadScreen> {
           ),
           _modelCard(
             context,
-            title: 'Parakeet STT',
-            subtitle: 'On-device speech recognition (MLX)',
-            size: '~120 MB',
+            title: 'Speech Recognition',
+            subtitle: 'On-device STT for line matching',
+            size: '~244 MB',
             ready: _parakeetReady,
             icon: Icons.hearing,
           ),
@@ -210,7 +201,7 @@ class _ModelDownloadScreenState extends ConsumerState<ModelDownloadScreen> {
             ),
             const SizedBox(height: 8),
             Text(
-              'Total download: ~215 MB. Wi-Fi recommended.',
+              'Total download: ~340 MB. Wi-Fi recommended.',
               textAlign: TextAlign.center,
               style: theme.textTheme.bodySmall?.copyWith(
                 color: theme.colorScheme.onSurface.withValues(alpha: 0.5),

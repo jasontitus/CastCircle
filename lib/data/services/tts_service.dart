@@ -137,20 +137,32 @@ class TtsService {
 
   /// Speak text for a character.
   /// Returns true if audio was produced, false if no TTS engine is available.
-  /// System TTS is never used — only Kokoro neural TTS.
-  /// If Kokoro is not downloaded, returns false silently.
+  /// Uses Kokoro neural TTS if available, falls back to system TTS.
   Future<bool> speak(String text, {String? character}) async {
     if (!_initialized) await init();
+
+    // Try lazy-loading Kokoro if models appeared since init
+    if (_kokoroTts == null) {
+      await _initKokoro();
+      if (_kokoroTts != null) _activeEngine = TtsEngine.kokoro;
+    }
 
     if (_kokoroTts != null) {
       return _speakWithKokoro(text, character: character);
     }
 
-    // Kokoro not available — do not fall back to system TTS.
-    // The UI should prompt the user to download AI models.
-    debugPrint('TTS: Kokoro not available, skipping speech');
-    _completionHandler?.call();
-    return false;
+    // Fall back to system TTS so rehearsal doesn't skip lines
+    debugPrint('TTS: Kokoro not available, using system TTS');
+    return _speakWithSystem(text, character: character);
+  }
+
+  /// Speak using system TTS.
+  Future<bool> _speakWithSystem(String text, {String? character}) async {
+    if (character != null && _characterSystemVoices.containsKey(character)) {
+      await _systemTts.setVoice(_characterSystemVoices[character]!);
+    }
+    await _systemTts.speak(text);
+    return true;
   }
 
   /// Speak using Kokoro via sherpa-onnx.

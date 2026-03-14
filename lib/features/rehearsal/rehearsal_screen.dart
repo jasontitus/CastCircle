@@ -122,6 +122,22 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen> {
       }
     }
 
+    // Jump to a few lines before the actor's first line
+    if (script != null && myCharacter != null) {
+      final scene = ref.read(selectedSceneProvider);
+      if (scene != null) {
+        final dialogueLines = _getRehearsalLines(script, scene, myCharacter);
+        final firstMyIdx = dialogueLines
+            .indexWhere((l) => l.character == myCharacter);
+        if (firstMyIdx > 0) {
+          // Start 3 lines before actor's first line (minimum 0)
+          final startIdx = (firstMyIdx - 3).clamp(0, dialogueLines.length - 1);
+          ref.read(currentLineIndexProvider.notifier).state = startIdx;
+          _scrollToCurrentLine();
+        }
+      }
+    }
+
     // Auto-start if enabled
     if (_autoPlay) {
       _processCurrentLine();

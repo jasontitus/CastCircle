@@ -1,7 +1,12 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:go_router/go_router.dart';
 
+import '../../app.dart';
 import '../../core/constants.dart';
+import '../../data/services/supabase_service.dart';
+import '../../main.dart';
+import '../auth/auth_screen.dart';
 
 // Settings providers
 final jumpBackLinesProvider = StateProvider<int>(
@@ -136,6 +141,13 @@ class SettingsScreen extends ConsumerWidget {
                 ref.read(understudyFallbackProvider.notifier).state = v,
             secondary: const Icon(Icons.people_outline),
           ),
+          _sectionHeader(context, 'Account'),
+          ListTile(
+            leading: const Icon(Icons.logout),
+            title: const Text('Sign Out'),
+            subtitle: const Text('Sign out and return to the login screen'),
+            onTap: () => _signOut(context, ref),
+          ),
           _sectionHeader(context, 'About'),
           const ListTile(
             title: Text('LineGuide'),
@@ -145,6 +157,25 @@ class SettingsScreen extends ConsumerWidget {
         ],
       ),
     );
+  }
+
+  Future<void> _signOut(BuildContext context, WidgetRef ref) async {
+    // Clear persisted skip-auth flag.
+    ref.read(sharedPreferencesProvider).remove('auth_skipped');
+
+    // Sign out of Supabase if there's an active session.
+    if (SupabaseService.instance.isInitialized &&
+        SupabaseService.instance.isSignedIn) {
+      await SupabaseService.instance.signOut();
+    }
+
+    // Reset in-memory auth state.
+    ref.read(authStateProvider.notifier).state = false;
+    ref.read(authGatePassedProvider.notifier).state = false;
+
+    if (context.mounted) {
+      context.go('/auth');
+    }
   }
 
   Widget _sectionHeader(BuildContext context, String title) {

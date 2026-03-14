@@ -1,6 +1,7 @@
 import 'dart:io';
+import 'dart:isolate';
 
-import 'package:archive/archive.dart';
+import 'package:archive/archive_io.dart';
 import 'package:flutter/foundation.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:path/path.dart' as p;
@@ -9,8 +10,9 @@ import 'mlx_stt_channel.dart';
 
 /// Manages downloading and caching of ONNX models for on-device ML.
 ///
-/// Kokoro and Whisper are distributed as .tar.bz2 archives on GitHub.
-/// VAD is a single .onnx file.
+/// Kokoro is downloaded as a .tar.bz2 archive (600+ files including
+/// espeak-ng-data). Extraction runs in a separate isolate using streaming
+/// I/O to avoid OOM and main-thread watchdog kills.
 class ModelManager {
   ModelManager._();
   static final instance = ModelManager._();
@@ -77,7 +79,8 @@ class ModelManager {
     await _downloadAndExtractArchive(
       _kokoroArchiveUrl,
       dir,
-      (progress) => onProgress?.call('kokoro-multi-lang-v1_0.tar.bz2', progress),
+      (progress) =>
+          onProgress?.call('kokoro-multi-lang-v1_0.tar.bz2', progress),
     );
   }
 
@@ -140,15 +143,18 @@ class ModelManager {
     return null;
   }
 
-  /// Check if Parakeet STT model is downloaded.
+  /// Check if STT model is downloaded (Parakeet or Whisper fallback).
   Future<bool> isParakeetReady() async {
-    // Check local models dir first
+    // Check local models dir for Parakeet
     final dir = await modelsDir;
     final modelDir = p.join(dir, _mlxSttModelName);
     if (await Directory(modelDir).exists()) return true;
 
     // Check via platform channel (HuggingFace cache)
-    return MlxSttChannel.instance.isModelDownloaded();
+    if (await MlxSttChannel.instance.isModelDownloaded()) return true;
+
+    // Fall back to Whisper readiness check
+    return isWhisperReady();
   }
 
   /// Download Parakeet STT model via MLX platform channel.
@@ -166,7 +172,10 @@ class ModelManager {
       },
     );
     if (!success) {
-      throw Exception('Parakeet model download failed');
+      // MLX not available yet — fall back to Whisper download
+      debugPrint('Parakeet download unavailable, falling back to Whisper');
+      await downloadWhisper(onProgress: onProgress);
+      return;
     }
   }
 
@@ -243,6 +252,10 @@ class ModelManager {
   // ── Helpers ────────────────────────────────────────────
 
   /// Download a .tar.bz2 archive and extract it to [destDir].
+  ///
+  /// Extraction runs in a separate isolate using streaming I/O:
+  /// bzip2 → temp tar file → extract entries one at a time.
+  /// This avoids both OOM (streaming) and iOS watchdog kills (off main thread).
   Future<void> _downloadAndExtractArchive(
     String url,
     String destDir,
@@ -259,13 +272,14 @@ class ModelManager {
 
     // Download the archive
     await _downloadFile(url, archivePath, (progress) {
-      // Download is 90% of the work, extraction is 10%
-      onProgress?.call(progress * 0.9);
+      // Download is 80% of the work, extraction is 20%
+      onProgress?.call(progress * 0.8);
     });
 
-    // Extract in an isolate to avoid blocking the UI
+    // Extract in a separate isolate using streaming I/O
     debugPrint('Extracting archive to $destDir ...');
-    await compute(_extractArchive, (archivePath, destDir));
+    onProgress?.call(0.85);
+    await Isolate.run(() => _extractArchiveStreaming(archivePath, destDir));
 
     // Clean up archive
     try {
@@ -276,31 +290,31 @@ class ModelManager {
     debugPrint('Archive extracted successfully');
   }
 
-  /// Top-level function for compute() — extracts a .tar.bz2 archive.
+  /// Streaming archive extraction — runs in an isolate.
   ///
-  /// Uses streaming decompression to avoid loading the entire archive
-  /// into memory at once (Kokoro is ~100MB compressed, ~700MB extracted).
-  static void _extractArchive((String archivePath, String destDir) args) {
-    final (archivePath, destDir) = args;
+  /// Step 1: Stream-decompress bzip2 to a temp .tar file on disk.
+  /// Step 2: Stream-extract tar entries to destination, one file at a time.
+  /// Peak memory is ~one file, not the entire archive.
+  static void _extractArchiveStreaming(String archivePath, String destDir) {
+    // Decompress bzip2 → temp tar file
+    final tempDir = Directory.systemTemp.createTempSync('lineguide_extract');
+    final tarPath = p.join(tempDir.path, 'temp.tar');
 
-    final archiveBytes = File(archivePath).readAsBytesSync();
+    final input = InputFileStream(archivePath);
+    final output = OutputFileStream(tarPath);
+    BZip2Decoder().decodeStream(input, output);
+    input.closeSync();
+    output.closeSync();
 
-    // Decompress bzip2 → tar
-    final tarBytes = BZip2Decoder().decodeBytes(archiveBytes);
+    // Extract tar entries to destination
+    final tarInput = InputFileStream(tarPath);
+    final archive = TarDecoder().decodeStream(tarInput);
+    extractArchiveToDiskSync(archive, destDir);
+    tarInput.closeSync();
+    archive.clear();
 
-    // Decode tar and extract files
-    final archive = TarDecoder().decodeBytes(tarBytes);
-
-    for (final file in archive) {
-      final filePath = p.join(destDir, file.name);
-      if (file.isFile) {
-        final outFile = File(filePath);
-        outFile.createSync(recursive: true);
-        outFile.writeAsBytesSync(file.content as List<int>);
-      } else {
-        Directory(filePath).createSync(recursive: true);
-      }
-    }
+    // Cleanup temp tar
+    tempDir.deleteSync(recursive: true);
   }
 
   /// Download a single file with progress reporting.
@@ -325,7 +339,10 @@ class ModelManager {
       final response = await request.close();
 
       if (response.statusCode != 200) {
-        if (response.statusCode == 302 || response.statusCode == 301) {
+        if (response.isRedirect ||
+            response.statusCode == 302 ||
+            response.statusCode == 301 ||
+            response.statusCode == 307) {
           final redirectUrl = response.headers.value('location');
           if (redirectUrl != null) {
             await response.drain<void>();
