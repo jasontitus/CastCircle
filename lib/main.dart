@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'app.dart';
 import 'data/database/app_database.dart';
+import 'data/services/supabase_service.dart';
 
 /// Global database instance, provided via Riverpod.
 final databaseProvider = Provider<AppDatabase>((ref) {
@@ -11,15 +12,18 @@ final databaseProvider = Provider<AppDatabase>((ref) {
   return db;
 });
 
-void main() {
+void main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
-  // Supabase initialization is deferred — it requires URL and anonKey
-  // which come from environment config. The app works fully offline
-  // without Supabase (local Drift DB is the source of truth).
-  //
-  // To enable Supabase, call SupabaseService.instance.init() with
-  // your project credentials before auth screens are shown.
+  const supabaseUrl = String.fromEnvironment('SUPABASE_URL');
+  const supabaseAnonKey = String.fromEnvironment('SUPABASE_ANON_KEY');
+
+  if (supabaseUrl.isNotEmpty && supabaseAnonKey.isNotEmpty) {
+    await SupabaseService.instance.init(
+      url: supabaseUrl,
+      anonKey: supabaseAnonKey,
+    );
+  }
 
   runApp(
     const ProviderScope(
