@@ -17,6 +17,7 @@ class SupabaseService {
 
   SupabaseClient get _client => Supabase.instance.client;
   bool _initialized = false;
+  bool get isInitialized => _initialized;
 
   /// Initialize Supabase. Call once at app startup.
   /// Pass url and anonKey from environment config or compile-time constants.

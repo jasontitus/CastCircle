@@ -1,8 +1,10 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import 'core/theme/app_theme.dart';
+import 'data/services/supabase_service.dart';
 import 'features/auth/auth_screen.dart';
 import 'features/home/home_screen.dart';
 import 'features/script_import/script_import_screen.dart';
@@ -18,8 +20,17 @@ import 'features/rehearsal/rehearsal_history_screen.dart';
 import 'features/rehearsal/rehearsal_screen.dart';
 import 'features/settings/settings_screen.dart';
 
+/// Key used to persist the "skip auth" choice across app launches.
+const _authSkippedKey = 'auth_skipped';
+
 /// Whether the user has passed the auth gate (signed in or skipped).
-final authGatePassedProvider = StateProvider<bool>((ref) => false);
+/// Initialized from the persisted Supabase session or saved skip preference.
+final authGatePassedProvider = StateProvider<bool>((ref) {
+  final supabase = SupabaseService.instance;
+  // If Supabase is initialized and has a valid session, restore login.
+  if (supabase.isInitialized && supabase.isSignedIn) return true;
+  return false;
+});
 
 GoRouter _buildRouter(Ref ref) => GoRouter(
   initialLocation: '/',

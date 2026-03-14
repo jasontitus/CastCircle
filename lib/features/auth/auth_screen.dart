@@ -1,9 +1,11 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import '../../app.dart';
 import '../../data/services/supabase_service.dart';
+import '../../main.dart';
 
 /// Auth state provider — tracks whether user is signed in.
 final authStateProvider = StateProvider<bool>((ref) {
@@ -179,6 +181,8 @@ class _AuthScreenState extends ConsumerState<AuthScreen> {
   }
 
   void _skipAuth() {
+    // Persist the skip choice so the user isn't asked again on next launch.
+    ref.read(sharedPreferencesProvider).setBool('auth_skipped', true);
     ref.read(authStateProvider.notifier).state = true;
     ref.read(authGatePassedProvider.notifier).state = true;
     context.go('/');

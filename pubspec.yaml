@@ -48,6 +48,9 @@ dependencies:
   # Backend
   supabase_flutter: ^2.8.2
 
+  # Persistent preferences
+  shared_preferences: ^2.3.4
+
   # Connectivity
   connectivity_plus: ^6.1.0
 
