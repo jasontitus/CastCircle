@@ -50,6 +50,7 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen> {
   final VoiceCloneService _voiceClone = VoiceCloneService.instance;
   final SttAdaptationService _sttAdapt = SttAdaptationService.instance;
   String? _activeAdapter; // per-actor or per-production LoRA adapter path
+  final GlobalKey _currentLineKey = GlobalKey();
 
   final bool _autoPlay = true; // auto-advance through other characters' lines
   String _recognizedText = '';
@@ -95,13 +96,15 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen> {
     if (script != null) {
       final voiceConfig = VoiceConfigService.instance;
       for (var i = 0; i < script.characters.length; i++) {
-        final charName = script.characters[i].name;
+        final char = script.characters[i];
         if (production != null) {
-          final voiceId =
-              await voiceConfig.resolveVoice(production.id, charName, i);
+          final voiceId = await voiceConfig.resolveVoice(
+            production.id, char.name, i,
+            isFemale: char.gender != CharacterGender.male,
+          );
           final speed =
-              await voiceConfig.resolveSpeed(production.id, charName);
-          _tts.assignVoice(charName, i, voiceId: voiceId, speed: speed);
+              await voiceConfig.resolveSpeed(production.id, char.name);
+          _tts.assignVoice(char.name, i, voiceId: voiceId, speed: speed);
         } else {
           _tts.assignVoice(charName, i);
         }
@@ -115,7 +118,6 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen> {
     });
 
     // Check for per-actor or per-production STT adapter
-    final production = ref.read(currentProductionProvider);
     final myCharacter = ref.read(rehearsalCharacterProvider);
     if (production != null && myCharacter != null) {
       _activeAdapter = _sttAdapt.getBestAdapter(production.id, myCharacter);
@@ -363,6 +365,7 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen> {
         }
 
         return Opacity(
+          key: isCurrent ? _currentLineKey : null,
           opacity: opacity,
           child: Container(
             margin: const EdgeInsets.symmetric(vertical: 6),
@@ -520,7 +523,7 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen> {
           ),
           const SizedBox(width: 8),
           Text(
-            matched ? 'Match! $percentage%' : '$percentage% — try again or tap Next',
+            matched ? 'Match! $percentage%' : '$percentage% — keep going',
             style: TextStyle(
               color: matched ? Colors.green : Colors.orange,
               fontSize: 13,
@@ -718,14 +721,14 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen> {
 
   IconData _mainActionIcon(RehearsalState state, bool isMyLine) {
     if (state == RehearsalState.ready && isMyLine) return Icons.mic;
-    if (state == RehearsalState.listeningForMe) return Icons.check;
+    if (state == RehearsalState.listeningForMe) return Icons.skip_next;
     if (state == RehearsalState.ready) return Icons.play_arrow;
     return Icons.skip_next;
   }
 
   String _mainActionLabel(RehearsalState state, bool isMyLine) {
     if (state == RehearsalState.ready && isMyLine) return 'Speak';
-    if (state == RehearsalState.listeningForMe) return 'Done';
+    if (state == RehearsalState.listeningForMe) return 'Skip';
     if (state == RehearsalState.ready) return 'Play';
     return 'Next';
   }
@@ -844,6 +847,9 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen> {
 
     final line = dialogueLines[currentIdx];
     final isMyLine = line.character == myCharacter;
+
+    // Always scroll to the current line so the actor can see it
+    _scrollToCurrentLine();
 
     // Reset attempt tracking for new line
     _currentAttemptCount = 0;
@@ -993,6 +999,7 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen> {
     _currentAttemptCount++;
 
     await _stt.listen(
+      continuous: true,
       onResult: (recognized) {
         if (!mounted) return;
         final score = SttService.matchScore(line.text, recognized);
@@ -1024,14 +1031,6 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen> {
               _advanceLine(dialogueLines.length);
             }
           });
-        }
-      },
-      onDone: () {
-        if (!mounted) return;
-        // Listening ended but no match — stay on this line, let user retry or skip
-        if (ref.read(rehearsalStateProvider) == RehearsalState.listeningForMe) {
-          ref.read(rehearsalStateProvider.notifier).state =
-              RehearsalState.ready;
         }
       },
     );
@@ -1206,13 +1205,17 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen> {
   }
 
   void _scrollToCurrentLine() {
-    final idx = ref.read(currentLineIndexProvider);
-    final offset =
-        (idx * 100.0).clamp(0.0, _scrollController.position.maxScrollExtent);
-    _scrollController.animateTo(
-      offset,
-      duration: const Duration(milliseconds: 300),
-      curve: Curves.easeOut,
-    );
+    // Wait for the next frame so the key is attached to the rebuilt widget
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      final ctx = _currentLineKey.currentContext;
+      if (ctx != null) {
+        Scrollable.ensureVisible(
+          ctx,
+          alignment: 0.3, // position current line ~30% from top
+          duration: const Duration(milliseconds: 300),
+          curve: Curves.easeOut,
+        );
+      }
+    });
   }
 }

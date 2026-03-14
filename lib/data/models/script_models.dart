@@ -79,17 +79,36 @@ class ScriptLine {
       );
 }
 
+/// Gender assigned to a character, used for voice pool selection.
+enum CharacterGender { female, male, nonGendered }
+
 /// A character/role in the production.
 class ScriptCharacter {
   final String name;
   final int colorIndex;
   final int lineCount;
+  final CharacterGender gender;
 
   const ScriptCharacter({
     required this.name,
     required this.colorIndex,
     required this.lineCount,
+    this.gender = CharacterGender.female,
   });
+
+  ScriptCharacter copyWith({
+    String? name,
+    int? colorIndex,
+    int? lineCount,
+    CharacterGender? gender,
+  }) {
+    return ScriptCharacter(
+      name: name ?? this.name,
+      colorIndex: colorIndex ?? this.colorIndex,
+      lineCount: lineCount ?? this.lineCount,
+      gender: gender ?? this.gender,
+    );
+  }
 }
 
 /// A scene within the script — the primary unit for rehearsal.

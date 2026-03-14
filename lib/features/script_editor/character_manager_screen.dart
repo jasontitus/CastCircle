@@ -4,13 +4,21 @@ import 'package:go_router/go_router.dart';
 
 import '../../core/theme/app_theme.dart';
 import '../../data/models/script_models.dart';
+import '../../data/services/voice_config_service.dart';
 import '../../providers/production_providers.dart';
 
-class CharacterManagerScreen extends ConsumerWidget {
+class CharacterManagerScreen extends ConsumerStatefulWidget {
   const CharacterManagerScreen({super.key});
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  ConsumerState<CharacterManagerScreen> createState() =>
+      _CharacterManagerScreenState();
+}
+
+class _CharacterManagerScreenState
+    extends ConsumerState<CharacterManagerScreen> {
+  @override
+  Widget build(BuildContext context) {
     final script = ref.watch(currentScriptProvider);
 
     if (script == null) {
@@ -84,39 +92,56 @@ class CharacterManagerScreen extends ConsumerWidget {
                       ),
                     ),
                     title: Text(char.name),
-                    subtitle: Text('${char.lineCount} lines'),
-                    trailing: PopupMenuButton<String>(
-                      onSelected: (action) =>
-                          _handleAction(context, ref, action, char, script),
-                      itemBuilder: (context) => [
-                        const PopupMenuItem(
-                          value: 'rename',
-                          child: ListTile(
-                            leading: Icon(Icons.edit),
-                            title: Text('Rename'),
-                            dense: true,
+                    subtitle: Text(
+                      '${char.lineCount} lines · ${_genderLabel(char.gender)}',
+                    ),
+                    trailing: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        // Gender toggle
+                        IconButton(
+                          icon: Icon(
+                            _genderIcon(char.gender),
+                            color: _genderColor(char.gender),
+                            size: 22,
                           ),
+                          tooltip: 'Change gender',
+                          onPressed: () => _toggleGender(ref, char, script),
                         ),
-                        PopupMenuItem(
-                          value: 'merge',
-                          child: ListTile(
-                            leading: const Icon(Icons.merge_type),
-                            title: Text(
-                                'Merge into another'),
-                            dense: true,
-                          ),
-                        ),
-                        if (char.lineCount <= 1)
-                          const PopupMenuItem(
-                            value: 'delete',
-                            child: ListTile(
-                              leading:
-                                  Icon(Icons.delete_outline, color: Colors.red),
-                              title: Text('Delete',
-                                  style: TextStyle(color: Colors.red)),
-                              dense: true,
+                        PopupMenuButton<String>(
+                          onSelected: (action) =>
+                              _handleAction(context, ref, action, char, script),
+                          itemBuilder: (context) => [
+                            const PopupMenuItem(
+                              value: 'rename',
+                              child: ListTile(
+                                leading: Icon(Icons.edit),
+                                title: Text('Rename'),
+                                dense: true,
+                              ),
                             ),
-                          ),
+                            PopupMenuItem(
+                              value: 'merge',
+                              child: ListTile(
+                                leading: const Icon(Icons.merge_type),
+                                title: Text(
+                                    'Merge into another'),
+                                dense: true,
+                              ),
+                            ),
+                            if (char.lineCount <= 1)
+                              const PopupMenuItem(
+                                value: 'delete',
+                                child: ListTile(
+                                  leading:
+                                      Icon(Icons.delete_outline, color: Colors.red),
+                                  title: Text('Delete',
+                                      style: TextStyle(color: Colors.red)),
+                                  dense: true,
+                                ),
+                              ),
+                          ],
+                        ),
                       ],
                     ),
                     onTap: () => _showCharacterDetail(context, ref, char, script),
@@ -127,6 +152,53 @@ class CharacterManagerScreen extends ConsumerWidget {
           ),
         ],
       ),
+    );
+  }
+
+  static String _genderLabel(CharacterGender gender) => switch (gender) {
+        CharacterGender.female => 'Female',
+        CharacterGender.male => 'Male',
+        CharacterGender.nonGendered => 'Non-gendered',
+      };
+
+  static IconData _genderIcon(CharacterGender gender) => switch (gender) {
+        CharacterGender.female => Icons.female,
+        CharacterGender.male => Icons.male,
+        CharacterGender.nonGendered => Icons.transgender,
+      };
+
+  static Color _genderColor(CharacterGender gender) => switch (gender) {
+        CharacterGender.female => Colors.pink,
+        CharacterGender.male => Colors.blue,
+        CharacterGender.nonGendered => Colors.purple,
+      };
+
+  void _toggleGender(WidgetRef ref, ScriptCharacter char, ParsedScript script) {
+    final newGender = switch (char.gender) {
+      CharacterGender.female => CharacterGender.male,
+      CharacterGender.male => CharacterGender.nonGendered,
+      CharacterGender.nonGendered => CharacterGender.female,
+    };
+
+    // Persist gender
+    final production = ref.read(currentProductionProvider);
+    if (production != null) {
+      VoiceConfigService.instance
+          .setGender(production.id, char.name, newGender);
+    }
+
+    // Update in-memory script
+    final updatedCharacters = script.characters.map((c) {
+      if (c.name == char.name) return c.copyWith(gender: newGender);
+      return c;
+    }).toList();
+
+    ref.read(currentScriptProvider.notifier).state = ParsedScript(
+      title: script.title,
+      lines: script.lines,
+      characters: updatedCharacters,
+      scenes: script.scenes,
+      rawText: script.rawText,
     );
   }
 
@@ -356,7 +428,10 @@ class CharacterManagerScreen extends ConsumerWidget {
 
   void _rebuildScript(
       WidgetRef ref, ParsedScript script, List<ScriptLine> updatedLines) {
-    // Recalculate characters
+    // Recalculate characters, preserving genders from existing script
+    final existingGenders = {
+      for (final c in script.characters) c.name: c.gender,
+    };
     final charCounts = <String, int>{};
     for (final line in updatedLines) {
       if (line.lineType == LineType.dialogue && line.character.isNotEmpty) {
@@ -371,6 +446,7 @@ class CharacterManagerScreen extends ConsumerWidget {
               name: e.key,
               colorIndex: colorIdx++,
               lineCount: e.value,
+              gender: existingGenders[e.key] ?? CharacterGender.female,
             ))
         .toList();
 

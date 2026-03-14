@@ -4,6 +4,7 @@ import '../data/models/production_models.dart';
 import '../data/models/script_models.dart';
 import '../data/repositories/production_repository.dart';
 import '../data/services/script_import_service.dart';
+import '../data/services/voice_config_service.dart';
 import '../main.dart';
 
 /// Repository provider — bridges Drift DB with domain models.
@@ -141,10 +142,16 @@ Future<ParsedScript?> loadPersistedScript(WidgetRef ref, String productionId) as
   }
   final characters = charCounts.entries.toList()
     ..sort((a, b) => b.value.compareTo(a.value));
+
+  // Load saved genders
+  final savedGenders =
+      await VoiceConfigService.instance.getGenders(productionId);
+
   final scriptCharacters = characters.asMap().entries.map((e) => ScriptCharacter(
         name: e.value.key,
         colorIndex: e.key,
         lineCount: e.value.value,
+        gender: savedGenders[e.value.key] ?? CharacterGender.female,
       )).toList();
 
   return ParsedScript(

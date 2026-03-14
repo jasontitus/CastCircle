@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import '../models/script_models.dart';
 import '../models/voice_preset.dart';
 
 /// Service for persisting per-production voice presets and per-character
@@ -94,6 +95,42 @@ class VoiceConfigService {
     await prefs.setString('voice_overrides_$productionId', json);
   }
 
+  // ── Character Gender ──────────────────────────────────────
+
+  /// Get all character genders for a production.
+  Future<Map<String, CharacterGender>> getGenders(
+      String productionId) async {
+    final prefs = await _preferences;
+    final json = prefs.getString('character_genders_$productionId');
+    if (json == null) return {};
+
+    try {
+      final map = jsonDecode(json) as Map<String, dynamic>;
+      return map.map((key, value) => MapEntry(
+            key,
+            switch (value) {
+              'male' => CharacterGender.male,
+              'nonGendered' => CharacterGender.nonGendered,
+              _ => CharacterGender.female,
+            },
+          ));
+    } catch (e) {
+      debugPrint('VoiceConfig: Failed to parse genders: $e');
+      return {};
+    }
+  }
+
+  /// Set the gender for a specific character.
+  Future<void> setGender(
+      String productionId, String characterName, CharacterGender gender) async {
+    final genders = await getGenders(productionId);
+    genders[characterName] = gender;
+    final prefs = await _preferences;
+    final json = jsonEncode(
+        genders.map((key, value) => MapEntry(key, value.name)));
+    await prefs.setString('character_genders_$productionId', json);
+  }
+
   // ── Resolved Voice Assignment ───────────────────────────
 
   /// Resolve the final voice ID for a character, considering preset + overrides.
@@ -112,8 +149,11 @@ class VoiceConfigService {
     // Fall back to preset pool
     final preset = await getPreset(productionId);
     final pool = isFemale ? preset.femaleVoices : preset.maleVoices;
-    if (pool.isEmpty) return 'af_heart';
-    return pool[characterIndex % pool.length];
+    final voices = pool.isNotEmpty
+        ? pool
+        : [...preset.femaleVoices, ...preset.maleVoices];
+    if (voices.isEmpty) return 'af_heart';
+    return voices[characterIndex % voices.length];
   }
 
   /// Resolve the speed for a character (override speed or preset default).

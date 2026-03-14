@@ -120,8 +120,16 @@ class _VoiceConfigScreenState extends ConsumerState<VoiceConfigScreen> {
 
     // Determine what voice this character would get from the preset
     final charIndex = script.characters.indexOf(char);
-    final presetVoice = _currentPreset.femaleVoices.isNotEmpty
-        ? _currentPreset.femaleVoices[charIndex % _currentPreset.femaleVoices.length]
+    final pool = switch (char.gender) {
+      CharacterGender.female => _currentPreset.femaleVoices,
+      CharacterGender.male => _currentPreset.maleVoices,
+      CharacterGender.nonGendered => [
+        ..._currentPreset.femaleVoices,
+        ..._currentPreset.maleVoices,
+      ],
+    };
+    final presetVoice = pool.isNotEmpty
+        ? pool[charIndex % pool.length]
         : 'af_heart';
     final activeVoice = hasOverride ? override.voiceId : presetVoice;
     final activeSpeed =
