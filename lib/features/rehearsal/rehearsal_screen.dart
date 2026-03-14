@@ -115,7 +115,6 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen> {
     });
 
     // Check for per-actor or per-production STT adapter
-    final production = ref.read(currentProductionProvider);
     final myCharacter = ref.read(rehearsalCharacterProvider);
     if (production != null && myCharacter != null) {
       _activeAdapter = _sttAdapt.getBestAdapter(production.id, myCharacter);
@@ -520,7 +519,7 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen> {
           ),
           const SizedBox(width: 8),
           Text(
-            matched ? 'Match! $percentage%' : '$percentage% — try again or tap Next',
+            matched ? 'Match! $percentage%' : '$percentage% — keep going',
             style: TextStyle(
               color: matched ? Colors.green : Colors.orange,
               fontSize: 13,
@@ -718,14 +717,14 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen> {
 
   IconData _mainActionIcon(RehearsalState state, bool isMyLine) {
     if (state == RehearsalState.ready && isMyLine) return Icons.mic;
-    if (state == RehearsalState.listeningForMe) return Icons.check;
+    if (state == RehearsalState.listeningForMe) return Icons.skip_next;
     if (state == RehearsalState.ready) return Icons.play_arrow;
     return Icons.skip_next;
   }
 
   String _mainActionLabel(RehearsalState state, bool isMyLine) {
     if (state == RehearsalState.ready && isMyLine) return 'Speak';
-    if (state == RehearsalState.listeningForMe) return 'Done';
+    if (state == RehearsalState.listeningForMe) return 'Skip';
     if (state == RehearsalState.ready) return 'Play';
     return 'Next';
   }
@@ -993,6 +992,7 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen> {
     _currentAttemptCount++;
 
     await _stt.listen(
+      continuous: true,
       onResult: (recognized) {
         if (!mounted) return;
         final score = SttService.matchScore(line.text, recognized);
@@ -1024,14 +1024,6 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen> {
               _advanceLine(dialogueLines.length);
             }
           });
-        }
-      },
-      onDone: () {
-        if (!mounted) return;
-        // Listening ended but no match — stay on this line, let user retry or skip
-        if (ref.read(rehearsalStateProvider) == RehearsalState.listeningForMe) {
-          ref.read(rehearsalStateProvider.notifier).state =
-              RehearsalState.ready;
         }
       },
     );

@@ -9,6 +9,7 @@ class SttService {
   final SpeechToText _stt = SpeechToText();
   bool _initialized = false;
   bool _isListening = false;
+  bool _continuousMode = false;
 
   bool get isListening => _isListening;
 
@@ -19,10 +20,16 @@ class SttService {
   }
 
   /// Start listening for speech. Calls [onResult] with recognized words.
-  /// Calls [onDone] when listening stops.
+  /// Calls [onDone] when listening stops (only fires when [continuous] is
+  /// false or after [stop] is called).
+  ///
+  /// When [continuous] is true, listening automatically restarts after each
+  /// pause/timeout until [stop] is called explicitly. This keeps the mic
+  /// open so the actor can take their time before speaking.
   Future<void> listen({
     required void Function(String recognizedWords) onResult,
     void Function()? onDone,
+    bool continuous = false,
   }) async {
     if (!_initialized) {
       final ok = await init();
@@ -30,23 +37,42 @@ class SttService {
     }
 
     _isListening = true;
+    _continuousMode = continuous;
+
+    await _startListenSession(onResult: onResult, onDone: onDone);
+  }
+
+  Future<void> _startListenSession({
+    required void Function(String recognizedWords) onResult,
+    void Function()? onDone,
+  }) async {
     await _stt.listen(
       onResult: (result) {
         onResult(result.recognizedWords);
         if (result.finalResult) {
-          _isListening = false;
-          onDone?.call();
+          if (_continuousMode && _isListening) {
+            // Auto-restart after a brief pause so the mic stays open
+            Future.delayed(const Duration(milliseconds: 200), () {
+              if (_isListening) {
+                _startListenSession(onResult: onResult, onDone: onDone);
+              }
+            });
+          } else {
+            _isListening = false;
+            onDone?.call();
+          }
         }
       },
       listenFor: const Duration(seconds: 30),
-      pauseFor: const Duration(seconds: 3),
+      pauseFor: const Duration(seconds: 5),
       listenOptions: SpeechListenOptions(listenMode: ListenMode.dictation),
     );
   }
 
-  /// Stop listening.
+  /// Stop listening. Also exits continuous mode.
   Future<void> stop() async {
     _isListening = false;
+    _continuousMode = false;
     await _stt.stop();
   }
 
