@@ -149,10 +149,14 @@ class _ProductionHubScreenState extends ConsumerState<ProductionHubScreen> {
             }),
             const Divider(),
           ],
-          // ── History ──
+          // ── History & Settings ──
           _drawerItem(Icons.history, 'Rehearsal History', () {
             Navigator.pop(context);
             context.push('/history');
+          }),
+          _drawerItem(Icons.smart_toy, 'AI Models', () {
+            Navigator.pop(context);
+            context.push('/models');
           }),
           _drawerItem(Icons.settings, 'Settings', () {
             Navigator.pop(context);

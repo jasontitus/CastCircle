@@ -2,8 +2,12 @@ import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:flutter/foundation.dart';
+import 'package:just_audio/just_audio.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
+import 'package:sherpa_onnx/sherpa_onnx.dart' as sherpa;
+
+import 'model_manager.dart';
 
 /// Voice profile for a cast member, storing reference audio and embeddings.
 class VoiceProfile {
@@ -45,23 +49,21 @@ class VoiceProfile {
 /// Status of a voice clone generation request.
 enum VoiceCloneStatus {
   idle,
-  extractingEmbedding, // analyzing reference audio
-  generating, // synthesizing speech
+  extractingEmbedding,
+  generating,
   complete,
   error,
 }
 
-/// Service for voice cloning using F5-TTS (ONNX) or cloud fallback.
+/// Service for voice cloning using ZipVoice via sherpa-onnx.
 ///
-/// Architecture:
-/// Phase 1 (MVP): Cloud-based — send reference audio + text to server,
-///   receive synthesized audio back. Cache locally for offline playback.
-/// Phase 2: On-device — download quantized F5-TTS ONNX model (~200MB),
-///   run inference locally using onnxruntime_flutter.
+/// ZipVoice is a 123M parameter flow-matching-based zero-shot TTS model.
+/// Given 3-10 seconds of reference audio + its transcript, it generates
+/// new speech in that voice.
 ///
 /// The service manages:
 /// - Voice profiles (reference audio per character)
-/// - Generating speech for unrecorded lines
+/// - Generating speech for unrecorded lines using ZipVoice
 /// - Caching generated audio alongside real recordings
 class VoiceCloneService {
   VoiceCloneService._();
@@ -70,7 +72,13 @@ class VoiceCloneService {
   VoiceCloneStatus _status = VoiceCloneStatus.idle;
   VoiceCloneStatus get status => _status;
 
+  sherpa.OfflineTts? _zipVoiceTts;
+  bool _initialized = false;
+
   final Map<String, VoiceProfile> _profiles = {};
+
+  /// Whether ZipVoice model is loaded and ready.
+  bool get isReady => _zipVoiceTts != null;
 
   /// Get voice profile for a character, or null if none exists.
   VoiceProfile? getProfile(String character) => _profiles[character];
@@ -78,14 +86,58 @@ class VoiceCloneService {
   /// Get all voice profiles.
   Map<String, VoiceProfile> get profiles => Map.unmodifiable(_profiles);
 
+  /// Initialize ZipVoice model. Call after models are downloaded.
+  Future<bool> init() async {
+    if (_initialized && _zipVoiceTts != null) return true;
+
+    // ZipVoice model paths — these will be provided by ModelManager
+    // once ZipVoice models are added to the download list.
+    // For now, check if the model files exist.
+    final models = ModelManager.instance;
+    final dir = await models.modelsDir;
+    final zipVoiceDir = p.join(dir, 'zipvoice');
+
+    final encoderPath = p.join(zipVoiceDir, 'encoder.onnx');
+    final decoderPath = p.join(zipVoiceDir, 'decoder.onnx');
+    final vocoderPath = p.join(zipVoiceDir, 'vocoder.onnx');
+    final tokensPath = p.join(zipVoiceDir, 'tokens.txt');
+
+    if (!await File(encoderPath).exists()) {
+      debugPrint('ZipVoice: Model not downloaded yet');
+      return false;
+    }
+
+    try {
+      final config = sherpa.OfflineTtsConfig(
+        model: sherpa.OfflineTtsModelConfig(
+          zipvoice: sherpa.OfflineTtsZipVoiceModelConfig(
+            tokens: tokensPath,
+            encoder: encoderPath,
+            decoder: decoderPath,
+            vocoder: vocoderPath,
+            dataDir: zipVoiceDir,
+          ),
+          numThreads: 2,
+          debug: false,
+          provider: 'cpu',
+        ),
+      );
+
+      _zipVoiceTts = sherpa.OfflineTts(config);
+      _initialized = true;
+      debugPrint('ZipVoice loaded: ${_zipVoiceTts!.sampleRate}Hz');
+      return true;
+    } catch (e) {
+      debugPrint('ZipVoice init failed: $e');
+      return false;
+    }
+  }
+
   /// Build a voice profile from existing recordings.
-  /// Call this after a cast member records several lines — their recordings
-  /// become the reference audio for voice cloning.
   Future<VoiceProfile> buildProfileFromRecordings({
     required String character,
     required List<String> recordingPaths,
   }) async {
-    // Filter to existing files
     final validPaths = <String>[];
     for (final path in recordingPaths) {
       if (await File(path).exists()) {
@@ -107,15 +159,13 @@ class VoiceCloneService {
 
   /// Generate speech for a line using a character's voice profile.
   /// Returns the path to the generated audio file, or null if generation
-  /// is not possible (no profile, service unavailable, etc.).
-  ///
-  /// The generated audio is cached locally so it only needs to be
-  /// synthesized once per line.
+  /// is not possible.
   Future<String?> generateLine({
     required String productionId,
     required String character,
     required String lineId,
     required String text,
+    String? referenceText,
   }) async {
     final profile = _profiles[character];
     if (profile == null || profile.referenceAudioPaths.isEmpty) return null;
@@ -124,33 +174,54 @@ class VoiceCloneService {
     final cachePath = await _cachePath(productionId, character, lineId);
     if (await File(cachePath).exists()) return cachePath;
 
+    if (_zipVoiceTts == null) {
+      // ZipVoice not loaded — try to init
+      final loaded = await init();
+      if (!loaded) {
+        debugPrint('ZipVoice: Cannot generate — model not available');
+        return null;
+      }
+    }
+
     _status = VoiceCloneStatus.generating;
 
     try {
-      // Phase 1: Cloud API call
-      // In production, this would POST to a voice cloning API:
-      //   POST /api/voice-clone/generate
-      //   Body: { reference_audio: [base64...], text: "line text" }
-      //   Response: audio/wav binary
-      //
-      // Phase 2: On-device ONNX inference
-      //   Load F5-TTS ONNX model
-      //   Extract speaker embedding from reference audio
-      //   Run inference: (text, embedding) -> audio
-      //
-      // For now, return null to fall back to system TTS
-      debugPrint(
-        'VoiceClone: Would generate "$text" in ${character}\'s voice '
-        '(${profile.referenceAudioPaths.length} reference clips, '
-        'quality: ${(profile.quality * 100).toInt()}%)',
+      // Load reference audio from the first available recording
+      final refPath = profile.referenceAudioPaths.first;
+      final refAudio = await _loadAudioSamples(refPath);
+      if (refAudio == null) {
+        _status = VoiceCloneStatus.error;
+        return null;
+      }
+
+      // Generate with ZipVoice using reference audio
+      final audio = _zipVoiceTts!.generateWithConfig(
+        text: text,
+        config: sherpa.OfflineTtsGenerationConfig(
+          speed: 1.0,
+          referenceAudio: refAudio.samples,
+          referenceSampleRate: refAudio.sampleRate,
+          referenceText: referenceText ?? '',
+        ),
       );
 
-      _status = VoiceCloneStatus.idle;
-      return null; // Fall back to TTS until API is connected
+      if (audio.samples.isEmpty) {
+        _status = VoiceCloneStatus.error;
+        return null;
+      }
+
+      // Write to cache
+      await _writeWav(audio.samples, audio.sampleRate, cachePath);
+      _status = VoiceCloneStatus.complete;
+      return cachePath;
     } catch (e) {
       _status = VoiceCloneStatus.error;
-      debugPrint('VoiceClone error: $e');
+      debugPrint('ZipVoice generation error: $e');
       return null;
+    } finally {
+      if (_status != VoiceCloneStatus.complete) {
+        _status = VoiceCloneStatus.idle;
+      }
     }
   }
 
@@ -158,6 +229,97 @@ class VoiceCloneService {
   bool canClone(String character) {
     final profile = _profiles[character];
     return profile != null && profile.referenceAudioPaths.length >= 3;
+  }
+
+  /// Load audio samples from a WAV/M4A file as Float32List.
+  Future<({Float32List samples, int sampleRate})?> _loadAudioSamples(
+      String path) async {
+    try {
+      final file = File(path);
+      if (!await file.exists()) return null;
+
+      final bytes = await file.readAsBytes();
+
+      // Simple WAV parser — check for RIFF header
+      if (bytes.length > 44 &&
+          bytes[0] == 0x52 && // R
+          bytes[1] == 0x49 && // I
+          bytes[2] == 0x46 && // F
+          bytes[3] == 0x46) { // F
+        final byteData = ByteData.sublistView(bytes);
+        final sampleRate = byteData.getUint32(24, Endian.little);
+        final bitsPerSample = byteData.getUint16(34, Endian.little);
+        final dataStart = 44; // Standard WAV header size
+
+        if (bitsPerSample == 16) {
+          final numSamples = (bytes.length - dataStart) ~/ 2;
+          final samples = Float32List(numSamples);
+          for (var i = 0; i < numSamples; i++) {
+            final int16 = byteData.getInt16(dataStart + i * 2, Endian.little);
+            samples[i] = int16 / 32768.0;
+          }
+          return (samples: samples, sampleRate: sampleRate);
+        }
+      }
+
+      // For non-WAV formats (m4a, etc.), use AudioPlayer to decode
+      // This is a simplified approach — a proper implementation would
+      // use a dedicated audio decoder
+      debugPrint('VoiceClone: Non-WAV reference audio at $path');
+      return null;
+    } catch (e) {
+      debugPrint('VoiceClone: Failed to load reference audio: $e');
+      return null;
+    }
+  }
+
+  /// Write Float32 PCM samples to a WAV file.
+  Future<void> _writeWav(
+      Float32List samples, int sampleRate, String path) async {
+    final numSamples = samples.length;
+    final dataSize = numSamples * 2;
+    final fileSize = 36 + dataSize;
+
+    final buffer = ByteData(44 + dataSize);
+
+    // RIFF header
+    buffer.setUint8(0, 0x52);
+    buffer.setUint8(1, 0x49);
+    buffer.setUint8(2, 0x46);
+    buffer.setUint8(3, 0x46);
+    buffer.setUint32(4, fileSize, Endian.little);
+    buffer.setUint8(8, 0x57);
+    buffer.setUint8(9, 0x41);
+    buffer.setUint8(10, 0x56);
+    buffer.setUint8(11, 0x45);
+
+    // fmt
+    buffer.setUint8(12, 0x66);
+    buffer.setUint8(13, 0x6D);
+    buffer.setUint8(14, 0x74);
+    buffer.setUint8(15, 0x20);
+    buffer.setUint32(16, 16, Endian.little);
+    buffer.setUint16(20, 1, Endian.little);
+    buffer.setUint16(22, 1, Endian.little);
+    buffer.setUint32(24, sampleRate, Endian.little);
+    buffer.setUint32(28, sampleRate * 2, Endian.little);
+    buffer.setUint16(32, 2, Endian.little);
+    buffer.setUint16(34, 16, Endian.little);
+
+    // data
+    buffer.setUint8(36, 0x64);
+    buffer.setUint8(37, 0x61);
+    buffer.setUint8(38, 0x74);
+    buffer.setUint8(39, 0x61);
+    buffer.setUint32(40, dataSize, Endian.little);
+
+    for (var i = 0; i < numSamples; i++) {
+      final clamped = samples[i].clamp(-1.0, 1.0);
+      buffer.setInt16(44 + i * 2, (clamped * 32767).round(), Endian.little);
+    }
+
+    await File(path).parent.create(recursive: true);
+    await File(path).writeAsBytes(buffer.buffer.asUint8List());
   }
 
   /// Get the local cache path for a generated line.
@@ -179,5 +341,10 @@ class VoiceCloneService {
     if (cacheDir.existsSync()) {
       await cacheDir.delete(recursive: true);
     }
+  }
+
+  void dispose() {
+    _zipVoiceTts?.free();
+    _zipVoiceTts = null;
   }
 }

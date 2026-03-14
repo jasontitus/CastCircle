@@ -1,149 +1,262 @@
+import 'dart:io';
+import 'dart:typed_data';
+
 import 'package:flutter/foundation.dart';
 import 'package:flutter_tts/flutter_tts.dart';
+import 'package:just_audio/just_audio.dart';
+import 'package:path_provider/path_provider.dart';
+import 'package:path/path.dart' as p;
+import 'package:sherpa_onnx/sherpa_onnx.dart' as sherpa;
 
-/// TTS engine type used for fallback speech synthesis.
+import 'model_manager.dart';
+
+/// TTS engine type.
 enum TtsEngine {
-  /// Kokoro on-device neural TTS (default, higher quality).
+  /// Kokoro on-device neural TTS via sherpa-onnx (default).
   kokoro,
 
-  /// System TTS (disabled by default — only used if Kokoro unavailable).
+  /// System TTS (fallback if Kokoro model not downloaded).
   system,
 }
 
-/// Text-to-speech service.
+/// Text-to-speech service using Kokoro via sherpa-onnx.
 ///
 /// Priority chain for playing other characters' lines:
 ///   1. Real recording by primary actor
 ///   2. Real recording by understudy (if fallback enabled)
-///   3. Voice-cloned audio (if voice cloning enabled)
-///   4. Kokoro on-device TTS (default fallback)
-///   5. System TTS (last resort — only if device can't run Kokoro)
+///   3. Voice-cloned audio (ZipVoice)
+///   4. Kokoro on-device TTS (this service)
+///   5. System TTS (last resort — only if Kokoro model not available)
 class TtsService {
   TtsService._();
   static final instance = TtsService._();
 
   final FlutterTts _systemTts = FlutterTts();
+  final AudioPlayer _audioPlayer = AudioPlayer();
   bool _initialized = false;
-  TtsEngine _activeEngine = TtsEngine.kokoro;
+  TtsEngine _activeEngine = TtsEngine.system;
+  VoidCallback? _completionHandler;
 
-  // Map character names to voice indices for variety
-  final Map<String, Map<String, String>> _characterVoices = {};
-  List<dynamic> _availableVoices = [];
+  // Kokoro
+  sherpa.OfflineTts? _kokoroTts;
+  int _kokoroSampleRate = 24000;
 
-  // Kokoro model state
-  bool _kokoroLoaded = false;
+  // Character voice assignments (speaker IDs for Kokoro, voice maps for system)
+  final Map<String, int> _characterSpeakerIds = {};
+  final Map<String, Map<String, String>> _characterSystemVoices = {};
+  List<dynamic> _availableSystemVoices = [];
 
   TtsEngine get activeEngine => _activeEngine;
+  bool get isKokoroReady => _kokoroTts != null;
 
   Future<void> init() async {
     if (_initialized) return;
 
-    // Try to load Kokoro first
-    _kokoroLoaded = await _initKokoro();
-    if (_kokoroLoaded) {
+    // Try to load Kokoro
+    final kokoroLoaded = await _initKokoro();
+    if (kokoroLoaded) {
       _activeEngine = TtsEngine.kokoro;
-      debugPrint('TTS: Using Kokoro on-device neural TTS');
+      debugPrint('TTS: Kokoro neural TTS ready (sherpa-onnx)');
     } else {
-      // Kokoro not yet available — still use it as placeholder
-      // so that when the model is integrated, it becomes the default.
-      // For now the speak() method will use the Kokoro API path
-      // which falls through to a no-op until the ONNX model is loaded.
-      _activeEngine = TtsEngine.kokoro;
-      debugPrint('TTS: Kokoro model not yet loaded, will use Kokoro API stub');
+      _activeEngine = TtsEngine.system;
+      debugPrint('TTS: Kokoro not available, using system TTS');
     }
 
-    // Initialize system TTS as internal implementation detail only
+    // Initialize system TTS as fallback
     await _systemTts.setLanguage('en-US');
     await _systemTts.setSpeechRate(0.5);
     await _systemTts.setVolume(1.0);
     await _systemTts.setPitch(1.0);
+    _availableSystemVoices = await _systemTts.getVoices as List<dynamic>;
 
-    _availableVoices = await _systemTts.getVoices as List<dynamic>;
+    _systemTts.setCompletionHandler(() {
+      _completionHandler?.call();
+    });
+
+    _audioPlayer.playerStateStream.listen((state) {
+      if (state.processingState == ProcessingState.completed) {
+        _completionHandler?.call();
+      }
+    });
+
     _initialized = true;
   }
 
-  /// Initialize Kokoro on-device TTS model.
-  /// Returns true if the model is loaded and ready.
+  /// Initialize Kokoro via sherpa-onnx.
   Future<bool> _initKokoro() async {
-    // Phase 6: Load Kokoro ONNX model from assets/downloaded weights.
-    // For now, return false — the Kokoro integration will be wired in
-    // when the ONNX runtime package is added.
-    //
-    // When ready:
-    //   final modelPath = await _getKokoroModelPath();
-    //   if (modelPath == null) return false;
-    //   _kokoroSession = await OrtSession.create(modelPath);
-    //   return true;
-    return false;
-  }
+    final paths = await ModelManager.instance.getKokoroPaths();
+    if (paths == null) return false;
 
-  /// Assign a distinct voice to a character for variety during rehearsal.
-  void assignVoice(String character, int characterIndex) {
-    if (_availableVoices.isEmpty) return;
+    try {
+      final config = sherpa.OfflineTtsConfig(
+        model: sherpa.OfflineTtsModelConfig(
+          kokoro: sherpa.OfflineTtsKokoroModelConfig(
+            model: paths.model,
+            voices: paths.voices,
+            tokens: paths.tokens,
+            dataDir: paths.dataDir,
+          ),
+          numThreads: 2,
+          debug: false,
+          provider: 'cpu',
+        ),
+      );
 
-    // Cycle through available voices by index
-    final voiceIdx = characterIndex % _availableVoices.length;
-    final voice = _availableVoices[voiceIdx];
-    if (voice is Map) {
-      _characterVoices[character] = Map<String, String>.from(voice);
+      _kokoroTts = sherpa.OfflineTts(config);
+      _kokoroSampleRate = _kokoroTts!.sampleRate;
+      debugPrint('Kokoro loaded: ${_kokoroTts!.numSpeakers} speakers, ${_kokoroSampleRate}Hz');
+      return true;
+    } catch (e) {
+      debugPrint('Kokoro init failed: $e');
+      return false;
     }
   }
 
-  /// Speak text for a character using Kokoro TTS.
-  ///
-  /// This is the final fallback in the audio chain — never uses system TTS.
-  /// Until Kokoro ONNX integration is complete, this calls the Kokoro cloud
-  /// endpoint (stub) to synthesize speech.
+  /// Re-attempt Kokoro init (e.g. after model download).
+  Future<bool> reloadKokoro() async {
+    final loaded = await _initKokoro();
+    if (loaded) _activeEngine = TtsEngine.kokoro;
+    return loaded;
+  }
+
+  /// Assign a distinct voice to a character.
+  void assignVoice(String character, int characterIndex) {
+    if (_kokoroTts != null && _kokoroTts!.numSpeakers > 0) {
+      _characterSpeakerIds[character] =
+          characterIndex % _kokoroTts!.numSpeakers;
+    }
+
+    if (_availableSystemVoices.isNotEmpty) {
+      final voiceIdx = characterIndex % _availableSystemVoices.length;
+      final voice = _availableSystemVoices[voiceIdx];
+      if (voice is Map) {
+        _characterSystemVoices[character] = Map<String, String>.from(voice);
+      }
+    }
+  }
+
+  /// Speak text for a character.
   Future<void> speak(String text, {String? character}) async {
     if (!_initialized) await init();
 
-    // Always use Kokoro path
-    final spoke = await _speakWithKokoro(text, character: character);
-    if (spoke) return;
+    if (_activeEngine == TtsEngine.kokoro && _kokoroTts != null) {
+      final spoke = await _speakWithKokoro(text, character: character);
+      if (spoke) return;
+    }
 
-    // Kokoro not available on this device — fall back to system TTS
-    // as last resort. This only happens if the device can't run Kokoro.
-    if (character != null && _characterVoices.containsKey(character)) {
-      final voice = _characterVoices[character]!;
-      await _systemTts.setVoice(voice);
+    // Fallback to system TTS
+    if (character != null && _characterSystemVoices.containsKey(character)) {
+      await _systemTts.setVoice(_characterSystemVoices[character]!);
     }
     await _systemTts.speak(text);
   }
 
-  /// Attempt to speak using Kokoro on-device or cloud TTS.
-  /// Returns true if successful.
+  /// Speak using Kokoro via sherpa-onnx.
   Future<bool> _speakWithKokoro(String text, {String? character}) async {
-    if (!_kokoroLoaded) {
-      // Phase 6: Cloud Kokoro API fallback
-      // POST /api/kokoro/synthesize { text, voice_id }
-      // For now, return false to fall through to system TTS bridge.
-      debugPrint(
-        'Kokoro: Would synthesize "${text.length > 40 ? '${text.substring(0, 37)}...' : text}" '
-        'for ${character ?? "default"} voice',
+    if (_kokoroTts == null) return false;
+
+    try {
+      final sid = character != null
+          ? (_characterSpeakerIds[character] ?? 0)
+          : 0;
+
+      final audio = _kokoroTts!.generate(
+        text: text,
+        sid: sid,
+        speed: 1.0,
       );
+
+      if (audio.samples.isEmpty) {
+        debugPrint('Kokoro generated empty audio for: "${text.substring(0, text.length.clamp(0, 40))}..."');
+        return false;
+      }
+
+      // Write to temporary WAV file and play
+      final wavPath = await _writeWav(audio.samples, audio.sampleRate);
+      await _audioPlayer.setFilePath(wavPath);
+      await _audioPlayer.play();
+      return true;
+    } catch (e) {
+      debugPrint('Kokoro speak failed: $e');
       return false;
     }
+  }
 
-    // On-device Kokoro inference would happen here
-    // _kokoroSession.run(text, voiceEmbedding) -> audio bytes
-    return false;
+  /// Write Float32 PCM samples to a WAV file.
+  Future<String> _writeWav(Float32List samples, int sampleRate) async {
+    final tmpDir = await getTemporaryDirectory();
+    final wavPath = p.join(tmpDir.path, 'tts_output.wav');
+
+    final numSamples = samples.length;
+    final byteRate = sampleRate * 2; // 16-bit mono
+    final dataSize = numSamples * 2;
+    final fileSize = 36 + dataSize;
+
+    final buffer = ByteData(44 + dataSize);
+
+    // RIFF header
+    buffer.setUint8(0, 0x52); // R
+    buffer.setUint8(1, 0x49); // I
+    buffer.setUint8(2, 0x46); // F
+    buffer.setUint8(3, 0x46); // F
+    buffer.setUint32(4, fileSize, Endian.little);
+    buffer.setUint8(8, 0x57);  // W
+    buffer.setUint8(9, 0x41);  // A
+    buffer.setUint8(10, 0x56); // V
+    buffer.setUint8(11, 0x45); // E
+
+    // fmt subchunk
+    buffer.setUint8(12, 0x66); // f
+    buffer.setUint8(13, 0x6D); // m
+    buffer.setUint8(14, 0x74); // t
+    buffer.setUint8(15, 0x20); // (space)
+    buffer.setUint32(16, 16, Endian.little);    // subchunk size
+    buffer.setUint16(20, 1, Endian.little);     // PCM
+    buffer.setUint16(22, 1, Endian.little);     // mono
+    buffer.setUint32(24, sampleRate, Endian.little);
+    buffer.setUint32(28, byteRate, Endian.little);
+    buffer.setUint16(32, 2, Endian.little);     // block align
+    buffer.setUint16(34, 16, Endian.little);    // bits per sample
+
+    // data subchunk
+    buffer.setUint8(36, 0x64); // d
+    buffer.setUint8(37, 0x61); // a
+    buffer.setUint8(38, 0x74); // t
+    buffer.setUint8(39, 0x61); // a
+    buffer.setUint32(40, dataSize, Endian.little);
+
+    // Convert float32 [-1,1] to int16
+    for (var i = 0; i < numSamples; i++) {
+      final clamped = samples[i].clamp(-1.0, 1.0);
+      final int16 = (clamped * 32767).round();
+      buffer.setInt16(44 + i * 2, int16, Endian.little);
+    }
+
+    await File(wavPath).writeAsBytes(buffer.buffer.asUint8List());
+    return wavPath;
   }
 
   /// Stop current speech.
   Future<void> stop() async {
     await _systemTts.stop();
-    // Also stop Kokoro playback when integrated
+    await _audioPlayer.stop();
   }
 
-  /// Set playback speed (0.0 to 1.0, where 0.5 is normal).
+  /// Set playback speed.
   Future<void> setRate(double rate) async {
     await _systemTts.setSpeechRate(rate);
-    // Kokoro speed will be set via inference parameter
+    // Kokoro speed is set per-generate call
   }
 
   /// Listen for TTS completion events.
   void setCompletionHandler(Function handler) {
-    _systemTts.setCompletionHandler(() => handler());
-    // Kokoro completion will be handled via audio player callback
+    _completionHandler = () => handler();
+  }
+
+  /// Clean up resources.
+  void dispose() {
+    _kokoroTts?.free();
+    _kokoroTts = null;
+    _audioPlayer.dispose();
   }
 }

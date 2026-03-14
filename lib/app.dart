@@ -18,6 +18,7 @@ import 'features/rehearsal/scene_selector_screen.dart';
 import 'features/rehearsal/rehearsal_history_screen.dart';
 import 'features/rehearsal/rehearsal_screen.dart';
 import 'features/settings/settings_screen.dart';
+import 'features/settings/model_download_screen.dart';
 
 /// Whether the user has passed the auth gate (signed in or skipped).
 final authGatePassedProvider = StateProvider<bool>((ref) => false);
@@ -96,6 +97,10 @@ GoRouter _buildRouter(Ref ref) => GoRouter(
     GoRoute(
       path: '/history',
       builder: (context, state) => const RehearsalHistoryScreen(),
+    ),
+    GoRoute(
+      path: '/models',
+      builder: (context, state) => const ModelDownloadScreen(),
     ),
   ],
 );
