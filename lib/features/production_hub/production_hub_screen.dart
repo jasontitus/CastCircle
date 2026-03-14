@@ -4,6 +4,7 @@ import 'package:go_router/go_router.dart';
 
 import '../../core/theme/app_theme.dart';
 import '../../data/models/script_models.dart';
+import '../../data/services/model_manager.dart';
 import '../../data/services/supabase_service.dart';
 import '../../providers/production_providers.dart';
 import '../rehearsal/rehearsal_history_screen.dart';
@@ -18,6 +19,62 @@ class ProductionHubScreen extends ConsumerStatefulWidget {
 }
 
 class _ProductionHubScreenState extends ConsumerState<ProductionHubScreen> {
+  bool _checkedModels = false;
+  bool _modelsReady = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _checkModels();
+  }
+
+  Future<void> _checkModels() async {
+    final ready = await ModelManager.instance.isAllReady();
+    if (mounted) {
+      setState(() {
+        _checkedModels = true;
+        _modelsReady = ready;
+      });
+
+      // Prompt to download if models are missing and script is loaded
+      if (!ready) {
+        Future.delayed(const Duration(milliseconds: 500), () {
+          if (mounted && !_modelsReady) _showModelPrompt();
+        });
+      }
+    }
+  }
+
+  void _showModelPrompt() {
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        icon: const Icon(Icons.smart_toy, size: 48),
+        title: const Text('Download AI Voices'),
+        content: const Text(
+          'LineGuide uses on-device AI for natural-sounding voices during '
+          'rehearsal. Download the voice models now (~340 MB, one-time) '
+          'for the best experience.\n\n'
+          'Without them, rehearsal audio won\'t be available.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Later'),
+          ),
+          FilledButton.icon(
+            onPressed: () {
+              Navigator.pop(ctx);
+              context.push('/models');
+            },
+            icon: const Icon(Icons.download),
+            label: const Text('Download Now'),
+          ),
+        ],
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final production = ref.watch(currentProductionProvider);
@@ -38,10 +95,13 @@ class _ProductionHubScreenState extends ConsumerState<ProductionHubScreen> {
     return Scaffold(
       appBar: AppBar(
         title: Text(production.title),
-        leading: IconButton(
-          icon: const Icon(Icons.arrow_back),
-          onPressed: () => context.go('/'),
-        ),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.close),
+            tooltip: 'Back to productions',
+            onPressed: () => context.go('/'),
+          ),
+        ],
       ),
       drawer: _buildDrawer(context, hasScript),
       body: hasScript
@@ -250,6 +310,45 @@ class _ProductionHubScreenState extends ConsumerState<ProductionHubScreen> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
+          // ── Model download banner ──
+          if (_checkedModels && !_modelsReady)
+            Card(
+              color: theme.colorScheme.tertiaryContainer,
+              margin: const EdgeInsets.only(bottom: 16),
+              child: InkWell(
+                onTap: () => context.push('/models'),
+                borderRadius: BorderRadius.circular(12),
+                child: Padding(
+                  padding: const EdgeInsets.all(16),
+                  child: Row(
+                    children: [
+                      Icon(Icons.download,
+                          color: theme.colorScheme.onTertiaryContainer),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text('AI voices not downloaded',
+                                style: theme.textTheme.titleSmall?.copyWith(
+                                    color: theme.colorScheme
+                                        .onTertiaryContainer)),
+                            Text(
+                                'Tap to download for natural-sounding rehearsal',
+                                style: theme.textTheme.bodySmall?.copyWith(
+                                    color: theme.colorScheme
+                                        .onTertiaryContainer
+                                        .withValues(alpha: 0.7))),
+                          ],
+                        ),
+                      ),
+                      Icon(Icons.chevron_right,
+                          color: theme.colorScheme.onTertiaryContainer),
+                    ],
+                  ),
+                ),
+              ),
+            ),
           // ── Script summary card ──
           Card(
             child: Padding(

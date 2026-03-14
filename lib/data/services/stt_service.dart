@@ -9,20 +9,26 @@ import 'package:path/path.dart' as p;
 import 'package:sherpa_onnx/sherpa_onnx.dart' as sherpa;
 import 'package:speech_to_text/speech_to_text.dart';
 
+import 'mlx_stt_channel.dart';
 import 'model_manager.dart';
 
 /// STT engine type.
 enum SttEngine {
-  /// Whisper on-device via sherpa-onnx (default).
+  /// MLX Parakeet on-device via mlx-audio-swift (preferred on iOS).
+  mlx,
+
+  /// Whisper on-device via sherpa-onnx (fallback).
   whisper,
 
-  /// System STT (fallback if Whisper model not downloaded).
+  /// System STT (last resort).
   system,
 }
 
-/// Speech-to-text service using Whisper via sherpa-onnx.
+/// Speech-to-text service with tiered engine priority:
 ///
-/// Falls back to system STT if Whisper model is not downloaded.
+///   1. MLX Parakeet (best quality, supports LoRA fine-tuning)
+///   2. sherpa-onnx Whisper (cross-platform fallback)
+///   3. System STT (last resort, lazy-initialized)
 class SttService {
   SttService._();
   static final instance = SttService._();
@@ -31,11 +37,14 @@ class SttService {
   final SpeechToText _systemStt = SpeechToText();
   bool _systemInitialized = false;
 
+  // MLX Parakeet via platform channel
+  final MlxSttChannel _mlxChannel = MlxSttChannel.instance;
+
   // Whisper via sherpa-onnx
   sherpa.OfflineRecognizer? _whisperRecognizer;
   SttEngine _activeEngine = SttEngine.system;
 
-  // Recording for Whisper
+  // Recording
   final AudioRecorder _recorder = AudioRecorder();
   bool _isListening = false;
   Timer? _listenTimer;
@@ -43,9 +52,22 @@ class SttService {
   SttEngine get activeEngine => _activeEngine;
   bool get isListening => _isListening;
   bool get isWhisperReady => _whisperRecognizer != null;
+  bool get isMlxReady => _mlxChannel.isInitialized;
+
+  /// Check if any on-device STT is available (MLX or Whisper).
+  /// Does NOT eagerly init system STT.
+  bool get isAvailable => _mlxChannel.isInitialized || _whisperRecognizer != null;
 
   Future<bool> init() async {
-    // Try Whisper first
+    // 1. Try MLX Parakeet first (iOS only, best quality)
+    final mlxLoaded = await _initMlx();
+    if (mlxLoaded) {
+      _activeEngine = SttEngine.mlx;
+      debugPrint('STT: MLX Parakeet ready');
+      return true;
+    }
+
+    // 2. Try sherpa-onnx Whisper
     final whisperLoaded = await _initWhisper();
     if (whisperLoaded) {
       _activeEngine = SttEngine.whisper;
@@ -53,11 +75,17 @@ class SttService {
       return true;
     }
 
-    // Fallback to system STT
+    // 3. Mark system as fallback but do NOT initialize it yet.
     _activeEngine = SttEngine.system;
-    _systemInitialized = await _systemStt.initialize();
-    debugPrint('STT: Using system STT (Whisper not available)');
-    return _systemInitialized;
+    debugPrint('STT: No on-device models, system STT will init on first use');
+    return false;
+  }
+
+  Future<bool> _initMlx() async {
+    final modelPath = await ModelManager.instance.getMlxSttModelPath();
+    if (modelPath == null) return false;
+
+    return _mlxChannel.initialize(modelPath);
   }
 
   Future<bool> _initWhisper() async {
@@ -94,11 +122,18 @@ class SttService {
     }
   }
 
-  /// Re-attempt Whisper init (e.g. after model download).
+  /// Re-attempt model init (e.g. after model download).
   Future<bool> reloadWhisper() async {
+    // Try MLX first
+    final mlxLoaded = await _initMlx();
+    if (mlxLoaded) {
+      _activeEngine = SttEngine.mlx;
+      return true;
+    }
+    // Fall back to Whisper
     final loaded = await _initWhisper();
     if (loaded) _activeEngine = SttEngine.whisper;
-    return loaded;
+    return loaded || mlxLoaded;
   }
 
   /// Start listening for speech.
@@ -106,8 +141,17 @@ class SttService {
     required void Function(String recognizedWords) onResult,
     void Function()? onDone,
     Duration listenFor = const Duration(seconds: 30),
+    List<String>? vocabularyHints,
   }) async {
-    if (_activeEngine == SttEngine.whisper && _whisperRecognizer != null) {
+    if (_activeEngine == SttEngine.mlx && _mlxChannel.isInitialized) {
+      await _listenWithMlx(
+        onResult: onResult,
+        onDone: onDone,
+        listenFor: listenFor,
+        vocabularyHints: vocabularyHints,
+      );
+    } else if (_activeEngine == SttEngine.whisper &&
+        _whisperRecognizer != null) {
       await _listenWithWhisper(
         onResult: onResult,
         onDone: onDone,
@@ -121,6 +165,81 @@ class SttService {
     }
   }
 
+  // ── MLX Parakeet ──────────────────────────────────────
+
+  Future<void> _listenWithMlx({
+    required void Function(String recognizedWords) onResult,
+    void Function()? onDone,
+    required Duration listenFor,
+    List<String>? vocabularyHints,
+  }) async {
+    _isListening = true;
+
+    final tmpDir = await getTemporaryDirectory();
+    final wavPath = p.join(tmpDir.path, 'stt_mlx_input.wav');
+
+    final hasPermission = await _recorder.hasPermission();
+    if (!hasPermission) {
+      _isListening = false;
+      onDone?.call();
+      return;
+    }
+
+    await _recorder.start(
+      const RecordConfig(
+        encoder: AudioEncoder.wav,
+        sampleRate: 16000,
+        numChannels: 1,
+        bitRate: 256000,
+      ),
+      path: wavPath,
+    );
+
+    _listenTimer = Timer(listenFor, () async {
+      await _stopMlxRecording(wavPath, onResult, onDone, vocabularyHints);
+    });
+  }
+
+  Future<void> _stopMlxRecording(
+    String wavPath,
+    void Function(String recognizedWords) onResult,
+    void Function()? onDone,
+    List<String>? vocabularyHints,
+  ) async {
+    _listenTimer?.cancel();
+    _listenTimer = null;
+
+    if (!_isListening) return;
+    _isListening = false;
+
+    await _recorder.stop();
+
+    try {
+      final audioFile = File(wavPath);
+      if (!await audioFile.exists()) {
+        onDone?.call();
+        return;
+      }
+
+      final text = await _mlxChannel.transcribe(
+        wavPath,
+        vocabularyHints: vocabularyHints,
+      );
+
+      if (text != null && text.trim().isNotEmpty) {
+        onResult(text.trim());
+      }
+
+      await audioFile.delete().catchError((_) => audioFile);
+    } catch (e) {
+      debugPrint('MLX transcription failed: $e');
+    }
+
+    onDone?.call();
+  }
+
+  // ── Whisper (sherpa-onnx) ─────────────────────────────
+
   Future<void> _listenWithWhisper({
     required void Function(String recognizedWords) onResult,
     void Function()? onDone,
@@ -128,7 +247,6 @@ class SttService {
   }) async {
     _isListening = true;
 
-    // Record audio to a temporary WAV file
     final tmpDir = await getTemporaryDirectory();
     final wavPath = p.join(tmpDir.path, 'stt_input.wav');
 
@@ -149,7 +267,6 @@ class SttService {
       path: wavPath,
     );
 
-    // Stop after timeout
     _listenTimer = Timer(listenFor, () async {
       await _stopWhisperRecording(wavPath, onResult, onDone);
     });
@@ -172,7 +289,6 @@ class SttService {
       return;
     }
 
-    // Recognize with Whisper
     try {
       final audioFile = File(wavPath);
       if (!await audioFile.exists()) {
@@ -198,7 +314,6 @@ class SttService {
         onResult(text);
       }
 
-      // Clean up
       await audioFile.delete().catchError((_) => audioFile);
     } catch (e) {
       debugPrint('Whisper recognition failed: $e');
@@ -207,13 +322,20 @@ class SttService {
     onDone?.call();
   }
 
+  // ── System STT ────────────────────────────────────────
+
   Future<void> _listenWithSystem({
     required void Function(String recognizedWords) onResult,
     void Function()? onDone,
   }) async {
+    // Lazy-init system STT only when actually needed
     if (!_systemInitialized) {
       _systemInitialized = await _systemStt.initialize();
-      if (!_systemInitialized) return;
+      if (!_systemInitialized) {
+        debugPrint('STT: System STT unavailable');
+        onDone?.call();
+        return;
+      }
     }
 
     _isListening = true;
@@ -231,18 +353,16 @@ class SttService {
     );
   }
 
+  // ── Stop / Transcribe ─────────────────────────────────
+
   /// Stop listening.
   Future<void> stop() async {
     _listenTimer?.cancel();
     _listenTimer = null;
 
-    if (_activeEngine == SttEngine.whisper) {
+    if (_activeEngine == SttEngine.mlx || _activeEngine == SttEngine.whisper) {
       _isListening = false;
-      // Force stop recording and transcribe what we have
-      final tmpDir = await getTemporaryDirectory();
-      final wavPath = p.join(tmpDir.path, 'stt_input.wav');
       await _recorder.stop();
-      _isListening = false;
     } else {
       _isListening = false;
       await _systemStt.stop();
@@ -250,7 +370,15 @@ class SttService {
   }
 
   /// Transcribe a pre-recorded audio file.
-  Future<String?> transcribeFile(String audioPath) async {
+  Future<String?> transcribeFile(String audioPath,
+      {List<String>? vocabularyHints}) async {
+    // Try MLX first
+    if (_mlxChannel.isInitialized) {
+      return _mlxChannel.transcribe(audioPath,
+          vocabularyHints: vocabularyHints);
+    }
+
+    // Fall back to Whisper
     if (_whisperRecognizer == null) return null;
 
     try {
@@ -271,12 +399,7 @@ class SttService {
     }
   }
 
-  /// Check if speech recognition is available.
-  Future<bool> get isAvailable async {
-    if (_whisperRecognizer != null) return true;
-    if (!_systemInitialized) await init();
-    return _systemInitialized;
-  }
+  // ── Match Score ───────────────────────────────────────
 
   /// Simple fuzzy match: what percentage of expected words were spoken.
   static double matchScore(String expected, String spoken) {
@@ -295,17 +418,15 @@ class SttService {
   }
 
   static String _normalize(String text) {
-    return text
-        .toLowerCase()
-        .replaceAll(RegExp(r'[^\w\s]'), '')
-        .trim();
+    return text.toLowerCase().replaceAll(RegExp(r'[^\w\s]'), '').trim();
   }
+
+  // ── Helpers ───────────────────────────────────────────
 
   /// Extract Float32 samples from WAV bytes.
   Float32List? _wavToFloat32(Uint8List bytes) {
     if (bytes.length < 44) return null;
 
-    // Verify RIFF header
     if (bytes[0] != 0x52 || bytes[1] != 0x49 ||
         bytes[2] != 0x46 || bytes[3] != 0x46) {
       return null;
@@ -331,6 +452,7 @@ class SttService {
   void dispose() {
     _whisperRecognizer?.free();
     _whisperRecognizer = null;
+    _mlxChannel.dispose();
     _listenTimer?.cancel();
     _recorder.dispose();
   }

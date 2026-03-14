@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -17,13 +18,13 @@ class _ModelDownloadScreenState extends ConsumerState<ModelDownloadScreen> {
   final _manager = ModelManager.instance;
 
   bool _downloading = false;
-  String _currentModel = '';
-  String _currentFile = '';
-  double _progress = 0;
   String? _error;
 
+  // Per-model progress for parallel downloads
+  final Map<String, double> _modelProgress = {};
+
   bool _kokoroReady = false;
-  bool _whisperReady = false;
+  bool _parakeetReady = false;
   bool _vadReady = false;
 
   @override
@@ -35,13 +36,13 @@ class _ModelDownloadScreenState extends ConsumerState<ModelDownloadScreen> {
   Future<void> _checkStatus() async {
     final results = await Future.wait([
       _manager.isKokoroReady(),
-      _manager.isWhisperReady(),
+      _manager.isParakeetReady(),
       _manager.isVadReady(),
     ]);
     if (mounted) {
       setState(() {
         _kokoroReady = results[0];
-        _whisperReady = results[1];
+        _parakeetReady = results[1];
         _vadReady = results[2];
       });
     }
@@ -58,17 +59,23 @@ class _ModelDownloadScreenState extends ConsumerState<ModelDownloadScreen> {
         onProgress: (model, file, progress) {
           if (mounted) {
             setState(() {
-              _currentModel = model;
-              _currentFile = file;
-              _progress = progress;
+              _modelProgress[model] = progress;
             });
           }
         },
       );
 
-      // Reload services with new models
-      await TtsService.instance.reloadKokoro();
-      await SttService.instance.reloadWhisper();
+      // Reload services with new models (may fail if model files are large)
+      try {
+        await TtsService.instance.reloadKokoro();
+      } catch (e) {
+        debugPrint('Kokoro reload failed (will retry on next app launch): $e');
+      }
+      try {
+        await SttService.instance.reloadWhisper();
+      } catch (e) {
+        debugPrint('STT reload failed (will retry on next app launch): $e');
+      }
 
       await _checkStatus();
     } catch (e) {
@@ -89,7 +96,7 @@ class _ModelDownloadScreenState extends ConsumerState<ModelDownloadScreen> {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final allReady = _kokoroReady && _whisperReady && _vadReady;
+    final allReady = _kokoroReady && _parakeetReady && _vadReady;
 
     return Scaffold(
       appBar: AppBar(title: const Text('AI Models')),
@@ -119,10 +126,10 @@ class _ModelDownloadScreenState extends ConsumerState<ModelDownloadScreen> {
           ),
           _modelCard(
             context,
-            title: 'Whisper STT',
-            subtitle: 'Speech recognition for line matching',
-            size: '~244 MB',
-            ready: _whisperReady,
+            title: 'Parakeet STT',
+            subtitle: 'On-device speech recognition (MLX)',
+            size: '~120 MB',
+            ready: _parakeetReady,
             icon: Icons.hearing,
           ),
           _modelCard(
@@ -141,15 +148,34 @@ class _ModelDownloadScreenState extends ConsumerState<ModelDownloadScreen> {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text('Downloading $_currentModel',
+                    Text('Downloading models...',
                         style: theme.textTheme.titleSmall),
-                    const SizedBox(height: 4),
-                    Text(_currentFile, style: theme.textTheme.bodySmall),
                     const SizedBox(height: 12),
-                    LinearProgressIndicator(value: _progress),
-                    const SizedBox(height: 4),
-                    Text('${(_progress * 100).toInt()}%',
-                        style: theme.textTheme.labelSmall),
+                    for (final entry in _modelProgress.entries) ...[
+                      Row(
+                        children: [
+                          Expanded(
+                            flex: 2,
+                            child: Text(entry.key,
+                                style: theme.textTheme.bodySmall),
+                          ),
+                          Expanded(
+                            flex: 3,
+                            child: LinearProgressIndicator(
+                                value: entry.value),
+                          ),
+                          const SizedBox(width: 8),
+                          SizedBox(
+                            width: 36,
+                            child: Text(
+                              '${(entry.value * 100).toInt()}%',
+                              style: theme.textTheme.labelSmall,
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 8),
+                    ],
                   ],
                 ),
               ),
@@ -184,7 +210,7 @@ class _ModelDownloadScreenState extends ConsumerState<ModelDownloadScreen> {
             ),
             const SizedBox(height: 8),
             Text(
-              'Total download: ~340 MB. Requires Wi-Fi recommended.',
+              'Total download: ~215 MB. Wi-Fi recommended.',
               textAlign: TextAlign.center,
               style: theme.textTheme.bodySmall?.copyWith(
                 color: theme.colorScheme.onSurface.withValues(alpha: 0.5),

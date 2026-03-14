@@ -12,6 +12,7 @@ import '../../data/models/rehearsal_models.dart';
 import '../../data/services/tts_service.dart';
 import '../../data/services/stt_service.dart';
 import '../../data/services/stt_adaptation_service.dart';
+import '../../data/services/stt_vocabulary_service.dart';
 import '../../data/services/voice_clone_service.dart';
 import '../../providers/production_providers.dart';
 import '../../features/settings/settings_screen.dart';
@@ -48,6 +49,7 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen> {
   final SttService _stt = SttService.instance;
   final VoiceCloneService _voiceClone = VoiceCloneService.instance;
   final SttAdaptationService _sttAdapt = SttAdaptationService.instance;
+  final SttVocabularyService _sttVocab = SttVocabularyService.instance;
   String? _activeAdapter; // per-actor or per-production LoRA adapter path
 
   final bool _autoPlay = true; // auto-advance through other characters' lines
@@ -93,6 +95,14 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen> {
     if (script != null) {
       for (var i = 0; i < script.characters.length; i++) {
         _tts.assignVoice(script.characters[i].name, i);
+      }
+    }
+
+    // Build STT vocabulary from script for correction
+    if (script != null) {
+      final production = ref.read(currentProductionProvider);
+      if (production != null) {
+        _sttVocab.buildFromScript(production.id, script.lines);
       }
     }
 
@@ -969,7 +979,7 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen> {
     // Haptic feedback: it's your turn
     HapticFeedback.mediumImpact();
 
-    final available = await _stt.isAvailable;
+    final available = _stt.isAvailable;
     if (!available) {
       // STT not available — just wait for manual advance
       ref.read(rehearsalStateProvider.notifier).state = RehearsalState.ready;
@@ -980,14 +990,31 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen> {
 
     _currentAttemptCount++;
 
+    // Build vocabulary hints from the expected line for MLX
+    final script = ref.read(currentScriptProvider);
+    final production = ref.read(currentProductionProvider);
+    final myCharacter = ref.read(rehearsalCharacterProvider);
+    final vocabHints = line.text.split(RegExp(r'\s+')).toList();
+
     await _stt.listen(
       onResult: (recognized) {
         if (!mounted) return;
-        final score = SttService.matchScore(line.text, recognized);
+
+        // Apply vocabulary correction before scoring
+        final corrected = production != null
+            ? _sttVocab.correct(
+                recognized: recognized,
+                expectedText: line.text,
+                productionId: production.id,
+                actorId: myCharacter,
+              )
+            : recognized;
+
+        final score = SttService.matchScore(line.text, corrected);
         setState(() {
-          _recognizedText = recognized;
+          _recognizedText = corrected;
           _matchScore = score;
-          _showMatchFeedback = recognized.isNotEmpty;
+          _showMatchFeedback = corrected.isNotEmpty;
         });
 
         if (score > _currentBestScore) _currentBestScore = score;
@@ -997,18 +1024,27 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen> {
           _stt.stop();
           HapticFeedback.lightImpact();
 
+          // Learn from this successful attempt
+          if (production != null && myCharacter != null) {
+            _sttVocab.learnFromAttempt(
+              productionId: production.id,
+              actorId: myCharacter,
+              recognized: recognized,
+              expected: line.text,
+            );
+          }
+
           // Record the attempt
           _recordAttempt(line, skipped: false);
 
           // Brief delay so user sees the "Match!" feedback
           Future.delayed(const Duration(milliseconds: 600), () {
             if (mounted) {
-              final script = ref.read(currentScriptProvider);
+              final s = ref.read(currentScriptProvider);
               final scene = ref.read(selectedSceneProvider);
-              final myCharacter = ref.read(rehearsalCharacterProvider);
-              if (script == null || scene == null) return;
-              final dialogueLines =
-                  _getRehearsalLines(script, scene, myCharacter);
+              final mc = ref.read(rehearsalCharacterProvider);
+              if (s == null || scene == null) return;
+              final dialogueLines = _getRehearsalLines(s, scene, mc);
               _advanceLine(dialogueLines.length);
             }
           });
@@ -1022,6 +1058,7 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen> {
               RehearsalState.ready;
         }
       },
+      vocabularyHints: vocabHints,
     );
   }
 

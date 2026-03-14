@@ -15,9 +15,14 @@ void main() {
       expect(SttService.instance.isListening, false);
     });
 
+    test('isMlxReady is false before init', () {
+      expect(SttService.instance.isMlxReady, false);
+    });
+
     test('SttEngine enum has expected values', () {
-      expect(SttEngine.values, containsAll([SttEngine.whisper, SttEngine.system]));
-      expect(SttEngine.values.length, 2);
+      expect(SttEngine.values,
+          containsAll([SttEngine.mlx, SttEngine.whisper, SttEngine.system]));
+      expect(SttEngine.values.length, 3);
     });
   });
 
