@@ -50,6 +50,7 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen> {
   final VoiceCloneService _voiceClone = VoiceCloneService.instance;
   final SttAdaptationService _sttAdapt = SttAdaptationService.instance;
   String? _activeAdapter; // per-actor or per-production LoRA adapter path
+  final GlobalKey _currentLineKey = GlobalKey();
 
   final bool _autoPlay = true; // auto-advance through other characters' lines
   String _recognizedText = '';
@@ -362,6 +363,7 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen> {
         }
 
         return Opacity(
+          key: isCurrent ? _currentLineKey : null,
           opacity: opacity,
           child: Container(
             margin: const EdgeInsets.symmetric(vertical: 6),
@@ -844,6 +846,9 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen> {
     final line = dialogueLines[currentIdx];
     final isMyLine = line.character == myCharacter;
 
+    // Always scroll to the current line so the actor can see it
+    _scrollToCurrentLine();
+
     // Reset attempt tracking for new line
     _currentAttemptCount = 0;
     _currentBestScore = 0.0;
@@ -1198,13 +1203,17 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen> {
   }
 
   void _scrollToCurrentLine() {
-    final idx = ref.read(currentLineIndexProvider);
-    final offset =
-        (idx * 100.0).clamp(0.0, _scrollController.position.maxScrollExtent);
-    _scrollController.animateTo(
-      offset,
-      duration: const Duration(milliseconds: 300),
-      curve: Curves.easeOut,
-    );
+    // Wait for the next frame so the key is attached to the rebuilt widget
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      final ctx = _currentLineKey.currentContext;
+      if (ctx != null) {
+        Scrollable.ensureVisible(
+          ctx,
+          alignment: 0.3, // position current line ~30% from top
+          duration: const Duration(milliseconds: 300),
+          curve: Curves.easeOut,
+        );
+      }
+    });
   }
 }
