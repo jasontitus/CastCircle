@@ -14,6 +14,7 @@ import 'features/script_editor/scene_editor_screen.dart';
 import 'features/cast_manager/cast_manager_screen.dart';
 import 'features/recording_studio/recording_character_screen.dart';
 import 'features/recording_studio/recording_studio_screen.dart';
+import 'features/recording_studio/recordings_browser_screen.dart';
 import 'features/recording_studio/voice_profile_screen.dart';
 import 'features/rehearsal/scene_selector_screen.dart';
 import 'features/rehearsal/rehearsal_history_screen.dart';
@@ -87,6 +88,10 @@ GoRouter _buildRouter(Ref ref) => GoRouter(
     GoRoute(
       path: '/recording-studio',
       builder: (context, state) => const RecordingStudioScreen(),
+    ),
+    GoRoute(
+      path: '/recordings',
+      builder: (context, state) => const RecordingsBrowserScreen(),
     ),
     GoRoute(
       path: '/voice-profile',

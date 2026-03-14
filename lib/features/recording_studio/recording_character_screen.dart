@@ -28,6 +28,13 @@ class RecordingCharacterScreen extends ConsumerWidget {
           icon: const Icon(Icons.arrow_back),
           onPressed: () => context.pop(),
         ),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.library_music_outlined),
+            tooltip: 'Browse Recordings',
+            onPressed: () => context.push('/recordings'),
+          ),
+        ],
       ),
       body: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
