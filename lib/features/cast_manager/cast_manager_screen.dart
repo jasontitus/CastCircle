@@ -498,9 +498,9 @@ class _CastManagerScreenState extends ConsumerState<CastManagerScreen> {
           ),
           if (strategy != TrainingStrategy.notReady)
             FilledButton.icon(
-              onPressed: () {
+              onPressed: () async {
                 Navigator.pop(context);
-                _startTraining(production.id, strategy);
+                await _startTraining(production.id, strategy);
               },
               icon: const Icon(Icons.play_arrow),
               label: Text(strategy == TrainingStrategy.perActor
@@ -512,30 +512,41 @@ class _CastManagerScreenState extends ConsumerState<CastManagerScreen> {
     );
   }
 
-  void _startTraining(String productionId, TrainingStrategy strategy) {
+  Future<void> _startTraining(String productionId, TrainingStrategy strategy) async {
     final sttAdapt = SttAdaptationService.instance;
 
-    if (strategy == TrainingStrategy.perActor) {
-      final profiles = sttAdapt.getProductionActorProfiles(productionId);
-      for (final profile in profiles) {
-        if (profile.hasEnoughData) {
-          sttAdapt.requestActorTraining(
-            productionId: productionId,
-            actorId: profile.actorId,
-          );
+    try {
+      if (strategy == TrainingStrategy.perActor) {
+        final profiles = sttAdapt.getProductionActorProfiles(productionId);
+        for (final profile in profiles) {
+          if (profile.hasEnoughData) {
+            await sttAdapt.requestActorTraining(
+              productionId: productionId,
+              actorId: profile.actorId,
+            );
+          }
         }
+      } else {
+        await sttAdapt.requestProductionTraining(productionId: productionId);
       }
-    } else {
-      sttAdapt.requestProductionTraining(productionId: productionId);
-    }
 
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(strategy == TrainingStrategy.perActor
-            ? 'Per-actor training requested'
-            : 'Production training requested'),
-      ),
-    );
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(strategy == TrainingStrategy.perActor
+              ? 'Per-actor training requested'
+              : 'Production training requested'),
+        ),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Training failed: $e'),
+          backgroundColor: Colors.red,
+        ),
+      );
+    }
   }
 
   Widget _aiBadge({
