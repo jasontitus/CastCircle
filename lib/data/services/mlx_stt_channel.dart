@@ -10,7 +10,7 @@ class MlxSttChannel {
   static final instance = MlxSttChannel._();
 
   static const _channel = MethodChannel('com.lineguide/mlx_stt');
-  static const _trainingEvents = EventChannel('com.lineguide/mlx_stt_training');
+  static const _streamEvents = EventChannel('com.lineguide/mlx_stt_stream');
 
   bool _initialized = false;
 
@@ -94,29 +94,35 @@ class MlxSttChannel {
     }
   }
 
-  /// Listen for LoRA training progress events.
-  Stream<Map<String, dynamic>> get trainingProgress {
-    return _trainingEvents.receiveBroadcastStream().map(
+  /// Stream of partial transcription results from streaming mode.
+  /// Each event is a map with 'type' ('partial' or 'final') and 'text'.
+  Stream<Map<String, dynamic>> get transcriptionStream {
+    return _streamEvents.receiveBroadcastStream().map(
           (event) => Map<String, dynamic>.from(event as Map),
         );
   }
 
-  /// Download the Parakeet model from HuggingFace via mlx-audio-swift.
-  /// Returns true if download succeeded (or model already exists).
-  /// [onProgress] reports 0.0–1.0 progress.
-  Future<bool> downloadModel({
-    void Function(double progress)? onProgress,
+  /// Transcribe audio with streaming — sends partial results via
+  /// [transcriptionStream] as text is recognized progressively.
+  /// Returns the final transcribed text.
+  Future<String?> transcribeStreaming(
+    String audioPath, {
+    List<String>? vocabularyHints,
   }) async {
+    if (!_initialized) return null;
+
     try {
-      final result = await _channel.invokeMethod<bool>('downloadModel');
-      onProgress?.call(1.0);
-      return result ?? false;
+      final result = await _channel.invokeMethod<String>(
+        'transcribeStreaming',
+        {
+          'audioPath': audioPath,
+          if (vocabularyHints != null) 'vocabularyHints': vocabularyHints,
+        },
+      );
+      return result;
     } on PlatformException catch (e) {
-      debugPrint('MlxStt: downloadModel failed: ${e.message}');
-      return false;
-    } on MissingPluginException {
-      debugPrint('MlxStt: Platform channel not available for download');
-      return false;
+      debugPrint('MlxStt: transcribeStreaming failed: ${e.message}');
+      return null;
     }
   }
 

@@ -174,6 +174,13 @@ class SettingsScreen extends ConsumerWidget {
             trailing: const Icon(Icons.chevron_right),
             onTap: () => context.push('/kokoro-debug'),
           ),
+          ListTile(
+            leading: const Icon(Icons.mic),
+            title: const Text('Parakeet Debug'),
+            subtitle: const Text('Test STT engine and match scoring'),
+            trailing: const Icon(Icons.chevron_right),
+            onTap: () => context.push('/parakeet-debug'),
+          ),
           _sectionHeader(context, 'Account'),
           ListTile(
             leading: const Icon(Icons.logout),

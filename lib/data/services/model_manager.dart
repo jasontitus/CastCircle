@@ -5,9 +5,9 @@ import 'package:flutter/foundation.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:path/path.dart' as p;
 
-import 'mlx_stt_channel.dart';
+import 'model_download_service.dart';
 
-/// Manages downloading and caching of ONNX models for on-device ML.
+/// Manages downloading and caching of on-device ML models.
 ///
 /// Kokoro is downloaded as a .tar.bz2 archive (600+ files including
 /// espeak-ng-data). Extraction runs in a separate isolate using streaming
@@ -33,12 +33,6 @@ class ModelManager {
       'https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/kokoro-multi-lang-v1_0.tar.bz2';
   static const _kokoroModelName = 'kokoro-multi-lang-v1_0';
 
-  static const _whisperArchiveUrl =
-      'https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-whisper-small.tar.bz2';
-  static const _whisperModelName = 'sherpa-onnx-whisper-small';
-
-  static const _vadUrl =
-      'https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/silero_vad.onnx';
 
   // ── Kokoro TTS ─────────────────────────────────────────
 
@@ -83,127 +77,11 @@ class ModelManager {
     );
   }
 
-  // ── Whisper STT ────────────────────────────────────────
-
-  /// Check if Whisper model is downloaded and extracted.
-  Future<bool> isWhisperReady() async {
-    final dir = await modelsDir;
-    final modelDir = p.join(dir, _whisperModelName);
-    return await File(p.join(modelDir, 'small-encoder.onnx')).exists() &&
-        await File(p.join(modelDir, 'small-decoder.onnx')).exists() &&
-        await File(p.join(modelDir, 'small-tokens.txt')).exists();
-  }
-
-  /// Get paths to Whisper model files. Returns null if not downloaded.
-  Future<({String encoder, String decoder, String tokens})?>
-      getWhisperPaths() async {
-    if (!await isWhisperReady()) return null;
-    final dir = await modelsDir;
-    final modelDir = p.join(dir, _whisperModelName);
-    return (
-      encoder: p.join(modelDir, 'small-encoder.onnx'),
-      decoder: p.join(modelDir, 'small-decoder.onnx'),
-      tokens: p.join(modelDir, 'small-tokens.txt'),
-    );
-  }
-
-  /// Download and extract Whisper STT model archive.
-  Future<void> downloadWhisper({
-    void Function(String file, double progress)? onProgress,
-  }) async {
-    if (await isWhisperReady()) {
-      onProgress?.call('whisper', 1.0);
-      return;
-    }
-    final dir = await modelsDir;
-    onProgress?.call('sherpa-onnx-whisper-small.tar.bz2', 0);
-    await _downloadAndExtractArchive(
-      _whisperArchiveUrl,
-      dir,
-      (progress) =>
-          onProgress?.call('sherpa-onnx-whisper-small.tar.bz2', progress),
-    );
-  }
-
   // ── MLX Parakeet STT ─────────────────────────────────────
 
-  static const _mlxSttModelName = 'parakeet-tdt-0.6b-v3';
-
-  /// Get path to the MLX STT model directory, or null if not downloaded.
-  /// The model is downloaded automatically by mlx-audio-swift on first use,
-  /// but we also support pre-downloading for offline use.
-  Future<String?> getMlxSttModelPath() async {
-    final dir = await modelsDir;
-    final modelDir = p.join(dir, _mlxSttModelName);
-    if (await Directory(modelDir).exists()) {
-      return modelDir;
-    }
-    // Also check HuggingFace cache (mlx-audio-swift downloads here)
-    return null;
-  }
-
-  /// Check if STT model is downloaded (Parakeet or Whisper fallback).
+  /// Check if Parakeet STT model is downloaded.
   Future<bool> isParakeetReady() async {
-    // Check local models dir for Parakeet
-    final dir = await modelsDir;
-    final modelDir = p.join(dir, _mlxSttModelName);
-    if (await Directory(modelDir).exists()) return true;
-
-    // Check via platform channel (HuggingFace cache)
-    if (await MlxSttChannel.instance.isModelDownloaded()) return true;
-
-    // Fall back to Whisper readiness check
-    return isWhisperReady();
-  }
-
-  /// Download Parakeet STT model via MLX platform channel.
-  Future<void> downloadParakeet({
-    void Function(String file, double progress)? onProgress,
-  }) async {
-    if (await isParakeetReady()) {
-      onProgress?.call('parakeet-tdt-0.6b-v3', 1.0);
-      return;
-    }
-    onProgress?.call('parakeet-tdt-0.6b-v3', 0);
-    final success = await MlxSttChannel.instance.downloadModel(
-      onProgress: (progress) {
-        onProgress?.call('parakeet-tdt-0.6b-v3', progress);
-      },
-    );
-    if (!success) {
-      // MLX not available yet — fall back to Whisper download
-      debugPrint('Parakeet download unavailable, falling back to Whisper');
-      await downloadWhisper(onProgress: onProgress);
-      return;
-    }
-  }
-
-  // ── Silero VAD ─────────────────────────────────────────
-
-  Future<bool> isVadReady() async {
-    final dir = await modelsDir;
-    return File(p.join(dir, 'silero_vad.onnx')).exists();
-  }
-
-  Future<String?> getVadPath() async {
-    final dir = await modelsDir;
-    final path = p.join(dir, 'silero_vad.onnx');
-    return await File(path).exists() ? path : null;
-  }
-
-  Future<void> downloadVad({
-    void Function(String file, double progress)? onProgress,
-  }) async {
-    final dir = await modelsDir;
-    final path = p.join(dir, 'silero_vad.onnx');
-    if (await File(path).exists()) {
-      onProgress?.call('silero_vad.onnx', 1.0);
-      return;
-    }
-    onProgress?.call('silero_vad.onnx', 0);
-    await _downloadFile(_vadUrl, path, (progress) {
-      onProgress?.call('silero_vad.onnx', progress);
-    });
+    return ModelDownloadService.instance.isParakeetReady();
   }
 
   // ── Download all ───────────────────────────────────────
@@ -213,29 +91,18 @@ class ModelManager {
     final results = await Future.wait([
       isKokoroReady(),
       isParakeetReady(),
-      isVadReady(),
     ]);
     return results.every((r) => r);
   }
 
-  /// Download all models in parallel.
+  /// Download all models. Use ModelDownloadService for individual model downloads.
   Future<void> downloadAll({
     void Function(String model, String file, double progress)? onProgress,
   }) async {
-    await Future.wait([
-      downloadKokoro(
-        onProgress: (file, progress) =>
-            onProgress?.call('Kokoro TTS', file, progress),
-      ),
-      downloadParakeet(
-        onProgress: (file, progress) =>
-            onProgress?.call('Parakeet STT', file, progress),
-      ),
-      downloadVad(
-        onProgress: (file, progress) =>
-            onProgress?.call('VAD', file, progress),
-      ),
-    ]);
+    await downloadKokoro(
+      onProgress: (file, progress) =>
+          onProgress?.call('Kokoro TTS', file, progress),
+    );
   }
 
   /// Delete all cached models.

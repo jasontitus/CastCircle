@@ -7,10 +7,6 @@ void main() {
       expect(identical(SttService.instance, SttService.instance), true);
     });
 
-    test('isWhisperReady is false before init', () {
-      expect(SttService.instance.isWhisperReady, false);
-    });
-
     test('isListening is false initially', () {
       expect(SttService.instance.isListening, false);
     });
@@ -21,8 +17,8 @@ void main() {
 
     test('SttEngine enum has expected values', () {
       expect(SttEngine.values,
-          containsAll([SttEngine.mlx, SttEngine.whisper, SttEngine.system]));
-      expect(SttEngine.values.length, 3);
+          containsAll([SttEngine.mlx, SttEngine.system]));
+      expect(SttEngine.values.length, 2);
     });
   });
 

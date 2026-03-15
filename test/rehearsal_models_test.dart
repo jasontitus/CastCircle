@@ -16,7 +16,7 @@ void main() {
         completedLines: 18,
         averageMatchScore: 0.85,
         lineAttempts: [],
-        cueToCueMode: false,
+        rehearsalMode: 'sceneReadthrough',
       );
 
       expect(session.duration, const Duration(minutes: 15));
@@ -35,7 +35,7 @@ void main() {
         completedLines: 15,
         averageMatchScore: 0.8,
         lineAttempts: [],
-        cueToCueMode: false,
+        rehearsalMode: 'sceneReadthrough',
       );
 
       expect(session.completionRate, 0.75);
@@ -54,7 +54,7 @@ void main() {
         completedLines: 0,
         averageMatchScore: 0.0,
         lineAttempts: [],
-        cueToCueMode: false,
+        rehearsalMode: 'sceneReadthrough',
       );
 
       expect(session.completionRate, 0.0);
@@ -92,7 +92,7 @@ void main() {
         completedLines: 3,
         averageMatchScore: 0.6,
         lineAttempts: attempts,
-        cueToCueMode: false,
+        rehearsalMode: 'sceneReadthrough',
       );
 
       expect(session.struggledLines.length, 2);
@@ -123,7 +123,7 @@ void main() {
         completedLines: 2,
         averageMatchScore: 0.875,
         lineAttempts: attempts,
-        cueToCueMode: false,
+        rehearsalMode: 'sceneReadthrough',
       );
 
       expect(session.struggledLines, isEmpty);

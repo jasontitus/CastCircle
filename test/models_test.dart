@@ -328,7 +328,7 @@ void main() {
         completedLines: 18,
         averageMatchScore: 0.85,
         lineAttempts: [],
-        cueToCueMode: false,
+        rehearsalMode: 'sceneReadthrough',
       );
 
       expect(session.character, 'ELIZABETH');

@@ -1,55 +1,95 @@
 import Flutter
 import UIKit
 import AVFoundation
+import ParakeetSTT
+import MLX
 
-/// Flutter platform channel plugin for MLX-based speech-to-text.
-///
-/// Bridges Flutter (Dart) to native MLX audio inference via method channels.
-/// Uses Parakeet-TDT-0.6B for high-quality on-device ASR.
+/// Flutter platform channel plugin for on-device speech-to-text using
+/// MLX Parakeet (real neural model inference on Apple Silicon).
 class MLXSttPlugin: NSObject, FlutterStreamHandler {
     private let channel: FlutterMethodChannel
-    private let trainingChannel: FlutterEventChannel
+    private let streamChannel: FlutterEventChannel
     private var eventSink: FlutterEventSink?
     private var isModelLoaded = false
 
-    // MLX model instance (will be typed properly when mlx-audio-swift is linked)
-    private var sttModel: Any? = nil
+    /// The loaded Parakeet STT model.
+    private var sttModel: ParakeetModel? = nil
+    private static let modelId = "mlx-community/parakeet-tdt-0.6b-v3"
+
+    /// Model directory — downloaded model files live here.
+    private static var modelDir: URL? {
+        // Check Documents/models/parakeet_stt/ (downloaded via BackgroundDownloadPlugin)
+        if let docsDir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first {
+            let appModelDir = docsDir
+                .appendingPathComponent("models")
+                .appendingPathComponent("parakeet_stt")
+            let configPath = appModelDir.appendingPathComponent("config.json")
+            let modelPath = appModelDir.appendingPathComponent("model.safetensors")
+            if FileManager.default.fileExists(atPath: configPath.path) &&
+               FileManager.default.fileExists(atPath: modelPath.path) {
+                NSLog("MLXStt: Found model at \(appModelDir.path)")
+                return appModelDir
+            }
+        }
+
+        // Fallback: HuggingFace cache (if downloaded externally)
+        let cacheDir = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first!
+        let hfDir = cacheDir
+            .appendingPathComponent("huggingface/hub")
+            .appendingPathComponent("models--mlx-community--parakeet-tdt-0.6b-v3")
+        if FileManager.default.fileExists(atPath: hfDir.path) {
+            let snapshotsDir = hfDir.appendingPathComponent("snapshots")
+            if let snapshots = try? FileManager.default.contentsOfDirectory(at: snapshotsDir, includingPropertiesForKeys: nil),
+               let firstSnapshot = snapshots.first {
+                return firstSnapshot
+            }
+            return hfDir
+        }
+
+        return nil
+    }
 
     init(messenger: FlutterBinaryMessenger) {
         channel = FlutterMethodChannel(
             name: "com.lineguide/mlx_stt",
             binaryMessenger: messenger
         )
-        trainingChannel = FlutterEventChannel(
-            name: "com.lineguide/mlx_stt_training",
+        streamChannel = FlutterEventChannel(
+            name: "com.lineguide/mlx_stt_stream",
             binaryMessenger: messenger
         )
         super.init()
 
         channel.setMethodCallHandler(handle)
-        trainingChannel.setStreamHandler(self)
+        streamChannel.setStreamHandler(self)
     }
 
     func handle(_ call: FlutterMethodCall, result: @escaping FlutterResult) {
         switch call.method {
         case "initialize":
             Task {
-                await initialize(call: call, result: result)
+                await initialize(result: result)
             }
         case "transcribe":
             Task {
                 await transcribe(call: call, result: result)
             }
-        case "loadAdapter":
-            loadAdapter(call: call, result: result)
-        case "unloadAdapter":
-            unloadAdapter(result: result)
-        case "downloadModel":
+        case "transcribeStreaming":
             Task {
-                await downloadModel(result: result)
+                await transcribeStreaming(call: call, result: result)
             }
+        case "loadAdapter":
+            result(true)
+        case "unloadAdapter":
+            result(true)
+        case "downloadModel":
+            result(FlutterError(
+                code: "NOT_IMPLEMENTED",
+                message: "Use BackgroundDownloadPlugin to download model files.",
+                details: nil
+            ))
         case "isModelDownloaded":
-            isModelDownloaded(result: result)
+            result(Self.modelDir != nil)
         case "isReady":
             result(isModelLoaded)
         case "dispose":
@@ -61,46 +101,36 @@ class MLXSttPlugin: NSObject, FlutterStreamHandler {
 
     // MARK: - Model Management
 
-    private func initialize(call: FlutterMethodCall, result: @escaping FlutterResult) async {
-        guard let args = call.arguments as? [String: Any],
-              let modelPath = args["modelPath"] as? String else {
-            result(FlutterError(code: "INVALID_ARGS", message: "modelPath required", details: nil))
+    private func initialize(result: @escaping FlutterResult) async {
+        if isModelLoaded && sttModel != nil {
+            result(true)
+            return
+        }
+
+        guard let modelDir = Self.modelDir else {
+            NSLog("MLXStt: Model not downloaded yet")
+            result(FlutterError(
+                code: "MODEL_NOT_FOUND",
+                message: "Parakeet model not downloaded. Download model files first.",
+                details: nil
+            ))
             return
         }
 
         do {
-            // Load the MLX STT model from the local path
-            try await loadModel(from: modelPath)
+            NSLog("MLXStt: Loading Parakeet model from \(modelDir.path)...")
+            sttModel = try ParakeetModel.fromDirectory(modelDir)
             isModelLoaded = true
+            NSLog("MLXStt: Parakeet model loaded successfully")
             result(true)
         } catch {
-            result(FlutterError(code: "INIT_FAILED", message: error.localizedDescription, details: nil))
+            NSLog("MLXStt: Failed to load Parakeet model: \(error.localizedDescription)")
+            result(FlutterError(
+                code: "INIT_FAILED",
+                message: "Failed to load Parakeet model: \(error.localizedDescription)",
+                details: nil
+            ))
         }
-    }
-
-    private func loadModel(from path: String) async throws {
-        #if canImport(MLXAudioSTT)
-        // When mlx-audio-swift is linked, load the Parakeet model:
-        // import MLXAudioSTT
-        // import MLXAudioCore
-        // sttModel = try await ParakeetModel.fromPretrained(path)
-        NSLog("MLXStt: Loading model from \(path)")
-        // For now, mark as loaded if the model directory exists
-        let fm = FileManager.default
-        guard fm.fileExists(atPath: path) else {
-            throw NSError(domain: "MLXStt", code: 1,
-                         userInfo: [NSLocalizedDescriptionKey: "Model directory not found: \(path)"])
-        }
-        NSLog("MLXStt: Model directory found, marking as ready")
-        #else
-        // MLX not available — stub for compilation without the dependency
-        NSLog("MLXStt: mlx-audio-swift not linked, using stub mode")
-        let fm = FileManager.default
-        guard fm.fileExists(atPath: path) else {
-            throw NSError(domain: "MLXStt", code: 1,
-                         userInfo: [NSLocalizedDescriptionKey: "Model directory not found: \(path)"])
-        }
-        #endif
     }
 
     // MARK: - Transcription
@@ -112,83 +142,96 @@ class MLXSttPlugin: NSObject, FlutterStreamHandler {
             return
         }
 
-        guard isModelLoaded else {
+        guard isModelLoaded, let model = sttModel else {
             result(FlutterError(code: "NOT_READY", message: "Model not initialized", details: nil))
             return
         }
 
-        do {
-            let text = try await transcribeAudio(at: audioPath,
-                                                  hints: args["vocabularyHints"] as? [String])
-            result(text)
-        } catch {
-            result(FlutterError(code: "TRANSCRIBE_FAILED", message: error.localizedDescription, details: nil))
-        }
-    }
+        let audioURL = URL(fileURLWithPath: audioPath)
 
-    private func transcribeAudio(at path: String, hints: [String]?) async throws -> String {
-        #if canImport(MLXAudioSTT)
-        // When mlx-audio-swift is linked:
-        // let (sampleRate, audioData) = try loadAudioArray(from: URL(fileURLWithPath: path))
-        // let output = sttModel!.generate(audio: audioData)
-        // return output.text
-        NSLog("MLXStt: Would transcribe \(path) with \(hints?.count ?? 0) vocabulary hints")
-        return ""
-        #else
-        // Stub — return empty string when MLX not linked
-        NSLog("MLXStt: Stub transcribe for \(path)")
-        return ""
-        #endif
-    }
-
-    // MARK: - LoRA Adapters
-
-    private func loadAdapter(call: FlutterMethodCall, result: @escaping FlutterResult) {
-        guard let args = call.arguments as? [String: Any],
-              let adapterPath = args["adapterPath"] as? String else {
-            result(FlutterError(code: "INVALID_ARGS", message: "adapterPath required", details: nil))
+        guard FileManager.default.fileExists(atPath: audioPath) else {
+            result(FlutterError(code: "FILE_NOT_FOUND", message: "Audio file not found", details: nil))
             return
         }
 
-        NSLog("MLXStt: Loading adapter from \(adapterPath)")
-        // Future: merge LoRA adapter weights with base model
-        result(true)
+        do {
+            let (_, audioData) = try loadAudioArray(from: audioURL)
+            let output = model.generate(audio: audioData)
+            let text = output.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            NSLog("MLXStt: Transcribed (\(text.prefix(60))...)")
+            result(text)
+        } catch {
+            NSLog("MLXStt: Transcription failed: \(error.localizedDescription)")
+            result(FlutterError(
+                code: "TRANSCRIBE_FAILED",
+                message: error.localizedDescription,
+                details: nil
+            ))
+        }
     }
 
-    private func unloadAdapter(result: @escaping FlutterResult) {
-        NSLog("MLXStt: Unloading adapter")
-        result(true)
-    }
+    /// Streaming transcription — sends partial results via EventChannel as
+    /// Parakeet processes audio in chunks. Returns final text via method result.
+    private func transcribeStreaming(call: FlutterMethodCall, result: @escaping FlutterResult) async {
+        guard let args = call.arguments as? [String: Any],
+              let audioPath = args["audioPath"] as? String else {
+            result(FlutterError(code: "INVALID_ARGS", message: "audioPath required", details: nil))
+            return
+        }
 
-    // MARK: - Model Download
+        guard isModelLoaded, let model = sttModel else {
+            result(FlutterError(code: "NOT_READY", message: "Model not initialized", details: nil))
+            return
+        }
 
-    private static let parakeetModelId = "mlx-community/parakeet-tdt-0.6b-v3"
+        let audioURL = URL(fileURLWithPath: audioPath)
 
-    private func downloadModel(result: @escaping FlutterResult) async {
-        #if canImport(MLXAudioSTT)
-        // When mlx-audio-swift is linked:
-        // do {
-        //     let modelDir = try await ParakeetModel.fromPretrained(Self.parakeetModelId)
-        //     NSLog("MLXStt: Model downloaded to \(modelDir)")
-        //     result(true)
-        // } catch {
-        //     result(FlutterError(code: "DOWNLOAD_FAILED", message: error.localizedDescription, details: nil))
-        // }
-        NSLog("MLXStt: Would download \(Self.parakeetModelId) via mlx-audio-swift")
-        result(true)
-        #else
-        // Stub — mlx-audio-swift not linked
-        NSLog("MLXStt: Stub downloadModel — mlx-audio-swift not linked")
-        result(true)
-        #endif
-    }
+        guard FileManager.default.fileExists(atPath: audioPath) else {
+            result(FlutterError(code: "FILE_NOT_FOUND", message: "Audio file not found", details: nil))
+            return
+        }
 
-    private func isModelDownloaded(result: @escaping FlutterResult) {
-        // Check if model files exist in the app's documents directory
-        let documentsDir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
-        let modelDir = documentsDir.appendingPathComponent("models/parakeet-tdt-0.6b-v3")
-        let exists = FileManager.default.fileExists(atPath: modelDir.path)
-        result(exists)
+        do {
+            let (_, audioData) = try loadAudioArray(from: audioURL)
+
+            // Use streaming generation — emits tokens progressively
+            let params = STTGenerateParameters(
+                chunkDuration: 5.0  // Process in 5-second chunks for progressive results
+            )
+
+            var fullText = ""
+            let stream = model.generateStream(audio: audioData, generationParameters: params)
+
+            for try await event in stream {
+                switch event {
+                case .token(let token):
+                    fullText += token
+                    // Send partial text to Dart via EventChannel
+                    DispatchQueue.main.async { [weak self] in
+                        self?.eventSink?(["type": "partial", "text": fullText])
+                    }
+
+                case .result(let output):
+                    fullText = output.text.trimmingCharacters(in: .whitespacesAndNewlines)
+                    DispatchQueue.main.async { [weak self] in
+                        self?.eventSink?(["type": "final", "text": fullText])
+                    }
+
+                case .info:
+                    break
+                }
+            }
+
+            NSLog("MLXStt: Streamed transcription (\(fullText.prefix(60))...)")
+            result(fullText)
+        } catch {
+            NSLog("MLXStt: Streaming transcription failed: \(error.localizedDescription)")
+            result(FlutterError(
+                code: "TRANSCRIBE_FAILED",
+                message: error.localizedDescription,
+                details: nil
+            ))
+        }
     }
 
     // MARK: - Cleanup
@@ -200,7 +243,7 @@ class MLXSttPlugin: NSObject, FlutterStreamHandler {
         result(nil)
     }
 
-    // MARK: - FlutterStreamHandler (training progress)
+    // MARK: - FlutterStreamHandler
 
     func onListen(withArguments arguments: Any?, eventSink events: @escaping FlutterEventSink) -> FlutterError? {
         eventSink = events

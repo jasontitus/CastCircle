@@ -1,6 +1,7 @@
 import 'dart:io';
 
 import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 
@@ -66,11 +67,19 @@ class ModelDownloadState {
 
 /// Service for downloading and managing on-device AI model files.
 ///
+/// Uses native iOS background URLSession for downloads so they survive
+/// screen sleep, app suspension, and even app termination.
+///
 /// Kokoro MLX model files are downloaded to Documents/models/kokoro_mlx/
 /// to match the path expected by KokoroMLXService.swift.
 class ModelDownloadService {
-  ModelDownloadService._();
+  ModelDownloadService._() {
+    _setupNativeCallbacks();
+  }
   static final instance = ModelDownloadService._();
+
+  static const _channel =
+      MethodChannel('com.lineguide/background_download');
 
   /// Registry of available models.
   static const List<AiModel> availableModels = [
@@ -96,6 +105,28 @@ class ModelDownloadService {
       filename: 'voices.npz',
       subdir: 'kokoro_mlx',
     ),
+    AiModel(
+      id: 'parakeet_model',
+      name: 'Parakeet STT Model',
+      description: 'MLX neural speech-to-text (0.6B params)',
+      sizeLabel: '~2.5 GB',
+      sizeBytes: 2508288736,
+      downloadUrl:
+          'https://huggingface.co/mlx-community/parakeet-tdt-0.6b-v3/resolve/main/model.safetensors',
+      filename: 'model.safetensors',
+      subdir: 'parakeet_stt',
+    ),
+    AiModel(
+      id: 'parakeet_config',
+      name: 'Parakeet STT Config',
+      description: 'Model configuration and vocabulary',
+      sizeLabel: '~244 KB',
+      sizeBytes: 244093,
+      downloadUrl:
+          'https://huggingface.co/mlx-community/parakeet-tdt-0.6b-v3/resolve/main/config.json',
+      filename: 'config.json',
+      subdir: 'parakeet_stt',
+    ),
   ];
 
   final Map<String, ModelDownloadState> _states = {};
@@ -118,6 +149,49 @@ class ModelDownloadService {
     }
   }
 
+  /// Set up callbacks from native iOS for download progress/completion/error.
+  void _setupNativeCallbacks() {
+    _channel.setMethodCallHandler((call) async {
+      switch (call.method) {
+        case 'onDownloadProgress':
+          final args = call.arguments as Map;
+          final modelId = args['modelId'] as String;
+          final progress = (args['progress'] as num).toDouble();
+          _states[modelId] = ModelDownloadState(
+            status: ModelStatus.downloading,
+            progress: progress,
+          );
+          _notify();
+          break;
+
+        case 'onDownloadComplete':
+          final args = call.arguments as Map;
+          final modelId = args['modelId'] as String;
+          final size = args['size'] as int;
+          _states[modelId] = const ModelDownloadState(
+            status: ModelStatus.downloaded,
+            progress: 1.0,
+          );
+          _notify();
+          debugPrint(
+              'ModelDownload: $modelId complete (${(size / 1024 / 1024).toStringAsFixed(1)} MB)');
+          break;
+
+        case 'onDownloadError':
+          final args = call.arguments as Map;
+          final modelId = args['modelId'] as String;
+          final error = args['error'] as String;
+          _states[modelId] = ModelDownloadState(
+            status: ModelStatus.error,
+            errorMessage: error,
+          );
+          _notify();
+          debugPrint('ModelDownload: $modelId failed: $error');
+          break;
+      }
+    });
+  }
+
   /// Check which models are already downloaded on disk.
   Future<void> refreshDownloadedStatus() async {
     for (final model in availableModels) {
@@ -127,8 +201,16 @@ class ModelDownloadService {
           status: ModelStatus.downloaded,
           progress: 1.0,
         );
+      } else {
+        // Reset error/stuck states on refresh — allow retry
+        final current = _states[model.id];
+        if (current != null && current.status != ModelStatus.downloading) {
+          _states[model.id] = const ModelDownloadState();
+        }
       }
     }
+    // Clean up any leftover .tmp files from failed downloads
+    await _cleanupTmpFiles();
     _notify();
   }
 
@@ -143,9 +225,25 @@ class ModelDownloadService {
     return true;
   }
 
-  /// Download a model file with progress reporting.
-  ///
-  /// Follows redirects (HuggingFace and GitHub LFS both redirect).
+  /// Whether all Parakeet STT files are downloaded.
+  Future<bool> isParakeetReady() async {
+    for (final model in availableModels) {
+      if (model.subdir == 'parakeet_stt') {
+        final path = await _filePath(model);
+        if (!File(path).existsSync()) return false;
+      }
+    }
+    return true;
+  }
+
+  /// Get the path to the Parakeet model directory, or null if not downloaded.
+  Future<String?> getParakeetModelDir() async {
+    if (!await isParakeetReady()) return null;
+    final appDir = await getApplicationDocumentsDirectory();
+    return p.join(appDir.path, 'models', 'parakeet_stt');
+  }
+
+  /// Download a model file using native iOS background URLSession.
   Future<void> download(AiModel model) async {
     if (model.downloadUrl.isEmpty) {
       _states[model.id] = const ModelDownloadState(
@@ -156,6 +254,7 @@ class ModelDownloadService {
       return;
     }
 
+    // Reset state and clean up any leftover .tmp file
     _states[model.id] = const ModelDownloadState(
       status: ModelStatus.downloading,
       progress: 0.0,
@@ -164,49 +263,41 @@ class ModelDownloadService {
 
     try {
       final outPath = await _filePath(model);
-      final outFile = File(outPath);
-      await outFile.parent.create(recursive: true);
 
-      await _downloadFile(model.downloadUrl, outPath, (progress) {
-        _states[model.id] = ModelDownloadState(
-          status: ModelStatus.downloading,
-          progress: progress,
-        );
-        _notify();
-      });
-
-      // Verify file size is reasonable
-      final size = await outFile.length();
-      if (size < 1000) {
-        await outFile.delete();
-        throw Exception('Downloaded file too small ($size bytes)');
+      // Clean up .tmp file from previous failed download
+      final tmpFile = File('$outPath.tmp');
+      if (tmpFile.existsSync()) {
+        await tmpFile.delete();
       }
 
-      _states[model.id] = const ModelDownloadState(
-        status: ModelStatus.downloaded,
-        progress: 1.0,
-      );
-      _notify();
+      // Create destination directory
+      await Directory(p.dirname(outPath)).create(recursive: true);
 
-      debugPrint(
-          'ModelDownload: ${model.id} downloaded (${(size / 1024 / 1024).toStringAsFixed(1)} MB)');
+      // Start native background download
+      await _channel.invokeMethod('startDownload', {
+        'modelId': model.id,
+        'url': model.downloadUrl,
+        'destinationPath': outPath,
+      });
+
+      debugPrint('ModelDownload: started background download for ${model.id}');
     } catch (e) {
       _states[model.id] = ModelDownloadState(
         status: ModelStatus.error,
         errorMessage: e.toString(),
       );
       _notify();
-      debugPrint('ModelDownload: ${model.id} failed: $e');
+      debugPrint('ModelDownload: ${model.id} failed to start: $e');
     }
   }
 
-  /// Download all available models in parallel.
+  /// Download all available models.
   Future<void> downloadAll() async {
-    await Future.wait(
-      availableModels
-          .where((m) => m.downloadUrl.isNotEmpty)
-          .map((m) => download(m)),
-    );
+    for (final m in availableModels) {
+      if (m.downloadUrl.isNotEmpty) {
+        await download(m);
+      }
+    }
   }
 
   /// Delete a downloaded model file.
@@ -216,6 +307,9 @@ class ModelDownloadService {
       final path = await _filePath(model);
       final file = File(path);
       if (file.existsSync()) await file.delete();
+      // Also clean up any .tmp file
+      final tmpFile = File('$path.tmp');
+      if (tmpFile.existsSync()) await tmpFile.delete();
     }
     _states[modelId] = const ModelDownloadState();
     _notify();
@@ -249,62 +343,19 @@ class ModelDownloadService {
     return Directory(p.join(appDir.path, 'models', 'kokoro_mlx'));
   }
 
-  /// Download a file with redirect handling and progress reporting.
-  Future<void> _downloadFile(
-    String url,
-    String localPath,
-    void Function(double progress) onProgress,
-  ) async {
-    final client = HttpClient();
-    client.autoUncompress = false;
-    try {
-      final request = await client.getUrl(Uri.parse(url));
-      final response = await request.close();
-
-      // Handle redirects (HuggingFace and GitHub LFS both redirect)
-      if (response.statusCode == 301 ||
-          response.statusCode == 302 ||
-          response.statusCode == 307 ||
-          response.isRedirect) {
-        final redirectUrl = response.headers.value('location');
-        if (redirectUrl != null) {
-          await response.drain<void>();
-          client.close();
-          await _downloadFile(redirectUrl, localPath, onProgress);
-          return;
+  /// Remove leftover .tmp files from failed downloads.
+  Future<void> _cleanupTmpFiles() async {
+    for (final model in availableModels) {
+      final path = await _filePath(model);
+      final tmpFile = File('$path.tmp');
+      if (tmpFile.existsSync()) {
+        try {
+          await tmpFile.delete();
+          debugPrint('ModelDownload: cleaned up ${model.id}.tmp');
+        } catch (e) {
+          debugPrint('ModelDownload: failed to clean ${model.id}.tmp: $e');
         }
       }
-
-      if (response.statusCode != 200) {
-        await response.drain<void>();
-        throw HttpException(
-          'Server returned ${response.statusCode}',
-          uri: Uri.parse(url),
-        );
-      }
-
-      final contentLength = response.contentLength;
-      final tmpPath = '$localPath.tmp';
-      final sink = File(tmpPath).openWrite();
-      int received = 0;
-
-      await for (final chunk in response) {
-        sink.add(chunk);
-        received += chunk.length;
-        if (contentLength > 0) {
-          onProgress((received / contentLength).clamp(0.0, 1.0));
-        }
-      }
-
-      await sink.flush();
-      await sink.close();
-      await File(tmpPath).rename(localPath);
-      onProgress(1.0);
-
-      debugPrint(
-          'Downloaded: ${p.basename(localPath)} (${(received / 1024 / 1024).toStringAsFixed(1)} MB)');
-    } finally {
-      client.close();
     }
   }
 }

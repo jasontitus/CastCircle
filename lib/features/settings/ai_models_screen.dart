@@ -126,6 +126,8 @@ class _AiModelsScreenState extends State<AiModelsScreen> {
     return switch (modelId) {
       'kokoro_model' => Icons.record_voice_over,
       'kokoro_voices' => Icons.people,
+      'parakeet_model' => Icons.hearing,
+      'parakeet_config' => Icons.settings,
       _ => Icons.smart_toy,
     };
   }

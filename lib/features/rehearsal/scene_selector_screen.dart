@@ -12,8 +12,14 @@ final rehearsalCharacterProvider = StateProvider<String?>((ref) => null);
 /// Provider for the selected scene to rehearse.
 final selectedSceneProvider = StateProvider<ScriptScene?>((ref) => null);
 
-/// Cue-to-cue mode: skip to just before each of the actor's lines.
-final cueToCueModeProvider = StateProvider<bool>((ref) => false);
+/// Rehearsal mode: full scene readthrough vs cue-response practice.
+enum RehearsalMode { sceneReadthrough, cuePractice }
+
+final rehearsalModeProvider =
+    StateProvider<RehearsalMode>((ref) => RehearsalMode.sceneReadthrough);
+
+/// When true, the actor's upcoming lines are hidden (blind rehearsal).
+final hideMyLinesProvider = StateProvider<bool>((ref) => false);
 
 class SceneSelectorScreen extends ConsumerStatefulWidget {
   const SceneSelectorScreen({super.key});
@@ -119,32 +125,46 @@ class _SceneSelectorScreenState extends ConsumerState<SceneSelectorScreen> {
   }
 
   Widget _buildModeToggle(BuildContext context) {
-    final cueToCue = ref.watch(cueToCueModeProvider);
+    final mode = ref.watch(rehearsalModeProvider);
+    final hideLines = ref.watch(hideMyLinesProvider);
 
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-      child: Row(
+      child: Column(
         children: [
-          Expanded(
-            child: SegmentedButton<bool>(
-              segments: const [
-                ButtonSegment(
-                  value: false,
-                  label: Text('Full Scene'),
-                  icon: Icon(Icons.playlist_play),
+          Row(
+            children: [
+              Expanded(
+                child: SegmentedButton<RehearsalMode>(
+                  segments: const [
+                    ButtonSegment(
+                      value: RehearsalMode.sceneReadthrough,
+                      label: Text('Scene Readthrough'),
+                      icon: Icon(Icons.playlist_play),
+                    ),
+                    ButtonSegment(
+                      value: RehearsalMode.cuePractice,
+                      label: Text('Cue Practice'),
+                      icon: Icon(Icons.skip_next),
+                    ),
+                  ],
+                  selected: {mode},
+                  onSelectionChanged: (selected) {
+                    ref.read(rehearsalModeProvider.notifier).state =
+                        selected.first;
+                  },
                 ),
-                ButtonSegment(
-                  value: true,
-                  label: Text('Cue-to-Cue'),
-                  icon: Icon(Icons.skip_next),
-                ),
-              ],
-              selected: {cueToCue},
-              onSelectionChanged: (selected) {
-                ref.read(cueToCueModeProvider.notifier).state =
-                    selected.first;
-              },
-            ),
+              ),
+            ],
+          ),
+          SwitchListTile(
+            dense: true,
+            contentPadding: EdgeInsets.zero,
+            title: const Text('Hide my lines (blind rehearsal)'),
+            subtitle: const Text('Test your memorization'),
+            value: hideLines,
+            onChanged: (v) =>
+                ref.read(hideMyLinesProvider.notifier).state = v,
           ),
         ],
       ),

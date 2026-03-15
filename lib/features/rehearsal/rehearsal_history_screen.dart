@@ -147,17 +147,27 @@ class RehearsalHistoryScreen extends ConsumerWidget {
                         ),
                   ),
                 ),
-                if (session.cueToCueMode)
-                  Container(
-                    padding:
-                        const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                    decoration: BoxDecoration(
-                      color: Colors.blue.withValues(alpha: 0.1),
-                      borderRadius: BorderRadius.circular(4),
-                    ),
-                    child: const Text('Cue-to-Cue',
-                        style: TextStyle(fontSize: 10, color: Colors.blue)),
+                Container(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                  decoration: BoxDecoration(
+                    color: session.rehearsalMode == 'cuePractice'
+                        ? Colors.blue.withValues(alpha: 0.1)
+                        : Colors.teal.withValues(alpha: 0.1),
+                    borderRadius: BorderRadius.circular(4),
                   ),
+                  child: Text(
+                    session.rehearsalMode == 'cuePractice'
+                        ? 'Cue Practice'
+                        : 'Readthrough',
+                    style: TextStyle(
+                      fontSize: 10,
+                      color: session.rehearsalMode == 'cuePractice'
+                          ? Colors.blue
+                          : Colors.teal,
+                    ),
+                  ),
+                ),
               ],
             ),
             const SizedBox(height: 4),

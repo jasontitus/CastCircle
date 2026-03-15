@@ -39,13 +39,10 @@ dependencies:
   # OCR (on-device)
   google_mlkit_text_recognition: ^0.14.0
 
-  # On-device ML: TTS (Kokoro), voice cloning (ZipVoice), STT (Whisper)
-  sherpa_onnx: ^1.12.29
-
-  # TTS (system fallback only if sherpa-onnx unavailable)
+  # TTS (system fallback when Kokoro MLX unavailable)
   flutter_tts: ^4.2.0
 
-  # Speech to text (system fallback only if sherpa-onnx unavailable)
+  # Speech to text (Apple SFSpeechRecognizer, primary STT engine)
   speech_to_text: ^7.0.0
 
   # Backend

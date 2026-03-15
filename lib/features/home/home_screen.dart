@@ -167,21 +167,29 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     ref.read(currentProductionProvider.notifier).state = production;
     ref.read(recordingsProvider.notifier).loadForProduction(production.id);
 
-    // Load local script
+    // Load local script first — this is fast (local disk)
     final savedScript = await loadPersistedScript(ref, production.id);
-    final localLines = savedScript?.lines ?? <ScriptLine>[];
 
-    // Check cloud for updates
-    final cloudLines = await fetchCloudScriptLines(production.id);
+    if (savedScript != null) {
+      // Have local script — navigate immediately, check cloud in background
+      ref.read(currentScriptProvider.notifier).state = ParsedScript(
+        title: production.title,
+        lines: savedScript.lines,
+        characters: savedScript.characters,
+        scenes: savedScript.scenes,
+        rawText: savedScript.rawText,
+      );
+      if (context.mounted) context.push('/production');
 
-    if (savedScript == null && cloudLines == null) {
-      // No script anywhere — go to import
-      if (context.mounted) context.push('/import');
+      // Check cloud for updates in background (non-blocking)
+      _backgroundCloudSync(context, ref, production, savedScript);
       return;
     }
 
-    if (savedScript == null && cloudLines != null) {
-      // Only cloud has a script — accept it directly
+    // No local script — check cloud (may be slow but unavoidable)
+    final cloudLines = await fetchCloudScriptLines(production.id);
+
+    if (cloudLines != null && cloudLines.isNotEmpty) {
       final script = buildParsedScript(production.title, cloudLines);
       ref.read(currentScriptProvider.notifier).state = script;
       await persistScript(ref);
@@ -194,61 +202,49 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
         );
         context.push('/production');
       }
-      return;
+    } else {
+      // No script anywhere — go to import
+      if (context.mounted) context.push('/import');
     }
+  }
 
-    if (cloudLines != null && cloudLines.isNotEmpty && localLines.isNotEmpty) {
-      // Both exist — check if they differ
-      final hasDifferences = _scriptsDiffer(localLines, cloudLines);
+  /// Check cloud for script updates after navigating — non-blocking.
+  Future<void> _backgroundCloudSync(
+    BuildContext context,
+    WidgetRef ref,
+    Production production,
+    ParsedScript savedScript,
+  ) async {
+    try {
+      final cloudLines = await fetchCloudScriptLines(production.id);
+      if (cloudLines == null || cloudLines.isEmpty) return;
 
-      if (hasDifferences && context.mounted) {
-        final accept = await showCloudSyncDialog(
-          context: context,
-          localLines: localLines,
-          cloudLines: cloudLines,
-        );
+      final localLines = savedScript.lines;
+      if (!_scriptsDiffer(localLines, cloudLines)) return;
 
-        if (accept == true) {
-          // Accept cloud version
-          final script = buildParsedScript(production.title, cloudLines);
-          ref.read(currentScriptProvider.notifier).state = script;
-          await persistScript(ref);
-          if (context.mounted) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(
-                content: Text('Cloud script accepted'),
-                duration: Duration(seconds: 2),
-              ),
-            );
-          }
-        } else {
-          // Keep local
-          ref.read(currentScriptProvider.notifier).state = ParsedScript(
-            title: production.title,
-            lines: savedScript!.lines,
-            characters: savedScript.characters,
-            scenes: savedScript.scenes,
-            rawText: savedScript.rawText,
+      // Cloud has different version — prompt user
+      if (!context.mounted) return;
+      final accept = await showCloudSyncDialog(
+        context: context,
+        localLines: localLines,
+        cloudLines: cloudLines,
+      );
+
+      if (accept == true) {
+        final script = buildParsedScript(production.title, cloudLines);
+        ref.read(currentScriptProvider.notifier).state = script;
+        await persistScript(ref);
+        if (context.mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Cloud script accepted'),
+              duration: Duration(seconds: 2),
+            ),
           );
         }
-
-        if (context.mounted) context.push('/production');
-        return;
       }
-    }
-
-    // No differences or no cloud — just load local
-    if (savedScript != null) {
-      ref.read(currentScriptProvider.notifier).state = ParsedScript(
-        title: production.title,
-        lines: savedScript.lines,
-        characters: savedScript.characters,
-        scenes: savedScript.scenes,
-        rawText: savedScript.rawText,
-      );
-      if (context.mounted) context.push('/production');
-    } else {
-      if (context.mounted) context.push('/import');
+    } catch (e) {
+      debugPrint('Background cloud sync failed: $e');
     }
   }
 

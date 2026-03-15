@@ -11,7 +11,7 @@ class RehearsalSession {
   final int completedLines;
   final double averageMatchScore;
   final List<LineAttempt> lineAttempts;
-  final bool cueToCueMode;
+  final String rehearsalMode; // 'sceneReadthrough' or 'cuePractice'
 
   const RehearsalSession({
     required this.id,
@@ -25,7 +25,7 @@ class RehearsalSession {
     required this.completedLines,
     required this.averageMatchScore,
     required this.lineAttempts,
-    required this.cueToCueMode,
+    required this.rehearsalMode,
   });
 
   Duration get duration => endedAt.difference(startedAt);

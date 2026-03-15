@@ -183,7 +183,7 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen> {
       );
     }
 
-    final cueToCue = ref.watch(cueToCueModeProvider);
+    final mode = ref.watch(rehearsalModeProvider);
     final dialogueLines = _getRehearsalLines(script, scene, myCharacter);
 
     final isComplete = currentIdx >= dialogueLines.length;
@@ -198,7 +198,7 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen> {
       body: SafeArea(
         child: Column(
           children: [
-            _buildTopBar(context, scene, progress, rehearsalState, cueToCue),
+            _buildTopBar(context, scene, progress, rehearsalState, mode),
             LinearProgressIndicator(
               value: progress,
               backgroundColor: Colors.grey[900],
@@ -227,7 +227,7 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen> {
   }
 
   Widget _buildTopBar(BuildContext context, ScriptScene scene, double progress,
-      RehearsalState rehearsalState, bool cueToCue) {
+      RehearsalState rehearsalState, RehearsalMode mode) {
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
       child: Row(
@@ -261,8 +261,8 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen> {
               ],
             ),
           ),
-          // Cue-to-cue badge
-          if (cueToCue)
+          // Mode badge
+          if (mode == RehearsalMode.cuePractice)
             Container(
               padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
               margin: const EdgeInsets.only(right: 4),
@@ -270,8 +270,21 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen> {
                 color: Colors.blue.withValues(alpha: 0.2),
                 borderRadius: BorderRadius.circular(8),
               ),
-              child: const Text('C2C',
+              child: const Text('CUE',
                   style: TextStyle(color: Colors.blue, fontSize: 9,
+                      fontWeight: FontWeight.bold)),
+            ),
+          // Blind rehearsal badge
+          if (ref.watch(hideMyLinesProvider))
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+              margin: const EdgeInsets.only(right: 4),
+              decoration: BoxDecoration(
+                color: Colors.purple.withValues(alpha: 0.2),
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: const Text('BLIND',
+                  style: TextStyle(color: Colors.purple, fontSize: 9,
                       fontWeight: FontWeight.bold)),
             ),
           // Voice clone opt-out badge
@@ -474,14 +487,26 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen> {
                       ),
                     ),
                   ),
-                Text(
-                  line.text,
-                  style: TextStyle(
-                    color: Colors.white,
-                    fontSize: isCurrent ? 18 : 15,
-                    height: 1.4,
+                // Hide the actor's upcoming lines in blind mode
+                if (ref.watch(hideMyLinesProvider) && isMe && !isPast)
+                  Text(
+                    'Say your line...',
+                    style: TextStyle(
+                      color: Colors.grey[600],
+                      fontSize: isCurrent ? 18 : 15,
+                      height: 1.4,
+                      fontStyle: FontStyle.italic,
+                    ),
+                  )
+                else
+                  Text(
+                    line.text,
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontSize: isCurrent ? 18 : 15,
+                      height: 1.4,
+                    ),
                   ),
-                ),
                 // Show recognized text under current line if listening
                 if (isCurrent && isMe && _recognizedText.isNotEmpty)
                   Padding(
@@ -713,9 +738,15 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen> {
           _controlButton(
             context,
             icon: Icons.replay,
-            label: 'Back $jumpBackLines',
+            label: ref.read(rehearsalModeProvider) == RehearsalMode.cuePractice
+                ? 'Back 2'
+                : 'Back $jumpBackLines',
             onTap: currentIdx > 0
-                ? () => _jumpBack(jumpBackLines, totalLines)
+                ? () => _jumpBack(
+                    ref.read(rehearsalModeProvider) == RehearsalMode.cuePractice
+                        ? 2
+                        : jumpBackLines,
+                    totalLines)
                 : null,
           ),
           _controlButton(
@@ -833,8 +864,8 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen> {
     final allDialogue =
         sceneLines.where((l) => l.lineType == LineType.dialogue).toList();
 
-    final cueToCue = ref.read(cueToCueModeProvider);
-    if (!cueToCue || myCharacter == null) return allDialogue;
+    final mode = ref.read(rehearsalModeProvider);
+    if (mode != RehearsalMode.cuePractice || myCharacter == null) return allDialogue;
 
     // Build a filtered list: for each of the actor's lines, include
     // the immediately preceding line (the cue) plus the actor's line.
@@ -1235,7 +1266,7 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen> {
     final scene = ref.read(selectedSceneProvider);
     final myCharacter = ref.read(rehearsalCharacterProvider);
     final production = ref.read(currentProductionProvider);
-    final cueToCue = ref.read(cueToCueModeProvider);
+    final mode = ref.read(rehearsalModeProvider);
     if (scene == null || myCharacter == null) return;
 
     final myLines = dialogueLines
@@ -1259,24 +1290,43 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen> {
       completedLines: completedLines,
       averageMatchScore: avgScore,
       lineAttempts: List.from(_lineAttempts),
-      cueToCueMode: cueToCue,
+      rehearsalMode: mode.name,
     );
 
     ref.read(rehearsalHistoryProvider.notifier).add(session);
   }
 
   void _scrollToCurrentLine() {
-    // Wait for the next frame so the key is attached to the rebuilt widget
+    // Wait for the current frame to complete layout so maxScrollExtent
+    // and the scroll controller are valid.
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      final ctx = _currentLineKey.currentContext;
-      if (ctx != null) {
-        Scrollable.ensureVisible(
-          ctx,
-          alignment: 0.3, // position current line ~30% from top
-          duration: const Duration(milliseconds: 300),
-          curve: Curves.easeOut,
-        );
-      }
+      if (!mounted || !_scrollController.hasClients) return;
+
+      final currentIdx = ref.read(currentLineIndexProvider);
+
+      // Estimate item height for the initial jump. Each line card is
+      // ~80-120px with margins; use 100px as a reasonable average.
+      const estimatedItemHeight = 100.0;
+      final targetOffset = currentIdx * estimatedItemHeight;
+      final maxScroll = _scrollController.position.maxScrollExtent;
+
+      // Jump near the target so ListView.builder materialises the widget.
+      _scrollController.jumpTo(targetOffset.clamp(0.0, maxScroll));
+
+      // After the jump, wait one more frame for the target item to build,
+      // then use ensureVisible for pixel-perfect positioning.
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        final ctx = _currentLineKey.currentContext;
+        if (ctx != null) {
+          Scrollable.ensureVisible(
+            ctx,
+            alignment: 0.3, // position current line ~30% from top
+            duration: const Duration(milliseconds: 300),
+            curve: Curves.easeOut,
+          );
+        }
+      });
     });
   }
 }

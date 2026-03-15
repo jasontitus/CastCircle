@@ -65,7 +65,7 @@ class _ProductionHubScreenState extends ConsumerState<ProductionHubScreen> {
           FilledButton.icon(
             onPressed: () {
               Navigator.pop(ctx);
-              context.push('/models');
+              context.push('/ai-models');
             },
             icon: const Icon(Icons.download),
             label: const Text('Download Now'),
@@ -216,7 +216,7 @@ class _ProductionHubScreenState extends ConsumerState<ProductionHubScreen> {
           }),
           _drawerItem(Icons.smart_toy, 'AI Models', () {
             Navigator.pop(context);
-            context.push('/models');
+            context.push('/ai-models');
           }),
           _drawerItem(Icons.settings, 'Settings', () {
             Navigator.pop(context);
@@ -316,7 +316,7 @@ class _ProductionHubScreenState extends ConsumerState<ProductionHubScreen> {
               color: theme.colorScheme.tertiaryContainer,
               margin: const EdgeInsets.only(bottom: 16),
               child: InkWell(
-                onTap: () => context.push('/models'),
+                onTap: () => context.push('/ai-models'),
                 borderRadius: BorderRadius.circular(12),
                 child: Padding(
                   padding: const EdgeInsets.all(16),

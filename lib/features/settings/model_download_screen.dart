@@ -25,7 +25,6 @@ class _ModelDownloadScreenState extends ConsumerState<ModelDownloadScreen> {
 
   bool _kokoroReady = false;
   bool _parakeetReady = false;
-  bool _vadReady = false;
 
   @override
   void initState() {
@@ -37,13 +36,11 @@ class _ModelDownloadScreenState extends ConsumerState<ModelDownloadScreen> {
     final results = await Future.wait([
       _manager.isKokoroReady(),
       _manager.isParakeetReady(),
-      _manager.isVadReady(),
     ]);
     if (mounted) {
       setState(() {
         _kokoroReady = results[0];
         _parakeetReady = results[1];
-        _vadReady = results[2];
       });
     }
   }
@@ -87,7 +84,7 @@ class _ModelDownloadScreenState extends ConsumerState<ModelDownloadScreen> {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final allReady = _kokoroReady && _parakeetReady && _vadReady;
+    final allReady = _kokoroReady && _parakeetReady;
 
     return Scaffold(
       appBar: AppBar(title: const Text('AI Models')),
@@ -117,19 +114,11 @@ class _ModelDownloadScreenState extends ConsumerState<ModelDownloadScreen> {
           ),
           _modelCard(
             context,
-            title: 'Speech Recognition',
-            subtitle: 'On-device STT for line matching',
+            title: 'Parakeet STT (future)',
+            subtitle: 'MLX on-device STT — uses Apple Speech for now',
             size: '~244 MB',
             ready: _parakeetReady,
             icon: Icons.hearing,
-          ),
-          _modelCard(
-            context,
-            title: 'Voice Activity Detection',
-            subtitle: 'Detects when you start/stop speaking',
-            size: '~2 MB',
-            ready: _vadReady,
-            icon: Icons.mic,
           ),
           const SizedBox(height: 24),
           if (_downloading) ...[
@@ -201,7 +190,7 @@ class _ModelDownloadScreenState extends ConsumerState<ModelDownloadScreen> {
             ),
             const SizedBox(height: 8),
             Text(
-              'Total download: ~340 MB. Wi-Fi recommended.',
+              'Total download: ~336 MB. Wi-Fi recommended.',
               textAlign: TextAlign.center,
               style: theme.textTheme.bodySmall?.copyWith(
                 color: theme.colorScheme.onSurface.withValues(alpha: 0.5),
