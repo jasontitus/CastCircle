@@ -15,6 +15,7 @@ class Productions extends Table {
   TextColumn get organizerId => text().nullable()();
   TextColumn get status => text().withDefault(const Constant('draft'))();
   TextColumn get scriptPath => text().nullable()();
+  TextColumn get locale => text().withDefault(const Constant('en-US'))();
   DateTimeColumn get createdAt =>
       dateTime().withDefault(currentDateAndTime)();
 
@@ -101,7 +102,17 @@ class AppDatabase extends _$AppDatabase {
   AppDatabase.forTesting(super.e);
 
   @override
-  int get schemaVersion => 1;
+  int get schemaVersion => 2;
+
+  @override
+  MigrationStrategy get migration => MigrationStrategy(
+        onUpgrade: (migrator, from, to) async {
+          if (from < 2) {
+            // Add locale column to productions table
+            await migrator.addColumn(productions, productions.locale);
+          }
+        },
+      );
 
   // ── Productions ─────────────────────────────────────
 

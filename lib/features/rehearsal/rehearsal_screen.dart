@@ -105,13 +105,20 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen> {
     _dlog.startMemoryMonitoring();
     await _tts.init();
 
-    // Use the script dialect locale for STT
-    final dialect = ref.read(scriptDialectProvider);
-    await _stt.init(locale: dialect.locale);
+    final production = ref.read(currentProductionProvider);
+    final myCharacter = ref.read(rehearsalCharacterProvider);
+    final script = ref.read(currentScriptProvider);
+
+    // Use per-character locale if set, otherwise production default
+    var locale = production?.locale ?? 'en-US';
+    if (production != null && myCharacter != null) {
+      final charLocale = await VoiceConfigService.instance
+          .getLocale(production.id, myCharacter);
+      if (charLocale != null) locale = charLocale;
+    }
+    await _stt.init(locale: locale);
 
     // Assign voices to characters using production voice config
-    final script = ref.read(currentScriptProvider);
-    final production = ref.read(currentProductionProvider);
     if (script != null) {
       final voiceConfig = VoiceConfigService.instance;
       for (var i = 0; i < script.characters.length; i++) {
@@ -131,11 +138,8 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen> {
     }
 
     // Build STT vocabulary from script for correction
-    if (script != null) {
-      final production = ref.read(currentProductionProvider);
-      if (production != null) {
-        _sttVocab.buildFromScript(production.id, script.lines);
-      }
+    if (script != null && production != null) {
+      _sttVocab.buildFromScript(production.id, script.lines);
     }
 
     _tts.setCompletionHandler(() {
@@ -145,7 +149,6 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen> {
     });
 
     // Check for per-actor or per-production STT adapter
-    final myCharacter = ref.read(rehearsalCharacterProvider);
     if (production != null && myCharacter != null) {
       _activeAdapter = _sttAdapt.getBestAdapter(production.id, myCharacter);
       if (_activeAdapter != null) {

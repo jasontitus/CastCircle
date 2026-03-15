@@ -21,19 +21,6 @@ final rehearsalModeProvider =
 /// When true, the actor's upcoming lines are hidden (blind rehearsal).
 final hideMyLinesProvider = StateProvider<bool>((ref) => false);
 
-/// Script dialect — affects STT locale and vocabulary hints.
-enum ScriptDialect {
-  americanEnglish('en-US', 'American English'),
-  britishEnglish('en-GB', 'British English'),
-  ;
-
-  const ScriptDialect(this.locale, this.label);
-  final String locale;
-  final String label;
-}
-
-final scriptDialectProvider =
-    StateProvider<ScriptDialect>((ref) => ScriptDialect.americanEnglish);
 
 class SceneSelectorScreen extends ConsumerStatefulWidget {
   const SceneSelectorScreen({super.key});
@@ -179,33 +166,6 @@ class _SceneSelectorScreenState extends ConsumerState<SceneSelectorScreen> {
             value: hideLines,
             onChanged: (v) =>
                 ref.read(hideMyLinesProvider.notifier).state = v,
-          ),
-          _buildDialectSelector(context),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildDialectSelector(BuildContext context) {
-    final dialect = ref.watch(scriptDialectProvider);
-    return Padding(
-      padding: const EdgeInsets.only(top: 4),
-      child: Row(
-        children: [
-          Icon(Icons.language, size: 18, color: Colors.grey[500]),
-          const SizedBox(width: 8),
-          Text('Script dialect:', style: TextStyle(color: Colors.grey[400], fontSize: 13)),
-          const SizedBox(width: 8),
-          DropdownButton<ScriptDialect>(
-            value: dialect,
-            isDense: true,
-            underline: const SizedBox.shrink(),
-            items: ScriptDialect.values.map((d) {
-              return DropdownMenuItem(value: d, child: Text(d.label, style: const TextStyle(fontSize: 13)));
-            }).toList(),
-            onChanged: (v) {
-              if (v != null) ref.read(scriptDialectProvider.notifier).state = v;
-            },
           ),
         ],
       ),

@@ -7,6 +7,12 @@ import '../../data/models/script_models.dart';
 import '../../data/services/voice_config_service.dart';
 import '../../providers/production_providers.dart';
 
+const _localeOptions = {
+  null: 'Production Default',
+  'en-US': 'American English',
+  'en-GB': 'British English',
+};
+
 class CharacterManagerScreen extends ConsumerStatefulWidget {
   const CharacterManagerScreen({super.key});
 
@@ -17,6 +23,23 @@ class CharacterManagerScreen extends ConsumerStatefulWidget {
 
 class _CharacterManagerScreenState
     extends ConsumerState<CharacterManagerScreen> {
+  Map<String, String> _charLocales = {};
+
+  @override
+  void initState() {
+    super.initState();
+    _loadLocales();
+  }
+
+  Future<void> _loadLocales() async {
+    final production = ref.read(currentProductionProvider);
+    if (production != null) {
+      final locales =
+          await VoiceConfigService.instance.getLocales(production.id);
+      if (mounted) setState(() => _charLocales = locales);
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final script = ref.watch(currentScriptProvider);
@@ -93,7 +116,8 @@ class _CharacterManagerScreenState
                     ),
                     title: Text(char.name),
                     subtitle: Text(
-                      '${char.lineCount} lines · ${_genderLabel(char.gender)}',
+                      '${char.lineCount} lines · ${_genderLabel(char.gender)}'
+                      '${_charLocales.containsKey(char.name) ? ' · ${_localeOptions[_charLocales[char.name]] ?? _charLocales[char.name]}' : ''}',
                     ),
                     trailing: Row(
                       mainAxisSize: MainAxisSize.min,
@@ -112,6 +136,14 @@ class _CharacterManagerScreenState
                           onSelected: (action) =>
                               _handleAction(context, ref, action, char, script),
                           itemBuilder: (context) => [
+                            const PopupMenuItem(
+                              value: 'locale',
+                              child: ListTile(
+                                leading: Icon(Icons.language),
+                                title: Text('Set Dialect'),
+                                dense: true,
+                              ),
+                            ),
                             const PopupMenuItem(
                               value: 'rename',
                               child: ListTile(
@@ -205,6 +237,8 @@ class _CharacterManagerScreenState
   void _handleAction(BuildContext context, WidgetRef ref, String action,
       ScriptCharacter char, ParsedScript script) {
     switch (action) {
+      case 'locale':
+        _setCharacterLocale(context, char);
       case 'rename':
         _renameCharacter(context, ref, char, script);
       case 'merge':
@@ -212,6 +246,38 @@ class _CharacterManagerScreenState
       case 'delete':
         _deleteCharacter(context, ref, char, script);
     }
+  }
+
+  void _setCharacterLocale(BuildContext context, ScriptCharacter char) {
+    final production = ref.read(currentProductionProvider);
+    if (production == null) return;
+    final currentLocale = _charLocales[char.name];
+
+    showDialog(
+      context: context,
+      builder: (ctx) => SimpleDialog(
+        title: Text('Dialect for ${char.name}'),
+        children: _localeOptions.entries.map((e) {
+          return RadioListTile<String?>(
+            value: e.key,
+            groupValue: currentLocale,
+            title: Text(e.value),
+            onChanged: (value) async {
+              await VoiceConfigService.instance
+                  .setLocale(production.id, char.name, value);
+              setState(() {
+                if (value == null) {
+                  _charLocales.remove(char.name);
+                } else {
+                  _charLocales[char.name] = value;
+                }
+              });
+              if (ctx.mounted) Navigator.pop(ctx);
+            },
+          );
+        }).toList(),
+      ),
+    );
   }
 
   void _renameCharacter(BuildContext context, WidgetRef ref,

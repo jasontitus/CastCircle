@@ -30,6 +30,7 @@ class ProductionRepository {
       organizerId: Value(production.organizerId),
       status: Value(production.status.name),
       scriptPath: Value(production.scriptPath),
+      locale: Value(production.locale),
       createdAt: Value(production.createdAt),
     ));
   }
@@ -49,6 +50,7 @@ class ProductionRepository {
       organizerId: row.organizerId ?? '',
       status: models.ProductionStatus.values.byName(row.status),
       scriptPath: row.scriptPath,
+      locale: row.locale,
       createdAt: row.createdAt,
     );
   }

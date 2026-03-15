@@ -131,6 +131,45 @@ class VoiceConfigService {
     await prefs.setString('character_genders_$productionId', json);
   }
 
+  // ── Per-Character Locale Override ────────────────────────
+
+  /// Get all character locale overrides for a production.
+  /// Characters without an override use the production's default locale.
+  Future<Map<String, String>> getLocales(String productionId) async {
+    final prefs = await _preferences;
+    final json = prefs.getString('character_locales_$productionId');
+    if (json == null) return {};
+
+    try {
+      final map = jsonDecode(json) as Map<String, dynamic>;
+      return map.map((key, value) => MapEntry(key, value as String));
+    } catch (e) {
+      debugPrint('VoiceConfig: Failed to parse locales: $e');
+      return {};
+    }
+  }
+
+  /// Get the locale for a specific character, or null (use production default).
+  Future<String?> getLocale(
+      String productionId, String characterName) async {
+    final locales = await getLocales(productionId);
+    return locales[characterName];
+  }
+
+  /// Set a locale override for a specific character.
+  Future<void> setLocale(
+      String productionId, String characterName, String? locale) async {
+    final locales = await getLocales(productionId);
+    if (locale == null) {
+      locales.remove(characterName);
+    } else {
+      locales[characterName] = locale;
+    }
+    final prefs = await _preferences;
+    await prefs.setString(
+        'character_locales_$productionId', jsonEncode(locales));
+  }
+
   // ── Resolved Voice Assignment ───────────────────────────
 
   /// Resolve the final voice ID for a character, considering preset + overrides.

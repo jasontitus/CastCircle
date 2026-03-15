@@ -59,6 +59,16 @@ class $ProductionsTable extends Productions
     type: DriftSqlType.string,
     requiredDuringInsert: false,
   );
+  static const VerificationMeta _localeMeta = const VerificationMeta('locale');
+  @override
+  late final GeneratedColumn<String> locale = GeneratedColumn<String>(
+    'locale',
+    aliasedName,
+    false,
+    type: DriftSqlType.string,
+    requiredDuringInsert: false,
+    defaultValue: const Constant('en-US'),
+  );
   static const VerificationMeta _createdAtMeta = const VerificationMeta(
     'createdAt',
   );
@@ -78,6 +88,7 @@ class $ProductionsTable extends Productions
     organizerId,
     status,
     scriptPath,
+    locale,
     createdAt,
   ];
   @override
@@ -126,6 +137,12 @@ class $ProductionsTable extends Productions
         scriptPath.isAcceptableOrUnknown(data['script_path']!, _scriptPathMeta),
       );
     }
+    if (data.containsKey('locale')) {
+      context.handle(
+        _localeMeta,
+        locale.isAcceptableOrUnknown(data['locale']!, _localeMeta),
+      );
+    }
     if (data.containsKey('created_at')) {
       context.handle(
         _createdAtMeta,
@@ -161,6 +178,10 @@ class $ProductionsTable extends Productions
         DriftSqlType.string,
         data['${effectivePrefix}script_path'],
       ),
+      locale: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}locale'],
+      )!,
       createdAt: attachedDatabase.typeMapping.read(
         DriftSqlType.dateTime,
         data['${effectivePrefix}created_at'],
@@ -180,6 +201,7 @@ class Production extends DataClass implements Insertable<Production> {
   final String? organizerId;
   final String status;
   final String? scriptPath;
+  final String locale;
   final DateTime createdAt;
   const Production({
     required this.id,
@@ -187,6 +209,7 @@ class Production extends DataClass implements Insertable<Production> {
     this.organizerId,
     required this.status,
     this.scriptPath,
+    required this.locale,
     required this.createdAt,
   });
   @override
@@ -201,6 +224,7 @@ class Production extends DataClass implements Insertable<Production> {
     if (!nullToAbsent || scriptPath != null) {
       map['script_path'] = Variable<String>(scriptPath);
     }
+    map['locale'] = Variable<String>(locale);
     map['created_at'] = Variable<DateTime>(createdAt);
     return map;
   }
@@ -216,6 +240,7 @@ class Production extends DataClass implements Insertable<Production> {
       scriptPath: scriptPath == null && nullToAbsent
           ? const Value.absent()
           : Value(scriptPath),
+      locale: Value(locale),
       createdAt: Value(createdAt),
     );
   }
@@ -231,6 +256,7 @@ class Production extends DataClass implements Insertable<Production> {
       organizerId: serializer.fromJson<String?>(json['organizerId']),
       status: serializer.fromJson<String>(json['status']),
       scriptPath: serializer.fromJson<String?>(json['scriptPath']),
+      locale: serializer.fromJson<String>(json['locale']),
       createdAt: serializer.fromJson<DateTime>(json['createdAt']),
     );
   }
@@ -243,6 +269,7 @@ class Production extends DataClass implements Insertable<Production> {
       'organizerId': serializer.toJson<String?>(organizerId),
       'status': serializer.toJson<String>(status),
       'scriptPath': serializer.toJson<String?>(scriptPath),
+      'locale': serializer.toJson<String>(locale),
       'createdAt': serializer.toJson<DateTime>(createdAt),
     };
   }
@@ -253,6 +280,7 @@ class Production extends DataClass implements Insertable<Production> {
     Value<String?> organizerId = const Value.absent(),
     String? status,
     Value<String?> scriptPath = const Value.absent(),
+    String? locale,
     DateTime? createdAt,
   }) => Production(
     id: id ?? this.id,
@@ -260,6 +288,7 @@ class Production extends DataClass implements Insertable<Production> {
     organizerId: organizerId.present ? organizerId.value : this.organizerId,
     status: status ?? this.status,
     scriptPath: scriptPath.present ? scriptPath.value : this.scriptPath,
+    locale: locale ?? this.locale,
     createdAt: createdAt ?? this.createdAt,
   );
   Production copyWithCompanion(ProductionsCompanion data) {
@@ -273,6 +302,7 @@ class Production extends DataClass implements Insertable<Production> {
       scriptPath: data.scriptPath.present
           ? data.scriptPath.value
           : this.scriptPath,
+      locale: data.locale.present ? data.locale.value : this.locale,
       createdAt: data.createdAt.present ? data.createdAt.value : this.createdAt,
     );
   }
@@ -285,14 +315,22 @@ class Production extends DataClass implements Insertable<Production> {
           ..write('organizerId: $organizerId, ')
           ..write('status: $status, ')
           ..write('scriptPath: $scriptPath, ')
+          ..write('locale: $locale, ')
           ..write('createdAt: $createdAt')
           ..write(')'))
         .toString();
   }
 
   @override
-  int get hashCode =>
-      Object.hash(id, title, organizerId, status, scriptPath, createdAt);
+  int get hashCode => Object.hash(
+    id,
+    title,
+    organizerId,
+    status,
+    scriptPath,
+    locale,
+    createdAt,
+  );
   @override
   bool operator ==(Object other) =>
       identical(this, other) ||
@@ -302,6 +340,7 @@ class Production extends DataClass implements Insertable<Production> {
           other.organizerId == this.organizerId &&
           other.status == this.status &&
           other.scriptPath == this.scriptPath &&
+          other.locale == this.locale &&
           other.createdAt == this.createdAt);
 }
 
@@ -311,6 +350,7 @@ class ProductionsCompanion extends UpdateCompanion<Production> {
   final Value<String?> organizerId;
   final Value<String> status;
   final Value<String?> scriptPath;
+  final Value<String> locale;
   final Value<DateTime> createdAt;
   final Value<int> rowid;
   const ProductionsCompanion({
@@ -319,6 +359,7 @@ class ProductionsCompanion extends UpdateCompanion<Production> {
     this.organizerId = const Value.absent(),
     this.status = const Value.absent(),
     this.scriptPath = const Value.absent(),
+    this.locale = const Value.absent(),
     this.createdAt = const Value.absent(),
     this.rowid = const Value.absent(),
   });
@@ -328,6 +369,7 @@ class ProductionsCompanion extends UpdateCompanion<Production> {
     this.organizerId = const Value.absent(),
     this.status = const Value.absent(),
     this.scriptPath = const Value.absent(),
+    this.locale = const Value.absent(),
     this.createdAt = const Value.absent(),
     this.rowid = const Value.absent(),
   }) : id = Value(id),
@@ -338,6 +380,7 @@ class ProductionsCompanion extends UpdateCompanion<Production> {
     Expression<String>? organizerId,
     Expression<String>? status,
     Expression<String>? scriptPath,
+    Expression<String>? locale,
     Expression<DateTime>? createdAt,
     Expression<int>? rowid,
   }) {
@@ -347,6 +390,7 @@ class ProductionsCompanion extends UpdateCompanion<Production> {
       if (organizerId != null) 'organizer_id': organizerId,
       if (status != null) 'status': status,
       if (scriptPath != null) 'script_path': scriptPath,
+      if (locale != null) 'locale': locale,
       if (createdAt != null) 'created_at': createdAt,
       if (rowid != null) 'rowid': rowid,
     });
@@ -358,6 +402,7 @@ class ProductionsCompanion extends UpdateCompanion<Production> {
     Value<String?>? organizerId,
     Value<String>? status,
     Value<String?>? scriptPath,
+    Value<String>? locale,
     Value<DateTime>? createdAt,
     Value<int>? rowid,
   }) {
@@ -367,6 +412,7 @@ class ProductionsCompanion extends UpdateCompanion<Production> {
       organizerId: organizerId ?? this.organizerId,
       status: status ?? this.status,
       scriptPath: scriptPath ?? this.scriptPath,
+      locale: locale ?? this.locale,
       createdAt: createdAt ?? this.createdAt,
       rowid: rowid ?? this.rowid,
     );
@@ -390,6 +436,9 @@ class ProductionsCompanion extends UpdateCompanion<Production> {
     if (scriptPath.present) {
       map['script_path'] = Variable<String>(scriptPath.value);
     }
+    if (locale.present) {
+      map['locale'] = Variable<String>(locale.value);
+    }
     if (createdAt.present) {
       map['created_at'] = Variable<DateTime>(createdAt.value);
     }
@@ -407,6 +456,7 @@ class ProductionsCompanion extends UpdateCompanion<Production> {
           ..write('organizerId: $organizerId, ')
           ..write('status: $status, ')
           ..write('scriptPath: $scriptPath, ')
+          ..write('locale: $locale, ')
           ..write('createdAt: $createdAt, ')
           ..write('rowid: $rowid')
           ..write(')'))
@@ -2730,6 +2780,7 @@ typedef $$ProductionsTableCreateCompanionBuilder =
       Value<String?> organizerId,
       Value<String> status,
       Value<String?> scriptPath,
+      Value<String> locale,
       Value<DateTime> createdAt,
       Value<int> rowid,
     });
@@ -2740,6 +2791,7 @@ typedef $$ProductionsTableUpdateCompanionBuilder =
       Value<String?> organizerId,
       Value<String> status,
       Value<String?> scriptPath,
+      Value<String> locale,
       Value<DateTime> createdAt,
       Value<int> rowid,
     });
@@ -2862,6 +2914,11 @@ class $$ProductionsTableFilterComposer
 
   ColumnFilters<String> get scriptPath => $composableBuilder(
     column: $table.scriptPath,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get locale => $composableBuilder(
+    column: $table.locale,
     builder: (column) => ColumnFilters(column),
   );
 
@@ -3005,6 +3062,11 @@ class $$ProductionsTableOrderingComposer
     builder: (column) => ColumnOrderings(column),
   );
 
+  ColumnOrderings<String> get locale => $composableBuilder(
+    column: $table.locale,
+    builder: (column) => ColumnOrderings(column),
+  );
+
   ColumnOrderings<DateTime> get createdAt => $composableBuilder(
     column: $table.createdAt,
     builder: (column) => ColumnOrderings(column),
@@ -3038,6 +3100,9 @@ class $$ProductionsTableAnnotationComposer
     column: $table.scriptPath,
     builder: (column) => column,
   );
+
+  GeneratedColumn<String> get locale =>
+      $composableBuilder(column: $table.locale, builder: (column) => column);
 
   GeneratedColumn<DateTime> get createdAt =>
       $composableBuilder(column: $table.createdAt, builder: (column) => column);
@@ -3181,6 +3246,7 @@ class $$ProductionsTableTableManager
                 Value<String?> organizerId = const Value.absent(),
                 Value<String> status = const Value.absent(),
                 Value<String?> scriptPath = const Value.absent(),
+                Value<String> locale = const Value.absent(),
                 Value<DateTime> createdAt = const Value.absent(),
                 Value<int> rowid = const Value.absent(),
               }) => ProductionsCompanion(
@@ -3189,6 +3255,7 @@ class $$ProductionsTableTableManager
                 organizerId: organizerId,
                 status: status,
                 scriptPath: scriptPath,
+                locale: locale,
                 createdAt: createdAt,
                 rowid: rowid,
               ),
@@ -3199,6 +3266,7 @@ class $$ProductionsTableTableManager
                 Value<String?> organizerId = const Value.absent(),
                 Value<String> status = const Value.absent(),
                 Value<String?> scriptPath = const Value.absent(),
+                Value<String> locale = const Value.absent(),
                 Value<DateTime> createdAt = const Value.absent(),
                 Value<int> rowid = const Value.absent(),
               }) => ProductionsCompanion.insert(
@@ -3207,6 +3275,7 @@ class $$ProductionsTableTableManager
                 organizerId: organizerId,
                 status: status,
                 scriptPath: scriptPath,
+                locale: locale,
                 createdAt: createdAt,
                 rowid: rowid,
               ),

@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
 import '../../core/theme/app_theme.dart';
+import '../../data/models/production_models.dart';
 import '../../data/models/script_models.dart';
 import '../../data/services/model_manager.dart';
 import '../../data/services/supabase_service.dart';
@@ -209,6 +210,10 @@ class _ProductionHubScreenState extends ConsumerState<ProductionHubScreen> {
             }),
             const Divider(),
           ],
+          // ── Production Settings ──
+          _drawerSection('Production'),
+          _buildLocaleItem(context, production),
+          const Divider(),
           // ── History & Settings ──
           _drawerItem(Icons.history, 'Rehearsal History', () {
             Navigator.pop(context);
@@ -246,6 +251,48 @@ class _ProductionHubScreenState extends ConsumerState<ProductionHubScreen> {
       title: Text(label),
       dense: true,
       onTap: onTap,
+    );
+  }
+
+  static const _localeLabels = {
+    'en-US': 'American English',
+    'en-GB': 'British English',
+  };
+
+  Widget _buildLocaleItem(BuildContext context, Production production) {
+    final label = _localeLabels[production.locale] ?? production.locale;
+    return ListTile(
+      leading: const Icon(Icons.language),
+      title: const Text('Script Dialect'),
+      subtitle: Text(label),
+      dense: true,
+      onTap: () => _showLocaleDialog(context, production),
+    );
+  }
+
+  void _showLocaleDialog(BuildContext context, Production production) {
+    showDialog(
+      context: context,
+      builder: (ctx) => SimpleDialog(
+        title: const Text('Script Dialect'),
+        children: _localeLabels.entries.map((e) {
+          final isSelected = production.locale == e.key;
+          return RadioListTile<String>(
+            value: e.key,
+            groupValue: production.locale,
+            title: Text(e.value),
+            selected: isSelected,
+            onChanged: (value) {
+              if (value != null) {
+                final updated = production.copyWith(locale: value);
+                ref.read(productionsProvider.notifier).update(updated);
+                ref.read(currentProductionProvider.notifier).state = updated;
+                Navigator.pop(ctx);
+              }
+            },
+          );
+        }).toList(),
+      ),
     );
   }
 
