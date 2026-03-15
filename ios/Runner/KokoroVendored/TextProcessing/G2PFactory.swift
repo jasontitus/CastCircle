@@ -33,11 +33,7 @@ final class G2PFactory {
     switch engine {
     
     case .misaki:
-#if canImport(MisakiSwift)
       return MisakiG2PProcessor()
-#else
-      throw G2PError.noSuchEngine
-#endif
 
     case .eSpeakNG:
 #if canImport(eSpeakNGLib)

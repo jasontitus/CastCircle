@@ -59,7 +59,32 @@
 		KOKORO000200000000000041 /* AudioUtils.swift in Sources */ = {isa = PBXBuildFile; fileRef = KOKORO000100000000000041 /* AudioUtils.swift */; };
 		KOKORO000200000000000042 /* config.json in Resources */ = {isa = PBXBuildFile; fileRef = KOKORO000100000000000042 /* config.json */; };
 		KOKORO000600000000000001 /* MLXUtilsLibrary in Frameworks */ = {isa = PBXBuildFile; productRef = KOKORO000500000000000001 /* MLXUtilsLibrary */; };
-		KOKORO000600000000000002 /* MisakiSwift in Frameworks */ = {isa = PBXBuildFile; productRef = KOKORO000500000000000002 /* MisakiSwift */; };
+		MISAKI000100000000000001 /* NLTag+ProperNoun.swift in Sources */ = {isa = PBXBuildFile; fileRef = MISAKI000200000000000001 /* NLTag+ProperNoun.swift */; };
+		MISAKI000100000000000002 /* MLXArray+DebugPrint.swift in Sources */ = {isa = PBXBuildFile; fileRef = MISAKI000200000000000002 /* MLXArray+DebugPrint.swift */; };
+		MISAKI000100000000000003 /* String+ReplacingLast.swift in Sources */ = {isa = PBXBuildFile; fileRef = MISAKI000200000000000003 /* String+ReplacingLast.swift */; };
+		MISAKI000100000000000004 /* Range+Contains.swift in Sources */ = {isa = PBXBuildFile; fileRef = MISAKI000200000000000004 /* Range+Contains.swift */; };
+		MISAKI000100000000000005 /* EnglishG2P.swift in Sources */ = {isa = PBXBuildFile; fileRef = MISAKI000200000000000005 /* EnglishG2P.swift */; };
+		MISAKI000100000000000006 /* TokenContext.swift in Sources */ = {isa = PBXBuildFile; fileRef = MISAKI000200000000000006 /* TokenContext.swift */; };
+		MISAKI000100000000000007 /* EnglishNum2Word.swift in Sources */ = {isa = PBXBuildFile; fileRef = MISAKI000200000000000007 /* EnglishNum2Word.swift */; };
+		MISAKI000100000000000008 /* DataResourcesUtil.swift in Sources */ = {isa = PBXBuildFile; fileRef = MISAKI000200000000000008 /* DataResourcesUtil.swift */; };
+		MISAKI000100000000000009 /* PennTagUtil.swift in Sources */ = {isa = PBXBuildFile; fileRef = MISAKI000200000000000009 /* PennTagUtil.swift */; };
+		MISAKI000100000000000010 /* Lexicon.swift in Sources */ = {isa = PBXBuildFile; fileRef = MISAKI000200000000000010 /* Lexicon.swift */; };
+		MISAKI000100000000000011 /* BARTModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = MISAKI000200000000000011 /* BARTModel.swift */; };
+		MISAKI000100000000000012 /* BARTEncoderLayer.swift in Sources */ = {isa = PBXBuildFile; fileRef = MISAKI000200000000000012 /* BARTEncoderLayer.swift */; };
+		MISAKI000100000000000013 /* BARTLayerNorm.swift in Sources */ = {isa = PBXBuildFile; fileRef = MISAKI000200000000000013 /* BARTLayerNorm.swift */; };
+		MISAKI000100000000000014 /* BARTDecoderLayer.swift in Sources */ = {isa = PBXBuildFile; fileRef = MISAKI000200000000000014 /* BARTDecoderLayer.swift */; };
+		MISAKI000100000000000015 /* BARTConfig.swift in Sources */ = {isa = PBXBuildFile; fileRef = MISAKI000200000000000015 /* BARTConfig.swift */; };
+		MISAKI000100000000000016 /* FeedForward.swift in Sources */ = {isa = PBXBuildFile; fileRef = MISAKI000200000000000016 /* FeedForward.swift */; };
+		MISAKI000100000000000017 /* MultiHeadAttention.swift in Sources */ = {isa = PBXBuildFile; fileRef = MISAKI000200000000000017 /* MultiHeadAttention.swift */; };
+		MISAKI000100000000000018 /* EnglishFallbackNetwork.swift in Sources */ = {isa = PBXBuildFile; fileRef = MISAKI000200000000000018 /* EnglishFallbackNetwork.swift */; };
+		MISAKI000100000000000019 /* gb_bart_config.json in Resources */ = {isa = PBXBuildFile; fileRef = MISAKI000200000000000019 /* gb_bart_config.json */; };
+		MISAKI000100000000000020 /* gb_bart.safetensors in Resources */ = {isa = PBXBuildFile; fileRef = MISAKI000200000000000020 /* gb_bart.safetensors */; };
+		MISAKI000100000000000021 /* gb_gold.json in Resources */ = {isa = PBXBuildFile; fileRef = MISAKI000200000000000021 /* gb_gold.json */; };
+		MISAKI000100000000000022 /* gb_silver.json in Resources */ = {isa = PBXBuildFile; fileRef = MISAKI000200000000000022 /* gb_silver.json */; };
+		MISAKI000100000000000023 /* us_bart_config.json in Resources */ = {isa = PBXBuildFile; fileRef = MISAKI000200000000000023 /* us_bart_config.json */; };
+		MISAKI000100000000000024 /* us_bart.safetensors in Resources */ = {isa = PBXBuildFile; fileRef = MISAKI000200000000000024 /* us_bart.safetensors */; };
+		MISAKI000100000000000025 /* us_gold.json in Resources */ = {isa = PBXBuildFile; fileRef = MISAKI000200000000000025 /* us_gold.json */; };
+		MISAKI000100000000000026 /* us_silver.json in Resources */ = {isa = PBXBuildFile; fileRef = MISAKI000200000000000026 /* us_silver.json */; };
 		A1B2C3D40100000AE0000001 /* MLX in Frameworks */ = {isa = PBXBuildFile; productRef = A1B2C3D40100000BE0000001 /* MLX */; };
 		A1B2C3D40100000DE0000001 /* MLXFast in Frameworks */ = {isa = PBXBuildFile; productRef = A1B2C3D40100000EE0000001 /* MLXFast */; };
 		A1B2C3D401000010E0000001 /* MLXNN in Frameworks */ = {isa = PBXBuildFile; productRef = A1B2C3D401000011E0000001 /* MLXNN */; };
@@ -164,6 +189,32 @@
 		KOKORO000100000000000040 /* eSpeakNGG2PProcessor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = eSpeakNGG2PProcessor.swift; sourceTree = "<group>"; };
 		KOKORO000100000000000041 /* AudioUtils.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioUtils.swift; sourceTree = "<group>"; };
 		KOKORO000100000000000042 /* config.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = config.json; sourceTree = "<group>"; };
+		MISAKI000200000000000001 /* NLTag+ProperNoun.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "NLTag+ProperNoun.swift"; sourceTree = "<group>"; };
+		MISAKI000200000000000002 /* MLXArray+DebugPrint.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "MLXArray+DebugPrint.swift"; sourceTree = "<group>"; };
+		MISAKI000200000000000003 /* String+ReplacingLast.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "String+ReplacingLast.swift"; sourceTree = "<group>"; };
+		MISAKI000200000000000004 /* Range+Contains.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Range+Contains.swift"; sourceTree = "<group>"; };
+		MISAKI000200000000000005 /* EnglishG2P.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EnglishG2P.swift; sourceTree = "<group>"; };
+		MISAKI000200000000000006 /* TokenContext.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TokenContext.swift; sourceTree = "<group>"; };
+		MISAKI000200000000000007 /* EnglishNum2Word.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EnglishNum2Word.swift; sourceTree = "<group>"; };
+		MISAKI000200000000000008 /* DataResourcesUtil.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DataResourcesUtil.swift; sourceTree = "<group>"; };
+		MISAKI000200000000000009 /* PennTagUtil.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PennTagUtil.swift; sourceTree = "<group>"; };
+		MISAKI000200000000000010 /* Lexicon.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Lexicon.swift; sourceTree = "<group>"; };
+		MISAKI000200000000000011 /* BARTModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BARTModel.swift; sourceTree = "<group>"; };
+		MISAKI000200000000000012 /* BARTEncoderLayer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BARTEncoderLayer.swift; sourceTree = "<group>"; };
+		MISAKI000200000000000013 /* BARTLayerNorm.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BARTLayerNorm.swift; sourceTree = "<group>"; };
+		MISAKI000200000000000014 /* BARTDecoderLayer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BARTDecoderLayer.swift; sourceTree = "<group>"; };
+		MISAKI000200000000000015 /* BARTConfig.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BARTConfig.swift; sourceTree = "<group>"; };
+		MISAKI000200000000000016 /* FeedForward.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FeedForward.swift; sourceTree = "<group>"; };
+		MISAKI000200000000000017 /* MultiHeadAttention.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MultiHeadAttention.swift; sourceTree = "<group>"; };
+		MISAKI000200000000000018 /* EnglishFallbackNetwork.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EnglishFallbackNetwork.swift; sourceTree = "<group>"; };
+		MISAKI000200000000000019 /* gb_bart_config.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = gb_bart_config.json; sourceTree = "<group>"; };
+		MISAKI000200000000000020 /* gb_bart.safetensors */ = {isa = PBXFileReference; lastKnownFileType = file; path = gb_bart.safetensors; sourceTree = "<group>"; };
+		MISAKI000200000000000021 /* gb_gold.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = gb_gold.json; sourceTree = "<group>"; };
+		MISAKI000200000000000022 /* gb_silver.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = gb_silver.json; sourceTree = "<group>"; };
+		MISAKI000200000000000023 /* us_bart_config.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = us_bart_config.json; sourceTree = "<group>"; };
+		MISAKI000200000000000024 /* us_bart.safetensors */ = {isa = PBXFileReference; lastKnownFileType = file; path = us_bart.safetensors; sourceTree = "<group>"; };
+		MISAKI000200000000000025 /* us_gold.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = us_gold.json; sourceTree = "<group>"; };
+		MISAKI000200000000000026 /* us_silver.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = us_silver.json; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -181,7 +232,6 @@
 			files = (
 				14692237A6EC9A5B95750614 /* Pods_Runner.framework in Frameworks */,
 				KOKORO000600000000000001 /* MLXUtilsLibrary in Frameworks */,
-				KOKORO000600000000000002 /* MisakiSwift in Frameworks */,
 				A1B2C3D40100000AE0000001 /* MLX in Frameworks */,
 				A1B2C3D40100000DE0000001 /* MLXFast in Frameworks */,
 				A1B2C3D401000010E0000001 /* MLXNN in Frameworks */,
@@ -249,6 +299,7 @@
 				74858FAD1ED2DC5600515810 /* Runner-Bridging-Header.h */,
 				4C96AB88695FDD4A90758E11 /* MLXSttPlugin.swift */,
 				KOKORO000300000000000001 /* KokoroVendored */,
+				MISAKI000300000000000001 /* MisakiVendored */,
 			);
 			path = Runner;
 			sourceTree = "<group>";
@@ -381,6 +432,95 @@
 			path = Resources;
 			sourceTree = "<group>";
 		};
+		MISAKI000300000000000001 /* MisakiVendored */ = {
+			isa = PBXGroup;
+			children = (
+				MISAKI000300000000000002 /* Extensions */,
+				MISAKI000300000000000003 /* English */,
+				MISAKI000300000000000008 /* Resources */,
+			);
+			path = MisakiVendored;
+			sourceTree = "<group>";
+		};
+		MISAKI000300000000000002 /* Extensions */ = {
+			isa = PBXGroup;
+			children = (
+				MISAKI000200000000000001 /* NLTag+ProperNoun.swift */,
+				MISAKI000200000000000002 /* MLXArray+DebugPrint.swift */,
+				MISAKI000200000000000003 /* String+ReplacingLast.swift */,
+				MISAKI000200000000000004 /* Range+Contains.swift */,
+			);
+			path = Extensions;
+			sourceTree = "<group>";
+		};
+		MISAKI000300000000000003 /* English */ = {
+			isa = PBXGroup;
+			children = (
+				MISAKI000200000000000005 /* EnglishG2P.swift */,
+				MISAKI000300000000000004 /* DataStructures */,
+				MISAKI000300000000000005 /* Num2Word */,
+				MISAKI000300000000000006 /* Lexicon */,
+				MISAKI000300000000000007 /* FallbackNetwork */,
+			);
+			path = English;
+			sourceTree = "<group>";
+		};
+		MISAKI000300000000000004 /* DataStructures */ = {
+			isa = PBXGroup;
+			children = (
+				MISAKI000200000000000006 /* TokenContext.swift */,
+			);
+			path = DataStructures;
+			sourceTree = "<group>";
+		};
+		MISAKI000300000000000005 /* Num2Word */ = {
+			isa = PBXGroup;
+			children = (
+				MISAKI000200000000000007 /* EnglishNum2Word.swift */,
+			);
+			path = Num2Word;
+			sourceTree = "<group>";
+		};
+		MISAKI000300000000000006 /* Lexicon */ = {
+			isa = PBXGroup;
+			children = (
+				MISAKI000200000000000008 /* DataResourcesUtil.swift */,
+				MISAKI000200000000000009 /* PennTagUtil.swift */,
+				MISAKI000200000000000010 /* Lexicon.swift */,
+			);
+			path = Lexicon;
+			sourceTree = "<group>";
+		};
+		MISAKI000300000000000007 /* FallbackNetwork */ = {
+			isa = PBXGroup;
+			children = (
+				MISAKI000200000000000011 /* BARTModel.swift */,
+				MISAKI000200000000000012 /* BARTEncoderLayer.swift */,
+				MISAKI000200000000000013 /* BARTLayerNorm.swift */,
+				MISAKI000200000000000014 /* BARTDecoderLayer.swift */,
+				MISAKI000200000000000015 /* BARTConfig.swift */,
+				MISAKI000200000000000016 /* FeedForward.swift */,
+				MISAKI000200000000000017 /* MultiHeadAttention.swift */,
+				MISAKI000200000000000018 /* EnglishFallbackNetwork.swift */,
+			);
+			path = FallbackNetwork;
+			sourceTree = "<group>";
+		};
+		MISAKI000300000000000008 /* Resources */ = {
+			isa = PBXGroup;
+			children = (
+				MISAKI000200000000000019 /* gb_bart_config.json */,
+				MISAKI000200000000000020 /* gb_bart.safetensors */,
+				MISAKI000200000000000021 /* gb_gold.json */,
+				MISAKI000200000000000022 /* gb_silver.json */,
+				MISAKI000200000000000023 /* us_bart_config.json */,
+				MISAKI000200000000000024 /* us_bart.safetensors */,
+				MISAKI000200000000000025 /* us_gold.json */,
+				MISAKI000200000000000026 /* us_silver.json */,
+			);
+			path = Resources;
+			sourceTree = "<group>";
+		};
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
@@ -429,7 +569,6 @@
 				A1B2C3D401000013E0000001 /* MLXRandom */,
 				A1B2C3D401000015E0000001 /* MLXFFT */,
 				KOKORO000500000000000001 /* MLXUtilsLibrary */,
-				KOKORO000500000000000002 /* MisakiSwift */,
 			);
 			productName = Runner;
 			productReference = 97C146EE1CF9000F007C117D /* Runner.app */;
@@ -466,7 +605,6 @@
 			mainGroup = 97C146E51CF9000F007C117D;
 			packageReferences = (
 				A1B2C3D40100000CE0000001 /* XCRemoteSwiftPackageReference "mlx-swift" */,
-				KOKORO000400000000000001 /* XCRemoteSwiftPackageReference "MisakiSwift" */,
 				KOKORO000400000000000002 /* XCRemoteSwiftPackageReference "MLXUtilsLibrary" */,
 			);
 			productRefGroup = 97C146EF1CF9000F007C117D /* Products */;
@@ -496,6 +634,14 @@
 				97C146FE1CF9000F007C117D /* Assets.xcassets in Resources */,
 				97C146FC1CF9000F007C117D /* Main.storyboard in Resources */,
 				KOKORO000200000000000042 /* config.json in Resources */,
+				MISAKI000100000000000019 /* gb_bart_config.json in Resources */,
+				MISAKI000100000000000020 /* gb_bart.safetensors in Resources */,
+				MISAKI000100000000000021 /* gb_gold.json in Resources */,
+				MISAKI000100000000000022 /* gb_silver.json in Resources */,
+				MISAKI000100000000000023 /* us_bart_config.json in Resources */,
+				MISAKI000100000000000024 /* us_bart.safetensors in Resources */,
+				MISAKI000100000000000025 /* us_gold.json in Resources */,
+				MISAKI000100000000000026 /* us_silver.json in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -673,6 +819,24 @@
 				KOKORO000200000000000039 /* Tokenizer.swift in Sources */,
 				KOKORO000200000000000040 /* eSpeakNGG2PProcessor.swift in Sources */,
 				KOKORO000200000000000041 /* AudioUtils.swift in Sources */,
+				MISAKI000100000000000001 /* NLTag+ProperNoun.swift in Sources */,
+				MISAKI000100000000000002 /* MLXArray+DebugPrint.swift in Sources */,
+				MISAKI000100000000000003 /* String+ReplacingLast.swift in Sources */,
+				MISAKI000100000000000004 /* Range+Contains.swift in Sources */,
+				MISAKI000100000000000005 /* EnglishG2P.swift in Sources */,
+				MISAKI000100000000000006 /* TokenContext.swift in Sources */,
+				MISAKI000100000000000007 /* EnglishNum2Word.swift in Sources */,
+				MISAKI000100000000000008 /* DataResourcesUtil.swift in Sources */,
+				MISAKI000100000000000009 /* PennTagUtil.swift in Sources */,
+				MISAKI000100000000000010 /* Lexicon.swift in Sources */,
+				MISAKI000100000000000011 /* BARTModel.swift in Sources */,
+				MISAKI000100000000000012 /* BARTEncoderLayer.swift in Sources */,
+				MISAKI000100000000000013 /* BARTLayerNorm.swift in Sources */,
+				MISAKI000100000000000014 /* BARTDecoderLayer.swift in Sources */,
+				MISAKI000100000000000015 /* BARTConfig.swift in Sources */,
+				MISAKI000100000000000016 /* FeedForward.swift in Sources */,
+				MISAKI000100000000000017 /* MultiHeadAttention.swift in Sources */,
+				MISAKI000100000000000018 /* EnglishFallbackNetwork.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -1030,14 +1194,6 @@
 				minimumVersion = 0.29.1;
 			};
 		};
-		KOKORO000400000000000001 /* XCRemoteSwiftPackageReference "MisakiSwift" */ = {
-			isa = XCRemoteSwiftPackageReference;
-			repositoryURL = "https://github.com/mlalma/MisakiSwift.git";
-			requirement = {
-				kind = upToNextMajorVersion;
-				minimumVersion = 1.0.4;
-			};
-		};
 		KOKORO000400000000000002 /* XCRemoteSwiftPackageReference "MLXUtilsLibrary" */ = {
 			isa = XCRemoteSwiftPackageReference;
 			repositoryURL = "https://github.com/mlalma/MLXUtilsLibrary.git";
@@ -1078,11 +1234,6 @@
 			isa = XCSwiftPackageProductDependency;
 			package = KOKORO000400000000000002 /* XCRemoteSwiftPackageReference "MLXUtilsLibrary" */;
 			productName = MLXUtilsLibrary;
-		};
-		KOKORO000500000000000002 /* MisakiSwift */ = {
-			isa = XCSwiftPackageProductDependency;
-			package = KOKORO000400000000000001 /* XCRemoteSwiftPackageReference "MisakiSwift" */;
-			productName = MisakiSwift;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};
