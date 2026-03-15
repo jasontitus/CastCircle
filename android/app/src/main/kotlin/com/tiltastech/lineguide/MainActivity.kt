@@ -1,4 +1,4 @@
-package com.lineguide.lineguide
+package com.tiltastech.lineguide
 
 import io.flutter.embedding.android.FlutterActivity
 

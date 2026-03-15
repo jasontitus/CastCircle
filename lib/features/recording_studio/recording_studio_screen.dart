@@ -35,13 +35,14 @@ class RecordingStudioScreen extends ConsumerStatefulWidget {
 }
 
 class _RecordingStudioScreenState extends ConsumerState<RecordingStudioScreen> {
-  final AudioRecorder _recorder = AudioRecorder();
-  final AudioPlayer _player = AudioPlayer();
+  AudioRecorder? _recorder;
+  AudioPlayer? _player;
   RecordingStatus _status = RecordingStatus.idle;
   int _currentLineIdx = 0;
   String? _currentRecordingPath;
   Duration _recordingDuration = Duration.zero;
   Timer? _durationTimer;
+  String? _initError;
 
   late List<ScriptLine> _myLines;
   String? _character;
@@ -49,18 +50,28 @@ class _RecordingStudioScreenState extends ConsumerState<RecordingStudioScreen> {
   @override
   void initState() {
     super.initState();
-    _player.playerStateStream.listen((state) {
-      if (state.processingState == ProcessingState.completed) {
-        if (mounted) setState(() => _status = RecordingStatus.recorded);
-      }
-    });
+    _initAudio();
+  }
+
+  void _initAudio() {
+    try {
+      _recorder = AudioRecorder();
+      _player = AudioPlayer();
+      _player!.playerStateStream.listen((state) {
+        if (state.processingState == ProcessingState.completed) {
+          if (mounted) setState(() => _status = RecordingStatus.recorded);
+        }
+      });
+    } catch (e) {
+      _initError = 'Audio initialization failed: $e';
+    }
   }
 
   @override
   void dispose() {
     _durationTimer?.cancel();
-    _recorder.dispose();
-    _player.dispose();
+    _recorder?.dispose();
+    _player?.dispose();
     super.dispose();
   }
 
@@ -73,6 +84,13 @@ class _RecordingStudioScreenState extends ConsumerState<RecordingStudioScreen> {
       return Scaffold(
         appBar: AppBar(title: const Text('Recording Studio')),
         body: const Center(child: Text('No script or character selected')),
+      );
+    }
+
+    if (_initError != null) {
+      return Scaffold(
+        appBar: AppBar(title: const Text('Recording Studio')),
+        body: Center(child: Text(_initError!)),
       );
     }
 
@@ -398,11 +416,13 @@ class _RecordingStudioScreenState extends ConsumerState<RecordingStudioScreen> {
   // ── Recording Actions ─────────────────────────────────
 
   Future<void> _startRecording() async {
+    if (_recorder == null) return;
+
     if (_status == RecordingStatus.playing) {
-      await _player.stop();
+      await _player?.stop();
     }
 
-    final hasPermission = await _recorder.hasPermission();
+    final hasPermission = await _recorder!.hasPermission();
     if (!hasPermission) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -422,7 +442,7 @@ class _RecordingStudioScreenState extends ConsumerState<RecordingStudioScreen> {
     final filePath = p.join(recordingsDir.path,
         '${line.id}${AppConstants.audioExtension}');
 
-    await _recorder.start(
+    await _recorder!.start(
       const RecordConfig(
         encoder: AudioEncoder.aacLc,
         sampleRate: AppConstants.sampleRate,
@@ -446,7 +466,7 @@ class _RecordingStudioScreenState extends ConsumerState<RecordingStudioScreen> {
 
   Future<void> _stopRecording() async {
     _durationTimer?.cancel();
-    final path = await _recorder.stop();
+    final path = await _recorder?.stop();
 
     if (path != null && mounted) {
       final line = _myLines[_currentLineIdx];
@@ -497,11 +517,11 @@ class _RecordingStudioScreenState extends ConsumerState<RecordingStudioScreen> {
     if (path == null) return;
 
     try {
-      await _player.setFilePath(path);
+      await _player!.setFilePath(path);
       final speed = ref.read(playbackSpeedProvider);
-      await _player.setSpeed(speed);
+      await _player!.setSpeed(speed);
       setState(() => _status = RecordingStatus.playing);
-      await _player.play();
+      await _player!.play();
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -512,7 +532,7 @@ class _RecordingStudioScreenState extends ConsumerState<RecordingStudioScreen> {
   }
 
   Future<void> _stopPlayback() async {
-    await _player.stop();
+    await _player?.stop();
     setState(() => _status = RecordingStatus.recorded);
   }
 
@@ -529,7 +549,7 @@ class _RecordingStudioScreenState extends ConsumerState<RecordingStudioScreen> {
   }
 
   void _goToLine(int index) {
-    _player.stop();
+    _player?.stop();
     _durationTimer?.cancel();
     setState(() {
       _currentLineIdx = index;

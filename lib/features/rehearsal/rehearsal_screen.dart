@@ -12,6 +12,7 @@ import '../../data/models/rehearsal_models.dart';
 import '../../data/services/tts_service.dart';
 import '../../data/services/stt_service.dart';
 import '../../data/services/stt_adaptation_service.dart';
+import '../../data/services/stt_vocabulary_service.dart';
 import '../../data/services/voice_clone_service.dart';
 import '../../data/services/voice_config_service.dart';
 import '../../providers/production_providers.dart';
@@ -49,6 +50,7 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen> {
   final SttService _stt = SttService.instance;
   final VoiceCloneService _voiceClone = VoiceCloneService.instance;
   final SttAdaptationService _sttAdapt = SttAdaptationService.instance;
+  final SttVocabularyService _sttVocab = SttVocabularyService.instance;
   String? _activeAdapter; // per-actor or per-production LoRA adapter path
   final GlobalKey _currentLineKey = GlobalKey();
 
@@ -106,8 +108,16 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen> {
               await voiceConfig.resolveSpeed(production.id, char.name);
           _tts.assignVoice(char.name, i, voiceId: voiceId, speed: speed);
         } else {
-          _tts.assignVoice(charName, i);
+          _tts.assignVoice(char.name, i);
         }
+      }
+    }
+
+    // Build STT vocabulary from script for correction
+    if (script != null) {
+      final production = ref.read(currentProductionProvider);
+      if (production != null) {
+        _sttVocab.buildFromScript(production.id, script.lines);
       }
     }
 
@@ -123,6 +133,22 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen> {
       _activeAdapter = _sttAdapt.getBestAdapter(production.id, myCharacter);
       if (_activeAdapter != null) {
         debugPrint('Rehearsal: Using adapted STT model: $_activeAdapter');
+      }
+    }
+
+    // Jump to a few lines before the actor's first line
+    if (script != null && myCharacter != null) {
+      final scene = ref.read(selectedSceneProvider);
+      if (scene != null) {
+        final dialogueLines = _getRehearsalLines(script, scene, myCharacter);
+        final firstMyIdx = dialogueLines
+            .indexWhere((l) => l.character == myCharacter);
+        if (firstMyIdx > 0) {
+          // Start 3 lines before actor's first line (minimum 0)
+          final startIdx = (firstMyIdx - 3).clamp(0, dialogueLines.length - 1);
+          ref.read(currentLineIndexProvider.notifier).state = startIdx;
+          _scrollToCurrentLine();
+        }
       }
     }
 
@@ -987,7 +1013,7 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen> {
     // Haptic feedback: it's your turn
     HapticFeedback.mediumImpact();
 
-    final available = await _stt.isAvailable;
+    final available = _stt.isAvailable;
     if (!available) {
       // STT not available — just wait for manual advance
       ref.read(rehearsalStateProvider.notifier).state = RehearsalState.ready;
@@ -998,15 +1024,32 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen> {
 
     _currentAttemptCount++;
 
+    // Build vocabulary hints from the expected line for MLX
+    final script = ref.read(currentScriptProvider);
+    final production = ref.read(currentProductionProvider);
+    final myCharacter = ref.read(rehearsalCharacterProvider);
+    final vocabHints = line.text.split(RegExp(r'\s+')).toList();
+
     await _stt.listen(
       continuous: true,
       onResult: (recognized) {
         if (!mounted) return;
-        final score = SttService.matchScore(line.text, recognized);
+
+        // Apply vocabulary correction before scoring
+        final corrected = production != null
+            ? _sttVocab.correct(
+                recognized: recognized,
+                expectedText: line.text,
+                productionId: production.id,
+                actorId: myCharacter,
+              )
+            : recognized;
+
+        final score = SttService.matchScore(line.text, corrected);
         setState(() {
-          _recognizedText = recognized;
+          _recognizedText = corrected;
           _matchScore = score;
-          _showMatchFeedback = recognized.isNotEmpty;
+          _showMatchFeedback = corrected.isNotEmpty;
         });
 
         if (score > _currentBestScore) _currentBestScore = score;
@@ -1016,23 +1059,41 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen> {
           _stt.stop();
           HapticFeedback.lightImpact();
 
+          // Learn from this successful attempt
+          if (production != null && myCharacter != null) {
+            _sttVocab.learnFromAttempt(
+              productionId: production.id,
+              actorId: myCharacter,
+              recognized: recognized,
+              expected: line.text,
+            );
+          }
+
           // Record the attempt
           _recordAttempt(line, skipped: false);
 
           // Brief delay so user sees the "Match!" feedback
           Future.delayed(const Duration(milliseconds: 600), () {
             if (mounted) {
-              final script = ref.read(currentScriptProvider);
+              final s = ref.read(currentScriptProvider);
               final scene = ref.read(selectedSceneProvider);
-              final myCharacter = ref.read(rehearsalCharacterProvider);
-              if (script == null || scene == null) return;
-              final dialogueLines =
-                  _getRehearsalLines(script, scene, myCharacter);
+              final mc = ref.read(rehearsalCharacterProvider);
+              if (s == null || scene == null) return;
+              final dialogueLines = _getRehearsalLines(s, scene, mc);
               _advanceLine(dialogueLines.length);
             }
           });
         }
       },
+      onDone: () {
+        if (!mounted) return;
+        // Listening ended but no match — stay on this line, let user retry or skip
+        if (ref.read(rehearsalStateProvider) == RehearsalState.listeningForMe) {
+          ref.read(rehearsalStateProvider.notifier).state =
+              RehearsalState.ready;
+        }
+      },
+      vocabularyHints: vocabHints,
     );
   }
 

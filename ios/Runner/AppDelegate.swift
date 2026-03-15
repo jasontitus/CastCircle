@@ -4,6 +4,7 @@ import UIKit
 @main
 @objc class AppDelegate: FlutterAppDelegate, FlutterImplicitEngineDelegate {
   private var kokoroPlugin: KokoroMLXPlugin?
+  private var mlxSttPlugin: MLXSttPlugin?
 
   override func application(
     _ application: UIApplication,
@@ -18,6 +19,11 @@ import UIKit
     // Register Kokoro-MLX platform channel
     if let registrar = engineBridge.pluginRegistry.registrar(forPlugin: "KokoroMLXPlugin") {
       kokoroPlugin = KokoroMLXPlugin(messenger: registrar.messenger())
+    }
+
+    // Register MLX STT platform channel
+    if let controller = window?.rootViewController as? FlutterViewController {
+      mlxSttPlugin = MLXSttPlugin(messenger: controller.binaryMessenger)
     }
   }
 }

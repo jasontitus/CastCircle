@@ -32,16 +32,20 @@ class SupabaseService {
 
   // ── Auth ──────────────────────────────────────────────
 
-  User? get currentUser => _client.auth.currentUser;
-  bool get isSignedIn => currentUser != null;
+  User? get currentUser => _initialized ? _client.auth.currentUser : null;
+  bool get isSignedIn => _initialized && _client.auth.currentUser != null;
 
-  Stream<AuthState> get authStateChanges => _client.auth.onAuthStateChange;
+  Stream<AuthState> get authStateChanges => _initialized
+      ? _client.auth.onAuthStateChange
+      : const Stream.empty();
 
   Future<AuthResponse> signInWithEmail(String email, String password) {
+    if (!_initialized) throw Exception('Supabase is not initialized');
     return _client.auth.signInWithPassword(email: email, password: password);
   }
 
   Future<AuthResponse> signUpWithEmail(String email, String password) {
+    if (!_initialized) throw Exception('Supabase is not initialized');
     return _client.auth.signUp(email: email, password: password);
   }
 
@@ -198,6 +202,36 @@ class SupabaseService {
       'duration_ms': durationMs,
       'recorded_at': DateTime.now().toIso8601String(),
     });
+  }
+
+  // ── Script Lines (cloud sync) ────────────────────────
+
+  /// Fetch script lines for a production from the cloud.
+  Future<List<Map<String, dynamic>>> fetchScriptLines(
+      String productionId) async {
+    return _client
+        .from('script_lines')
+        .select()
+        .eq('production_id', productionId)
+        .order('order_index', ascending: true);
+  }
+
+  /// Save script lines to the cloud (replaces all existing lines).
+  Future<void> saveScriptLines({
+    required String productionId,
+    required List<Map<String, dynamic>> lines,
+  }) async {
+    // Delete existing
+    await _client
+        .from('script_lines')
+        .delete()
+        .eq('production_id', productionId);
+
+    // Insert in batches of 100
+    for (var i = 0; i < lines.length; i += 100) {
+      final batch = lines.sublist(i, i + 100 > lines.length ? lines.length : i + 100);
+      await _client.from('script_lines').insert(batch);
+    }
   }
 
   // ── Realtime ──────────────────────────────────────────

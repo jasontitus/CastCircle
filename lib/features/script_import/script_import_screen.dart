@@ -85,6 +85,12 @@ class _ScriptImportScreenState extends ConsumerState<ScriptImportScreen> {
             ),
             const SizedBox(height: 12),
             OutlinedButton.icon(
+              onPressed: _pickMarkdownFile,
+              icon: const Icon(Icons.article),
+              label: const Text('Import Markdown'),
+            ),
+            const SizedBox(height: 12),
+            OutlinedButton.icon(
               onPressed: _pickPdfFile,
               icon: const Icon(Icons.picture_as_pdf),
               label: const Text('Import PDF'),
@@ -218,7 +224,7 @@ class _ScriptImportScreenState extends ConsumerState<ScriptImportScreen> {
                     onPressed: () {
                       ref.read(currentScriptProvider.notifier).state = script;
                       persistScript(ref);
-                      context.push('/editor');
+                      context.push('/production');
                     },
                     child: const Text('Edit Script'),
                   ),
@@ -355,6 +361,38 @@ class _ScriptImportScreenState extends ConsumerState<ScriptImportScreen> {
     } catch (e) {
       setState(() {
         _error = 'Failed to import PDF: $e';
+        _loading = false;
+      });
+    }
+  }
+
+  Future<void> _pickMarkdownFile() async {
+    try {
+      final result = await FilePicker.platform.pickFiles(
+        type: FileType.custom,
+        allowedExtensions: ['md', 'markdown', 'txt'],
+      );
+
+      if (result == null || result.files.isEmpty) return;
+
+      final filePath = result.files.first.path;
+      if (filePath == null) return;
+
+      setState(() {
+        _loading = true;
+        _error = null;
+      });
+
+      final service = ref.read(scriptImportServiceProvider);
+      final script = await service.importFromMarkdownFile(filePath);
+
+      setState(() {
+        _preview = script;
+        _loading = false;
+      });
+    } catch (e) {
+      setState(() {
+        _error = 'Failed to import markdown: $e';
         _loading = false;
       });
     }

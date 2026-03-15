@@ -284,9 +284,9 @@ class ScriptParser {
         continue;
       }
 
-      // Explicit SCENE headers
+      // Explicit SCENE headers (supports "SCENE 1", "SCENE IV", "SCENE 1.2")
       final sceneMatch =
-          RegExp(r'^SCENE\s+(\d+|[IV]+)', caseSensitive: false)
+          RegExp(r'^SCENE\s+[\d.IV]+', caseSensitive: false)
               .firstMatch(line);
       if (sceneMatch != null) {
         flushDialogue();

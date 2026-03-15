@@ -28,6 +28,33 @@ class ScriptImportService {
     return _parser.parse(rawText, title: title);
   }
 
+  /// Import a script from a markdown file.
+  /// Strips markdown formatting (bold, italic, headers, etc.) and parses.
+  Future<ParsedScript> importFromMarkdownFile(String filePath) async {
+    final file = File(filePath);
+    var rawText = await file.readAsString();
+    rawText = _stripMarkdown(rawText);
+    final title = _titleFromPath(filePath);
+    return _parser.parse(rawText, title: title);
+  }
+
+  /// Strip common markdown formatting to get clean script text.
+  String _stripMarkdown(String md) {
+    var text = md;
+    // Remove markdown headers (## ACT I -> ACT I)
+    text = text.replaceAll(RegExp(r'^#{1,6}\s*', multiLine: true), '');
+    // Remove bold/italic markers
+    text = text.replaceAll(RegExp(r'\*{1,3}(.+?)\*{1,3}'), r'$1');
+    text = text.replaceAll(RegExp(r'_{1,3}(.+?)_{1,3}'), r'$1');
+    // Remove horizontal rules
+    text = text.replaceAll(RegExp(r'^[-*_]{3,}\s*$', multiLine: true), '');
+    // Remove link syntax [text](url) -> text
+    text = text.replaceAll(RegExp(r'\[([^\]]+)\]\([^)]+\)'), r'$1');
+    // Remove inline code backticks
+    text = text.replaceAll(RegExp(r'`([^`]+)`'), r'$1');
+    return text;
+  }
+
   /// Import from a PDF file using the on-device OCR pipeline:
   /// 1. Render each PDF page to an image
   /// 2. Run ML Kit text recognition on each page image

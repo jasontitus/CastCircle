@@ -1,9 +1,13 @@
+import 'dart:io';
+
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_tts/flutter_tts.dart';
 import 'package:just_audio/just_audio.dart';
 
-/// TTS engine type used for fallback speech synthesis.
+import 'model_manager.dart';
+
+/// TTS engine type.
 enum TtsEngine {
   /// Kokoro on-device neural TTS via MLX (default, higher quality).
   kokoroMlx,
@@ -12,7 +16,7 @@ enum TtsEngine {
   system,
 }
 
-/// Text-to-speech service.
+/// Text-to-speech service using Kokoro via MLX.
 ///
 /// Priority chain for playing other characters' lines:
 ///   1. Real recording by primary actor
@@ -49,6 +53,7 @@ class TtsService {
 
   TtsEngine get activeEngine => _activeEngine;
   bool get isKokoroLoaded => _kokoroLoaded;
+  bool get isInitialized => _initialized;
 
   /// Available Kokoro voices for character assignment.
   static const List<String> kokoroVoices = [
@@ -87,10 +92,12 @@ class TtsService {
     await _systemTts.setSpeechRate(0.5);
     await _systemTts.setVolume(1.0);
     await _systemTts.setPitch(1.0);
-
     _availableSystemVoices = await _systemTts.getVoices as List<dynamic>;
 
-    // Listen for audio player completion (for Kokoro playback)
+    _systemTts.setCompletionHandler(() {
+      _completionHandler?.call();
+    });
+
     _audioPlayer.playerStateStream.listen((state) {
       if (state.processingState == ProcessingState.completed) {
         _completionHandler?.call();
@@ -232,5 +239,19 @@ class TtsService {
     } catch (e) {
       debugPrint('Kokoro MLX: delete failed: $e');
     }
+  }
+
+  /// Debug info for diagnostics screen.
+  Future<Map<String, String>> getDebugInfo() async {
+    return {
+      'initialized': _initialized.toString(),
+      'activeEngine': _activeEngine.name,
+      'kokoroLoaded': _kokoroLoaded.toString(),
+    };
+  }
+
+  /// Clean up resources.
+  void dispose() {
+    _audioPlayer.dispose();
   }
 }

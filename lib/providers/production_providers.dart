@@ -1,10 +1,13 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:uuid/uuid.dart';
 
 import '../data/models/production_models.dart';
 import '../data/models/script_models.dart';
 import '../data/repositories/production_repository.dart';
 import '../data/services/script_import_service.dart';
 import '../data/services/voice_config_service.dart';
+import '../data/services/supabase_service.dart';
 import '../main.dart';
 
 /// Repository provider — bridges Drift DB with domain models.
@@ -125,6 +128,150 @@ Future<void> persistScript(WidgetRef ref) async {
   await repo.saveScenes(production.id, script.scenes);
 }
 
+/// Fetch cloud script lines for a production. Returns null if Supabase
+/// is not initialized or no lines exist in the cloud.
+Future<List<ScriptLine>?> fetchCloudScriptLines(String productionId) async {
+  final supa = SupabaseService.instance;
+  if (!supa.isInitialized || !supa.isSignedIn) return null;
+
+  try {
+    final rows = await supa.fetchScriptLines(productionId);
+    if (rows.isEmpty) return null;
+
+    return rows.map((row) => ScriptLine(
+      id: row['id'] as String,
+      act: row['act'] as String? ?? '',
+      scene: row['scene'] as String? ?? '',
+      lineNumber: row['line_number'] as int? ?? 0,
+      orderIndex: row['order_index'] as int? ?? 0,
+      character: row['character'] as String? ?? '',
+      text: row['line_text'] as String? ?? '',
+      lineType: LineType.values.byName(row['line_type'] as String? ?? 'dialogue'),
+      stageDirection: row['stage_direction'] as String? ?? '',
+    )).toList();
+  } catch (e) {
+    debugPrint('Cloud sync fetch failed: $e');
+    return null;
+  }
+}
+
+/// Push the current script to the cloud.
+Future<void> pushScriptToCloud(WidgetRef ref) async {
+  final script = ref.read(currentScriptProvider);
+  final production = ref.read(currentProductionProvider);
+  final supa = SupabaseService.instance;
+  if (script == null || production == null) return;
+  if (!supa.isInitialized || !supa.isSignedIn) return;
+
+  try {
+    final rows = script.lines.asMap().entries.map((e) => {
+      'production_id': production.id,
+      'order_index': e.key,
+      'act': e.value.act,
+      'scene': e.value.scene,
+      'line_number': e.value.lineNumber,
+      'character': e.value.character,
+      'line_text': e.value.text,
+      'line_type': e.value.lineType.name,
+      'stage_direction': e.value.stageDirection,
+    }).toList();
+
+    await supa.saveScriptLines(
+      productionId: production.id,
+      lines: rows,
+    );
+  } catch (e) {
+    debugPrint('Cloud sync push failed: $e');
+    rethrow;
+  }
+}
+
+/// Build a ParsedScript from a list of ScriptLine objects.
+/// Reconstructs scenes from the scene tags already on each line.
+ParsedScript buildParsedScript(String title, List<ScriptLine> lines) {
+  final charCounts = <String, int>{};
+  for (final line in lines) {
+    if (line.lineType == LineType.dialogue && line.character.isNotEmpty) {
+      charCounts[line.character] = (charCounts[line.character] ?? 0) + 1;
+    }
+  }
+  final characters = charCounts.entries.toList()
+    ..sort((a, b) => b.value.compareTo(a.value));
+  final scriptCharacters = characters.asMap().entries.map((e) => ScriptCharacter(
+    name: e.value.key,
+    colorIndex: e.key,
+    lineCount: e.value.value,
+  )).toList();
+
+  // Rebuild scenes from line scene/act tags
+  final scenes = _buildScenesFromLines(lines);
+
+  return ParsedScript(
+    title: title,
+    lines: lines,
+    characters: scriptCharacters,
+    scenes: scenes,
+    rawText: '',
+  );
+}
+
+/// Reconstruct ScriptScene objects by grouping consecutive lines
+/// that share the same act+scene tag.
+List<ScriptScene> _buildScenesFromLines(List<ScriptLine> lines) {
+  if (lines.isEmpty) return [];
+
+  final scenes = <ScriptScene>[];
+  var sceneStart = 0;
+  var currentKey = '${lines.first.act}|${lines.first.scene}';
+  var sceneCounter = 0;
+
+  void closeScene(int endIndex) {
+    final sceneLines = lines.sublist(sceneStart, endIndex + 1);
+    final dialogueLines =
+        sceneLines.where((l) => l.lineType == LineType.dialogue).toList();
+    if (dialogueLines.isEmpty) {
+      sceneStart = endIndex + 1;
+      return;
+    }
+
+    sceneCounter++;
+    final chars = <String>{};
+    for (final l in dialogueLines) {
+      if (l.character.isNotEmpty) chars.add(l.character);
+    }
+
+    final act = sceneLines.first.act;
+    final scene = sceneLines.first.scene;
+    final sceneName = scene.isNotEmpty
+        ? '$act, $scene'
+        : '$act, Scene $sceneCounter';
+
+    scenes.add(ScriptScene(
+      id: const Uuid().v4(),
+      act: act,
+      sceneName: sceneName,
+      location: scene,
+      description: '',
+      startLineIndex: sceneStart,
+      endLineIndex: endIndex,
+      characters: chars.toList()..sort(),
+    ));
+
+    sceneStart = endIndex + 1;
+  }
+
+  for (var i = 1; i < lines.length; i++) {
+    final key = '${lines[i].act}|${lines[i].scene}';
+    if (key != currentKey) {
+      closeScene(i - 1);
+      currentKey = key;
+    }
+  }
+  closeScene(lines.length - 1);
+
+  return scenes;
+}
+
 /// Load a saved script from the database for the given production.
 Future<ParsedScript?> loadPersistedScript(WidgetRef ref, String productionId) async {
   final repo = ref.read(productionRepositoryProvider);
@@ -154,11 +301,14 @@ Future<ParsedScript?> loadPersistedScript(WidgetRef ref, String productionId) as
         gender: savedGenders[e.value.key] ?? CharacterGender.female,
       )).toList();
 
+  // If no scenes were persisted, rebuild from line tags
+  final effectiveScenes = scenes.isNotEmpty ? scenes : _buildScenesFromLines(lines);
+
   return ParsedScript(
     title: '', // Title comes from production
     lines: lines,
     characters: scriptCharacters,
-    scenes: scenes,
+    scenes: effectiveScenes,
     rawText: '',
   );
 }

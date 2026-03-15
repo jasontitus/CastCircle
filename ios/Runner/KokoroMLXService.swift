@@ -1,11 +1,13 @@
 import Foundation
 import AVFoundation
-import Kokoro
+import MLX
+import KokoroSwift
+import MLXUtilsLibrary
 
 /// On-device Kokoro TTS service using MLX for Apple Silicon inference.
 ///
-/// Downloads model weights from HuggingFace on first use (~86 MB),
-/// then runs inference entirely on-device via the MLX framework.
+/// Uses the KokoroSwift package (mlalma/kokoro-ios) which runs Kokoro-82M
+/// entirely on-device via Apple's MLX framework.
 class KokoroMLXService {
 
     // MARK: - Voice catalogue
@@ -26,30 +28,54 @@ class KokoroMLXService {
 
     // MARK: - State
 
-    private var pipeline: KPipeline?
-    private let sampleRate: Int = 24_000
-    private let modelRepo = "hexgrad/Kokoro-82M"
+    private var ttsEngine: KokoroTTS?
+    private var voices: [String: MLXArray] = [:]
 
-    var isModelLoaded: Bool { pipeline != nil }
+    var isModelLoaded: Bool { ttsEngine != nil && !voices.isEmpty }
 
     var isModelDownloaded: Bool {
-        let dir = modelDirectory
-        return FileManager.default.fileExists(atPath: dir.appendingPathComponent("config.json").path)
+        let modelURL = modelDirectory.appendingPathComponent("kokoro-v1_0.safetensors")
+        let voicesURL = modelDirectory.appendingPathComponent("voices.npz")
+        return FileManager.default.fileExists(atPath: modelURL.path)
+            && FileManager.default.fileExists(atPath: voicesURL.path)
     }
 
     // MARK: - Model lifecycle
 
-    /// Load (and download if needed) the Kokoro MLX model.
+    /// Load the Kokoro MLX model from the app's documents directory.
     func loadModel() async throws {
-        if pipeline != nil { return }
+        if ttsEngine != nil { return }
 
-        // KPipeline from kokoro-swift handles downloading & caching from HuggingFace
-        pipeline = try await KPipeline(langCode: "a") // "a" = American English
+        let modelURL = modelDirectory.appendingPathComponent("kokoro-v1_0.safetensors")
+        let voicesURL = modelDirectory.appendingPathComponent("voices.npz")
+
+        guard FileManager.default.fileExists(atPath: modelURL.path) else {
+            throw KokoroError.modelNotDownloaded
+        }
+        guard FileManager.default.fileExists(atPath: voicesURL.path) else {
+            throw KokoroError.voicesNotDownloaded
+        }
+
+        // Load TTS engine
+        ttsEngine = KokoroTTS(modelPath: modelURL)
+
+        // Load voice embeddings from NPZ file
+        voices = NpyzReader.read(fileFromPath: voicesURL) ?? [:]
+        if voices.isEmpty {
+            ttsEngine = nil
+            throw KokoroError.voicesNotDownloaded
+        }
+
+        // Configure audio session for iOS
+        let audioSession = AVAudioSession.sharedInstance()
+        try audioSession.setCategory(.playback, mode: .default)
+        try audioSession.setActive(true)
     }
 
     /// Delete downloaded model weights to free storage.
     func deleteModel() throws {
-        pipeline = nil
+        ttsEngine = nil
+        voices = [:]
         let dir = modelDirectory
         if FileManager.default.fileExists(atPath: dir.path) {
             try FileManager.default.removeItem(at: dir)
@@ -60,23 +86,34 @@ class KokoroMLXService {
 
     /// Synthesize speech and return the path to a WAV file.
     func synthesize(text: String, voice: String, speed: Float) async throws -> String {
-        guard let pipeline = pipeline else {
+        guard let ttsEngine = ttsEngine else {
             throw KokoroError.modelNotLoaded
         }
 
-        // Generate audio samples via Kokoro MLX inference
-        var allSamples: [Float] = []
-        for await result in pipeline.generate(text: text, voice: voice, speed: speed) {
-            allSamples.append(contentsOf: result.audio)
+        // Look up voice embedding — voice names in the NPZ have ".npy" suffix
+        let voiceKey = voice + ".npy"
+        guard let voiceEmbedding = voices[voiceKey] else {
+            throw KokoroError.voiceNotFound(voice)
         }
 
-        guard !allSamples.isEmpty else {
+        // Determine language from voice prefix
+        let language: Language = voice.hasPrefix("a") ? .enUS : .enGB
+
+        // Generate audio via Kokoro MLX inference
+        let (audioSamples, _) = try ttsEngine.generateAudio(
+            voice: voiceEmbedding,
+            language: language,
+            text: text
+        )
+
+        guard !audioSamples.isEmpty else {
             throw KokoroError.emptyAudio
         }
 
         // Write to a cached WAV file
         let outputPath = cacheURL(for: text, voice: voice, speed: speed)
-        try writeWAV(samples: allSamples, sampleRate: sampleRate, to: outputPath)
+        let sampleRate = KokoroTTS.Constants.samplingRate
+        try writeWAV(samples: audioSamples, sampleRate: sampleRate, to: outputPath)
 
         return outputPath.path
     }
@@ -133,8 +170,8 @@ class KokoroMLXService {
     }
 
     private var modelDirectory: URL {
-        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("kokoro_mlx", isDirectory: true)
+        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("models/kokoro_mlx", isDirectory: true)
     }
 }
 
@@ -142,11 +179,17 @@ class KokoroMLXService {
 
 enum KokoroError: LocalizedError {
     case modelNotLoaded
+    case modelNotDownloaded
+    case voicesNotDownloaded
+    case voiceNotFound(String)
     case emptyAudio
 
     var errorDescription: String? {
         switch self {
         case .modelNotLoaded: return "Kokoro model not loaded. Call loadModel() first."
+        case .modelNotDownloaded: return "Kokoro model file not found. Download kokoro-v1_0.safetensors first."
+        case .voicesNotDownloaded: return "Voice embeddings file not found. Download voices.npz first."
+        case .voiceNotFound(let v): return "Voice '\(v)' not found in voice embeddings."
         case .emptyAudio: return "No audio generated for the given text."
         }
     }

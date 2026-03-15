@@ -167,6 +167,13 @@ class SettingsScreen extends ConsumerWidget {
             trailing: const Icon(Icons.chevron_right),
             onTap: () => context.push('/ai-models'),
           ),
+          ListTile(
+            leading: const Icon(Icons.bug_report),
+            title: const Text('Kokoro Debug'),
+            subtitle: const Text('Test TTS engine and view diagnostics'),
+            trailing: const Icon(Icons.chevron_right),
+            onTap: () => context.push('/kokoro-debug'),
+          ),
           _sectionHeader(context, 'Account'),
           ListTile(
             leading: const Icon(Icons.logout),

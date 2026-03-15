@@ -124,9 +124,8 @@ class _AiModelsScreenState extends State<AiModelsScreen> {
 
   IconData _iconForModel(String modelId) {
     return switch (modelId) {
-      'vad' => Icons.hearing,
-      'kokoro_tts' => Icons.record_voice_over,
-      'whisper_stt' => Icons.mic,
+      'kokoro_model' => Icons.record_voice_over,
+      'kokoro_voices' => Icons.people,
       _ => Icons.smart_toy,
     };
   }

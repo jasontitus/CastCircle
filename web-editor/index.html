@@ -1,0 +1,1484 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>LineGuide Script Editor</title>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <style>
+    :root {
+      --bg: #1a1a2e;
+      --surface: #16213e;
+      --surface2: #0f3460;
+      --text: #e0e0e0;
+      --text-dim: #888;
+      --accent: #e94560;
+      --accent2: #533483;
+      --border: #2a2a4a;
+      --header-bg: #2a1a3e;
+      --direction-bg: #1a2e1a;
+      --dialogue-bg: #1e2a3e;
+      --success: #4caf50;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+    }
+
+    .topbar {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 12px 20px;
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      position: sticky;
+      top: 0;
+      z-index: 100;
+    }
+
+    .topbar h1 { font-size: 18px; font-weight: 600; flex: 1; }
+
+    .topbar .stats {
+      display: flex;
+      gap: 16px;
+      font-size: 13px;
+      color: var(--text-dim);
+    }
+
+    .topbar .stats span { font-weight: 600; color: var(--text); }
+
+    .btn {
+      padding: 8px 16px;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      background: var(--surface2);
+      color: var(--text);
+      font-size: 13px;
+      cursor: pointer;
+      transition: background 0.15s;
+      white-space: nowrap;
+    }
+
+    .btn:hover { background: var(--accent2); }
+    .btn-primary { background: var(--accent); border-color: var(--accent); }
+    .btn-primary:hover { background: #c73a52; }
+    .btn-success { background: var(--success); border-color: var(--success); }
+    .btn-success:hover { background: #388e3c; }
+    .btn-sm { padding: 4px 10px; font-size: 12px; }
+    .btn-icon { padding: 6px 8px; font-size: 16px; }
+    .btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+    /* ── Auth Screen ─────────────────────────── */
+    #auth-screen {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      padding: 40px;
+    }
+
+    .auth-box {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 32px;
+      width: 100%;
+      max-width: 380px;
+    }
+
+    .auth-box h2 { margin-bottom: 24px; text-align: center; }
+
+    .auth-box .form-group { margin-bottom: 16px; }
+
+    .auth-box label {
+      display: block;
+      font-size: 12px;
+      color: var(--text-dim);
+      margin-bottom: 4px;
+      text-transform: uppercase;
+    }
+
+    .auth-box input {
+      width: 100%;
+      padding: 10px 12px;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      color: var(--text);
+      font-size: 14px;
+    }
+
+    .auth-error {
+      color: var(--accent);
+      font-size: 13px;
+      margin-top: 8px;
+      min-height: 20px;
+    }
+
+    .auth-toggle {
+      text-align: center;
+      margin-top: 16px;
+      font-size: 13px;
+      color: var(--text-dim);
+    }
+
+    .auth-toggle a {
+      color: var(--accent);
+      cursor: pointer;
+      text-decoration: underline;
+    }
+
+    /* ── Production Picker ───────────────────── */
+    #production-screen {
+      display: none;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      padding: 40px;
+    }
+
+    .production-box {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 32px;
+      width: 100%;
+      max-width: 500px;
+    }
+
+    .production-box h2 { margin-bottom: 8px; }
+    .production-box .subtitle { color: var(--text-dim); margin-bottom: 24px; font-size: 14px; }
+
+    .production-item {
+      display: flex;
+      align-items: center;
+      padding: 12px 16px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      margin-bottom: 8px;
+      cursor: pointer;
+      transition: background 0.1s, border-color 0.1s;
+    }
+
+    .production-item:hover {
+      background: rgba(255,255,255,0.05);
+      border-color: var(--accent);
+    }
+
+    .production-item .title { flex: 1; font-weight: 600; }
+    .production-item .status { font-size: 12px; color: var(--text-dim); }
+
+    .create-production {
+      display: flex;
+      gap: 8px;
+      margin-top: 16px;
+    }
+
+    .create-production input {
+      flex: 1;
+      padding: 8px 12px;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      color: var(--text);
+      font-size: 14px;
+    }
+
+    /* ── Import Screen ───────────────────────── */
+    #import-screen {
+      display: none;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      min-height: calc(100vh - 60px);
+      padding: 40px;
+    }
+
+    #import-screen h2 { font-size: 28px; margin-bottom: 8px; }
+    #import-screen p { color: var(--text-dim); margin-bottom: 32px; text-align: center; }
+
+    .import-options {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      width: 100%;
+      max-width: 400px;
+    }
+
+    .drop-zone {
+      border: 2px dashed var(--border);
+      border-radius: 12px;
+      padding: 48px 24px;
+      text-align: center;
+      cursor: pointer;
+      transition: border-color 0.2s, background 0.2s;
+    }
+
+    .drop-zone:hover, .drop-zone.dragover {
+      border-color: var(--accent);
+      background: rgba(233, 69, 96, 0.05);
+    }
+
+    .drop-zone .icon { font-size: 48px; margin-bottom: 12px; }
+
+    /* ── Editor Screen ───────────────────────── */
+    #editor-screen { display: none; }
+
+    .editor-layout {
+      display: flex;
+      height: calc(100vh - 95px);
+    }
+
+    .sidebar {
+      width: 240px;
+      background: var(--surface);
+      border-right: 1px solid var(--border);
+      display: flex;
+      flex-direction: column;
+      flex-shrink: 0;
+    }
+
+    .sidebar h3 {
+      padding: 12px 16px 8px;
+      font-size: 12px;
+      text-transform: uppercase;
+      color: var(--text-dim);
+      letter-spacing: 1px;
+    }
+
+    .char-list { flex: 1; overflow-y: auto; padding: 0 8px; }
+
+    .char-item {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 13px;
+      transition: background 0.1s;
+    }
+
+    .char-item:hover { background: rgba(255,255,255,0.05); }
+    .char-item.active { background: rgba(233, 69, 96, 0.15); }
+
+    .char-dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
+
+    .char-count { margin-left: auto; font-size: 11px; color: var(--text-dim); }
+
+    .sidebar-actions {
+      padding: 12px;
+      border-top: 1px solid var(--border);
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .script-area { flex: 1; overflow-y: auto; padding: 16px 24px; }
+
+    .script-line {
+      display: flex;
+      align-items: flex-start;
+      gap: 8px;
+      padding: 8px 12px;
+      margin-bottom: 2px;
+      border-radius: 6px;
+      border: 1px solid transparent;
+      transition: background 0.1s;
+      cursor: pointer;
+    }
+
+    .script-line:hover { background: rgba(255,255,255,0.03); border-color: var(--border); }
+    .script-line.selected { background: rgba(233, 69, 96, 0.08); border-color: var(--accent); }
+    .script-line.filtered-out { opacity: 0.2; }
+
+    .line-number { font-size: 11px; color: var(--text-dim); min-width: 28px; text-align: right; padding-top: 3px; flex-shrink: 0; }
+
+    .line-type-badge { font-size: 10px; padding: 2px 6px; border-radius: 3px; min-width: 20px; text-align: center; flex-shrink: 0; font-weight: 600; }
+    .badge-header { background: var(--header-bg); color: #c9a0dc; }
+    .badge-direction { background: var(--direction-bg); color: #7ec87e; }
+    .badge-dialogue { background: var(--dialogue-bg); color: #7eb8ec; }
+    .badge-song { background: #2e2a1a; color: #ecc87e; }
+
+    .line-char { font-weight: 700; font-size: 13px; min-width: 100px; flex-shrink: 0; }
+    .line-direction { font-style: italic; color: var(--text-dim); font-size: 13px; }
+
+    .line-text { font-size: 14px; line-height: 1.5; flex: 1; }
+    .line-text.header-text { font-weight: 700; font-size: 18px; text-transform: uppercase; }
+    .line-text.direction-text { font-style: italic; color: #7ec87e; }
+
+    .scene-divider {
+      display: flex; align-items: center; gap: 12px; padding: 8px 16px; margin: 4px 0;
+      color: #e8b84d; font-size: 0.8em; font-weight: 600; text-transform: uppercase; letter-spacing: 1px;
+    }
+    .scene-divider::before, .scene-divider::after {
+      content: ''; flex: 1; height: 1px; background: #e8b84d44;
+    }
+
+    .line-actions { display: none; gap: 4px; flex-shrink: 0; }
+    .script-line:hover .line-actions, .script-line.selected .line-actions { display: flex; }
+
+    .modal-overlay {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,0.7);
+      z-index: 200;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .modal-overlay.open { display: flex; }
+
+    .modal {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 24px;
+      width: 90%;
+      max-width: 600px;
+      max-height: 80vh;
+      overflow-y: auto;
+    }
+
+    .modal h3 { margin-bottom: 16px; }
+
+    .form-group { margin-bottom: 14px; }
+
+    .form-group label {
+      display: block;
+      font-size: 12px;
+      color: var(--text-dim);
+      margin-bottom: 4px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+
+    .form-group input, .form-group select, .form-group textarea {
+      width: 100%;
+      padding: 8px 12px;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      color: var(--text);
+      font-size: 14px;
+      font-family: inherit;
+    }
+
+    .form-group textarea { min-height: 100px; resize: vertical; }
+
+    .modal-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 20px; }
+
+    .toast {
+      position: fixed;
+      bottom: 24px;
+      right: 24px;
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      padding: 12px 20px;
+      border-radius: 8px;
+      font-size: 14px;
+      z-index: 300;
+      opacity: 0;
+      transform: translateY(10px);
+      transition: opacity 0.2s, transform 0.2s;
+    }
+
+    .toast.show { opacity: 1; transform: translateY(0); }
+
+    .toolbar {
+      display: flex;
+      gap: 8px;
+      padding: 8px 24px;
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      flex-wrap: wrap;
+      align-items: center;
+    }
+
+    .toolbar .search-box {
+      padding: 6px 12px;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      color: var(--text);
+      font-size: 13px;
+      width: 200px;
+    }
+
+    .save-indicator {
+      font-size: 12px;
+      padding: 4px 10px;
+      border-radius: 4px;
+      margin-left: auto;
+    }
+
+    .save-indicator.saved { color: var(--success); }
+    .save-indicator.saving { color: #FFB74D; }
+    .save-indicator.unsaved { color: var(--accent); }
+
+    .user-badge {
+      font-size: 12px;
+      color: var(--text-dim);
+      padding: 4px 10px;
+      background: var(--bg);
+      border-radius: 4px;
+    }
+
+    @media (max-width: 768px) {
+      .sidebar { display: none; }
+      .line-char { min-width: 60px; }
+    }
+  </style>
+</head>
+<body>
+
+<!-- Auth Screen -->
+<div id="auth-screen">
+  <div class="auth-box">
+    <h2>LineGuide</h2>
+    <div class="form-group">
+      <label>Email</label>
+      <input type="email" id="auth-email" autocomplete="email">
+    </div>
+    <div class="form-group">
+      <label>Password</label>
+      <input type="password" id="auth-password" autocomplete="current-password">
+    </div>
+    <button class="btn btn-primary" style="width:100%" id="auth-submit" onclick="doAuth()">Sign In</button>
+    <div class="auth-error" id="auth-error"></div>
+    <div class="auth-toggle">
+      <span id="auth-toggle-text">Don't have an account?</span>
+      <a id="auth-toggle-link" onclick="toggleAuthMode()">Create Account</a>
+    </div>
+  </div>
+</div>
+
+<!-- Production Picker -->
+<div id="production-screen">
+  <div class="production-box">
+    <h2>Select Production</h2>
+    <div class="subtitle" id="user-email-display"></div>
+    <div id="production-list"></div>
+    <div class="create-production">
+      <input type="text" id="new-production-title" placeholder="New production title...">
+      <button class="btn btn-primary" onclick="createProduction()">Create</button>
+    </div>
+    <div style="margin-top:16px;text-align:center">
+      <button class="btn btn-sm" onclick="doSignOut()">Sign Out</button>
+    </div>
+  </div>
+</div>
+
+<!-- Import Screen -->
+<div id="import-screen">
+  <div class="topbar">
+    <h1>LineGuide Script Editor</h1>
+    <span class="user-badge" id="import-user-badge"></span>
+    <button class="btn btn-sm" onclick="showProductions()">Switch Production</button>
+    <button class="btn btn-sm" onclick="doSignOut()">Sign Out</button>
+  </div>
+  <h2 id="import-production-title">Import Script</h2>
+  <p>Drop a .txt or .md file, or click to browse.<br>
+     Use the format: <code>CHARACTER. Dialogue text</code></p>
+  <div class="import-options">
+    <div class="drop-zone" id="drop-zone">
+      <div class="icon">📄</div>
+      <div>Drop file here or click to browse</div>
+      <div style="font-size:12px;color:var(--text-dim);margin-top:8px">.txt or .md</div>
+    </div>
+    <input type="file" id="file-input" accept=".txt,.md,.markdown" style="display:none">
+    <button class="btn" onclick="loadFromCloud()">Load from Cloud</button>
+    <button class="btn" onclick="loadSample()">Load Sample Script</button>
+  </div>
+</div>
+
+<!-- Editor Screen -->
+<div id="editor-screen">
+  <div class="topbar">
+    <h1 id="script-title">Script</h1>
+    <div class="stats">
+      <div><span id="stat-lines">0</span> lines</div>
+      <div><span id="stat-chars">0</span> characters</div>
+      <div><span id="stat-acts">0</span> acts</div>
+      <div><span id="stat-scenes">0</span> scenes</div>
+    </div>
+    <button class="btn btn-success" onclick="saveToCloud()">Save to Cloud</button>
+    <button class="btn" onclick="showImport()">Import New</button>
+    <button class="btn btn-primary" onclick="exportMarkdown()">Export .md</button>
+    <button class="btn" onclick="exportPlainText()">Export .txt</button>
+    <span class="user-badge" id="editor-user-badge"></span>
+    <button class="btn btn-sm" onclick="doSignOut()">Sign Out</button>
+  </div>
+  <div class="toolbar">
+    <input type="text" class="search-box" placeholder="Search lines..." id="search-box" oninput="filterLines()">
+    <button class="btn btn-sm" onclick="addLine()">+ Add Line</button>
+    <button class="btn btn-sm" onclick="deleteSelected()">Delete Selected</button>
+    <button class="btn btn-sm" onclick="moveUp()">Move Up</button>
+    <button class="btn btn-sm" onclick="moveDown()">Move Down</button>
+    <button class="btn btn-sm" onclick="mergeSelected()">Merge Down</button>
+    <button class="btn btn-sm" onclick="splitLine()">Split Line</button>
+    <button class="btn btn-sm" onclick="selectAll()">Select All</button>
+    <button class="btn btn-sm" onclick="clearSelection()">Clear Selection</button>
+    <div class="save-indicator" id="save-indicator"></div>
+  </div>
+  <div class="editor-layout">
+    <div class="sidebar">
+      <h3>Characters</h3>
+      <div class="char-list" id="char-list"></div>
+      <div class="sidebar-actions">
+        <button class="btn btn-sm" onclick="renameCharacter()">Rename Character</button>
+        <button class="btn btn-sm" onclick="mergeCharacters()">Merge Characters</button>
+        <button class="btn btn-sm" onclick="filterByChar(null)">Show All</button>
+      </div>
+    </div>
+    <div class="script-area" id="script-area"></div>
+  </div>
+</div>
+
+<!-- Edit Line Modal -->
+<div class="modal-overlay" id="edit-modal">
+  <div class="modal">
+    <h3>Edit Line</h3>
+    <div class="form-group">
+      <label>Type</label>
+      <select id="edit-type">
+        <option value="dialogue">Dialogue</option>
+        <option value="stageDirection">Stage Direction</option>
+        <option value="header">Header</option>
+        <option value="song">Song</option>
+      </select>
+    </div>
+    <div class="form-group" id="edit-char-group">
+      <label>Character</label>
+      <input type="text" id="edit-char" list="char-datalist">
+      <datalist id="char-datalist"></datalist>
+    </div>
+    <div class="form-group" id="edit-direction-group">
+      <label>Stage Direction</label>
+      <input type="text" id="edit-direction" placeholder="e.g. whispering">
+    </div>
+    <div class="form-group">
+      <label>Text</label>
+      <textarea id="edit-text"></textarea>
+    </div>
+    <div class="modal-actions">
+      <button class="btn" onclick="closeEditModal()">Cancel</button>
+      <button class="btn btn-primary" onclick="saveEdit()">Save</button>
+    </div>
+  </div>
+</div>
+
+<!-- Toast -->
+<div class="toast" id="toast"></div>
+
+<script>
+// ── Supabase ──────────────────────────────────────────
+const SUPABASE_URL = 'https://novslzpkjjvccitypkzf.supabase.co';
+const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im5vdnNsenBramp2Y2NpdHlwa3pmIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzM0NjAwNDEsImV4cCI6MjA4OTAzNjA0MX0._umYAE_BgZHg2MXylkekE5xAFmdO1uUrwvxy95h94zQ';
+
+var sb = null; // initialized in init()
+
+let currentUser = null;
+let currentProductionId = null;
+let currentProductionTitle = '';
+
+// ── Data ──────────────────────────────────────────────
+let scriptLines = [];
+let scriptTitle = 'Untitled';
+let selectedIndices = new Set();
+let filterChar = null;
+let filterText = '';
+let editingIndex = -1;
+let isDirty = false;
+
+const CHAR_COLORS = [
+  '#64B5F6','#E57373','#81C784','#FFB74D',
+  '#BA68C8','#4DD0E1','#FF8A65','#A1887F',
+  '#AED581','#F06292','#4FC3F7','#FFD54F',
+  '#9575CD','#4DB6AC','#FF8A80','#90A4AE',
+];
+
+// ── Auth ──────────────────────────────────────────────
+var isSignUp = false;
+
+function toggleAuthMode() {
+  isSignUp = !isSignUp;
+  document.getElementById('auth-submit').textContent = isSignUp ? 'Create Account' : 'Sign In';
+  document.getElementById('auth-toggle-text').textContent = isSignUp ? 'Already have an account?' : "Don't have an account?";
+  document.getElementById('auth-toggle-link').textContent = isSignUp ? 'Sign In' : 'Create Account';
+  document.getElementById('auth-password').autocomplete = isSignUp ? 'new-password' : 'current-password';
+  document.getElementById('auth-error').textContent = '';
+}
+
+async function doAuth() {
+  const email = document.getElementById('auth-email').value.trim();
+  const password = document.getElementById('auth-password').value;
+  const errEl = document.getElementById('auth-error');
+  errEl.textContent = '';
+
+  if (!email || !password) { errEl.textContent = 'Email and password required'; return; }
+
+  try {
+    let result;
+    if (isSignUp) {
+      result = await sb.auth.signUp({ email, password });
+    } else {
+      result = await sb.auth.signInWithPassword({ email, password });
+    }
+    if (result.error) throw result.error;
+    currentUser = result.data.user;
+    showProductionScreen();
+  } catch (e) {
+    errEl.textContent = e.message || 'Auth failed';
+  }
+}
+
+async function doSignOut() {
+  await sb.auth.signOut();
+  currentUser = null;
+  currentProductionId = null;
+  showScreen('auth-screen');
+}
+
+// Allow Enter to submit auth
+document.getElementById('auth-password').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') doAuth();
+});
+
+// ── Productions ───────────────────────────────────────
+
+async function showProductionScreen() {
+  showScreen('production-screen');
+  document.getElementById('user-email-display').textContent = currentUser?.email || '';
+
+  const { data: owned } = await sb
+    .from('productions')
+    .select('*')
+    .eq('organizer_id', currentUser.id)
+    .order('created_at', { ascending: false });
+
+  const { data: castRows } = await sb
+    .from('cast_members')
+    .select('production_id')
+    .eq('user_id', currentUser.id);
+
+  const castIds = (castRows || []).map(r => r.production_id);
+  const ownedIds = new Set((owned || []).map(p => p.id));
+  const otherIds = castIds.filter(id => !ownedIds.has(id));
+
+  let otherProductions = [];
+  if (otherIds.length > 0) {
+    const { data } = await sb
+      .from('productions')
+      .select('*')
+      .in('id', otherIds);
+    otherProductions = data || [];
+  }
+
+  const all = [...(owned || []), ...otherProductions];
+
+  const list = document.getElementById('production-list');
+  if (all.length === 0) {
+    list.innerHTML = '<div style="color:var(--text-dim);padding:16px;text-align:center">No productions yet. Create one below.</div>';
+  } else {
+    list.innerHTML = all.map(p => `
+      <div class="production-item" onclick="selectProduction('${p.id}', '${escAttr(p.title)}')">
+        <div class="title">${escHtml(p.title)}</div>
+        <div class="status">${p.status}</div>
+      </div>
+    `).join('');
+  }
+}
+
+async function createProduction() {
+  const titleInput = document.getElementById('new-production-title');
+  const title = titleInput.value.trim();
+  if (!title) return;
+
+  const { data, error } = await sb
+    .from('productions')
+    .insert({ title, organizer_id: currentUser.id, status: 'draft' })
+    .select()
+    .single();
+
+  if (error) { toast('Error: ' + error.message); return; }
+
+  // Auto-add as organizer cast member
+  await sb.from('cast_members').insert({
+    production_id: data.id,
+    user_id: currentUser.id,
+    role: 'organizer',
+  });
+
+  titleInput.value = '';
+  selectProduction(data.id, title);
+}
+
+async function selectProduction(id, title) {
+  currentProductionId = id;
+  currentProductionTitle = title;
+  scriptTitle = title;
+
+  // Try to load existing script from cloud
+  const { data, error } = await sb
+    .from('script_lines')
+    .select('*')
+    .eq('production_id', id)
+    .order('order_index', { ascending: true });
+
+  if (data && data.length > 0) {
+    scriptLines = data.map(row => ({
+      id: row.id,
+      act: row.act,
+      scene: row.scene,
+      lineNumber: row.line_number,
+      character: row.character,
+      text: row.line_text,
+      lineType: row.line_type,
+      stageDirection: row.stage_direction,
+    }));
+    isDirty = false;
+    showEditor();
+    toast(`Loaded ${scriptLines.length} lines from cloud`);
+  } else {
+    showImportScreen();
+  }
+}
+
+// ── Screen Navigation ─────────────────────────────────
+
+function showScreen(id) {
+  for (const s of ['auth-screen', 'production-screen', 'import-screen', 'editor-screen']) {
+    document.getElementById(s).style.display = 'none';
+  }
+  const el = document.getElementById(id);
+  if (id === 'editor-screen') {
+    el.style.display = 'block';
+  } else {
+    el.style.display = 'flex';
+  }
+}
+
+function showImportScreen() {
+  showScreen('import-screen');
+  document.getElementById('import-user-badge').textContent = currentUser?.email || '';
+  document.getElementById('import-production-title').textContent = currentProductionTitle || 'Import Script';
+}
+
+function showImport() { showImportScreen(); }
+
+function showProductions() { showProductionScreen(); }
+
+function showEditor() {
+  showScreen('editor-screen');
+  document.getElementById('editor-user-badge').textContent = currentUser?.email || '';
+  updateSaveIndicator();
+  render();
+}
+
+// ── Cloud Save / Load ─────────────────────────────────
+
+async function saveToCloud() {
+  if (!currentProductionId || !currentUser) {
+    toast('Not signed in or no production selected');
+    return;
+  }
+
+  updateSaveIndicator('saving');
+
+  try {
+    // Delete existing lines for this production
+    await sb
+      .from('script_lines')
+      .delete()
+      .eq('production_id', currentProductionId);
+
+    // Insert all current lines
+    const rows = scriptLines.map((line, i) => ({
+      production_id: currentProductionId,
+      order_index: i,
+      act: line.act || '',
+      scene: line.scene || '',
+      line_number: line.lineNumber || 0,
+      character: line.character || '',
+      line_text: line.text || '',
+      line_type: line.lineType || 'dialogue',
+      stage_direction: line.stageDirection || '',
+    }));
+
+    // Insert in batches of 100
+    for (let i = 0; i < rows.length; i += 100) {
+      const batch = rows.slice(i, i + 100);
+      const { error } = await sb.from('script_lines').insert(batch);
+      if (error) throw error;
+    }
+
+    isDirty = false;
+    updateSaveIndicator('saved');
+    toast(`Saved ${scriptLines.length} lines to cloud`);
+  } catch (e) {
+    updateSaveIndicator('unsaved');
+    toast('Save failed: ' + (e.message || e));
+  }
+}
+
+async function loadFromCloud() {
+  if (!currentProductionId) {
+    toast('No production selected');
+    return;
+  }
+
+  const { data, error } = await sb
+    .from('script_lines')
+    .select('*')
+    .eq('production_id', currentProductionId)
+    .order('order_index', { ascending: true });
+
+  if (error) { toast('Load failed: ' + error.message); return; }
+
+  if (!data || data.length === 0) {
+    toast('No script saved for this production yet');
+    return;
+  }
+
+  scriptLines = data.map(row => ({
+    id: row.id,
+    act: row.act,
+    scene: row.scene,
+    lineNumber: row.line_number,
+    character: row.character,
+    text: row.line_text,
+    lineType: row.line_type,
+    stageDirection: row.stage_direction,
+  }));
+
+  isDirty = false;
+  showEditor();
+  toast(`Loaded ${scriptLines.length} lines from cloud`);
+}
+
+function updateSaveIndicator(state) {
+  const el = document.getElementById('save-indicator');
+  if (!el) return;
+  if (state === 'saved') {
+    el.textContent = 'Saved';
+    el.className = 'save-indicator saved';
+  } else if (state === 'saving') {
+    el.textContent = 'Saving...';
+    el.className = 'save-indicator saving';
+  } else if (state === 'unsaved' || isDirty) {
+    el.textContent = 'Unsaved changes';
+    el.className = 'save-indicator unsaved';
+  } else {
+    el.textContent = '';
+    el.className = 'save-indicator';
+  }
+}
+
+function markDirty() {
+  isDirty = true;
+  updateSaveIndicator();
+}
+
+// ── Parser ────────────────────────────────────────────
+
+function stripMarkdown(text) {
+  text = text.replace(/^#{1,6}\s*/gm, '');
+  text = text.replace(/\*{1,3}(.+?)\*{1,3}/g, '$1');
+  text = text.replace(/_{1,3}(.+?)_{1,3}/g, '$1');
+  text = text.replace(/^[-*_]{3,}\s*$/gm, '');
+  text = text.replace(/\[([^\]]+)\]\([^)]+\)/g, '$1');
+  text = text.replace(/`([^`]+)`/g, '$1');
+  return text;
+}
+
+function preProcessText(text) {
+  // Split inline SCENE headers onto their own lines
+  // e.g. "...turning away.) SCENE 1.4ELIZABETH." → "...turning away.)\nSCENE 1.4\nELIZABETH."
+  text = text.replace(/\)\s*(SCENE\s+[\d.IV]+)\s*/gi, ')\n$1\n');
+  text = text.replace(/([.!?])\s*(SCENE\s+[\d.IV]+)\s*/gi, '$1\n$2\n');
+
+  // Split inline ACT headers onto their own lines
+  text = text.replace(/\)\s*(ACT\s+[IV\d]+)/gi, ')\n$1\n');
+  text = text.replace(/([.!?])\s*(ACT\s+[IV\d]+)/gi, '$1\n$2\n');
+
+  // Split stage directions jammed onto dialogue: "ELIZABETH. text(Stage dir)JANE. text"
+  // Put closing paren + next character cue on separate lines
+  text = text.replace(/\)\s*([A-Z]{2,}[A-Z.\s,]*\.)\s/g, ')\n$1 ');
+
+  // Split multiple character cues on same line (Gemini sometimes runs them together)
+  // e.g. "MISS BINGLEY, JANE. ...text" is fine (multi-char line)
+  // but "text. ELIZABETH. More text" should split
+  text = text.replace(/([.!?])\s+([A-Z]{2,}(?:\s+[A-Z]+)*)\.\s+/g, '$1\n$2. ');
+
+  return text;
+}
+
+function parseScript(rawText, fileName) {
+  const isMarkdown = fileName && (fileName.endsWith('.md') || fileName.endsWith('.markdown'));
+  if (isMarkdown) {
+    rawText = stripMarkdown(rawText);
+  }
+
+  // Pre-process to fix common Gemini formatting issues
+  rawText = preProcessText(rawText);
+
+  if (fileName) {
+    scriptTitle = fileName.replace(/\.(txt|md|markdown)$/i, '')
+      .replace(/[_-]/g, ' ')
+      .replace(/\b\w/g, c => c.toUpperCase());
+  }
+
+  const knownChars = new Set();
+  const charPattern = /^([A-Z][A-Z.\s,]+(?:,\s*[A-Z][A-Z.\s]+)*)\.\s/gm;
+  let m;
+  while ((m = charPattern.exec(rawText)) !== null) {
+    const name = m[1].trim();
+    if (name.length < 2 || name.length > 50) continue;
+    if (/^(ACT|SCENE|SETTING|NOTE|PRODUCTION)\b/.test(name)) continue;
+    knownChars.add(name);
+  }
+
+  const sortedChars = [...knownChars].sort((a, b) => b.length - a.length);
+  const lines = rawText.split('\n');
+  const result = [];
+  let currentAct = 'ACT I';
+  let currentScene = '';
+  let currentChar = '';
+  let dialogueParts = [];
+  let lineNum = 0;
+
+  function flushDialogue() {
+    if (currentChar && dialogueParts.length > 0) {
+      let fullText = dialogueParts.join(' ').replace(/[|~\u00b0]/g, '').replace(/\s+[/\\]\s*$/, '').replace(/  +/g, ' ').trim();
+      if (!fullText) return;
+      let direction = '';
+      const dirMatch = fullText.match(/^\(([^)]+?):\)\s*(.*)/);
+      if (dirMatch) { direction = dirMatch[1]; fullText = dirMatch[2]; }
+      lineNum++;
+      result.push({
+        id: crypto.randomUUID(), act: currentAct, scene: currentScene,
+        lineNumber: lineNum, character: currentChar, text: fullText,
+        lineType: 'dialogue', stageDirection: direction,
+      });
+    }
+  }
+
+  for (const rawLine of lines) {
+    const line = rawLine.trim();
+    if (!line) continue;
+    if (/^\d+\s+\w+\s+\w+$/.test(line) || /^\w+\s+\w+\s+\d+$/.test(line) ||
+        /^\d+$/.test(line) || /^[|}\s]+$/.test(line)) continue;
+
+    const actMatch = line.match(/^ACT\s+([IV]+|\d+)/);
+    if (actMatch) {
+      flushDialogue();
+      currentAct = line.trim(); currentScene = ''; currentChar = ''; dialogueParts = []; lineNum = 0;
+      result.push({ id: crypto.randomUUID(), act: currentAct, scene: '', lineNumber: 0,
+        character: '', text: currentAct, lineType: 'header', stageDirection: '' });
+      continue;
+    }
+
+    if (/^SCENE\s+[\d.IV]+/i.test(line)) {
+      flushDialogue(); currentScene = line.trim(); lineNum = 0; currentChar = ''; dialogueParts = [];
+      continue;
+    }
+
+    const cleaned = line.replace(/[|~\u00b0]/g, '').replace(/\s+[/\\]\s*$/, '').replace(/  +/g, ' ').trim();
+    if (!cleaned) continue;
+
+    let foundCue = false;
+    for (const char of sortedChars) {
+      const escaped = char.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const cueMatch = cleaned.match(new RegExp('^' + escaped + '\\.\\s+(.*)'));
+      if (cueMatch) {
+        flushDialogue(); currentChar = char; dialogueParts = [cueMatch[1]]; foundCue = true; break;
+      }
+    }
+    if (foundCue) continue;
+
+    if (cleaned.startsWith('(') && cleaned.endsWith(')')) {
+      flushDialogue(); currentChar = ''; dialogueParts = []; lineNum++;
+      result.push({ id: crypto.randomUUID(), act: currentAct, scene: currentScene, lineNumber: lineNum,
+        character: '', text: cleaned, lineType: 'stageDirection', stageDirection: '' });
+      continue;
+    }
+
+    if (currentChar && dialogueParts.length > 0) {
+      if (cleaned.length > 2 && /[a-zA-Z]/.test(cleaned)) dialogueParts.push(cleaned);
+      continue;
+    }
+
+    if (!currentChar && cleaned.startsWith('(')) {
+      lineNum++;
+      result.push({ id: crypto.randomUUID(), act: currentAct, scene: currentScene, lineNumber: lineNum,
+        character: '', text: cleaned, lineType: 'stageDirection', stageDirection: '' });
+    }
+  }
+
+  flushDialogue();
+  scriptLines = result;
+  markDirty();
+}
+
+// ── Rendering ─────────────────────────────────────────
+
+function getCharacters() {
+  const counts = {};
+  for (const line of scriptLines) {
+    if (line.lineType === 'dialogue' && line.character) {
+      counts[line.character] = (counts[line.character] || 0) + 1;
+    }
+  }
+  return Object.entries(counts)
+    .sort((a, b) => b[1] - a[1])
+    .map(([name, count], i) => ({ name, count, color: CHAR_COLORS[i % CHAR_COLORS.length] }));
+}
+
+function charColor(name) {
+  const ch = getCharacters().find(c => c.name === name);
+  return ch ? ch.color : '#888';
+}
+
+function render() {
+  const chars = getCharacters();
+
+  document.getElementById('script-title').textContent = scriptTitle;
+  document.getElementById('stat-lines').textContent = scriptLines.filter(l => l.lineType === 'dialogue').length;
+  document.getElementById('stat-chars').textContent = chars.length;
+  document.getElementById('stat-acts').textContent = scriptLines.filter(l => l.lineType === 'header' && l.text.startsWith('ACT')).length;
+
+  // Count distinct scenes
+  const sceneSet = new Set();
+  scriptLines.forEach(l => { if (l.scene) sceneSet.add(l.act + '|' + l.scene); });
+  const sceneStat = document.getElementById('stat-scenes');
+  if (sceneStat) sceneStat.textContent = sceneSet.size;
+
+  const charList = document.getElementById('char-list');
+  charList.innerHTML = chars.map(c => `
+    <div class="char-item ${filterChar === c.name ? 'active' : ''}"
+         onclick="filterByChar('${c.name.replace(/'/g, "\\'")}')">
+      <div class="char-dot" style="background:${c.color}"></div>
+      <div>${escHtml(c.name)}</div>
+      <div class="char-count">${c.count}</div>
+    </div>
+  `).join('');
+
+  document.getElementById('char-datalist').innerHTML =
+    chars.map(c => `<option value="${escAttr(c.name)}">`).join('');
+
+  const area = document.getElementById('script-area');
+  const searchLower = filterText.toLowerCase();
+
+  let prevScene = '';
+  area.innerHTML = scriptLines.map((line, i) => {
+    const matchesChar = !filterChar || line.character === filterChar;
+    const matchesSearch = !searchLower ||
+      line.text.toLowerCase().includes(searchLower) ||
+      line.character.toLowerCase().includes(searchLower);
+    const filtered = !matchesChar || !matchesSearch;
+    const selected = selectedIndices.has(i);
+    const color = line.character ? charColor(line.character) : 'var(--text-dim)';
+
+    let badge = '', badgeClass = '';
+    switch (line.lineType) {
+      case 'header': badge = 'HDR'; badgeClass = 'badge-header'; break;
+      case 'stageDirection': badge = 'SD'; badgeClass = 'badge-direction'; break;
+      case 'dialogue': badge = 'DLG'; badgeClass = 'badge-dialogue'; break;
+      case 'song': badge = 'SNG'; badgeClass = 'badge-song'; break;
+    }
+
+    const textClass = line.lineType === 'header' ? 'header-text' :
+                      line.lineType === 'stageDirection' ? 'direction-text' : '';
+
+    // Scene divider when scene changes
+    let sceneDivider = '';
+    const sceneKey = (line.act || '') + '|' + (line.scene || '');
+    if (line.scene && sceneKey !== prevScene && line.lineType !== 'header') {
+      sceneDivider = `<div class="scene-divider"><span>${escHtml(line.act || '')} &mdash; ${escHtml(line.scene)}</span></div>`;
+    }
+    if (line.scene || line.lineType === 'header') prevScene = sceneKey;
+
+    return `${sceneDivider}
+      <div class="script-line ${filtered ? 'filtered-out' : ''} ${selected ? 'selected' : ''}"
+           data-index="${i}" onclick="toggleSelect(event, ${i})" ondblclick="openEditModal(${i})">
+        <div class="line-number">${i + 1}</div>
+        <div class="line-type-badge ${badgeClass}">${badge}</div>
+        ${line.character ? `<div class="line-char" style="color:${color}">${escHtml(line.character)}.</div>` : '<div class="line-char"></div>'}
+        ${line.stageDirection ? `<div class="line-direction">(${escHtml(line.stageDirection)})</div>` : ''}
+        <div class="line-text ${textClass}">${escHtml(line.text)}</div>
+        <div class="line-actions">
+          <button class="btn btn-sm btn-icon" onclick="event.stopPropagation();openEditModal(${i})" title="Edit">&#9998;</button>
+          <button class="btn btn-sm btn-icon" onclick="event.stopPropagation();deleteLine(${i})" title="Delete">&times;</button>
+        </div>
+      </div>
+    `;
+  }).join('');
+}
+
+function escHtml(s) {
+  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+function escAttr(s) {
+  return s.replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/'/g,'&#39;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+// ── Selection & Actions ───────────────────────────────
+
+function toggleSelect(e, idx) {
+  if (e.detail === 2) return;
+  if (e.shiftKey && selectedIndices.size > 0) {
+    const last = Math.max(...selectedIndices);
+    const [lo, hi] = idx > last ? [last, idx] : [idx, last];
+    for (let i = lo; i <= hi; i++) selectedIndices.add(i);
+  } else if (e.metaKey || e.ctrlKey) {
+    selectedIndices.has(idx) ? selectedIndices.delete(idx) : selectedIndices.add(idx);
+  } else {
+    if (selectedIndices.has(idx) && selectedIndices.size === 1) selectedIndices.clear();
+    else { selectedIndices.clear(); selectedIndices.add(idx); }
+  }
+  render();
+}
+
+function selectAll() {
+  for (let i = 0; i < scriptLines.length; i++) {
+    if (!filterChar || scriptLines[i].character === filterChar) selectedIndices.add(i);
+  }
+  render();
+}
+
+function clearSelection() { selectedIndices.clear(); render(); }
+
+function deleteSelected() {
+  if (selectedIndices.size === 0) return;
+  if (!confirm(`Delete ${selectedIndices.size} line(s)?`)) return;
+  scriptLines = scriptLines.filter((_, i) => !selectedIndices.has(i));
+  selectedIndices.clear();
+  markDirty(); render();
+  toast('Deleted lines');
+}
+
+function deleteLine(idx) {
+  scriptLines.splice(idx, 1);
+  selectedIndices.clear();
+  markDirty(); render();
+}
+
+function moveUp() {
+  if (selectedIndices.size !== 1) return;
+  const idx = [...selectedIndices][0];
+  if (idx === 0) return;
+  [scriptLines[idx - 1], scriptLines[idx]] = [scriptLines[idx], scriptLines[idx - 1]];
+  selectedIndices.clear(); selectedIndices.add(idx - 1);
+  markDirty(); render();
+}
+
+function moveDown() {
+  if (selectedIndices.size !== 1) return;
+  const idx = [...selectedIndices][0];
+  if (idx >= scriptLines.length - 1) return;
+  [scriptLines[idx], scriptLines[idx + 1]] = [scriptLines[idx + 1], scriptLines[idx]];
+  selectedIndices.clear(); selectedIndices.add(idx + 1);
+  markDirty(); render();
+}
+
+function mergeSelected() {
+  if (selectedIndices.size !== 1) return;
+  const idx = [...selectedIndices][0];
+  if (idx >= scriptLines.length - 1) return;
+  scriptLines[idx].text += ' ' + scriptLines[idx + 1].text;
+  scriptLines.splice(idx + 1, 1);
+  markDirty(); render();
+  toast('Merged lines');
+}
+
+function splitLine() {
+  if (selectedIndices.size !== 1) return;
+  const idx = [...selectedIndices][0];
+  const line = scriptLines[idx];
+  const text = prompt('Enter text for the NEW line (will be split from current):', '');
+  if (!text) return;
+  const origText = line.text;
+  const splitIdx = origText.indexOf(text);
+  if (splitIdx > 0) line.text = origText.substring(0, splitIdx).trim();
+  scriptLines.splice(idx + 1, 0, {
+    ...line, id: crypto.randomUUID(), text: text.trim(), stageDirection: '',
+  });
+  markDirty(); render();
+  toast('Line split');
+}
+
+function addLine() {
+  const idx = selectedIndices.size > 0 ? Math.max(...selectedIndices) + 1 : scriptLines.length;
+  const prev = scriptLines[idx - 1] || {};
+  scriptLines.splice(idx, 0, {
+    id: crypto.randomUUID(), act: prev.act || 'ACT I', scene: prev.scene || '',
+    lineNumber: 0, character: '', text: '', lineType: 'dialogue', stageDirection: '',
+  });
+  selectedIndices.clear(); selectedIndices.add(idx);
+  markDirty(); render();
+  openEditModal(idx);
+}
+
+// ── Edit Modal ────────────────────────────────────────
+
+function openEditModal(idx) {
+  editingIndex = idx;
+  const line = scriptLines[idx];
+  document.getElementById('edit-type').value = line.lineType;
+  document.getElementById('edit-char').value = line.character;
+  document.getElementById('edit-direction').value = line.stageDirection;
+  document.getElementById('edit-text').value = line.text;
+  updateEditModalFields();
+  document.getElementById('edit-modal').classList.add('open');
+  document.getElementById('edit-text').focus();
+}
+
+function updateEditModalFields() {
+  const type = document.getElementById('edit-type').value;
+  document.getElementById('edit-char-group').style.display = (type === 'dialogue' || type === 'song') ? '' : 'none';
+  document.getElementById('edit-direction-group').style.display = (type === 'dialogue' || type === 'song') ? '' : 'none';
+}
+
+document.getElementById('edit-type').addEventListener('change', updateEditModalFields);
+
+function closeEditModal() {
+  document.getElementById('edit-modal').classList.remove('open');
+  editingIndex = -1;
+}
+
+function saveEdit() {
+  if (editingIndex < 0) return;
+  const line = scriptLines[editingIndex];
+  line.lineType = document.getElementById('edit-type').value;
+  line.character = document.getElementById('edit-char').value.trim();
+  line.stageDirection = document.getElementById('edit-direction').value.trim();
+  line.text = document.getElementById('edit-text').value.trim();
+  closeEditModal();
+  markDirty(); render();
+  toast('Line saved');
+}
+
+// ── Character Operations ──────────────────────────────
+
+function filterByChar(name) {
+  filterChar = filterChar === name ? null : name;
+  selectedIndices.clear();
+  render();
+}
+
+function filterLines() {
+  filterText = document.getElementById('search-box').value;
+  render();
+}
+
+function renameCharacter() {
+  const chars = getCharacters();
+  const old = prompt('Character to rename:', filterChar || chars[0]?.name || '');
+  if (!old) return;
+  const newName = prompt(`Rename "${old}" to:`);
+  if (!newName) return;
+  let count = 0;
+  for (const line of scriptLines) {
+    if (line.character === old) { line.character = newName.toUpperCase(); count++; }
+  }
+  if (filterChar === old) filterChar = newName.toUpperCase();
+  markDirty(); render();
+  toast(`Renamed ${count} lines`);
+}
+
+function mergeCharacters() {
+  const from = prompt('Character to merge FROM (will be removed):', '');
+  if (!from) return;
+  const into = prompt(`Merge "${from}" INTO (keep this name):`, filterChar || '');
+  if (!into) return;
+  let count = 0;
+  for (const line of scriptLines) {
+    if (line.character === from) { line.character = into; count++; }
+  }
+  markDirty(); render();
+  toast(`Merged ${count} lines from ${from} into ${into}`);
+}
+
+// ── Import / Export ───────────────────────────────────
+
+function handleFile(file) {
+  const reader = new FileReader();
+  reader.onload = (e) => {
+    parseScript(e.target.result, file.name);
+    showEditor();
+    toast(`Imported ${scriptLines.length} lines`);
+  };
+  reader.readAsText(file);
+}
+
+const dropZone = document.getElementById('drop-zone');
+const fileInput = document.getElementById('file-input');
+
+dropZone.addEventListener('click', () => fileInput.click());
+fileInput.addEventListener('change', (e) => { if (e.target.files[0]) handleFile(e.target.files[0]); });
+dropZone.addEventListener('dragover', (e) => { e.preventDefault(); dropZone.classList.add('dragover'); });
+dropZone.addEventListener('dragleave', () => dropZone.classList.remove('dragover'));
+dropZone.addEventListener('drop', (e) => {
+  e.preventDefault(); dropZone.classList.remove('dragover');
+  if (e.dataTransfer.files[0]) handleFile(e.dataTransfer.files[0]);
+});
+
+function exportMarkdown() {
+  const chars = getCharacters();
+  let md = `# ${scriptTitle}\n\n## Cast of Characters\n\n`;
+  for (const c of chars) md += `- **${c.name}** (${c.count} lines)\n`;
+  md += `\n---\n\n`;
+  for (const line of scriptLines) {
+    switch (line.lineType) {
+      case 'header': md += `## ${line.text}\n\n`; break;
+      case 'stageDirection': md += `*${line.text}*\n\n`; break;
+      case 'dialogue': {
+        const dir = line.stageDirection ? ` *(${line.stageDirection})* ` : ' ';
+        md += `**${line.character}.**${dir}${line.text}\n\n`; break;
+      }
+      case 'song': md += `> ♪ **${line.character}.** ${line.text}\n\n`; break;
+    }
+  }
+  downloadFile(scriptTitle.replace(/\s+/g, '_').toLowerCase() + '.md', md, 'text/markdown');
+  toast('Exported markdown');
+}
+
+function exportPlainText() {
+  let txt = '';
+  for (const line of scriptLines) {
+    switch (line.lineType) {
+      case 'header': txt += `\n${line.text}\n\n`; break;
+      case 'stageDirection': txt += `${line.text}\n\n`; break;
+      case 'dialogue': {
+        const dir = line.stageDirection ? `(${line.stageDirection}:) ` : '';
+        txt += `${line.character}. ${dir}${line.text}\n\n`; break;
+      }
+      case 'song': txt += `${line.character}. ${line.text}\n\n`; break;
+    }
+  }
+  downloadFile(scriptTitle.replace(/\s+/g, '_').toLowerCase() + '.txt', txt, 'text/plain');
+  toast('Exported text');
+}
+
+function downloadFile(name, content, type) {
+  const blob = new Blob([content], { type });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = name; a.click();
+  URL.revokeObjectURL(url);
+}
+
+function loadSample() {
+  const sample = `ACT I
+
+(The Bennet family parlor at Longbourn. MRS. BENNET is in a state of excitement.)
+
+MRS. BENNET. My dear Mr. Bennet, have you heard that Netherfield Park is let at last?
+
+MR. BENNET. I have not.
+
+MRS. BENNET. But it is, for Mrs. Long has just been here, and she told me all about it.
+
+MR. BENNET. I do not want to know. You will tell me anyway.
+
+MRS. BENNET. (excitedly:) A young man of large fortune! Four or five thousand a year! What a fine thing for our girls!
+
+ELIZABETH. Mama, you cannot mean to throw us at every single man who moves to the neighborhood.
+
+MRS. BENNET. Elizabeth, you are so tiresome! I am thinking of his marrying one of them.
+
+JANE. (gently:) Mama, we have not even met the gentleman.
+
+(MR. BINGLEY enters with MR. DARCY.)
+
+MR. BINGLEY. What a charming room! I am delighted to make your acquaintance.
+
+MR. DARCY. The country has a certain... rustic appeal.
+
+ELIZABETH. And what a charming compliment that is, sir.
+
+ACT II
+
+(The Netherfield Ball. Music and dancing.)
+
+MR. BINGLEY. Miss Bennet, may I have this dance?
+
+JANE. I would be delighted, Mr. Bingley.
+
+MR. DARCY. (reluctantly:) Miss Elizabeth, would you care to dance?
+
+ELIZABETH. I had not thought you the dancing sort, Mr. Darcy.
+
+MR. DARCY. I am not, as a rule. But I find myself making exceptions.
+`;
+  parseScript(sample, 'Pride and Prejudice Sample.txt');
+  showEditor();
+  toast('Loaded sample script');
+}
+
+// ── Keyboard Shortcuts ────────────────────────────────
+
+document.addEventListener('keydown', (e) => {
+  if (document.getElementById('edit-modal').classList.contains('open')) {
+    if (e.key === 'Escape') closeEditModal();
+    if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) saveEdit();
+    return;
+  }
+  if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+
+  if (e.key === 'Delete' || e.key === 'Backspace') { e.preventDefault(); deleteSelected(); }
+  if (e.key === 'a' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); selectAll(); }
+  if (e.key === 's' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); saveToCloud(); }
+  if (e.key === 'Escape') clearSelection();
+});
+
+// Warn on unsaved changes
+window.addEventListener('beforeunload', (e) => {
+  if (isDirty) { e.preventDefault(); e.returnValue = ''; }
+});
+
+// ── Toast ─────────────────────────────────────────────
+
+function toast(msg) {
+  const el = document.getElementById('toast');
+  el.textContent = msg;
+  el.classList.add('show');
+  setTimeout(() => el.classList.remove('show'), 2500);
+}
+
+// ── Init: check existing session ──────────────────────
+
+(async function init() {
+  // Wait for supabase-js to be available
+  while (!window.supabase || !window.supabase.createClient) {
+    await new Promise(r => setTimeout(r, 100));
+  }
+  sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+  try {
+    const { data: { session } } = await sb.auth.getSession();
+    if (session?.user) {
+      currentUser = session.user;
+      showProductionScreen();
+    } else {
+      showScreen('auth-screen');
+    }
+  } catch (e) {
+    console.error('Supabase init error:', e);
+    showScreen('auth-screen');
+  }
+})();
+</script>
+</body>
+</html>

@@ -1,6 +1,7 @@
 import 'dart:io';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:path_provider/path_provider.dart';
@@ -53,7 +54,7 @@ class _ScriptEditorScreenState extends ConsumerState<ScriptEditorScreen> {
         actions: [
           IconButton(
             icon: const Icon(Icons.save_outlined),
-            tooltip: 'Save to database',
+            tooltip: 'Save',
             onPressed: () async {
               await persistScript(ref);
               if (context.mounted) {
@@ -67,37 +68,9 @@ class _ScriptEditorScreenState extends ConsumerState<ScriptEditorScreen> {
             },
           ),
           IconButton(
-            icon: const Icon(Icons.checklist),
-            tooltip: 'Validate Script',
-            onPressed: () => showValidationPanel(context, script),
-          ),
-          IconButton(
-            icon: const Icon(Icons.person_search),
-            tooltip: 'Characters (${script.characters.length})',
-            onPressed: () => context.push('/characters'),
-          ),
-          IconButton(
-            icon: const Icon(Icons.auto_awesome_mosaic),
-            tooltip: 'Scenes (${script.scenes.length})',
-            onPressed: () => context.push('/scenes'),
-          ),
-          IconButton(
-            icon: const Icon(Icons.people_outline),
-            tooltip: 'Cast',
-            onPressed: () => context.push('/cast'),
-          ),
-          IconButton(
-            icon: const Icon(Icons.mic),
-            tooltip: 'Record Lines',
-            onPressed: () => context.push('/record'),
-          ),
-          IconButton(
-            icon: const Icon(Icons.play_circle_outline),
-            tooltip: 'Practice',
-            onPressed: () => context.push('/practice'),
-          ),
-          IconButton(
-            icon: const Icon(Icons.visibility),
+            icon: Icon(_showDirections
+                ? Icons.visibility
+                : Icons.visibility_off),
             tooltip: _showDirections
                 ? 'Hide stage directions'
                 : 'Show stage directions',
@@ -105,41 +78,44 @@ class _ScriptEditorScreenState extends ConsumerState<ScriptEditorScreen> {
                 setState(() => _showDirections = !_showDirections),
           ),
           PopupMenuButton<String>(
-            icon: const Icon(Icons.file_download),
-            tooltip: 'Export',
-            onSelected: (format) => _export(context, script, format),
+            icon: const Icon(Icons.more_vert),
+            tooltip: 'More',
+            onSelected: (action) {
+              switch (action) {
+                case 'validate':
+                  showValidationPanel(context, script);
+                case 'export_text':
+                  _export(context, script, 'plain');
+                case 'export_md':
+                  _export(context, script, 'markdown');
+              }
+            },
             itemBuilder: (context) => [
               const PopupMenuItem(
-                value: 'plain',
+                value: 'validate',
+                child: ListTile(
+                  leading: Icon(Icons.checklist),
+                  title: Text('Validate Script'),
+                  dense: true,
+                ),
+              ),
+              const PopupMenuDivider(),
+              const PopupMenuItem(
+                value: 'export_text',
                 child: ListTile(
                   leading: Icon(Icons.text_snippet),
                   title: Text('Export as Text'),
+                  dense: true,
                 ),
               ),
               const PopupMenuItem(
-                value: 'markdown',
+                value: 'export_md',
                 child: ListTile(
                   leading: Icon(Icons.article),
                   title: Text('Export as Markdown'),
+                  dense: true,
                 ),
               ),
-              if (_selectedCharacter != null) ...[
-                const PopupMenuDivider(),
-                PopupMenuItem(
-                  value: 'character',
-                  child: ListTile(
-                    leading: const Icon(Icons.person),
-                    title: Text('$_selectedCharacter lines'),
-                  ),
-                ),
-                PopupMenuItem(
-                  value: 'cue',
-                  child: ListTile(
-                    leading: const Icon(Icons.queue_music),
-                    title: Text('$_selectedCharacter cue script'),
-                  ),
-                ),
-              ],
             ],
           ),
         ],
@@ -704,10 +680,14 @@ class _ScriptEditorScreenState extends ConsumerState<ScriptEditorScreen> {
 
       if (!context.mounted) return;
 
-      // Show share sheet
+      // Show share sheet — sharePositionOrigin required on iPad/iPhone
+      final box = context.findRenderObject() as RenderBox?;
       await Share.shareXFiles(
         [XFile(filePath)],
         text: 'LineGuide export: ${script.title}',
+        sharePositionOrigin: box != null
+            ? box.localToGlobal(Offset.zero) & box.size
+            : Rect.zero,
       );
     } catch (e) {
       if (!context.mounted) return;
