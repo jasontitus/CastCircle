@@ -234,6 +234,11 @@ class _ProductionHubScreenState extends ConsumerState<ProductionHubScreen> {
               Navigator.pop(context);
               context.push('/record');
             }),
+          if (hasScript)
+            _drawerItem(Icons.record_voice_over, 'Voice Cloning', () {
+              Navigator.pop(context);
+              context.push('/voice-cloning');
+            }),
           const Divider(),
           // ── Cloud Sync ──
           if (isSignedIn) ...[

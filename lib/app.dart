@@ -19,6 +19,7 @@ import 'features/recording_studio/recording_character_screen.dart';
 import 'features/recording_studio/recording_studio_screen.dart';
 import 'features/recording_studio/recordings_browser_screen.dart';
 import 'features/recording_studio/voice_profile_screen.dart';
+import 'features/recording_studio/voice_cloning_screen.dart';
 import 'features/rehearsal/scene_selector_screen.dart';
 import 'features/rehearsal/rehearsal_history_screen.dart';
 import 'features/rehearsal/rehearsal_screen.dart';
@@ -114,6 +115,10 @@ GoRouter _buildRouter(Ref ref) => GoRouter(
     GoRoute(
       path: '/voice-profile',
       builder: (context, state) => const VoiceProfileScreen(),
+    ),
+    GoRoute(
+      path: '/voice-cloning',
+      builder: (context, state) => const VoiceCloningScreen(),
     ),
     GoRoute(
       path: '/practice',
