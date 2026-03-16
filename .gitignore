@@ -46,3 +46,8 @@ app.*.map.json
 ios/LocalPackages/*/.build/
 ios/LocalPackages/*/Package.resolved
 .env
+fastlane/.env
+fastlane/report.xml
+fastlane/Preview.html
+fastlane/test_output/
+Gemfile.lock
