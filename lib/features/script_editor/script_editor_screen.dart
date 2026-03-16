@@ -209,6 +209,14 @@ class _ScriptEditorScreenState extends ConsumerState<ScriptEditorScreen> {
               l.character == _selectedCharacter ||
               l.lineType == LineType.stageDirection)
           .toList();
+
+      // Trim headers and stage directions that appear before the character's
+      // first actual line so the view starts at relevant content.
+      final firstCharIndex =
+          lines.indexWhere((l) => l.character == _selectedCharacter);
+      if (firstCharIndex > 0) {
+        lines = lines.sublist(firstCharIndex);
+      }
     }
 
     return lines;
