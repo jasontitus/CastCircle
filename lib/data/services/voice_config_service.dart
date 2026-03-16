@@ -25,12 +25,17 @@ class VoiceConfigService {
 
   // ── Production Voice Preset ─────────────────────────────
 
-  /// Get the voice preset for a production (defaults to Modern American).
-  Future<VoicePreset> getPreset(String productionId) async {
+  /// Get the voice preset for a production.
+  ///
+  /// If no preset has been explicitly set, defaults based on [locale]:
+  /// 'en-GB' → Victorian English, otherwise → Modern American.
+  Future<VoicePreset> getPreset(String productionId,
+      {String locale = 'en-US'}) async {
     final prefs = await _preferences;
     final presetId = prefs.getString('voice_preset_$productionId');
-    return presetId != null
-        ? VoicePresets.byId(presetId)
+    if (presetId != null) return VoicePresets.byId(presetId);
+    return locale == 'en-GB'
+        ? VoicePresets.victorianEnglish
         : VoicePresets.modernAmerican;
   }
 
@@ -175,18 +180,20 @@ class VoiceConfigService {
   /// Resolve the final voice ID for a character, considering preset + overrides.
   ///
   /// Priority: per-character override > preset pool (round-robin by index).
+  /// [locale] is used to pick the right default preset if none is explicitly set.
   Future<String> resolveVoice(
     String productionId,
     String characterName,
     int characterIndex, {
     bool isFemale = true,
+    String locale = 'en-US',
   }) async {
     // Check for per-character override first
     final override = await getOverride(productionId, characterName);
     if (override != null) return override.voiceId;
 
-    // Fall back to preset pool
-    final preset = await getPreset(productionId);
+    // Fall back to preset pool (locale-aware default)
+    final preset = await getPreset(productionId, locale: locale);
     final pool = isFemale ? preset.femaleVoices : preset.maleVoices;
     final voices = pool.isNotEmpty
         ? pool
@@ -197,11 +204,12 @@ class VoiceConfigService {
 
   /// Resolve the speed for a character (override speed or preset default).
   Future<double> resolveSpeed(
-      String productionId, String characterName) async {
+      String productionId, String characterName,
+      {String locale = 'en-US'}) async {
     final override = await getOverride(productionId, characterName);
     if (override != null) return override.speed;
 
-    final preset = await getPreset(productionId);
+    final preset = await getPreset(productionId, locale: locale);
     return preset.defaultSpeed;
   }
 }

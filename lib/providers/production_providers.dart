@@ -7,6 +7,7 @@ import '../data/models/production_models.dart';
 import '../data/models/script_models.dart';
 import '../data/repositories/production_repository.dart';
 import '../data/services/script_import_service.dart';
+import '../data/services/script_parser.dart';
 import '../data/services/voice_config_service.dart';
 import '../data/services/supabase_service.dart';
 import '../main.dart';
@@ -185,8 +186,8 @@ class CastMembersNotifier extends StateNotifier<List<CastMemberModel>> {
   }
 }
 
-/// Persist the current script to the database. Call after updating
-/// currentScriptProvider when you want changes saved.
+/// Persist the current script to the local database and push to cloud.
+/// Call after updating currentScriptProvider when you want changes saved.
 Future<void> persistScript(WidgetRef ref) async {
   final script = ref.read(currentScriptProvider);
   final production = ref.read(currentProductionProvider);
@@ -195,6 +196,11 @@ Future<void> persistScript(WidgetRef ref) async {
   final repo = ref.read(productionRepositoryProvider);
   await repo.saveScriptLines(production.id, script.lines);
   await repo.saveScenes(production.id, script.scenes);
+
+  // Also push to cloud (non-blocking — don't fail local save if cloud fails)
+  pushScriptToCloud(ref).catchError((e) {
+    debugPrint('Auto cloud push after persist failed: $e');
+  });
 }
 
 /// Fetch cloud script lines for a production. Returns null if Supabase
@@ -270,6 +276,7 @@ ParsedScript buildParsedScript(String title, List<ScriptLine> lines) {
     name: e.value.key,
     colorIndex: e.key,
     lineCount: e.value.value,
+    gender: ScriptParser.inferGender(e.value.key),
   )).toList();
 
   // Rebuild scenes from line scene/act tags
@@ -367,7 +374,7 @@ Future<ParsedScript?> loadPersistedScript(WidgetRef ref, String productionId) as
         name: e.value.key,
         colorIndex: e.key,
         lineCount: e.value.value,
-        gender: savedGenders[e.value.key] ?? CharacterGender.female,
+        gender: savedGenders[e.value.key] ?? ScriptParser.inferGender(e.value.key),
       )).toList();
 
   // If no scenes were persisted, rebuild from line tags

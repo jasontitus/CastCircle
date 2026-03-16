@@ -24,18 +24,18 @@ final sharedPreferencesProvider = Provider<SharedPreferences>((ref) {
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
-  const supabaseUrl = String.fromEnvironment('SUPABASE_URL');
-  const supabaseAnonKey = String.fromEnvironment('SUPABASE_ANON_KEY');
+  const supabaseUrl = String.fromEnvironment('SUPABASE_URL',
+      defaultValue: 'https://vngpbmqymdaxxnvqptsk.supabase.co');
+  const supabaseAnonKey = String.fromEnvironment('SUPABASE_ANON_KEY',
+      defaultValue: 'sb_publishable_f3YAIMI4GIEIPdDwnvfO3Q_stwSCxXI');
 
-  if (supabaseUrl.isNotEmpty && supabaseAnonKey.isNotEmpty) {
-    try {
-      await SupabaseService.instance.init(
-        url: supabaseUrl,
-        anonKey: supabaseAnonKey,
-      );
-    } catch (e) {
-      debugPrint('Supabase init failed: $e');
-    }
+  try {
+    await SupabaseService.instance.init(
+      url: supabaseUrl,
+      anonKey: supabaseAnonKey,
+    );
+  } catch (e) {
+    debugPrint('Supabase init failed: $e');
   }
 
   // Initialize debug logging first so other services can use it
@@ -64,7 +64,7 @@ void main() async {
         if (hasPersistedSession)
           authGatePassedProvider.overrideWith((ref) => true),
       ],
-      child: const LineGuideApp(),
+      child: const CastCircleApp(),
     ),
   );
 }

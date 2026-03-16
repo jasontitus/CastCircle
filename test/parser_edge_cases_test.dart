@@ -1,7 +1,7 @@
 import 'package:flutter_test/flutter_test.dart';
-import 'package:lineguide/data/services/script_parser.dart';
-import 'package:lineguide/data/services/stt_service.dart';
-import 'package:lineguide/data/models/script_models.dart';
+import 'package:castcircle/data/services/script_parser.dart';
+import 'package:castcircle/data/services/stt_service.dart';
+import 'package:castcircle/data/models/script_models.dart';
 
 void main() {
   group('ScriptParser edge cases', () {

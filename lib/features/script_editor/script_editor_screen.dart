@@ -332,125 +332,158 @@ class _ScriptEditorScreenState extends ConsumerState<ScriptEditorScreen> {
 
   void _editLine(BuildContext context, ScriptLine line) {
     final textController = TextEditingController(text: line.text);
-    final charController = TextEditingController(text: line.character);
+    final script = ref.read(currentScriptProvider);
+    final charNames = script?.characters.map((c) => c.name).toList() ?? [];
+    var selectedChar = line.character;
+    final newCharController = TextEditingController();
+    var isNewChar = !charNames.contains(selectedChar) && selectedChar.isNotEmpty;
 
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
-      builder: (context) => Padding(
-        padding: EdgeInsets.only(
-          bottom: MediaQuery.of(context).viewInsets.bottom,
-          left: 16,
-          right: 16,
-          top: 16,
-        ),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            Row(
+      builder: (context) {
+        return StatefulBuilder(
+          builder: (context, setModalState) => Padding(
+            padding: EdgeInsets.only(
+              bottom: MediaQuery.of(context).viewInsets.bottom,
+              left: 16,
+              right: 16,
+              top: 16,
+            ),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                Expanded(
-                  child: Text(
-                    'Edit Line #${line.orderIndex}',
-                    style: Theme.of(context).textTheme.titleMedium,
-                  ),
-                ),
-                // Line type toggle
-                PopupMenuButton<String>(
-                  icon: Icon(_lineTypeIcon(line.lineType), size: 20),
-                  tooltip: 'Change line type',
-                  onSelected: (type) {
-                    _changeLineType(line, type);
-                    Navigator.pop(context);
-                  },
-                  itemBuilder: (context) => [
-                    const PopupMenuItem(
-                      value: 'dialogue',
-                      child: Text('Dialogue'),
+                Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        'Edit Line #${line.orderIndex}',
+                        style: Theme.of(context).textTheme.titleMedium,
+                      ),
                     ),
-                    const PopupMenuItem(
-                      value: 'stageDirection',
-                      child: Text('Stage Direction'),
+                    PopupMenuButton<String>(
+                      icon: Icon(_lineTypeIcon(line.lineType), size: 20),
+                      tooltip: 'Change line type',
+                      onSelected: (type) {
+                        _changeLineType(line, type);
+                        Navigator.pop(context);
+                      },
+                      itemBuilder: (context) => [
+                        const PopupMenuItem(
+                            value: 'dialogue', child: Text('Dialogue')),
+                        const PopupMenuItem(
+                            value: 'stageDirection',
+                            child: Text('Stage Direction')),
+                        const PopupMenuItem(
+                            value: 'header', child: Text('Header')),
+                        const PopupMenuItem(
+                            value: 'song', child: Text('Song')),
+                      ],
                     ),
-                    const PopupMenuItem(
-                      value: 'header',
-                      child: Text('Header'),
+                    IconButton(
+                      icon: const Icon(Icons.splitscreen, size: 20),
+                      tooltip: 'Split line',
+                      onPressed: () {
+                        Navigator.pop(context);
+                        _splitLine(context, line);
+                      },
                     ),
-                    const PopupMenuItem(
-                      value: 'song',
-                      child: Text('Song'),
+                    IconButton(
+                      icon: const Icon(Icons.delete_outline,
+                          size: 20, color: Colors.red),
+                      tooltip: 'Delete line',
+                      onPressed: () {
+                        _deleteLine(line);
+                        Navigator.pop(context);
+                      },
                     ),
                   ],
                 ),
-                // Split line
-                IconButton(
-                  icon: const Icon(Icons.splitscreen, size: 20),
-                  tooltip: 'Split line',
-                  onPressed: () {
-                    Navigator.pop(context);
-                    _splitLine(context, line);
-                  },
+                const SizedBox(height: 16),
+                if (line.lineType == LineType.dialogue ||
+                    line.lineType == LineType.song) ...[
+                  DropdownButtonFormField<String>(
+                    value: isNewChar ? '__new__' : selectedChar,
+                    decoration: const InputDecoration(
+                      labelText: 'Character',
+                      border: OutlineInputBorder(),
+                    ),
+                    items: [
+                      ...charNames.map((name) => DropdownMenuItem(
+                            value: name,
+                            child: Text(name),
+                          )),
+                      const DropdownMenuItem(
+                        value: '__new__',
+                        child: Text('+ New character...'),
+                      ),
+                    ],
+                    onChanged: (value) {
+                      setModalState(() {
+                        if (value == '__new__') {
+                          isNewChar = true;
+                          selectedChar = '';
+                        } else {
+                          isNewChar = false;
+                          selectedChar = value ?? '';
+                        }
+                      });
+                    },
+                  ),
+                  if (isNewChar) ...[
+                    const SizedBox(height: 12),
+                    TextField(
+                      controller: newCharController,
+                      textCapitalization: TextCapitalization.characters,
+                      decoration: const InputDecoration(
+                        labelText: 'New character name',
+                        border: OutlineInputBorder(),
+                        hintText: 'e.g. DARCY',
+                      ),
+                    ),
+                  ],
+                  const SizedBox(height: 12),
+                ],
+                TextField(
+                  controller: textController,
+                  maxLines: 4,
+                  decoration: const InputDecoration(
+                    labelText: 'Line text',
+                    border: OutlineInputBorder(),
+                  ),
                 ),
-                // Delete line
-                IconButton(
-                  icon: const Icon(Icons.delete_outline,
-                      size: 20, color: Colors.red),
-                  tooltip: 'Delete line',
-                  onPressed: () {
-                    _deleteLine(line);
-                    Navigator.pop(context);
-                  },
+                const SizedBox(height: 16),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.end,
+                  children: [
+                    TextButton(
+                      onPressed: () => Navigator.pop(context),
+                      child: const Text('Cancel'),
+                    ),
+                    const SizedBox(width: 8),
+                    FilledButton(
+                      onPressed: () {
+                        final finalChar = isNewChar
+                            ? newCharController.text.trim().toUpperCase()
+                            : selectedChar;
+                        _updateLine(
+                          line,
+                          finalChar,
+                          textController.text.trim(),
+                        );
+                        Navigator.pop(context);
+                      },
+                      child: const Text('Save'),
+                    ),
+                  ],
                 ),
+                const SizedBox(height: 16),
               ],
             ),
-            const SizedBox(height: 16),
-            if (line.lineType == LineType.dialogue ||
-                line.lineType == LineType.song)
-              TextField(
-                controller: charController,
-                decoration: const InputDecoration(
-                  labelText: 'Character',
-                  border: OutlineInputBorder(),
-                ),
-              ),
-            if (line.lineType == LineType.dialogue ||
-                line.lineType == LineType.song)
-              const SizedBox(height: 12),
-            TextField(
-              controller: textController,
-              maxLines: 4,
-              decoration: const InputDecoration(
-                labelText: 'Line text',
-                border: OutlineInputBorder(),
-              ),
-            ),
-            const SizedBox(height: 16),
-            Row(
-              mainAxisAlignment: MainAxisAlignment.end,
-              children: [
-                TextButton(
-                  onPressed: () => Navigator.pop(context),
-                  child: const Text('Cancel'),
-                ),
-                const SizedBox(width: 8),
-                FilledButton(
-                  onPressed: () {
-                    _updateLine(
-                      line,
-                      charController.text.trim(),
-                      textController.text.trim(),
-                    );
-                    Navigator.pop(context);
-                  },
-                  child: const Text('Save'),
-                ),
-              ],
-            ),
-            const SizedBox(height: 16),
-          ],
-        ),
-      ),
+          ),
+        );
+      },
     );
   }
 
@@ -684,7 +717,7 @@ class _ScriptEditorScreenState extends ConsumerState<ScriptEditorScreen> {
       final box = context.findRenderObject() as RenderBox?;
       await Share.shareXFiles(
         [XFile(filePath)],
-        text: 'LineGuide export: ${script.title}',
+        text: 'CastCircle export: ${script.title}',
         sharePositionOrigin: box != null
             ? box.localToGlobal(Offset.zero) & box.size
             : Rect.zero,

@@ -148,14 +148,14 @@ GoRouter _buildRouter(Ref ref) => GoRouter(
 
 final _routerProvider = Provider<GoRouter>((ref) => _buildRouter(ref));
 
-class LineGuideApp extends ConsumerWidget {
-  const LineGuideApp({super.key});
+class CastCircleApp extends ConsumerWidget {
+  const CastCircleApp({super.key});
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final router = ref.watch(_routerProvider);
     return MaterialApp.router(
-      title: 'LineGuide',
+      title: 'CastCircle',
       theme: AppTheme.lightTheme,
       darkTheme: AppTheme.darkTheme,
       themeMode: ThemeMode.dark,

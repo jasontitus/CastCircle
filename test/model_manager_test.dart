@@ -1,5 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
-import 'package:lineguide/data/services/model_manager.dart';
+import 'package:castcircle/data/services/model_manager.dart';
 
 void main() {
   group('ModelManager', () {

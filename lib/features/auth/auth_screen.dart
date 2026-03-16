@@ -52,7 +52,7 @@ class _AuthScreenState extends ConsumerState<AuthScreen> {
                 ),
                 const SizedBox(height: 16),
                 Text(
-                  'LineGuide',
+                  'CastCircle',
                   style: Theme.of(context).textTheme.headlineMedium?.copyWith(
                         fontWeight: FontWeight.bold,
                       ),

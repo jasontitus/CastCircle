@@ -95,9 +95,9 @@ class _KokoroDebugScreenState extends State<KokoroDebugScreen> {
   }
 
   Future<void> _tryReload() async {
-    _log('Calling init() to reload...');
-    await _tts.init();
-    _log('init() complete. Kokoro loaded: ${_tts.isKokoroLoaded}');
+    _log('Calling tryLoadKokoro()...');
+    final success = await _tts.tryLoadKokoro();
+    _log('tryLoadKokoro() → $success. Engine: ${_tts.activeEngine.name}');
     await _loadDebugInfo();
   }
 

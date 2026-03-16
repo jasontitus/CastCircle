@@ -1,5 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
-import 'package:lineguide/data/services/sync_queue.dart';
+import 'package:castcircle/data/services/sync_queue.dart';
 
 void main() {
   group('SyncJob', () {

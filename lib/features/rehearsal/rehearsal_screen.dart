@@ -116,45 +116,15 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen> {
           .getLocale(production.id, myCharacter);
       if (charLocale != null) locale = charLocale;
     }
-    await _stt.init(locale: locale);
 
-    // Assign voices to characters using production voice config
-    if (script != null) {
-      final voiceConfig = VoiceConfigService.instance;
-      for (var i = 0; i < script.characters.length; i++) {
-        final char = script.characters[i];
-        if (production != null) {
-          final voiceId = await voiceConfig.resolveVoice(
-            production.id, char.name, i,
-            isFemale: char.gender != CharacterGender.male,
-          );
-          final speed =
-              await voiceConfig.resolveSpeed(production.id, char.name);
-          _tts.assignVoice(char.name, i, voiceId: voiceId, speed: speed);
-        } else {
-          _tts.assignVoice(char.name, i);
-        }
-      }
-    }
-
-    // Build STT vocabulary from script for correction
-    if (script != null && production != null) {
-      _sttVocab.buildFromScript(production.id, script.lines);
-    }
+    // Assign voices (fast — batched SharedPreferences reads)
+    await _assignVoices(production, script, locale);
 
     _tts.setCompletionHandler(() {
       if (_autoPlay && mounted) {
         _onOtherLineFinished();
       }
     });
-
-    // Check for per-actor or per-production STT adapter
-    if (production != null && myCharacter != null) {
-      _activeAdapter = _sttAdapt.getBestAdapter(production.id, myCharacter);
-      if (_activeAdapter != null) {
-        debugPrint('Rehearsal: Using adapted STT model: $_activeAdapter');
-      }
-    }
 
     // In Cue Practice mode, jump to a few lines before the actor's first line.
     // In Scene Readthrough mode, start from the beginning of the scene.
@@ -176,9 +146,35 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen> {
       }
     }
 
-    // Auto-start if enabled
+    // Auto-start playback immediately — don't wait for STT
     if (_autoPlay) {
       _processCurrentLine();
+    }
+
+    // Defer STT init to background — it's only needed when it's the user's
+    // turn to speak, not for TTS playback of other characters' lines.
+    _initSttDeferred(production, myCharacter, script, locale);
+  }
+
+  Future<void> _initSttDeferred(
+    dynamic production,
+    String? myCharacter,
+    ParsedScript? script,
+    String locale,
+  ) async {
+    await _stt.init(locale: locale);
+
+    // Build STT vocabulary from script for correction
+    if (script != null && production != null) {
+      _sttVocab.buildFromScript(production.id, script.lines);
+    }
+
+    // Check for per-actor or per-production STT adapter
+    if (production != null && myCharacter != null) {
+      _activeAdapter = _sttAdapt.getBestAdapter(production.id, myCharacter);
+      if (_activeAdapter != null) {
+        debugPrint('Rehearsal: Using adapted STT model: $_activeAdapter');
+      }
     }
   }
 
@@ -189,9 +185,55 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen> {
     _silenceTimer?.cancel();
     _scrollController.dispose();
     _player.dispose();
-    _tts.stop();
+    _tts.stop(reason: 'dispose');
     _stt.stop();
     super.dispose();
+  }
+
+  /// Assign voices to all characters. Batches SharedPreferences reads
+  /// to avoid sequential await per character.
+  Future<void> _assignVoices(
+    dynamic production,
+    ParsedScript? script,
+    String locale,
+  ) async {
+    if (script == null) return;
+    final voiceConfig = VoiceConfigService.instance;
+
+    if (production != null) {
+      // Batch-load overrides and genders in one go
+      final genderOverrides = await voiceConfig.getGenders(production.id);
+      final overrides = await voiceConfig.getOverrides(production.id);
+      final preset = await voiceConfig.getPreset(production.id, locale: locale);
+
+      for (var i = 0; i < script.characters.length; i++) {
+        final char = script.characters[i];
+        final gender = genderOverrides[char.name] ?? char.gender;
+        final isFemale = gender != CharacterGender.male;
+
+        // Resolve voice without hitting SharedPreferences again
+        String voiceId;
+        double speed;
+        final override = overrides[char.name];
+        if (override != null) {
+          voiceId = override.voiceId;
+          speed = override.speed;
+        } else {
+          final pool = isFemale ? preset.femaleVoices : preset.maleVoices;
+          final voices = pool.isNotEmpty
+              ? pool
+              : [...preset.femaleVoices, ...preset.maleVoices];
+          voiceId = voices.isEmpty ? 'af_heart' : voices[i % voices.length];
+          speed = preset.defaultSpeed;
+        }
+
+        _tts.assignVoice(char.name, i, voiceId: voiceId, speed: speed);
+      }
+    } else {
+      for (var i = 0; i < script.characters.length; i++) {
+        _tts.assignVoice(script.characters[i].name, i);
+      }
+    }
   }
 
   @override
@@ -262,7 +304,7 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen> {
           IconButton(
             icon: const Icon(Icons.close, color: Colors.white70),
             onPressed: () {
-              _tts.stop();
+              _tts.stop(reason: 'closeButton');
               _stt.stop();
               _player.stop();
               context.pop();
@@ -719,7 +761,7 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen> {
             const SizedBox(height: 12),
             OutlinedButton(
               onPressed: () {
-                _tts.stop();
+                _tts.stop(reason: 'chooseAnotherScene');
                 _stt.stop();
                 _player.stop();
                 context.pop();
@@ -826,7 +868,7 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen> {
         _processCurrentLine();
       case RehearsalState.playingOther:
         // Skip to next
-        _tts.stop();
+        _tts.stop(reason: 'skipOtherLine');
         try { _player.stop(); } catch (_) {}
         _advanceLine(totalLines);
       case RehearsalState.listeningForMe:
@@ -922,9 +964,23 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen> {
     final myCharacter = ref.read(rehearsalCharacterProvider);
     final currentIdx = ref.read(currentLineIndexProvider);
 
-    if (script == null || scene == null) return;
+    if (script == null || scene == null) {
+      _dlog.log(LogCategory.rehearsal,
+          'processCurrentLine: script=${script != null} scene=${scene != null}');
+      return;
+    }
+
+    final sceneLines = script.linesInScene(scene);
+    _dlog.log(LogCategory.rehearsal,
+        'processCurrentLine: scene="${scene.sceneName}" '
+        'start=${scene.startLineIndex} end=${scene.endLineIndex} '
+        'totalLines=${script.lines.length} sceneLines=${sceneLines.length}');
 
     final dialogueLines = _getRehearsalLines(script, scene, myCharacter);
+
+    _dlog.log(LogCategory.rehearsal,
+        'processCurrentLine: dialogueLines=${dialogueLines.length} '
+        'currentIdx=$currentIdx char=$myCharacter');
 
     if (currentIdx >= dialogueLines.length) {
       ref.read(rehearsalStateProvider.notifier).state =
@@ -1068,10 +1124,20 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen> {
     ref.read(currentLineIndexProvider.notifier).state = currentIdx + 1;
     _scrollToCurrentLine();
 
-    // Small delay between lines for natural pacing
-    Future.delayed(const Duration(milliseconds: 400), () {
+    // Check if next line is the actor's — if so, start listening immediately
+    // so there's no awkward pause. Only add pacing delay between other lines.
+    final nextLine = dialogueLines[currentIdx + 1];
+    final isNextMine = nextLine.character == myCharacter;
+
+    if (isNextMine) {
+      // Actor's turn — start listening right away
       if (mounted) _processCurrentLine();
-    });
+    } else {
+      // Another character's line — brief pacing delay for natural feel
+      Future.delayed(const Duration(milliseconds: 300), () {
+        if (mounted) _processCurrentLine();
+      });
+    }
   }
 
   /// Start STT listening for the actor's line.
@@ -1083,12 +1149,27 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen> {
       _showMatchFeedback = false;
     });
 
+    // Release TTS audio session so STT can acquire the microphone.
+    // Without this, the audioPlayer holds the session in playback mode
+    // and STT silently fails to start recording.
+    await _tts.releaseAudioSession();
+
     // Haptic feedback: it's your turn
     HapticFeedback.mediumImpact();
 
+    // If STT isn't ready yet (deferred init still running), wait for it
+    if (!_stt.isAvailable) {
+      _dlog.log(LogCategory.rehearsal, 'Waiting for STT init...');
+      // Poll briefly — STT init typically takes 1-3 seconds
+      for (var i = 0; i < 50 && !_stt.isAvailable && mounted; i++) {
+        await Future.delayed(const Duration(milliseconds: 100));
+      }
+    }
+
     final available = _stt.isAvailable;
     if (!available) {
-      // STT not available — just wait for manual advance
+      // STT truly not available — just wait for manual advance
+      _dlog.log(LogCategory.rehearsal, 'STT not available, manual advance');
       ref.read(rehearsalStateProvider.notifier).state = RehearsalState.ready;
       return;
     }
@@ -1120,6 +1201,8 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen> {
       continuous: true,
       onResult: (recognized) {
         if (!mounted) return;
+        // Ignore stale results if we've moved past this line
+        if (ref.read(rehearsalStateProvider) != RehearsalState.listeningForMe) return;
 
         // Reset silence timer on each new result
         _resetSilenceTimer(line);
@@ -1215,7 +1298,7 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen> {
 
   void _advanceLine(int totalLines) {
     _silenceTimer?.cancel();
-    _tts.stop();
+    _tts.stop(reason: 'advanceLine');
     _stt.stop(discard: true);
     try { _player.stop(); } catch (_) {}
 
@@ -1247,7 +1330,7 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen> {
 
   void _jumpBack(int jumpCount, int totalLines) {
     _silenceTimer?.cancel();
-    _tts.stop();
+    _tts.stop(reason: 'jumpBack');
     _stt.stop(discard: true);
     try { _player.stop(); } catch (_) {}
 
@@ -1275,7 +1358,7 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen> {
 
   void _restartScene() {
     _silenceTimer?.cancel();
-    _tts.stop();
+    _tts.stop(reason: 'restartScene');
     _stt.stop(discard: true);
     try { _player.stop(); } catch (_) {}
 
@@ -1313,7 +1396,7 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen> {
       ref.read(rehearsalStateProvider.notifier).state = RehearsalState.ready;
       if (_autoPlay) _processCurrentLine();
     } else {
-      _tts.stop();
+      _tts.stop(reason: 'pause');
       _stt.stop(discard: true);
       try { _player.pause(); } catch (_) {}
       ref.read(rehearsalStateProvider.notifier).state = RehearsalState.paused;

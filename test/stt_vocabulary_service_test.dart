@@ -1,6 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
-import 'package:lineguide/data/models/script_models.dart';
-import 'package:lineguide/data/services/stt_vocabulary_service.dart';
+import 'package:castcircle/data/models/script_models.dart';
+import 'package:castcircle/data/services/stt_vocabulary_service.dart';
 
 void main() {
   late SttVocabularyService service;

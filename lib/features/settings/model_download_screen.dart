@@ -1,10 +1,7 @@
-import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../data/services/model_manager.dart';
-import '../../data/services/tts_service.dart';
-import '../../data/services/stt_service.dart';
 
 class ModelDownloadScreen extends ConsumerStatefulWidget {
   const ModelDownloadScreen({super.key});
@@ -24,7 +21,6 @@ class _ModelDownloadScreenState extends ConsumerState<ModelDownloadScreen> {
   final Map<String, double> _modelProgress = {};
 
   bool _kokoroReady = false;
-  bool _parakeetReady = false;
 
   @override
   void initState() {
@@ -33,14 +29,10 @@ class _ModelDownloadScreenState extends ConsumerState<ModelDownloadScreen> {
   }
 
   Future<void> _checkStatus() async {
-    final results = await Future.wait([
-      _manager.isKokoroReady(),
-      _manager.isParakeetReady(),
-    ]);
+    final ready = await _manager.isKokoroReady();
     if (mounted) {
       setState(() {
-        _kokoroReady = results[0];
-        _parakeetReady = results[1];
+        _kokoroReady = ready;
       });
     }
   }
@@ -84,7 +76,7 @@ class _ModelDownloadScreenState extends ConsumerState<ModelDownloadScreen> {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final allReady = _kokoroReady && _parakeetReady;
+    final allReady = _kokoroReady;
 
     return Scaffold(
       appBar: AppBar(title: const Text('AI Models')),
@@ -108,17 +100,9 @@ class _ModelDownloadScreenState extends ConsumerState<ModelDownloadScreen> {
             context,
             title: 'Kokoro TTS',
             subtitle: 'Neural text-to-speech (54 voices)',
-            size: '~92 MB',
+            size: '~341 MB',
             ready: _kokoroReady,
             icon: Icons.record_voice_over,
-          ),
-          _modelCard(
-            context,
-            title: 'Parakeet STT (future)',
-            subtitle: 'MLX on-device STT — uses Apple Speech for now',
-            size: '~244 MB',
-            ready: _parakeetReady,
-            icon: Icons.hearing,
           ),
           const SizedBox(height: 24),
           if (_downloading) ...[
@@ -190,7 +174,7 @@ class _ModelDownloadScreenState extends ConsumerState<ModelDownloadScreen> {
             ),
             const SizedBox(height: 8),
             Text(
-              'Total download: ~336 MB. Wi-Fi recommended.',
+              'Total download: ~341 MB. Wi-Fi recommended.',
               textAlign: TextAlign.center,
               style: theme.textTheme.bodySmall?.copyWith(
                 color: theme.colorScheme.onSurface.withValues(alpha: 0.5),

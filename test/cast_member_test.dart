@@ -1,7 +1,7 @@
 import 'package:flutter_test/flutter_test.dart';
-import 'package:lineguide/data/models/cast_member_model.dart';
-import 'package:lineguide/data/models/production_models.dart';
-import 'package:lineguide/data/services/supabase_service.dart';
+import 'package:castcircle/data/models/cast_member_model.dart';
+import 'package:castcircle/data/models/production_models.dart';
+import 'package:castcircle/data/services/supabase_service.dart';
 
 void main() {
   group('CastMemberModel', () {

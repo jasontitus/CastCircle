@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>LineGuide Script Editor</title>
+  <title>CastCircle Script Editor</title>
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   <style>
     :root {
@@ -481,7 +481,7 @@
 <!-- Import Screen -->
 <div id="import-screen">
   <div class="topbar">
-    <h1>LineGuide Script Editor</h1>
+    <h1>CastCircle Script Editor</h1>
     <span class="user-badge" id="import-user-badge"></span>
     <button class="btn btn-sm" onclick="showProductions()">Switch Production</button>
     <button class="btn btn-sm" onclick="doSignOut()">Sign Out</button>
@@ -521,6 +521,7 @@
   <div class="toolbar">
     <input type="text" class="search-box" placeholder="Search lines..." id="search-box" oninput="filterLines()">
     <button class="btn btn-sm" onclick="addLine()">+ Add Line</button>
+    <button class="btn btn-sm" onclick="reassignCharacter()">Reassign Character</button>
     <button class="btn btn-sm" onclick="deleteSelected()">Delete Selected</button>
     <button class="btn btn-sm" onclick="moveUp()">Move Up</button>
     <button class="btn btn-sm" onclick="moveDown()">Move Down</button>
@@ -577,13 +578,33 @@
   </div>
 </div>
 
+<!-- Reassign Character Modal -->
+<div class="modal-overlay" id="reassign-modal">
+  <div class="modal">
+    <h3 id="reassign-title">Reassign Character</h3>
+    <div class="form-group">
+      <label>Assign to</label>
+      <select id="reassign-select" style="width:100%;padding:8px;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:6px;font-size:14px;">
+      </select>
+    </div>
+    <div class="form-group" id="reassign-new-group" style="display:none">
+      <label>New character name</label>
+      <input type="text" id="reassign-new-name" placeholder="e.g. DARCY" style="text-transform:uppercase">
+    </div>
+    <div class="modal-actions">
+      <button class="btn" onclick="closeReassignModal()">Cancel</button>
+      <button class="btn btn-primary" onclick="doReassign()">Reassign</button>
+    </div>
+  </div>
+</div>
+
 <!-- Toast -->
 <div class="toast" id="toast"></div>
 
 <script>
 // ── Supabase ──────────────────────────────────────────
-const SUPABASE_URL = 'https://novslzpkjjvccitypkzf.supabase.co';
-const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im5vdnNsenBramp2Y2NpdHlwa3pmIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzM0NjAwNDEsImV4cCI6MjA4OTAzNjA0MX0._umYAE_BgZHg2MXylkekE5xAFmdO1uUrwvxy95h94zQ';
+const SUPABASE_URL = 'https://vngpbmqymdaxxnvqptsk.supabase.co';
+const SUPABASE_ANON_KEY = 'sb_publishable_f3YAIMI4GIEIPdDwnvfO3Q_stwSCxXI';
 
 var sb = null; // initialized in init()
 
@@ -1275,6 +1296,12 @@ function filterByChar(name) {
   filterChar = filterChar === name ? null : name;
   selectedIndices.clear();
   render();
+
+  // Scroll to the character's first line
+  if (filterChar) {
+    const firstRow = document.querySelector('.script-line:not(.filtered-out)');
+    if (firstRow) firstRow.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  }
 }
 
 function filterLines() {
@@ -1308,6 +1335,85 @@ function mergeCharacters() {
   }
   markDirty(); render();
   toast(`Merged ${count} lines from ${from} into ${into}`);
+}
+
+let reassignMode = null; // 'selected' or 'filtered'
+
+function reassignCharacter() {
+  if (selectedIndices.size === 0 && !filterChar) {
+    toast('Select lines or filter by character first');
+    return;
+  }
+
+  const chars = getCharacters();
+  const select = document.getElementById('reassign-select');
+  const currentChar = selectedIndices.size > 0
+    ? scriptLines[[...selectedIndices][0]]?.character || ''
+    : filterChar;
+
+  // Build dropdown: existing characters + "New character..." option
+  select.innerHTML = chars
+    .map(c => `<option value="${escAttr(c.name)}" ${c.name === currentChar ? 'selected' : ''}>${escHtml(c.name)} (${c.count} lines)</option>`)
+    .join('') +
+    '<option value="__new__">+ New character...</option>';
+
+  // Set title
+  if (selectedIndices.size > 0) {
+    document.getElementById('reassign-title').textContent =
+      `Reassign ${selectedIndices.size} selected line(s)`;
+    reassignMode = 'selected';
+  } else {
+    document.getElementById('reassign-title').textContent =
+      `Reassign all "${filterChar}" lines`;
+    reassignMode = 'filtered';
+  }
+
+  document.getElementById('reassign-new-group').style.display = 'none';
+  document.getElementById('reassign-new-name').value = '';
+  document.getElementById('reassign-modal').classList.add('open');
+}
+
+document.getElementById('reassign-select').addEventListener('change', function() {
+  document.getElementById('reassign-new-group').style.display =
+    this.value === '__new__' ? '' : 'none';
+  if (this.value === '__new__') {
+    document.getElementById('reassign-new-name').focus();
+  }
+});
+
+function closeReassignModal() {
+  document.getElementById('reassign-modal').classList.remove('open');
+  reassignMode = null;
+}
+
+function doReassign() {
+  const select = document.getElementById('reassign-select');
+  let newName = select.value === '__new__'
+    ? document.getElementById('reassign-new-name').value.trim().toUpperCase()
+    : select.value;
+
+  if (select.value === '__new__' && !newName) {
+    toast('Enter a character name');
+    return;
+  }
+
+  let count = 0;
+  if (reassignMode === 'selected') {
+    for (const idx of selectedIndices) {
+      scriptLines[idx].character = newName;
+      count++;
+    }
+  } else {
+    const oldChar = filterChar;
+    for (const line of scriptLines) {
+      if (line.character === oldChar) { line.character = newName; count++; }
+    }
+    filterChar = newName || null;
+  }
+
+  closeReassignModal();
+  markDirty(); render();
+  toast(`Reassigned ${count} lines to ${newName}`);
 }
 
 // ── Import / Export ───────────────────────────────────
@@ -1433,6 +1539,11 @@ document.addEventListener('keydown', (e) => {
   if (document.getElementById('edit-modal').classList.contains('open')) {
     if (e.key === 'Escape') closeEditModal();
     if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) saveEdit();
+    return;
+  }
+  if (document.getElementById('reassign-modal').classList.contains('open')) {
+    if (e.key === 'Escape') closeReassignModal();
+    if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) doReassign();
     return;
   }
   if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;

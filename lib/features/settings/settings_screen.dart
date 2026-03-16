@@ -197,7 +197,7 @@ class SettingsScreen extends ConsumerWidget {
           ),
           _sectionHeader(context, 'About'),
           const ListTile(
-            title: Text('LineGuide'),
+            title: Text('CastCircle'),
             subtitle: Text('Version ${AppConstants.appVersion}'),
             leading: Icon(Icons.theater_comedy),
           ),

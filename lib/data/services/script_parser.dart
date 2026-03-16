@@ -24,9 +24,8 @@ class ScriptParser {
 
   // Noise patterns (page headers, footers, OCR artifacts)
   static final List<RegExp> _noisePatterns = [
-    RegExp(r'^\d+\s+\w+\s+\w+$'), // "12 Jon Jory"
-    RegExp(r'^\w+\s+\w+\s+\d+$'), // "Jon Jory 12"
-    RegExp(r'^Pride and Prejudice\s+\d+$'),
+    RegExp(r'^\d+\s+\w+(\s+\w+){0,4}$'), // "12 Author Name" (page num + short text)
+    RegExp(r'^\w+(\s+\w+){0,4}\s+\d+$'), // "Author Name 12" (short text + page num)
     RegExp(r'^\d+$'), // bare page numbers
     RegExp(r'^[|}\s]+$'), // OCR artifacts
     RegExp(r'^\$[A-Za-z\s]+$'), // OCR noise
@@ -62,8 +61,14 @@ class ScriptParser {
 
   /// Parse raw text into a [ParsedScript] with scenes.
   ParsedScript parse(String rawText, {String title = 'Untitled'}) {
+    // Pre-process: dehyphenate OCR line breaks ("dan-\ngerous" → "dangerous")
+    rawText = _dehyphenate(rawText);
+
     // First pass: detect character names from the text
     _detectCharacters(rawText);
+
+    // Merge OCR-garbled character names into correct ones
+    _mergeOcrCharacterNames(rawText);
 
     // Second pass: parse lines
     final lines = _parseLines(rawText);
@@ -89,6 +94,7 @@ class ScriptParser {
         name: entry.key,
         colorIndex: colorIdx++,
         lineCount: entry.value,
+        gender: inferGender(entry.key, rawText: rawText),
       ));
     }
 
@@ -101,11 +107,125 @@ class ScriptParser {
     );
   }
 
+  /// Infer gender from a character name using title prefixes.
+  /// Returns male/female/null. Returns null if no title prefix found
+  /// (caller should try context-based inference).
+  static CharacterGender? _inferGenderFromTitle(String name) {
+    final upper = name.toUpperCase();
+    // Male titles
+    if (upper.startsWith('MR ') || upper.startsWith('MR. ') ||
+        upper.startsWith('SIR ') || upper.startsWith('LORD ') ||
+        upper.startsWith('COLONEL ') || upper.startsWith('CAPTAIN ') ||
+        upper.startsWith('KING ') || upper.startsWith('PRINCE ') ||
+        upper.startsWith('DUKE ') || upper.startsWith('COUNT ') ||
+        upper.startsWith('REV ') || upper.startsWith('REV. ') ||
+        upper.startsWith('DR ') || upper.startsWith('DR. ') ||
+        upper.startsWith('FATHER ') || upper.startsWith('BROTHER ')) {
+      return CharacterGender.male;
+    }
+    // Female titles
+    if (upper.startsWith('MRS ') || upper.startsWith('MRS. ') ||
+        upper.startsWith('MS ') || upper.startsWith('MS. ') ||
+        upper.startsWith('MISS ') || upper.startsWith('LADY ') ||
+        upper.startsWith('QUEEN ') || upper.startsWith('PRINCESS ') ||
+        upper.startsWith('DUCHESS ') || upper.startsWith('COUNTESS ') ||
+        upper.startsWith('MOTHER ') || upper.startsWith('SISTER ')) {
+      return CharacterGender.female;
+    }
+    return null;
+  }
+
+  /// Infer gender by scanning the raw script for gendered pronouns in
+  /// parenthetical stage directions only (not dialogue, which refers to others).
+  ///   DARCY. (He crosses...)  → male
+  ///   ELIZABETH. (She turns...) → female
+  /// Returns null if no pronoun context found.
+  static CharacterGender? _inferGenderFromContext(
+      String name, String rawText) {
+    final escaped = RegExp.escape(name);
+    // Only match pronouns INSIDE parentheses (stage directions), not dialogue.
+    // Pattern: CHARNAME. (... he/she ...)
+    final malePattern = RegExp(
+      '$escaped\\.\\s*\\([^)]*\\b[Hh]e\\b[^)]*\\)',
+    );
+    final femalePattern = RegExp(
+      '$escaped\\.\\s*\\([^)]*\\b[Ss]he\\b[^)]*\\)',
+    );
+
+    final maleCount = malePattern.allMatches(rawText).length;
+    final femaleCount = femalePattern.allMatches(rawText).length;
+
+    if (maleCount > 0 && maleCount > femaleCount) return CharacterGender.male;
+    if (femaleCount > 0 && femaleCount > maleCount) {
+      return CharacterGender.female;
+    }
+    return null;
+  }
+
+  /// Common English first names used in theatre for gender inference fallback.
+  static const _femaleNames = {
+    'JANE', 'ELIZABETH', 'MARY', 'ANNE', 'SARAH', 'EMMA', 'ALICE',
+    'CHARLOTTE', 'LUCY', 'JULIA', 'JULIET', 'OPHELIA', 'KATE',
+    'KATHERINE', 'CATHERINE', 'KITTY', 'LYDIA', 'GEORGIANA', 'PORTIA',
+    'VIOLA', 'ROSALIND', 'DESDEMONA', 'CORDELIA', 'HELENA', 'HERMIA',
+    'TITANIA', 'MIRANDA', 'BEATRICE', 'HERO', 'CLEOPATRA', 'ANTIGONE',
+    'ELECTRA', 'MEDEA', 'NORA', 'HEDDA', 'STELLA', 'BLANCHE', 'LAURA',
+    'AMANDA', 'EMILY', 'DOROTHY', 'MARGARET', 'MARTHA', 'ABIGAIL',
+    'JESSICA', 'MARIA', 'OLIVIA', 'CELIA', 'PHOEBE', 'BIANCA',
+    'DIANA', 'RUTH', 'GRACE', 'HELEN', 'ANNA', 'ROSA', 'CLARA',
+    'FLORENCE', 'ELEANOR', 'SYLVIA', 'GWENDOLEN', 'CECILY', 'MABEL',
+  };
+
+  static const _maleNames = {
+    'JOHN', 'JAMES', 'HENRY', 'WILLIAM', 'THOMAS', 'GEORGE', 'CHARLES',
+    'EDWARD', 'RICHARD', 'ROBERT', 'ARTHUR', 'DAVID', 'MICHAEL', 'MARK',
+    'PETER', 'PAUL', 'JACK', 'TOM', 'HAMLET', 'ROMEO', 'OTHELLO',
+    'MACBETH', 'PROSPERO', 'OBERON', 'PUCK', 'LYSANDER', 'DEMETRIUS',
+    'BENEDICK', 'PETRUCHIO', 'IAGO', 'CASSIO', 'ANTONIO', 'SHYLOCK',
+    'FALSTAFF', 'CALIBAN', 'ARIEL', 'FITZWILLIAM', 'COLLINS', 'WICKHAM',
+    'BINGLEY', 'DARCY', 'STANLEY', 'WILLY', 'TROY', 'WALTER', 'EDMUND',
+    'EDGAR', 'KENT', 'GLOUCESTER', 'LEAR', 'HORATIO', 'LAERTES',
+    'CLAUDIUS', 'BANQUO', 'MACDUFF', 'ROSS', 'SEBASTIAN', 'FERDINAND',
+    'VALENTINE', 'OLIVER', 'ORLANDO', 'TOBY', 'ANDREW', 'MALVOLIO',
+    'SIMON', 'RALPH', 'ROGER', 'JOSEPH', 'DANIEL', 'PHILIP', 'FRANK',
+    'ALFIE', 'ARCHIE', 'ALBERT', 'ALFRED', 'FREDERICK', 'LEONARD',
+  };
+
+  /// Infer gender using title prefixes, common names, script context, then default.
+  static CharacterGender inferGender(String name, {String rawText = ''}) {
+    // 1. Title prefix (most reliable)
+    final fromTitle = _inferGenderFromTitle(name);
+    if (fromTitle != null) return fromTitle;
+
+    // 2. Common first names
+    final upper = name.toUpperCase().trim();
+    if (_femaleNames.contains(upper)) return CharacterGender.female;
+    if (_maleNames.contains(upper)) return CharacterGender.male;
+
+    // 3. Pronoun context from stage directions
+    if (rawText.isNotEmpty) {
+      final fromContext = _inferGenderFromContext(name, rawText);
+      if (fromContext != null) return fromContext;
+    }
+
+    // 4. Default to female (larger Kokoro voice pool)
+    return CharacterGender.female;
+  }
+
+  /// Titles/honorifics that are NOT valid character names on their own.
+  /// These get captured by the regex when it backtracks on cast list entries
+  /// like "MR. BENNET" (no trailing `. dialogue`).
+  static const _titlePrefixes = {
+    'MR', 'MRS', 'MS', 'DR', 'MISS', 'REV', 'PROF',
+  };
+
   /// Detect character names from the raw text using the
   /// "ALL CAPS WORD(S). " pattern.
   void _detectCharacters(String rawText) {
+    // Use literal space (not \s) in character classes to prevent matching
+    // across newlines, which would combine ACT headers with character names.
     final pattern = RegExp(
-      r'^([A-Z][A-Z.\s,]+(?:,\s*[A-Z][A-Z.\s]+)*)\.\s',
+      r'^([A-Z][A-Z. ,]+(?:, *[A-Z][A-Z. ]+)*)\. ',
       multiLine: true,
     );
 
@@ -116,8 +236,156 @@ class ScriptParser {
       if (RegExp(r'^(ACT|SCENE|SETTING|NOTE|PRODUCTION)\b').hasMatch(name)) {
         continue;
       }
+      // Skip bare titles like "MR", "MRS" — these are regex backtrack
+      // artifacts from cast list entries like "MR. BENNET"
+      if (_titlePrefixes.contains(name)) continue;
       knownCharacters.add(name);
     }
+  }
+
+  /// Dehyphenate OCR line breaks: "dan-\ngerous" → "dangerous".
+  /// PDF OCR often splits words at line breaks with hyphens.
+  static String _dehyphenate(String text) {
+    // Match: lowercase letter, hyphen, newline, optional whitespace, lowercase letter
+    // This avoids dehyphenating intentional hyphens (e.g., "well-known")
+    return text.replaceAllMapped(
+      RegExp(r'([a-z])-\n\s*([a-z])'),
+      (m) => '${m.group(1)}${m.group(2)}',
+    );
+  }
+
+  /// Merge OCR-garbled character names into their correct counterparts.
+  ///
+  /// Handles:
+  /// 1. Trailing punctuation: "LYDIA. .." → LYDIA
+  /// 2. OCR garbage detection: names with no vowels
+  /// 3. Fuzzy matches (edit distance ≤ 2): BNGLEY→BINGLEY, FHTZWILLIAM→FITZWILLIAM
+  ///    Only merges when one name is rare (≤ 2 occurrences) — prevents merging
+  ///    legitimate characters like MR. BENNET / MRS. BENNET.
+  /// 4. Title variant normalization: MR. DARCY→DARCY (only when DARCY is more common)
+  void _mergeOcrCharacterNames(String rawText) {
+    if (knownCharacters.length < 2) return;
+
+    final toRemove = <String>{};
+    final toAlias = <String, String>{};
+
+    // Count how often each character name appears as a cue in the raw text
+    final counts = <String, int>{};
+    for (final name in knownCharacters) {
+      final escaped = RegExp.escape(name);
+      counts[name] = RegExp('^$escaped\\.\\s', multiLine: true)
+          .allMatches(rawText)
+          .length;
+    }
+
+    for (final name in knownCharacters) {
+      // 1. Strip trailing punctuation/dots from names ("LYDIA. .." → "LYDIA")
+      final cleaned = name.replaceAll(RegExp(r'[.\s]+$'), '').trim();
+      if (cleaned != name && cleaned.isNotEmpty && knownCharacters.contains(cleaned)) {
+        toAlias[name] = cleaned;
+        toRemove.add(name);
+        continue;
+      }
+
+      // 2. OCR garbage: no vowels in a 4+ letter name
+      final letters = name.replaceAll(RegExp(r'[^A-Za-z]'), '');
+      final vowels = letters.replaceAll(RegExp(r'[^AEIOUaeiou]'), '');
+      if (letters.length >= 4 && vowels.isEmpty) {
+        toRemove.add(name);
+        continue;
+      }
+    }
+
+    // 3. Fuzzy match: only merge rare names (≤ 2 occurrences) into common ones
+    final nameList = knownCharacters.toList();
+    for (final name in nameList) {
+      if (toRemove.contains(name)) continue;
+      final nameCount = counts[name] ?? 0;
+      if (nameCount > 2) continue; // Not a rare name — don't fuzzy match
+
+      for (final candidate in nameList) {
+        if (candidate == name || toRemove.contains(candidate)) continue;
+        final candidateCount = counts[candidate] ?? 0;
+        if (candidateCount <= nameCount) continue; // Merge INTO more common name
+
+        final dist = _editDistance(name, candidate);
+        // Scale threshold: short names (≤5 chars) need exact-minus-1,
+        // longer names allow up to 2 edits. Prevents MARY→DARCY.
+        final maxDist = name.length <= 5 ? 1 : 2;
+        if (dist > 0 && dist <= maxDist && name.length >= 4) {
+          toAlias[name] = candidate;
+          toRemove.add(name);
+          break;
+        }
+      }
+    }
+
+    // 4. Title variant: "MR. DARCY" when "DARCY" exists and is more common
+    for (final name in nameList) {
+      if (toRemove.contains(name)) continue;
+      final nameCount = counts[name] ?? 0;
+      final withoutTitle = _stripTitle(name);
+      if (withoutTitle != null && knownCharacters.contains(withoutTitle)) {
+        final baseCount = counts[withoutTitle] ?? 0;
+        if (baseCount > nameCount) {
+          toAlias[name] = withoutTitle;
+          toRemove.add(name);
+        }
+      }
+    }
+
+    // Apply aliases — keep aliased names in knownCharacters so _detectCharacterCue
+    // can still match them during parsing. _normalizeCharacter in flushDialogue
+    // handles the name normalization. Only remove true garbage (no-vowel names).
+    for (final entry in toAlias.entries) {
+      characterAliases[entry.key] = entry.value;
+    }
+    // Only remove garbage names, not aliased ones (they still need cue detection)
+    final garbageOnly = toRemove.difference(toAlias.keys.toSet());
+    knownCharacters.removeAll(garbageOnly);
+  }
+
+  /// Strip title prefix from a name, returning null if no title found.
+  static String? _stripTitle(String name) {
+    final prefixes = [
+      'MR. ', 'MRS. ', 'MS. ', 'MISS ', 'SIR ', 'LORD ', 'LADY ',
+      'DR. ', 'REV. ', 'COLONEL ', 'CAPTAIN ', 'MR ', 'MRS ', 'MS ',
+    ];
+    final upper = name.toUpperCase();
+    for (final prefix in prefixes) {
+      if (upper.startsWith(prefix) && name.length > prefix.length) {
+        return name.substring(prefix.length).trim();
+      }
+    }
+    return null;
+  }
+
+  /// Levenshtein edit distance between two strings.
+  static int _editDistance(String a, String b) {
+    if (a == b) return 0;
+    if (a.isEmpty) return b.length;
+    if (b.isEmpty) return a.length;
+
+    final la = a.length, lb = b.length;
+    // Use single-row optimization
+    var prev = List.generate(lb + 1, (i) => i);
+    var curr = List.filled(lb + 1, 0);
+
+    for (var i = 1; i <= la; i++) {
+      curr[0] = i;
+      for (var j = 1; j <= lb; j++) {
+        final cost = a[i - 1] == b[j - 1] ? 0 : 1;
+        curr[j] = [
+          prev[j] + 1, // deletion
+          curr[j - 1] + 1, // insertion
+          prev[j - 1] + cost, // substitution
+        ].reduce((a, b) => a < b ? a : b);
+      }
+      final tmp = prev;
+      prev = curr;
+      curr = tmp;
+    }
+    return prev[lb];
   }
 
   /// Normalize a character name using aliases.
@@ -135,11 +403,13 @@ class ScriptParser {
     return false;
   }
 
-  /// Clean OCR artifacts.
+  /// Clean OCR artifacts from text.
   String _cleanLine(String text) {
     text = text.replaceAll(RegExp(r'[|~°]'), '');
     text = text.replaceAll(RegExp(r'\s+[/\\]\s*$'), '');
     text = text.replaceAll(RegExp(r'  +'), ' ');
+    // Strip trailing OCR noise: bracketed fragments like "[I.4 -HIL A leter for..."
+    text = text.replaceAll(RegExp(r'\s*\[[A-Z0-9][^\]]*$'), '');
     return text.trim();
   }
 

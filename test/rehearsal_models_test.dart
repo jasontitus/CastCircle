@@ -1,5 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
-import 'package:lineguide/data/models/rehearsal_models.dart';
+import 'package:castcircle/data/models/rehearsal_models.dart';
 
 void main() {
   group('RehearsalSession computed properties', () {

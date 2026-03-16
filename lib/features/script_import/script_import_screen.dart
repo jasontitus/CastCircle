@@ -4,6 +4,7 @@ import 'package:file_picker/file_picker.dart';
 import 'package:go_router/go_router.dart';
 
 import '../../data/models/script_models.dart';
+import '../../data/services/voice_config_service.dart';
 import '../../providers/production_providers.dart';
 
 class ScriptImportScreen extends ConsumerStatefulWidget {
@@ -158,6 +159,8 @@ class _ScriptImportScreenState extends ConsumerState<ScriptImportScreen> {
             ],
           ),
         ),
+        // Dialect selector
+        _buildDialectSelector(context),
         // Character list
         Expanded(
           child: ListView(
@@ -220,13 +223,14 @@ class _ScriptImportScreenState extends ConsumerState<ScriptImportScreen> {
                 ),
                 const SizedBox(width: 12),
                 Expanded(
-                  child: FilledButton(
+                  child: FilledButton.icon(
                     onPressed: () {
                       ref.read(currentScriptProvider.notifier).state = script;
                       persistScript(ref);
                       context.push('/production');
                     },
-                    child: const Text('Edit Script'),
+                    icon: const Icon(Icons.check),
+                    label: const Text('Accept Script'),
                   ),
                 ),
               ],
@@ -234,6 +238,61 @@ class _ScriptImportScreenState extends ConsumerState<ScriptImportScreen> {
           ),
         ),
       ],
+    );
+  }
+
+  static const _localeLabels = {
+    'en-US': 'American English',
+    'en-GB': 'British English',
+  };
+
+  Widget _buildDialectSelector(BuildContext context) {
+    final production = ref.watch(currentProductionProvider);
+    if (production == null) return const SizedBox.shrink();
+    final label = _localeLabels[production.locale] ?? production.locale;
+
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+      decoration: BoxDecoration(
+        border: Border(
+          bottom: BorderSide(
+            color: Theme.of(context).dividerColor.withValues(alpha: 0.3),
+          ),
+        ),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(Icons.language, size: 20,
+                  color: Theme.of(context).colorScheme.primary),
+              const SizedBox(width: 8),
+              const Text('Script dialect'),
+            ],
+          ),
+          const SizedBox(height: 8),
+          SizedBox(
+            width: double.infinity,
+            child: SegmentedButton<String>(
+              segments: _localeLabels.entries.map((e) =>
+                ButtonSegment(value: e.key, label: Text(e.value)),
+              ).toList(),
+              selected: {production.locale},
+              onSelectionChanged: (selected) {
+                final locale = selected.first;
+                final updated = production.copyWith(locale: locale);
+                ref.read(productionsProvider.notifier).update(updated);
+                ref.read(currentProductionProvider.notifier).state = updated;
+                final presetId = locale == 'en-GB'
+                    ? 'victorian_english'
+                    : 'modern_american';
+                VoiceConfigService.instance.setPreset(production.id, presetId);
+              },
+            ),
+          ),
+        ],
+      ),
     );
   }
 

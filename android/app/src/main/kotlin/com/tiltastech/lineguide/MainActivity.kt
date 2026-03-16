@@ -1,4 +1,4 @@
-package com.tiltastech.lineguide
+package com.tiltastech.castcircle
 
 import io.flutter.embedding.android.FlutterActivity
 

@@ -254,10 +254,12 @@ class ParsedScript {
 
   /// Get lines within a specific scene.
   List<ScriptLine> linesInScene(ScriptScene scene) {
-    if (scene.startLineIndex < 0 || scene.endLineIndex >= lines.length) {
-      return [];
-    }
-    return lines.sublist(scene.startLineIndex, scene.endLineIndex + 1);
+    if (lines.isEmpty) return [];
+    // Clamp indices to valid range to handle stale scene data
+    final start = scene.startLineIndex.clamp(0, lines.length - 1);
+    final end = (scene.endLineIndex + 1).clamp(start, lines.length);
+    if (start >= end) return [];
+    return lines.sublist(start, end);
   }
 
   /// Get all lines in a specific act.

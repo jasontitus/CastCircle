@@ -1,7 +1,7 @@
 class AppConstants {
   AppConstants._();
 
-  static const String appName = 'LineGuide';
+  static const String appName = 'CastCircle';
   static const String appVersion = '0.1.0';
 
   // Default rehearsal settings

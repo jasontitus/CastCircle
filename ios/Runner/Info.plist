@@ -7,7 +7,7 @@
 	<key>CFBundleDevelopmentRegion</key>
 	<string>$(DEVELOPMENT_LANGUAGE)</string>
 	<key>CFBundleDisplayName</key>
-	<string>Lineguide</string>
+	<string>CastCircle</string>
 	<key>CFBundleExecutable</key>
 	<string>$(EXECUTABLE_NAME)</string>
 	<key>CFBundleIdentifier</key>
@@ -15,7 +15,7 @@
 	<key>CFBundleInfoDictionaryVersion</key>
 	<string>6.0</string>
 	<key>CFBundleName</key>
-	<string>lineguide</string>
+	<string>castcircle</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
@@ -48,9 +48,9 @@
 		</dict>
 	</dict>
 	<key>NSMicrophoneUsageDescription</key>
-	<string>LineGuide needs microphone access to record your lines.</string>
+	<string>CastCircle needs microphone access to record your lines.</string>
 	<key>NSSpeechRecognitionUsageDescription</key>
-	<string>LineGuide uses speech recognition to check your line accuracy during rehearsal.</string>
+	<string>CastCircle uses speech recognition to check your line accuracy during rehearsal.</string>
 	<key>UIBackgroundModes</key>
 	<array>
 		<string>fetch</string>

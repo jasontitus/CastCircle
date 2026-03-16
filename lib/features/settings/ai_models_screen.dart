@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:go_router/go_router.dart';
 
 import '../../data/services/model_download_service.dart';
 
@@ -50,7 +51,34 @@ class _AiModelsScreenState extends State<AiModelsScreen> {
           ),
           const Divider(),
           ...ModelDownloadService.availableModels
+              .where((m) => m.subdir != 'parakeet_stt')
               .map((model) => _buildModelTile(context, model)),
+          const Divider(),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 8, 16, 4),
+            child: Text(
+              'Diagnostics',
+              style: TextStyle(
+                color: Theme.of(context).colorScheme.primary,
+                fontSize: 12,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+          ),
+          ListTile(
+            leading: const Icon(Icons.bug_report),
+            title: const Text('Kokoro TTS Debug'),
+            subtitle: const Text('Test TTS engine and view diagnostics'),
+            trailing: const Icon(Icons.chevron_right),
+            onTap: () => context.push('/kokoro-debug'),
+          ),
+          ListTile(
+            leading: const Icon(Icons.mic),
+            title: const Text('STT Debug'),
+            subtitle: const Text('Test speech recognition'),
+            trailing: const Icon(Icons.chevron_right),
+            onTap: () => context.push('/parakeet-debug'),
+          ),
         ],
       ),
     );
@@ -126,8 +154,6 @@ class _AiModelsScreenState extends State<AiModelsScreen> {
     return switch (modelId) {
       'kokoro_model' => Icons.record_voice_over,
       'kokoro_voices' => Icons.people,
-      'parakeet_model' => Icons.hearing,
-      'parakeet_config' => Icons.settings,
       _ => Icons.smart_toy,
     };
   }

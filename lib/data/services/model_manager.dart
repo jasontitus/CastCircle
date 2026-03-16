@@ -87,12 +87,10 @@ class ModelManager {
   // ── Download all ───────────────────────────────────────
 
   /// Check if all required models are downloaded.
+  /// Only checks MLX Kokoro (the engine the app actually uses).
+  /// Parakeet STT is optional — the app uses Apple SFSpeechRecognizer by default.
   Future<bool> isAllReady() async {
-    final results = await Future.wait([
-      isKokoroReady(),
-      isParakeetReady(),
-    ]);
-    return results.every((r) => r);
+    return ModelDownloadService.instance.isKokoroReady();
   }
 
   /// Download all models. Use ModelDownloadService for individual model downloads.

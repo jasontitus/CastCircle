@@ -204,18 +204,9 @@ class AppleSttPlugin: NSObject {
             audioEngine.inputNode.removeTap(onBus: 0)
         }
 
-        // Deactivate audio session after a brief delay so TTS/audio playback
-        // can set up its own session without a race condition.
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-            // Only deactivate if we haven't started a new session
-            if self.recognitionTask == nil {
-                do {
-                    try AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
-                    NSLog("AppleStt: Audio session deactivated")
-                } catch {
-                    NSLog("AppleStt: Audio session deactivation failed (ok if TTS took over): \(error)")
-                }
-            }
-        }
+        // Do NOT deactivate the audio session here. TTS reconfigures it to
+        // .playback in KokoroMLXService.synthesize(). Deferred deactivation
+        // caused a race condition: it would fire ~2s after STT stopped, killing
+        // the audio session right as TTS playback was starting.
     }
 }

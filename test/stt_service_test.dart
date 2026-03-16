@@ -1,5 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
-import 'package:lineguide/data/services/stt_service.dart';
+import 'package:castcircle/data/services/stt_service.dart';
 
 void main() {
   group('SttService', () {

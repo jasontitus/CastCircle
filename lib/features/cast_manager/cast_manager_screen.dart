@@ -8,7 +8,9 @@ import 'package:uuid/uuid.dart';
 import '../../core/theme/app_theme.dart';
 import '../../data/models/cast_member_model.dart';
 import '../../data/models/script_models.dart';
+import '../../data/models/voice_preset.dart';
 import '../../data/services/supabase_service.dart';
+import '../../data/services/voice_config_service.dart';
 import '../../providers/production_providers.dart';
 
 class CastManagerScreen extends ConsumerStatefulWidget {
@@ -19,6 +21,10 @@ class CastManagerScreen extends ConsumerStatefulWidget {
 }
 
 class _CastManagerScreenState extends ConsumerState<CastManagerScreen> {
+  final _voiceConfig = VoiceConfigService.instance;
+  VoicePreset _currentPreset = VoicePresets.modernAmerican;
+  Map<String, CharacterVoiceConfig> _voiceOverrides = {};
+
   @override
   void initState() {
     super.initState();
@@ -26,8 +32,20 @@ class _CastManagerScreenState extends ConsumerState<CastManagerScreen> {
       final production = ref.read(currentProductionProvider);
       if (production != null) {
         ref.read(castMembersProvider.notifier).loadForProduction(production.id);
+        _loadVoiceConfig(production.id);
       }
     });
+  }
+
+  Future<void> _loadVoiceConfig(String productionId) async {
+    final preset = await _voiceConfig.getPreset(productionId);
+    final overrides = await _voiceConfig.getOverrides(productionId);
+    if (mounted) {
+      setState(() {
+        _currentPreset = preset;
+        _voiceOverrides = overrides;
+      });
+    }
   }
 
   @override
@@ -219,6 +237,23 @@ class _CastManagerScreenState extends ConsumerState<CastManagerScreen> {
     int recordedCount,
     int totalLines,
   ) {
+    final script = ref.read(currentScriptProvider)!;
+    final charIndex = script.characters.indexOf(char);
+    final override = _voiceOverrides[char.name];
+    final pool = switch (char.gender) {
+      CharacterGender.female => _currentPreset.femaleVoices,
+      CharacterGender.male => _currentPreset.maleVoices,
+      CharacterGender.nonGendered => [
+        ..._currentPreset.femaleVoices,
+        ..._currentPreset.maleVoices,
+      ],
+    };
+    final presetVoice =
+        pool.isNotEmpty ? pool[charIndex % pool.length] : 'af_heart';
+    final activeVoice = override?.voiceId ?? presetVoice;
+    final activeSpeed = override?.speed ?? _currentPreset.defaultSpeed;
+    final voiceLabel = VoicePresets.voiceLabels[activeVoice] ?? activeVoice;
+
     return Card(
       margin: const EdgeInsets.only(bottom: 12),
       child: Padding(
@@ -259,6 +294,17 @@ class _CastManagerScreenState extends ConsumerState<CastManagerScreen> {
                     ],
                   ),
                 ),
+                // Gender toggle
+                IconButton(
+                  icon: Icon(
+                    _genderIcon(char.gender),
+                    color: _genderColor(char.gender),
+                    size: 22,
+                  ),
+                  tooltip: _genderLabel(char.gender),
+                  visualDensity: VisualDensity.compact,
+                  onPressed: () => _toggleGender(char),
+                ),
                 IconButton(
                   icon: const Icon(Icons.person_add_outlined),
                   tooltip: 'Invite actor',
@@ -266,7 +312,40 @@ class _CastManagerScreenState extends ConsumerState<CastManagerScreen> {
                 ),
               ],
             ),
-            const SizedBox(height: 12),
+            // Voice config row
+            const SizedBox(height: 8),
+            Row(
+              children: [
+                SizedBox(
+                  width: 80,
+                  child: Text(
+                    'Voice',
+                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                          color: Colors.grey[600],
+                        ),
+                  ),
+                ),
+                Expanded(
+                  child: OutlinedButton.icon(
+                    onPressed: () =>
+                        _showVoiceSheet(char, activeVoice, activeSpeed),
+                    icon: const Icon(Icons.record_voice_over, size: 16),
+                    label: Text(
+                      '$voiceLabel  ${activeSpeed.toStringAsFixed(1)}x',
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                    style: OutlinedButton.styleFrom(
+                      visualDensity: VisualDensity.compact,
+                      textStyle: const TextStyle(fontSize: 12),
+                      foregroundColor: override != null
+                          ? Theme.of(context).colorScheme.primary
+                          : null,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
             // Primary assignment
             _buildRoleRow(
               context,
@@ -477,19 +556,9 @@ class _CastManagerScreenState extends ConsumerState<CastManagerScreen> {
 
               if (context.mounted) Navigator.pop(context);
 
-              // Show join code in snackbar
-              if (production.joinCode != null && mounted) {
-                ScaffoldMessenger.of(this.context).showSnackBar(
-                  SnackBar(
-                    content: Text(
-                      'Assigned $name. Share join code: ${production.joinCode}',
-                    ),
-                    action: SnackBarAction(
-                      label: 'Share',
-                      onPressed: () => _shareJoinCode(production.joinCode!),
-                    ),
-                  ),
-                );
+              // Immediately open share sheet with the invite
+              if (mounted) {
+                _inviteActor(characterName);
               }
             },
             child: const Text('Assign'),
@@ -510,11 +579,11 @@ class _CastManagerScreenState extends ConsumerState<CastManagerScreen> {
 
     final shareText = joinCode != null
         ? 'You\'ve been invited to join "$productionTitle" as $characterName '
-            'on LineGuide! Open the app and enter join code: $joinCode'
+            'on CastCircle! Open the app and enter join code: $joinCode'
         : 'You\'ve been invited to join "$productionTitle" as $characterName '
-            'on LineGuide! Download the app to get started.';
+            'on CastCircle! Download the app to get started.';
 
-    Share.share(shareText, subject: 'LineGuide Invitation');
+    Share.share(shareText, subject: 'CastCircle Invitation');
   }
 
   void _shareJoinCode(String code) {
@@ -522,8 +591,8 @@ class _CastManagerScreenState extends ConsumerState<CastManagerScreen> {
     final title = production?.title ?? 'a production';
 
     Share.share(
-      'Join "$title" on LineGuide!\n\nOpen the app and enter code: $code',
-      subject: 'LineGuide Join Code',
+      'Join "$title" on CastCircle!\n\nOpen the app and enter code: $code',
+      subject: 'CastCircle Join Code',
     );
   }
 
@@ -534,9 +603,9 @@ class _CastManagerScreenState extends ConsumerState<CastManagerScreen> {
 
     final text =
         'Reminder: You\'re invited to play ${member.characterName} in "$title" '
-        'on LineGuide. Open the app and enter code: $code';
+        'on CastCircle. Open the app and enter code: $code';
 
-    Share.share(text, subject: 'LineGuide Reminder');
+    Share.share(text, subject: 'CastCircle Reminder');
   }
 
   void _shareCastList(ParsedScript script, List<CastMemberModel> members) {
@@ -574,5 +643,178 @@ class _CastManagerScreenState extends ConsumerState<CastManagerScreen> {
     }
 
     Share.share(buffer.toString(), subject: 'Cast List');
+  }
+
+  // ── Gender helpers ──────────────────────────────────────
+
+  static String _genderLabel(CharacterGender gender) => switch (gender) {
+        CharacterGender.female => 'Female',
+        CharacterGender.male => 'Male',
+        CharacterGender.nonGendered => 'Non-gendered',
+      };
+
+  static IconData _genderIcon(CharacterGender gender) => switch (gender) {
+        CharacterGender.female => Icons.female,
+        CharacterGender.male => Icons.male,
+        CharacterGender.nonGendered => Icons.transgender,
+      };
+
+  static Color _genderColor(CharacterGender gender) => switch (gender) {
+        CharacterGender.female => Colors.pink,
+        CharacterGender.male => Colors.blue,
+        CharacterGender.nonGendered => Colors.purple,
+      };
+
+  void _toggleGender(ScriptCharacter char) {
+    final newGender = switch (char.gender) {
+      CharacterGender.female => CharacterGender.male,
+      CharacterGender.male => CharacterGender.nonGendered,
+      CharacterGender.nonGendered => CharacterGender.female,
+    };
+
+    final production = ref.read(currentProductionProvider);
+    if (production != null) {
+      VoiceConfigService.instance
+          .setGender(production.id, char.name, newGender);
+    }
+
+    final script = ref.read(currentScriptProvider);
+    if (script != null) {
+      final updatedCharacters = script.characters.map((c) {
+        if (c.name == char.name) return c.copyWith(gender: newGender);
+        return c;
+      }).toList();
+
+      ref.read(currentScriptProvider.notifier).state = ParsedScript(
+        title: script.title,
+        lines: script.lines,
+        characters: updatedCharacters,
+        scenes: script.scenes,
+        rawText: script.rawText,
+      );
+    }
+  }
+
+  // ── Voice config ──────────────────────────────────────
+
+  void _showVoiceSheet(
+    ScriptCharacter char,
+    String currentVoice,
+    double currentSpeed,
+  ) {
+    final production = ref.read(currentProductionProvider);
+    if (production == null) return;
+
+    String selectedVoice = currentVoice;
+    double selectedSpeed = currentSpeed;
+
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setSheetState) => DraggableScrollableSheet(
+          initialChildSize: 0.6,
+          minChildSize: 0.3,
+          maxChildSize: 0.9,
+          expand: false,
+          builder: (ctx, scrollController) => Column(
+            children: [
+              Container(
+                margin: const EdgeInsets.symmetric(vertical: 8),
+                width: 40,
+                height: 4,
+                decoration: BoxDecoration(
+                  color: Colors.grey[600],
+                  borderRadius: BorderRadius.circular(2),
+                ),
+              ),
+              Padding(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        '${char.name} Voice',
+                        style: Theme.of(context).textTheme.titleLarge,
+                      ),
+                    ),
+                    if (_voiceOverrides.containsKey(char.name))
+                      TextButton(
+                        onPressed: () async {
+                          await _voiceConfig.removeOverride(
+                              production.id, char.name);
+                          final overrides =
+                              await _voiceConfig.getOverrides(production.id);
+                          setState(() => _voiceOverrides = overrides);
+                          if (ctx.mounted) Navigator.pop(ctx);
+                        },
+                        child: const Text('Reset'),
+                      ),
+                    FilledButton(
+                      onPressed: () async {
+                        await _voiceConfig.setOverride(
+                          production.id,
+                          CharacterVoiceConfig(
+                            characterName: char.name,
+                            voiceId: selectedVoice,
+                            speed: selectedSpeed,
+                          ),
+                        );
+                        final overrides =
+                            await _voiceConfig.getOverrides(production.id);
+                        setState(() => _voiceOverrides = overrides);
+                        if (ctx.mounted) Navigator.pop(ctx);
+                      },
+                      child: const Text('Save'),
+                    ),
+                  ],
+                ),
+              ),
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 16),
+                child: Row(
+                  children: [
+                    const Text('Speed', style: TextStyle(fontSize: 13)),
+                    Expanded(
+                      child: Slider(
+                        value: selectedSpeed,
+                        min: 0.5,
+                        max: 2.0,
+                        divisions: 15,
+                        label: '${selectedSpeed.toStringAsFixed(1)}x',
+                        onChanged: (v) =>
+                            setSheetState(() => selectedSpeed = v),
+                      ),
+                    ),
+                    Text('${selectedSpeed.toStringAsFixed(1)}x',
+                        style: const TextStyle(fontSize: 13)),
+                  ],
+                ),
+              ),
+              const Divider(),
+              Expanded(
+                child: ListView(
+                  controller: scrollController,
+                  children: VoicePresets.voiceLabels.entries.map((entry) {
+                    return RadioListTile<String>(
+                      value: entry.key,
+                      groupValue: selectedVoice,
+                      title: Text(entry.value),
+                      dense: true,
+                      onChanged: (v) {
+                        if (v != null) {
+                          setSheetState(() => selectedVoice = v);
+                        }
+                      },
+                    );
+                  }).toList(),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
   }
 }

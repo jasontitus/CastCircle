@@ -66,48 +66,63 @@ class ScriptImportService {
     final textRecognizer = TextRecognizer();
     final buffer = StringBuffer();
 
+    var failedPages = 0;
     try {
       for (var i = 1; i <= pageCount; i++) {
-        // Render page to image at 2x for good OCR quality
-        final page = await doc.getPage(i);
-        final pageImage = await page.render(
-          width: (page.width * 2).toInt(),
-          height: (page.height * 2).toInt(),
-        );
-        final image = await pageImage.createImageDetached();
+        try {
+          // Render page to image at 2x for good OCR quality
+          final page = await doc.getPage(i);
+          final pageImage = await page.render(
+            width: (page.width * 2).toInt(),
+            height: (page.height * 2).toInt(),
+          );
+          final image = await pageImage.createImageDetached();
 
-        // Save to temp file for ML Kit (requires file path)
-        final byteData =
-            await image.toByteData(format: ui.ImageByteFormat.png);
-        image.dispose();
+          // Save to temp file for ML Kit (requires file path)
+          final byteData =
+              await image.toByteData(format: ui.ImageByteFormat.png);
+          image.dispose();
 
-        if (byteData == null) continue;
-
-        final tempDir = await getTemporaryDirectory();
-        final tempFile = File(p.join(tempDir.path, 'ocr_page_$i.png'));
-        await tempFile.writeAsBytes(byteData.buffer.asUint8List());
-
-        // Run OCR
-        final inputImage = InputImage.fromFilePath(tempFile.path);
-        final recognized = await textRecognizer.processImage(inputImage);
-
-        // Reconstruct text preserving line breaks
-        for (final block in recognized.blocks) {
-          for (final line in block.lines) {
-            buffer.writeln(line.text);
+          if (byteData == null) {
+            debugPrint('PDF OCR: Page $i/$pageCount — render returned null, skipping');
+            failedPages++;
+            continue;
           }
-          buffer.writeln(); // paragraph break between blocks
+
+          final tempDir = await getTemporaryDirectory();
+          final tempFile = File(p.join(tempDir.path, 'ocr_page_$i.png'));
+          await tempFile.writeAsBytes(byteData.buffer.asUint8List());
+
+          // Run OCR
+          final inputImage = InputImage.fromFilePath(tempFile.path);
+          final recognized = await textRecognizer.processImage(inputImage);
+
+          // Reconstruct text preserving line breaks
+          for (final block in recognized.blocks) {
+            for (final line in block.lines) {
+              buffer.writeln(line.text);
+            }
+            buffer.writeln(); // paragraph break between blocks
+          }
+
+          // Clean up temp file
+          await tempFile.delete();
+
+          debugPrint('PDF OCR: Page $i/$pageCount done '
+              '(${recognized.blocks.length} blocks)');
+        } catch (e) {
+          // Don't let a single page failure kill the entire import
+          debugPrint('PDF OCR: Page $i/$pageCount FAILED: $e — skipping');
+          failedPages++;
         }
-
-        // Clean up temp file
-        await tempFile.delete();
-
-        debugPrint('PDF OCR: Page $i/$pageCount done '
-            '(${recognized.blocks.length} blocks)');
       }
     } finally {
       textRecognizer.close();
       doc.dispose();
+    }
+
+    if (failedPages > 0) {
+      debugPrint('PDF OCR: $failedPages of $pageCount pages failed');
     }
 
     final rawText = buffer.toString();

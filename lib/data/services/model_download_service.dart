@@ -5,6 +5,8 @@ import 'package:flutter/services.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 
+import 'tts_service.dart';
+
 /// Represents a downloadable on-device AI model file.
 class AiModel {
   final String id;
@@ -175,6 +177,11 @@ class ModelDownloadService {
           _notify();
           debugPrint(
               'ModelDownload: $modelId complete (${(size / 1024 / 1024).toStringAsFixed(1)} MB)');
+
+          // Auto-load Kokoro TTS engine once both model files are downloaded
+          if (modelId == 'kokoro_model' || modelId == 'kokoro_voices') {
+            _tryLoadKokoroIfReady();
+          }
           break;
 
         case 'onDownloadError':
@@ -212,6 +219,14 @@ class ModelDownloadService {
     // Clean up any leftover .tmp files from failed downloads
     await _cleanupTmpFiles();
     _notify();
+  }
+
+  /// Auto-load Kokoro TTS after both model files finish downloading.
+  Future<void> _tryLoadKokoroIfReady() async {
+    if (await isKokoroReady()) {
+      debugPrint('ModelDownload: Both Kokoro files ready, loading TTS engine');
+      await TtsService.instance.tryLoadKokoro();
+    }
   }
 
   /// Whether all Kokoro files are downloaded.

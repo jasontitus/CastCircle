@@ -32,7 +32,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text('LineGuide'),
+        title: const Text('CastCircle'),
         actions: [
           if (SupabaseService.instance.isSignedIn)
             IconButton(
@@ -357,7 +357,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   void _showAbout(BuildContext context) {
     showAboutDialog(
       context: context,
-      applicationName: 'LineGuide',
+      applicationName: 'CastCircle',
       applicationVersion: '0.1.0',
       children: [
         const Text(

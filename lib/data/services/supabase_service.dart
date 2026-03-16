@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 import 'dart:math';
 import 'dart:typed_data';
@@ -27,8 +28,16 @@ class SupabaseService {
     required String anonKey,
   }) async {
     if (_initialized) return;
-    await Supabase.initialize(url: url, anonKey: anonKey);
-    _initialized = true;
+    try {
+      // Timeout prevents hanging on expired tokens or unreachable server
+      await Supabase.initialize(url: url, anonKey: anonKey)
+          .timeout(const Duration(seconds: 5));
+      _initialized = true;
+    } on TimeoutException {
+      debugPrint('Supabase: init timed out after 5s, proceeding offline');
+      // Mark as initialized anyway — the SDK may still work for cached auth
+      _initialized = true;
+    }
   }
 
   // ── Auth ──────────────────────────────────────────────

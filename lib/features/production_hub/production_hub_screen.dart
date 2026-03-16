@@ -105,7 +105,7 @@ class _ProductionHubScreenState extends ConsumerState<ProductionHubScreen> {
         icon: const Icon(Icons.smart_toy, size: 48),
         title: const Text('Download AI Voices'),
         content: const Text(
-          'LineGuide uses on-device AI for natural-sounding voices during '
+          'CastCircle uses on-device AI for natural-sounding voices during '
           'rehearsal. Download the voice models now (~340 MB, one-time) '
           'for the best experience.\n\n'
           'Without them, rehearsal audio won\'t be available.',
@@ -116,9 +116,10 @@ class _ProductionHubScreenState extends ConsumerState<ProductionHubScreen> {
             child: const Text('Later'),
           ),
           FilledButton.icon(
-            onPressed: () {
+            onPressed: () async {
               Navigator.pop(ctx);
-              context.push('/ai-models');
+              await context.push('/ai-models');
+              _checkModels();
             },
             icon: const Icon(Icons.download),
             label: const Text('Download Now'),
@@ -266,9 +267,10 @@ class _ProductionHubScreenState extends ConsumerState<ProductionHubScreen> {
             Navigator.pop(context);
             context.push('/history');
           }),
-          _drawerItem(Icons.smart_toy, 'AI Models', () {
+          _drawerItem(Icons.smart_toy, 'AI Models', () async {
             Navigator.pop(context);
-            context.push('/ai-models');
+            await context.push('/ai-models');
+            _checkModels();
           }),
           _drawerItem(Icons.settings, 'Settings', () {
             Navigator.pop(context);
@@ -364,6 +366,61 @@ class _ProductionHubScreenState extends ConsumerState<ProductionHubScreen> {
     );
   }
 
+  void _showCharacterPicker(BuildContext context, ParsedScript script) {
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      builder: (ctx) => DraggableScrollableSheet(
+        initialChildSize: 0.6,
+        minChildSize: 0.3,
+        maxChildSize: 0.9,
+        expand: false,
+        builder: (_, scrollController) => Column(
+          children: [
+            Padding(
+              padding: const EdgeInsets.all(16),
+              child: Text('Select your character',
+                  style: Theme.of(context).textTheme.titleMedium),
+            ),
+            const Divider(height: 1),
+            Expanded(
+              child: ListView.builder(
+                controller: scrollController,
+                itemCount: script.characters.length,
+                itemBuilder: (_, i) {
+                  final char = script.characters[i];
+                  final color = AppTheme.colorForCharacter(char.colorIndex);
+                  final selected = ref.read(rehearsalCharacterProvider) == char.name;
+                  return ListTile(
+                    leading: CircleAvatar(
+                      backgroundColor: color,
+                      radius: 14,
+                      child: Text(char.name[0],
+                          style: const TextStyle(
+                              color: Colors.white,
+                              fontWeight: FontWeight.bold,
+                              fontSize: 12)),
+                    ),
+                    title: Text(char.name),
+                    trailing: Text('${char.lineCount} lines',
+                        style: Theme.of(context).textTheme.bodySmall),
+                    selected: selected,
+                    onTap: () {
+                      ref.read(rehearsalCharacterProvider.notifier).state =
+                          char.name;
+                      _saveCharacterChoice(char.name);
+                      Navigator.pop(ctx);
+                    },
+                  );
+                },
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   void _updateLocale(String locale) {
     final production = ref.read(currentProductionProvider);
     if (production == null) return;
@@ -443,7 +500,10 @@ class _ProductionHubScreenState extends ConsumerState<ProductionHubScreen> {
               color: theme.colorScheme.tertiaryContainer,
               margin: const EdgeInsets.only(bottom: 16),
               child: InkWell(
-                onTap: () => context.push('/ai-models'),
+                onTap: () async {
+                  await context.push('/ai-models');
+                  _checkModels();
+                },
                 borderRadius: BorderRadius.circular(12),
                 child: Padding(
                   padding: const EdgeInsets.all(16),
@@ -487,36 +547,47 @@ class _ProductionHubScreenState extends ConsumerState<ProductionHubScreen> {
                   Text('I am rehearsing as:',
                       style: theme.textTheme.titleSmall),
                   const SizedBox(height: 8),
-                  DropdownButtonFormField<String>(
-                    value: myCharacter,
-                    decoration: const InputDecoration(
-                      border: OutlineInputBorder(),
-                      contentPadding:
-                          EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                      hintText: 'Select your character',
+                  InkWell(
+                    onTap: () => _showCharacterPicker(context, script),
+                    borderRadius: BorderRadius.circular(8),
+                    child: InputDecorator(
+                      decoration: const InputDecoration(
+                        border: OutlineInputBorder(),
+                        contentPadding:
+                            EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                      ),
+                      child: myCharacter != null
+                          ? Row(
+                              children: [
+                                CircleAvatar(
+                                  backgroundColor: AppTheme.colorForCharacter(
+                                    script.characters
+                                        .indexWhere((c) => c.name == myCharacter)
+                                        .clamp(0, 99),
+                                  ),
+                                  radius: 8,
+                                ),
+                                const SizedBox(width: 8),
+                                Expanded(
+                                  child: Text(myCharacter,
+                                      overflow: TextOverflow.ellipsis),
+                                ),
+                                Icon(Icons.arrow_drop_down,
+                                    color: Colors.grey[500]),
+                              ],
+                            )
+                          : Row(
+                              children: [
+                                Expanded(
+                                  child: Text('Select your character',
+                                      style: TextStyle(
+                                          color: Colors.grey[500])),
+                                ),
+                                Icon(Icons.arrow_drop_down,
+                                    color: Colors.grey[500]),
+                              ],
+                            ),
                     ),
-                    items: script.characters.map((char) {
-                      final color =
-                          AppTheme.colorForCharacter(char.colorIndex);
-                      return DropdownMenuItem(
-                        value: char.name,
-                        child: Row(
-                          children: [
-                            CircleAvatar(
-                                backgroundColor: color, radius: 8),
-                            const SizedBox(width: 8),
-                            Expanded(child: Text(char.name)),
-                            Text('${char.lineCount} lines',
-                                style: theme.textTheme.bodySmall),
-                          ],
-                        ),
-                      );
-                    }).toList(),
-                    onChanged: (value) {
-                      ref.read(rehearsalCharacterProvider.notifier).state =
-                          value;
-                      _saveCharacterChoice(value);
-                    },
                   ),
                   if (myCharacter != null) ...[
                     const SizedBox(height: 16),
@@ -527,6 +598,19 @@ class _ProductionHubScreenState extends ConsumerState<ProductionHubScreen> {
                       style: FilledButton.styleFrom(
                         minimumSize: const Size.fromHeight(56),
                         textStyle: theme.textTheme.titleMedium,
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    OutlinedButton.icon(
+                      onPressed: () {
+                        ref.read(recordingCharacterProvider.notifier).state =
+                            myCharacter;
+                        context.push('/recording-studio');
+                      },
+                      icon: const Icon(Icons.mic),
+                      label: const Text('Record Lines'),
+                      style: OutlinedButton.styleFrom(
+                        minimumSize: const Size.fromHeight(48),
                       ),
                     ),
                   ],

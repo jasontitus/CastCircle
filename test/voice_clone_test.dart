@@ -1,5 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
-import 'package:lineguide/data/services/voice_clone_service.dart';
+import 'package:castcircle/data/services/voice_clone_service.dart';
 
 void main() {
   group('VoiceProfile', () {
