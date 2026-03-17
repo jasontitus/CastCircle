@@ -14,6 +14,7 @@ import '../../data/services/stt_service.dart';
 import '../../data/services/debug_log_service.dart';
 import '../../data/services/stt_adaptation_service.dart';
 import '../../data/services/stt_vocabulary_service.dart';
+import '../../data/services/media_control_service.dart';
 import '../../data/services/voice_clone_service.dart';
 import '../../data/services/voice_config_service.dart';
 import '../../providers/production_providers.dart';
@@ -104,10 +105,18 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen> {
   }
 
   final _dlog = DebugLogService.instance;
+  final _mediaControl = MediaControlService.instance;
 
   Future<void> _initAudio() async {
     _dlog.log(LogCategory.rehearsal, 'Rehearsal starting');
     _dlog.startMemoryMonitoring();
+
+    // Activate AirPods / lock screen remote controls
+    _mediaControl.activate(
+      onJumpBack: _handleRemoteJumpBack,
+      onSkip: _handleRemoteSkip,
+      onPlayPause: _handleRemotePlayPause,
+    );
     await _tts.init();
 
     final production = ref.read(currentProductionProvider);
@@ -193,6 +202,7 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen> {
     _player.dispose();
     _tts.stop(reason: 'dispose');
     _stt.stop();
+    _mediaControl.deactivate();
     super.dispose();
   }
 
@@ -998,6 +1008,13 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen> {
     final line = dialogueLines[currentIdx];
     final isMyLine = line.character == myCharacter;
 
+    // Update lock screen / AirPods now-playing info
+    final production = ref.read(currentProductionProvider);
+    _mediaControl.updateNowPlaying(
+      title: production?.title ?? scene.sceneName,
+      character: '${line.character}: ${line.text.length > 60 ? '${line.text.substring(0, 57)}...' : line.text}',
+    );
+
     // Always scroll to the current line so the actor can see it
     _scrollToCurrentLine();
 
@@ -1417,6 +1434,39 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen> {
       try { _player.pause(); } catch (_) {}
       ref.read(rehearsalStateProvider.notifier).state = RehearsalState.paused;
     }
+  }
+
+  // ── Remote media control handlers (AirPods / lock screen) ──
+
+  void _handleRemoteJumpBack() {
+    if (!mounted) return;
+    final script = ref.read(currentScriptProvider);
+    final scene = ref.read(selectedSceneProvider);
+    final mc = ref.read(rehearsalCharacterProvider);
+    if (script == null || scene == null) return;
+    final dialogueLines = _getRehearsalLines(script, scene, mc);
+    final jumpCount = ref.read(jumpBackLinesProvider);
+    _jumpBack(jumpCount, dialogueLines.length);
+  }
+
+  void _handleRemoteSkip() {
+    if (!mounted) return;
+    final script = ref.read(currentScriptProvider);
+    final scene = ref.read(selectedSceneProvider);
+    final mc = ref.read(rehearsalCharacterProvider);
+    if (script == null || scene == null) return;
+    final dialogueLines = _getRehearsalLines(script, scene, mc);
+    _advanceLine(dialogueLines.length);
+  }
+
+  void _handleRemotePlayPause() {
+    if (!mounted) return;
+    final script = ref.read(currentScriptProvider);
+    final scene = ref.read(selectedSceneProvider);
+    final mc = ref.read(rehearsalCharacterProvider);
+    if (script == null || scene == null) return;
+    final dialogueLines = _getRehearsalLines(script, scene, mc);
+    _togglePause(dialogueLines.length);
   }
 
   /// Record an attempt for the given line.

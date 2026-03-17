@@ -8,6 +8,7 @@ import UIKit
   private var appleSttPlugin: AppleSttPlugin?
   private var downloadPlugin: BackgroundDownloadPlugin?
   private var memoryMonitorPlugin: MemoryMonitorPlugin?
+  private var mediaControlPlugin: MediaControlPlugin?
 
   override func application(
     _ application: UIApplication,
@@ -51,6 +52,11 @@ import UIKit
     // Register memory monitor
     if let memRegistrar = engineBridge.pluginRegistry.registrar(forPlugin: "MemoryMonitorPlugin") {
       memoryMonitorPlugin = MemoryMonitorPlugin(messenger: memRegistrar.messenger())
+    }
+
+    // Register media control (AirPods / lock screen remote commands)
+    if let mediaRegistrar = engineBridge.pluginRegistry.registrar(forPlugin: "MediaControlPlugin") {
+      mediaControlPlugin = MediaControlPlugin(messenger: mediaRegistrar.messenger())
     }
   }
 }

@@ -269,7 +269,11 @@ class _ProductionHubScreenState extends ConsumerState<ProductionHubScreen> {
             }),
             const Divider(),
           ],
-          // ── History & Settings ──
+          // ── Voices & History ──
+          _drawerItem(Icons.record_voice_over, 'Voice Preset & Config', () {
+            Navigator.pop(context);
+            context.push('/voice-config');
+          }),
           _drawerItem(Icons.history, 'Rehearsal History', () {
             Navigator.pop(context);
             context.push('/history');
