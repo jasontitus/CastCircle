@@ -1,8 +1,8 @@
-# LineGuide
+# CastCircle
 
 **The actor's scene partner in your pocket.**
 
-LineGuide is a Flutter app (iOS, Android, and watchOS companion) that helps actors learn their lines by running through scenes with real cast recordings or high-quality on-device text-to-speech. A production organizer uploads a script PDF, assigns roles to cast members, and everyone records their lines. Then any actor can rehearse their scenes — hearing other characters speak and delivering their own lines, with the app listening via on-device speech recognition to advance automatically.
+CastCircle is a Flutter app (iOS, Android, and watchOS companion) that helps actors learn their lines by running through scenes with real cast recordings or high-quality on-device text-to-speech. A production organizer uploads a script PDF, assigns roles to cast members, and everyone records their lines. Then any actor can rehearse their scenes — hearing other characters speak and delivering their own lines, with the app listening via on-device speech recognition to advance automatically.
 
 ---
 
@@ -150,8 +150,8 @@ Production
 # Prerequisites: Flutter SDK 3.x, Xcode (for iOS), Android Studio
 
 # Clone and setup
-git clone https://github.com/jasontitus/Lineguide-.git
-cd Lineguide-
+git clone https://github.com/jasontitus/CastCircle-.git
+cd CastCircle-
 flutter pub get
 
 # Run on device/simulator
