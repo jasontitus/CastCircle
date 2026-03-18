@@ -19,6 +19,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../../data/services/voice_config_service.dart';
 import '../../providers/production_providers.dart';
 import '../rehearsal/rehearsal_history_screen.dart';
+import '../settings/settings_screen.dart';
 
 class ProductionHubScreen extends ConsumerStatefulWidget {
   const ProductionHubScreen({super.key});
@@ -218,7 +219,8 @@ class _ProductionHubScreenState extends ConsumerState<ProductionHubScreen> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              // Character dropdown
+              // Character dropdown (hidden in listen/readthrough mode)
+              if (mode != RehearsalMode.readthrough)
               DropdownButtonFormField<String>(
                 value: myCharacter,
                 decoration: const InputDecoration(
@@ -255,12 +257,17 @@ class _ProductionHubScreenState extends ConsumerState<ProductionHubScreen> {
                 },
               ),
               const SizedBox(height: 12),
-              // Mode toggle
+              // Mode toggle + fast mode
               Row(
                 children: [
                   Expanded(
                     child: SegmentedButton<RehearsalMode>(
                       segments: const [
+                        ButtonSegment(
+                          value: RehearsalMode.readthrough,
+                          label: Text('Listen'),
+                          icon: Icon(Icons.play_circle_outline),
+                        ),
                         ButtonSegment(
                           value: RehearsalMode.sceneReadthrough,
                           label: Text('Readthrough'),
@@ -278,6 +285,23 @@ class _ProductionHubScreenState extends ConsumerState<ProductionHubScreen> {
                             selected.first;
                       },
                     ),
+                  ),
+                  const SizedBox(width: 8),
+                  // Fast mode toggle (lightning bolt)
+                  IconButton(
+                    icon: Icon(
+                      Icons.bolt,
+                      color: ref.watch(fastModeEnabledProvider)
+                          ? Colors.amber
+                          : theme.colorScheme.onSurface.withValues(alpha: 0.3),
+                    ),
+                    tooltip: ref.watch(fastModeEnabledProvider)
+                        ? 'Fast mode ON'
+                        : 'Fast mode OFF',
+                    onPressed: () {
+                      ref.read(fastModeEnabledProvider.notifier).state =
+                          !ref.read(fastModeEnabledProvider);
+                    },
                   ),
                 ],
               ),

@@ -22,8 +22,8 @@ final rehearsalCharacterProvider = StateProvider<String?>((ref) => null);
 /// Provider for the selected scene to rehearse.
 final selectedSceneProvider = StateProvider<ScriptScene?>((ref) => null);
 
-/// Rehearsal mode: full scene readthrough vs cue-response practice.
-enum RehearsalMode { sceneReadthrough, cuePractice }
+/// Rehearsal mode: full scene readthrough vs cue-response practice vs full readthrough.
+enum RehearsalMode { sceneReadthrough, cuePractice, readthrough }
 
 final rehearsalModeProvider =
     StateProvider<RehearsalMode>((ref) => RehearsalMode.sceneReadthrough);
