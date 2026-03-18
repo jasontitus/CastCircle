@@ -9,6 +9,7 @@ import UIKit
   private var downloadPlugin: BackgroundDownloadPlugin?
   private var memoryMonitorPlugin: MemoryMonitorPlugin?
   private var mediaControlPlugin: MediaControlPlugin?
+  private var pdfTextPlugin: PdfTextPlugin?
 
   override func application(
     _ application: UIApplication,
@@ -57,6 +58,11 @@ import UIKit
     // Register media control (AirPods / lock screen remote commands)
     if let mediaRegistrar = engineBridge.pluginRegistry.registrar(forPlugin: "MediaControlPlugin") {
       mediaControlPlugin = MediaControlPlugin(messenger: mediaRegistrar.messenger())
+    }
+
+    // Register PDF text extraction (PDFKit fallback for complex PDF layouts)
+    if let pdfRegistrar = engineBridge.pluginRegistry.registrar(forPlugin: "PdfTextPlugin") {
+      pdfTextPlugin = PdfTextPlugin(messenger: pdfRegistrar.messenger())
     }
   }
 }

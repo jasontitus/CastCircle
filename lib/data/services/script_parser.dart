@@ -44,6 +44,8 @@ class ScriptParser {
     RegExp(r'^\d+$'), // bare page numbers
     RegExp(r'^[|}\s]+$'), // OCR artifacts
     RegExp(r'^\$[A-Za-z\s]+$'), // OCR noise
+    RegExp(r'^FTLN \d+'), // Folger Through Line Numbers
+    RegExp(r'^ACT \d+\. SC\. \d+$'), // Folger running scene headers
   ];
 
   /// Patterns that indicate a scene transition in stage directions.

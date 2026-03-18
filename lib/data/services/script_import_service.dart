@@ -10,6 +10,7 @@ import 'package:pdf_render/pdf_render.dart';
 import '../models/script_models.dart';
 import 'script_parser.dart';
 import 'script_export.dart';
+import 'pdf_text_channel.dart';
 
 /// Service to import scripts from PDF or text files.
 class ScriptImportService {
@@ -55,11 +56,69 @@ class ScriptImportService {
     return text;
   }
 
-  /// Import from a PDF file using the on-device OCR pipeline:
-  /// 1. Render each PDF page to an image
-  /// 2. Run ML Kit text recognition on each page image
-  /// 3. Concatenate text and parse as a script
+  /// Import from a PDF file.
+  ///
+  /// Strategy:
+  /// 1. Try native PDFKit text extraction first (fast, high quality for
+  ///    text-based PDFs like Gutenberg or Folger Shakespeare).
+  /// 2. If PDFKit returns text, parse it and check quality.
+  /// 3. If the result looks bad (few characters, too many acts) or the PDF
+  ///    has no embedded text (image-only), fall back to OCR pipeline.
   Future<ParsedScript> importFromPdf(String pdfPath) async {
+    final title = _titleFromPath(pdfPath);
+
+    // Strategy 1: Try native PDFKit text extraction (text-based PDFs)
+    try {
+      final nativeText = await PdfTextChannel.extractText(pdfPath);
+      if (nativeText != null && nativeText.trim().length > 200) {
+        debugPrint('PDF import: PDFKit extracted ${nativeText.length} chars');
+        final nativeParser = ScriptParser();
+        final nativeResult = nativeParser.parse(nativeText, title: title);
+
+        if (_isGoodParse(nativeResult)) {
+          debugPrint('PDF import: Using PDFKit result '
+              '(${nativeResult.characters.length} characters, '
+              '${nativeResult.lines.where((l) => l.lineType == LineType.dialogue).length} lines)');
+          return nativeResult;
+        }
+
+        debugPrint('PDF import: PDFKit parse quality low, trying OCR...');
+      }
+    } catch (e) {
+      debugPrint('PDF import: PDFKit extraction failed ($e), trying OCR...');
+    }
+
+    // Strategy 2: OCR pipeline (image-based PDFs like scanned scripts)
+    return _importFromPdfOcr(pdfPath, title: title);
+  }
+
+  /// Check if a parse result looks reasonable (not garbage).
+  ///
+  /// A bad parse typically has:
+  /// - Very few characters (< 3) for a full play
+  /// - Too many "acts" (Folger running headers parsed as act headers)
+  /// - Very few dialogue lines relative to total content
+  bool _isGoodParse(ParsedScript result) {
+    final dialogueCount =
+        result.lines.where((l) => l.lineType == LineType.dialogue).length;
+    final charCount = result.characters.length;
+    final actCount = result.acts.length;
+
+    // Must have at least 3 characters and 10 dialogue lines
+    if (charCount < 3 || dialogueCount < 10) return false;
+
+    // Too many acts suggests running headers were parsed as act markers
+    // (a normal play has 1-5 acts, not 35)
+    if (actCount > 10) return false;
+
+    return true;
+  }
+
+  /// OCR-based PDF import pipeline.
+  /// Renders each page to an image, runs ML Kit text recognition,
+  /// and concatenates the results.
+  Future<ParsedScript> _importFromPdfOcr(String pdfPath,
+      {required String title}) async {
     final doc = await PdfDocument.openFile(pdfPath);
     final pageCount = doc.pageCount;
 
@@ -131,7 +190,6 @@ class ScriptImportService {
           'No text found in PDF. The file may be image-only or corrupted.');
     }
 
-    final title = _titleFromPath(pdfPath);
     return _parser.parse(rawText, title: title);
   }
 
