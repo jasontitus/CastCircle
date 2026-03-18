@@ -219,10 +219,12 @@ class _ProductionHubScreenState extends ConsumerState<ProductionHubScreen> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              // Character dropdown (hidden in listen/readthrough mode)
+              // Character dropdown (hidden in listen mode)
               if (mode != RehearsalMode.readthrough)
               DropdownButtonFormField<String>(
-                value: myCharacter,
+                value: script.characters.any((c) => c.name == myCharacter)
+                    ? myCharacter
+                    : null,
                 decoration: const InputDecoration(
                   border: OutlineInputBorder(),
                   contentPadding:

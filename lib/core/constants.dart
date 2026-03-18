@@ -10,9 +10,9 @@ class AppConstants {
   static const int defaultMatchThreshold = 70; // % word overlap for line match
 
   // Fast mode settings
-  static const double defaultFastModeSpeed = 1.75;
+  static const double defaultFastModeSpeed = 1.5;
   static const int defaultLineDelay = 300; // ms between lines (normal)
-  static const int defaultFastModeLineDelay = 50; // ms between lines (fast)
+  static const int defaultFastModeLineDelay = 0; // ms between lines (fast)
 
   // Audio settings
   static const int sampleRate = 44100;
