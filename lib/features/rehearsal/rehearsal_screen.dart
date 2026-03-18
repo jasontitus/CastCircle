@@ -1204,6 +1204,8 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen> {
 
     // 4. Kokoro TTS fallback (never uses system TTS)
     _tts.setCharacterSpeed(line.character, speed);
+    _dlog.log(LogCategory.tts,
+        'Fast mode: ${ref.read(fastModeEnabledProvider)}, speed=$speed for ${line.character}');
     await _tts.speak(line.text, character: line.character);
     // Completion handled by TTS completion handler
   }

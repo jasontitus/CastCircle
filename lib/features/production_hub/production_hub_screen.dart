@@ -265,18 +265,18 @@ class _ProductionHubScreenState extends ConsumerState<ProductionHubScreen> {
                       segments: const [
                         ButtonSegment(
                           value: RehearsalMode.readthrough,
-                          label: Text('Listen'),
-                          icon: Icon(Icons.play_circle_outline),
+                          label: Text('Listen', style: TextStyle(fontSize: 12)),
+                          icon: Icon(Icons.play_circle_outline, size: 18),
                         ),
                         ButtonSegment(
                           value: RehearsalMode.sceneReadthrough,
-                          label: Text('Readthrough'),
-                          icon: Icon(Icons.playlist_play),
+                          label: Text('Read', style: TextStyle(fontSize: 12)),
+                          icon: Icon(Icons.playlist_play, size: 18),
                         ),
                         ButtonSegment(
                           value: RehearsalMode.cuePractice,
-                          label: Text('Cue Practice'),
-                          icon: Icon(Icons.skip_next),
+                          label: Text('Cue', style: TextStyle(fontSize: 12)),
+                          icon: Icon(Icons.skip_next, size: 18),
                         ),
                       ],
                       selected: {mode},

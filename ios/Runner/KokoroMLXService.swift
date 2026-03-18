@@ -112,7 +112,8 @@ class KokoroMLXService {
         let (audioSamples, _) = try ttsEngine.generateAudio(
             voice: voiceEmbedding,
             language: language,
-            text: text
+            text: text,
+            speed: speed
         )
 
         guard !audioSamples.isEmpty else {
