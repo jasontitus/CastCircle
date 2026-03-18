@@ -61,13 +61,21 @@ Date: 2026-03-14
 - **Source:** https://github.com/k2-fsa/ZipVoice
 - **Verdict:** Best option for sherpa-onnx path. Single dependency, proper API.
 
-### KokoClone (Kokoro + Kanade Voice Conversion)
+### KokoClone (Kokoro + Kanade Voice Conversion) ⭐ MLX Port In Progress
 - **Approach:** Kokoro generates speech → Kanade Tokenizer converts timbre to match reference
 - **Reference audio needed:** 3-10 seconds
 - **Modes:** Text-to-speech (with voice conversion) and audio-to-audio (direct conversion)
 - **Runs on:** CPU or GPU, on-device capable
 - **Source:** https://github.com/Ashish-Patnaik/kokoclone
-- **Verdict:** Best option for MLX/native path. Would need porting to Swift/MLX.
+- **MLX Port:** `KokoCloneMLX/` — standalone Swift package with test app
+- **Components (all ported to MLX Swift):**
+  - WavLM-Base+ (94M params, ~360 MB) — SSL feature extractor
+  - Kanade-25Hz (118M params, ~470 MB) — content encoder + mel decoder
+  - Vocos mel-24kHz (13.5M params, ~54 MB) — neural vocoder
+- **Total model size:** ~884 MB (FP32), est. ~450 MB (FP16)
+- **Est. RAM:** ~1.5-2.0 GB during inference
+- **Status:** Code complete, pending model conversion + on-device testing
+- **Verdict:** Best option for MLX/native path. Smallest total footprint of all voice cloning options.
 
 ### KVoiceWalk (Experimental)
 - **Approach:** Random walk algorithm to evolve Kokoro voice style tensors toward target
