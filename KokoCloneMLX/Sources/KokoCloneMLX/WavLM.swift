@@ -37,33 +37,42 @@ public class WavLMBaseP {
     private let numLayersNeeded: Int = 9
 
     public init(weights: [String: MLXArray]) {
+        // Helper: look up key with or without "encoder." prefix
+        func w(_ key: String) -> MLXArray {
+            if let v = weights[key] { return v }
+            if let v = weights["encoder.\(key)"] { return v }
+            // Strip "encoder." if the key starts with it
+            if key.hasPrefix("encoder."), let v = weights[String(key.dropFirst(8))] { return v }
+            fatalError("Missing weight key: \(key)")
+        }
+
         // Load feature extractor convolutions
         var convs: [MLXArray] = []
         for i in 0..<7 {
-            convs.append(weights["feature_extractor.conv_layers.\(i).conv.weight"]!)
+            convs.append(w("feature_extractor.conv_layers.\(i).conv.weight"))
         }
         self.convWeights = convs
 
-        self.conv0NormWeight = weights["feature_extractor.conv_layers.0.layer_norm.weight"]!
-        self.conv0NormBias = weights["feature_extractor.conv_layers.0.layer_norm.bias"]!
+        self.conv0NormWeight = w("feature_extractor.conv_layers.0.layer_norm.weight")
+        self.conv0NormBias = w("feature_extractor.conv_layers.0.layer_norm.bias")
 
         // Feature projection
-        self.featProjNormWeight = weights["feature_projection.layer_norm.weight"]!
-        self.featProjNormBias = weights["feature_projection.layer_norm.bias"]!
-        self.featProjWeight = weights["feature_projection.projection.weight"]!
-        self.featProjBias = weights["feature_projection.projection.bias"]!
+        self.featProjNormWeight = w("encoder.feature_projection.layer_norm.weight")
+        self.featProjNormBias = w("encoder.feature_projection.layer_norm.bias")
+        self.featProjWeight = w("encoder.feature_projection.projection.weight")
+        self.featProjBias = w("encoder.feature_projection.projection.bias")
 
         // Positional conv
-        self.posConvWeightV = weights["encoder.pos_conv_embed.conv.weight_v"]!
-        self.posConvWeightG = weights["encoder.pos_conv_embed.conv.weight_g"]!
-        self.posConvBias = weights["encoder.pos_conv_embed.conv.bias"]!
+        self.posConvWeightV = w("encoder.pos_conv_embed.conv.weight_v")
+        self.posConvWeightG = w("encoder.pos_conv_embed.conv.weight_g")
+        self.posConvBias = w("encoder.pos_conv_embed.conv.bias")
 
         // Encoder norm
-        self.encoderNormWeight = weights["encoder.layer_norm.weight"]!
-        self.encoderNormBias = weights["encoder.layer_norm.bias"]!
+        self.encoderNormWeight = w("encoder.layer_norm.weight")
+        self.encoderNormBias = w("encoder.layer_norm.bias")
 
-        // Relative position bias
-        self.relAttnEmbed = weights["encoder.layers.0.attention.rel_attn_embed"]!
+        // Relative position bias — try both key formats
+        self.relAttnEmbed = w("encoder.transformer.layers.0.attention.rel_attn_embed.weight")
 
         // Transformer layers (only load first 9 for Kanade)
         var layerList: [WavLMTransformerLayer] = []

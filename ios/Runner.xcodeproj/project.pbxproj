@@ -12,6 +12,8 @@
 		331C808B294A63AB00263BE5 /* RunnerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 331C807B294A618700263BE5 /* RunnerTests.swift */; };
 		3B3967161E833CAA004F5970 /* AppFrameworkInfo.plist in Resources */ = {isa = PBXBuildFile; fileRef = 3B3967151E833CAA004F5970 /* AppFrameworkInfo.plist */; };
 		435E218509157EDD3CA4E645 /* MediaControlPlugin.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9E8E620EB48706A30AA540AC /* MediaControlPlugin.swift */; };
+		C0C0C0C0C0C0C0C000000001 /* ContactPickerPlugin.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0C0C0C0C0C0C0C000000002 /* ContactPickerPlugin.swift */; };
+		D0D0D0D0D0D0D0D000000001 /* PdfTextPlugin.swift in Sources */ = {isa = PBXBuildFile; fileRef = D0D0D0D0D0D0D0D000000002 /* PdfTextPlugin.swift */; };
 		6C9D3AFED19C5CBACEC128A8 /* MLXSttPlugin.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4C96AB88695FDD4A90758E11 /* MLXSttPlugin.swift */; };
 		74858FAF1ED2DC5600515810 /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 74858FAE1ED2DC5600515810 /* AppDelegate.swift */; };
 		7884E8682EC3CC0700C636F2 /* SceneDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7884E8672EC3CC0400C636F2 /* SceneDelegate.swift */; };
@@ -150,6 +152,8 @@
 		97C147001CF9000F007C117D /* Base */ = {isa = PBXFileReference; lastKnownFileType = file.storyboard; name = Base; path = Base.lproj/LaunchScreen.storyboard; sourceTree = "<group>"; };
 		97C147021CF9000F007C117D /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		9E8E620EB48706A30AA540AC /* MediaControlPlugin.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = MediaControlPlugin.swift; sourceTree = "<group>"; };
+		C0C0C0C0C0C0C0C000000002 /* ContactPickerPlugin.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ContactPickerPlugin.swift; sourceTree = "<group>"; };
+		D0D0D0D0D0D0D0D000000002 /* PdfTextPlugin.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = PdfTextPlugin.swift; sourceTree = "<group>"; };
 		A1B2C3D401000002E0000001 /* KokoroMLXPlugin.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KokoroMLXPlugin.swift; sourceTree = "<group>"; };
 		A1B2C3D401000004E0000001 /* KokoroMLXService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KokoroMLXService.swift; sourceTree = "<group>"; };
 		A8076907A9DF618E8762E69B /* Pods-RunnerTests.release.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-RunnerTests.release.xcconfig"; path = "Target Support Files/Pods-RunnerTests/Pods-RunnerTests.release.xcconfig"; sourceTree = "<group>"; };
@@ -318,6 +322,8 @@
 				KOKORO000300000000000001 /* KokoroVendored */,
 				MISAKI000300000000000001 /* MisakiVendored */,
 				9E8E620EB48706A30AA540AC /* MediaControlPlugin.swift */,
+				C0C0C0C0C0C0C0C000000002 /* ContactPickerPlugin.swift */,
+				D0D0D0D0D0D0D0D000000002 /* PdfTextPlugin.swift */,
 			);
 			path = Runner;
 			sourceTree = "<group>";
@@ -863,6 +869,8 @@
 				MISAKI000100000000000017 /* MultiHeadAttention.swift in Sources */,
 				MISAKI000100000000000018 /* EnglishFallbackNetwork.swift in Sources */,
 				435E218509157EDD3CA4E645 /* MediaControlPlugin.swift in Sources */,
+				C0C0C0C0C0C0C0C000000001 /* ContactPickerPlugin.swift in Sources */,
+				D0D0D0D0D0D0D0D000000001 /* PdfTextPlugin.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

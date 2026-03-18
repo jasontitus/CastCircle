@@ -10,6 +10,7 @@ import UIKit
   private var memoryMonitorPlugin: MemoryMonitorPlugin?
   private var mediaControlPlugin: MediaControlPlugin?
   private var pdfTextPlugin: PdfTextPlugin?
+  private var contactPickerPlugin: ContactPickerPlugin?
 
   override func application(
     _ application: UIApplication,
@@ -63,6 +64,11 @@ import UIKit
     // Register PDF text extraction (PDFKit fallback for complex PDF layouts)
     if let pdfRegistrar = engineBridge.pluginRegistry.registrar(forPlugin: "PdfTextPlugin") {
       pdfTextPlugin = PdfTextPlugin(messenger: pdfRegistrar.messenger())
+    }
+
+    // Register contact picker
+    if let contactRegistrar = engineBridge.pluginRegistry.registrar(forPlugin: "ContactPickerPlugin") {
+      contactPickerPlugin = ContactPickerPlugin(messenger: contactRegistrar.messenger())
     }
   }
 }

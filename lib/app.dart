@@ -1,11 +1,13 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
-import 'package:shared_preferences/shared_preferences.dart';
-
 import 'core/theme/app_theme.dart';
+import 'data/services/deep_link_service.dart';
 import 'data/services/supabase_service.dart';
 import 'features/auth/auth_screen.dart';
+import 'features/cast_manager/bulk_cast_setup_screen.dart';
 import 'features/home/home_screen.dart';
 import 'features/production_hub/production_hub_screen.dart';
 import 'features/script_import/script_import_screen.dart';
@@ -19,7 +21,6 @@ import 'features/recording_studio/recording_character_screen.dart';
 import 'features/recording_studio/recording_studio_screen.dart';
 import 'features/recording_studio/recordings_browser_screen.dart';
 import 'features/recording_studio/voice_profile_screen.dart';
-import 'features/rehearsal/scene_selector_screen.dart';
 import 'features/rehearsal/rehearsal_history_screen.dart';
 import 'features/rehearsal/rehearsal_screen.dart';
 import 'features/settings/ai_models_screen.dart';
@@ -27,9 +28,7 @@ import 'features/settings/settings_screen.dart';
 import 'features/settings/kokoro_debug_screen.dart';
 import 'features/settings/parakeet_debug_screen.dart';
 import 'features/settings/debug_log_screen.dart';
-
-/// Key used to persist the "skip auth" choice across app launches.
-const _authSkippedKey = 'auth_skipped';
+import 'providers/production_providers.dart';
 
 /// Whether the user has passed the auth gate (signed in or skipped).
 /// Initialized from the persisted Supabase session or saved skip preference.
@@ -54,18 +53,13 @@ GoRouter _buildRouter(Ref ref) => GoRouter(
       path: '/auth',
       builder: (context, state) => const AuthScreen(),
     ),
-    ShellRoute(
-      builder: (context, state, child) => AppShell(child: child),
-      routes: [
-        GoRoute(
-          path: '/',
-          builder: (context, state) => const HomeScreen(),
-        ),
-        GoRoute(
-          path: '/settings',
-          builder: (context, state) => const SettingsScreen(),
-        ),
-      ],
+    GoRoute(
+      path: '/',
+      builder: (context, state) => const HomeScreen(),
+    ),
+    GoRoute(
+      path: '/settings',
+      builder: (context, state) => const SettingsScreen(),
     ),
     GoRoute(
       path: '/production',
@@ -92,6 +86,10 @@ GoRouter _buildRouter(Ref ref) => GoRouter(
       builder: (context, state) => const CastManagerScreen(),
     ),
     GoRoute(
+      path: '/cast-setup',
+      builder: (context, state) => const BulkCastSetupScreen(),
+    ),
+    GoRoute(
       path: '/join',
       builder: (context, state) => const JoinProductionScreen(),
     ),
@@ -114,10 +112,6 @@ GoRouter _buildRouter(Ref ref) => GoRouter(
     GoRoute(
       path: '/voice-profile',
       builder: (context, state) => const VoiceProfileScreen(),
-    ),
-    GoRoute(
-      path: '/practice',
-      builder: (context, state) => const SceneSelectorScreen(),
     ),
     GoRoute(
       path: '/rehearsal',
@@ -148,11 +142,59 @@ GoRouter _buildRouter(Ref ref) => GoRouter(
 
 final _routerProvider = Provider<GoRouter>((ref) => _buildRouter(ref));
 
-class CastCircleApp extends ConsumerWidget {
+class CastCircleApp extends ConsumerStatefulWidget {
   const CastCircleApp({super.key});
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  ConsumerState<CastCircleApp> createState() => _CastCircleAppState();
+}
+
+class _CastCircleAppState extends ConsumerState<CastCircleApp> {
+  StreamSubscription<PendingJoin>? _deepLinkSub;
+
+  @override
+  void initState() {
+    super.initState();
+    _setupDeepLinks();
+  }
+
+  Future<void> _setupDeepLinks() async {
+    final deepLinks = DeepLinkService.instance;
+
+    try {
+      await deepLinks.init();
+    } catch (e) {
+      debugPrint('Deep link init failed: $e');
+    }
+
+    // Handle initial link (cold start)
+    if (deepLinks.latestPendingJoin != null) {
+      _handlePendingJoin(deepLinks.latestPendingJoin!);
+    }
+
+    // Handle links while running
+    _deepLinkSub = deepLinks.onPendingJoin.listen(_handlePendingJoin);
+  }
+
+  void _handlePendingJoin(PendingJoin pending) {
+    ref.read(pendingJoinProvider.notifier).state = pending;
+    final router = ref.read(_routerProvider);
+    // If already authed, navigate to join. Otherwise auth screen will pick it up.
+    if (ref.read(authGatePassedProvider)) {
+      router.push('/join');
+    }
+    // If not authed, the auth screen will see the pending join and
+    // show a banner, then navigate after sign-in.
+  }
+
+  @override
+  void dispose() {
+    _deepLinkSub?.cancel();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
     final router = ref.watch(_routerProvider);
     return MaterialApp.router(
       title: 'CastCircle',
@@ -162,51 +204,5 @@ class CastCircleApp extends ConsumerWidget {
       routerConfig: router,
       debugShowCheckedModeBanner: false,
     );
-  }
-}
-
-class AppShell extends StatelessWidget {
-  final Widget child;
-
-  const AppShell({super.key, required this.child});
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      body: child,
-      bottomNavigationBar: NavigationBar(
-        selectedIndex: _selectedIndex(context),
-        onDestinationSelected: (index) => _onNav(context, index),
-        destinations: const [
-          NavigationDestination(
-            icon: Icon(Icons.theater_comedy_outlined),
-            selectedIcon: Icon(Icons.theater_comedy),
-            label: 'Productions',
-          ),
-          NavigationDestination(
-            icon: Icon(Icons.settings_outlined),
-            selectedIcon: Icon(Icons.settings),
-            label: 'Settings',
-          ),
-        ],
-      ),
-    );
-  }
-
-  int _selectedIndex(BuildContext context) {
-    final location = GoRouterState.of(context).uri.toString();
-    if (location.startsWith('/settings')) return 1;
-    return 0;
-  }
-
-  void _onNav(BuildContext context, int index) {
-    switch (index) {
-      case 0:
-        context.go('/');
-        break;
-      case 1:
-        context.go('/settings');
-        break;
-    }
   }
 }

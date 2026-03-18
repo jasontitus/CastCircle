@@ -4,6 +4,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import 'app.dart';
 import 'data/database/app_database.dart';
+import 'data/services/deep_link_service.dart';
 import 'data/services/supabase_service.dart';
 import 'data/services/model_download_service.dart';
 import 'data/services/tts_service.dart';
@@ -41,6 +42,9 @@ void main() async {
 
   // Initialize debug logging first so other services can use it
   await DebugLogService.instance.init();
+
+  // Deep link service is initialized lazily in CastCircleApp to avoid
+  // blocking app startup if app_links has issues on cold start.
 
   // Initialize ML services (non-blocking — will use fallbacks if models not ready)
   Future.microtask(() async {

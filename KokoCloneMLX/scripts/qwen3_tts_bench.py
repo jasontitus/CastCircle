@@ -140,7 +140,12 @@ def main():
     model, load_metrics = instrument("Model loading", load_model_fn)
     all_metrics.append(load_metrics)
     print(f"  ✓ {load_metrics['duration_s']:.2f}s | GPU peak: {load_metrics['gpu_peak_mb']:.1f} MB | "
-          f"RSS: {load_metrics['rss_after_mb']:.1f} MB\n")
+          f"RSS: {load_metrics['rss_after_mb']:.1f} MB")
+
+    # Free loader temp allocations before inference
+    mx.clear_cache()
+    post_clear = get_memory_snapshot()
+    print(f"  After pool clear: GPU {post_clear['gpu_active_mb']:.1f} MB\n")
 
     # 2. Generate speech with voice cloning
     print(f"[2/3] Generating speech (voice cloning)...")
@@ -148,6 +153,22 @@ def main():
     print(f"  Reference: {args.ref_audio}")
 
     import soundfile as sf
+
+    # Trim reference audio to max 4 seconds to reduce memory
+    MAX_REF_SECONDS = 4.0
+    ref_audio_path = args.ref_audio
+    try:
+        ref_info = sf.info(args.ref_audio)
+        if ref_info.duration > MAX_REF_SECONDS:
+            ref_data, ref_sr = sf.read(args.ref_audio)
+            max_samples = int(MAX_REF_SECONDS * ref_sr)
+            ref_data = ref_data[:max_samples]
+            trimmed_path = "/tmp/_qwen3_ref_trimmed.wav"
+            sf.write(trimmed_path, ref_data, ref_sr)
+            ref_audio_path = trimmed_path
+            print(f"  Reference trimmed: {ref_info.duration:.1f}s → {MAX_REF_SECONDS:.0f}s")
+    except Exception as e:
+        print(f"  (Could not trim reference: {e})")
 
     if args.stream:
         # Chunked decoding: process and save chunks as they arrive
@@ -162,7 +183,7 @@ def main():
 
         for i, result in enumerate(model.generate(
             text=args.text,
-            ref_audio=args.ref_audio,
+            ref_audio=ref_audio_path,
             ref_text=args.ref_text if args.ref_text else None,
         )):
             chunk_time = time.time() - gen_start
@@ -187,6 +208,9 @@ def main():
                 "audio_duration_s": chunk_dur,
                 "samples": len(chunk_np),
             })
+
+            # Free intermediate memory between chunks
+            mx.clear_cache()
 
         mx.eval(mx.array(0))
         gen_elapsed = time.time() - gen_start
@@ -227,7 +251,7 @@ def main():
             nonlocal audio_result
             results = list(model.generate(
                 text=args.text,
-                ref_audio=args.ref_audio,
+                ref_audio=ref_audio_path,
                 ref_text=args.ref_text if args.ref_text else None,
             ))
             audio_result = results

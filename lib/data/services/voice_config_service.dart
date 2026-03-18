@@ -100,6 +100,99 @@ class VoiceConfigService {
     await prefs.setString('voice_overrides_$productionId', json);
   }
 
+  // ── Adjacency-Aware Voice Assignment ─────────────────────
+
+  /// Assign voices to characters so that characters who speak near each
+  /// other in the script get different voices.
+  ///
+  /// Uses graph coloring: builds an adjacency set (characters who speak
+  /// within [window] lines of each other), then assigns voices greedily
+  /// to minimize collisions.
+  static Map<String, String> assignVoicesFromScript({
+    required List<ScriptLine> lines,
+    required List<ScriptCharacter> characters,
+    required List<String> femaleVoices,
+    required List<String> maleVoices,
+    Map<String, CharacterGender> genderOverrides = const {},
+    int window = 3,
+  }) {
+    if (characters.isEmpty) return {};
+
+    // 1. Build adjacency: which characters speak near each other
+    final adjacency = <String, Set<String>>{};
+    final dialogueLines = lines
+        .where((l) => l.lineType == LineType.dialogue && l.character.isNotEmpty)
+        .toList();
+
+    for (var i = 0; i < dialogueLines.length; i++) {
+      final a = dialogueLines[i].character;
+      adjacency.putIfAbsent(a, () => {});
+      // Look at the next [window] speakers
+      for (var j = i + 1; j < dialogueLines.length && j <= i + window; j++) {
+        final b = dialogueLines[j].character;
+        if (a != b) {
+          adjacency.putIfAbsent(b, () => {});
+          adjacency[a]!.add(b);
+          adjacency[b]!.add(a);
+        }
+      }
+    }
+
+    // 2. Order characters by number of neighbors (most constrained first)
+    final ordered = characters.toList()
+      ..sort((a, b) {
+        final na = adjacency[a.name]?.length ?? 0;
+        final nb = adjacency[b.name]?.length ?? 0;
+        if (na != nb) return nb.compareTo(na); // most neighbors first
+        return b.lineCount.compareTo(a.lineCount); // then by prominence
+      });
+
+    // 3. Greedy assignment: pick the first voice not used by neighbors
+    final assignment = <String, String>{};
+
+    for (final char in ordered) {
+      final gender = genderOverrides[char.name] ?? char.gender;
+      final pool = gender == CharacterGender.male
+          ? maleVoices
+          : femaleVoices.isNotEmpty ? femaleVoices : maleVoices;
+
+      if (pool.isEmpty) continue;
+
+      // Voices used by adjacent characters
+      final neighborVoices = <String>{};
+      for (final neighbor in adjacency[char.name] ?? <String>{}) {
+        final v = assignment[neighbor];
+        if (v != null) neighborVoices.add(v);
+      }
+
+      // Pick first voice not used by a neighbor
+      String? chosen;
+      for (final voice in pool) {
+        if (!neighborVoices.contains(voice)) {
+          chosen = voice;
+          break;
+        }
+      }
+
+      // If all voices are taken by neighbors, pick the least-used one
+      chosen ??= _leastUsedVoice(pool, assignment.values.toList());
+      assignment[char.name] = chosen;
+    }
+
+    return assignment;
+  }
+
+  static String _leastUsedVoice(List<String> pool, List<String> used) {
+    final counts = <String, int>{};
+    for (final v in pool) {
+      counts[v] = 0;
+    }
+    for (final v in used) {
+      if (counts.containsKey(v)) counts[v] = counts[v]! + 1;
+    }
+    return counts.entries.reduce((a, b) => a.value <= b.value ? a : b).key;
+  }
+
   // ── Character Gender ──────────────────────────────────────
 
   /// Get all character genders for a production.

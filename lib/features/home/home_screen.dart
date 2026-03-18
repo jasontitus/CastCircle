@@ -1,15 +1,22 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:uuid/uuid.dart';
 
+import '../../core/theme/app_theme.dart';
 import '../../data/models/production_models.dart';
 import '../../data/models/script_models.dart';
 import '../../data/services/supabase_service.dart';
-import '../../features/rehearsal/scene_selector_screen.dart';
 import '../../features/script_editor/cloud_sync_dialog.dart';
 import '../../providers/production_providers.dart';
 
+/// FutureProvider that loads the saved character name for a production.
+final savedCharacterProvider =
+    FutureProvider.family<String?, String>((ref, productionId) async {
+  final prefs = await SharedPreferences.getInstance();
+  return prefs.getString('rehearsal_character_$productionId');
+});
 
 class HomeScreen extends ConsumerStatefulWidget {
   const HomeScreen({super.key});
@@ -19,20 +26,18 @@ class HomeScreen extends ConsumerStatefulWidget {
 }
 
 class _HomeScreenState extends ConsumerState<HomeScreen> {
-  bool _hasSynced = false;
-
   @override
   Widget build(BuildContext context) {
     final productions = ref.watch(productionsProvider);
-
-    // Cloud sync disabled — productions are local-only to avoid conflicts
-    // between different users' scripts overwriting each other.
 
     return Scaffold(
       appBar: AppBar(
         title: const Text('CastCircle'),
         actions: [
-          // Cloud sync button removed — productions are independent per device
+          IconButton(
+            icon: const Icon(Icons.settings),
+            onPressed: () => context.push('/settings'),
+          ),
           IconButton(
             icon: const Icon(Icons.info_outline),
             onPressed: () => _showAbout(context),
@@ -66,44 +71,6 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
         ],
       ),
     );
-  }
-
-  /// Pull cloud productions into the local list.
-  Future<void> _syncCloudProductions(WidgetRef ref) async {
-    final supa = SupabaseService.instance;
-    if (!supa.isInitialized || !supa.isSignedIn) return;
-
-    try {
-      final cloudProductions = await supa.fetchMyProductions();
-      final localProductions = ref.read(productionsProvider);
-      final localIds = localProductions.map((p) => p.id).toSet();
-
-      for (final row in cloudProductions) {
-        final id = row['id'] as String;
-        if (!localIds.contains(id)) {
-          // Cloud production not in local — add it
-          final production = Production(
-            id: id,
-            title: row['title'] as String,
-            organizerId: row['organizer_id'] as String,
-            createdAt: DateTime.tryParse(row['created_at'] as String? ?? '') ??
-                DateTime.now(),
-            status: _parseStatus(row['status'] as String? ?? 'draft'),
-            joinCode: row['join_code'] as String?,
-          );
-          await ref.read(productionsProvider.notifier).add(production);
-        }
-      }
-    } catch (e) {
-      debugPrint('Cloud production sync failed: $e');
-    }
-  }
-
-  ProductionStatus _parseStatus(String s) {
-    for (final status in ProductionStatus.values) {
-      if (status.name == s) return status;
-    }
-    return ProductionStatus.draft;
   }
 
   Widget _buildEmptyState(BuildContext context) {
@@ -150,44 +117,22 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
       itemCount: productions.length,
       itemBuilder: (context, index) {
         final production = productions[index];
-        return Dismissible(
-          key: Key(production.id),
-          direction: DismissDirection.endToStart,
-          background: Card(
-            margin: const EdgeInsets.only(bottom: 12),
-            color: Theme.of(context).colorScheme.errorContainer,
-            child: Align(
-              alignment: Alignment.centerRight,
-              child: Padding(
-                padding: const EdgeInsets.only(right: 24),
-                child: Icon(Icons.delete,
-                    color: Theme.of(context).colorScheme.onErrorContainer),
-              ),
-            ),
-          ),
-          confirmDismiss: (_) => _confirmDeleteProduction(context, production),
-          onDismissed: (_) {
-            ref.read(productionsProvider.notifier).remove(production.id);
+        final savedChar = ref.watch(savedCharacterProvider(production.id));
+
+        return _ProductionCard(
+          production: production,
+          savedCharacterName: savedChar.valueOrNull,
+          onRehearse: () => _openProduction(context, ref, production),
+          onSetUp: () => _openProductionForSetup(context, ref, production),
+          onMenuAction: (action) =>
+              _handleMenuAction(context, ref, production, action),
+          onDelete: () async {
+            final confirmed =
+                await _confirmDeleteProduction(context, production);
+            if (confirmed == true) {
+              ref.read(productionsProvider.notifier).remove(production.id);
+            }
           },
-          child: Card(
-            margin: const EdgeInsets.only(bottom: 12),
-            child: ListTile(
-              contentPadding:
-                  const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-              leading: CircleAvatar(
-                backgroundColor:
-                    Theme.of(context).colorScheme.primaryContainer,
-                child: Icon(
-                  Icons.theater_comedy,
-                  color: Theme.of(context).colorScheme.onPrimaryContainer,
-                ),
-              ),
-              title: Text(production.title),
-              subtitle: Text(production.status.name.toUpperCase()),
-              trailing: const Icon(Icons.chevron_right),
-              onTap: () => _openProduction(context, ref, production),
-            ),
-          ),
         );
       },
     );
@@ -199,16 +144,14 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     Production production,
   ) async {
     ref.read(currentProductionProvider.notifier).state = production;
-    ref.read(rehearsalCharacterProvider.notifier).state = null; // Reset before loading per-production character
+    ref.read(rehearsalCharacterProvider.notifier).state = null;
     ref.read(selectedSceneProvider.notifier).state = null;
     ref.read(recordingsProvider.notifier).loadForProduction(production.id);
     ref.read(castMembersProvider.notifier).loadForProduction(production.id);
 
-    // Load local script first — this is fast (local disk)
     final savedScript = await loadPersistedScript(ref, production.id);
 
     if (savedScript != null) {
-      // Have local script — navigate immediately, check cloud in background
       ref.read(currentScriptProvider.notifier).state = ParsedScript(
         title: production.title,
         lines: savedScript.lines,
@@ -217,13 +160,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
         rawText: savedScript.rawText,
       );
       if (context.mounted) context.push('/production');
-
-      // Cloud script sync disabled — productions are independent per device.
-      // Shared productions sync explicitly via invite code join flow.
       return;
     }
 
-    // No local script — check cloud (may be slow but unavoidable)
     final cloudLines = await fetchCloudScriptLines(production.id);
 
     if (cloudLines != null && cloudLines.isNotEmpty) {
@@ -240,62 +179,73 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
         context.push('/production');
       }
     } else {
-      // No script anywhere — go to import
       if (context.mounted) context.push('/import');
     }
   }
 
-  /// Check cloud for script updates after navigating — non-blocking.
-  Future<void> _backgroundCloudSync(
+  Future<void> _openProductionForSetup(
     BuildContext context,
     WidgetRef ref,
     Production production,
-    ParsedScript savedScript,
   ) async {
-    try {
-      final cloudLines = await fetchCloudScriptLines(production.id);
-      if (cloudLines == null || cloudLines.isEmpty) return;
+    ref.read(currentProductionProvider.notifier).state = production;
+    ref.read(rehearsalCharacterProvider.notifier).state = null;
+    ref.read(selectedSceneProvider.notifier).state = null;
+    ref.read(recordingsProvider.notifier).loadForProduction(production.id);
+    ref.read(castMembersProvider.notifier).loadForProduction(production.id);
 
-      final localLines = savedScript.lines;
-      if (!_scriptsDiffer(localLines, cloudLines)) return;
+    if (context.mounted) context.push('/import');
+  }
 
-      // Cloud has different version — prompt user
-      if (!context.mounted) return;
-      final accept = await showCloudSyncDialog(
-        context: context,
-        localLines: localLines,
-        cloudLines: cloudLines,
-      );
+  void _handleMenuAction(
+    BuildContext context,
+    WidgetRef ref,
+    Production production,
+    String action,
+  ) {
+    // Set as current production first
+    ref.read(currentProductionProvider.notifier).state = production;
+    ref.read(recordingsProvider.notifier).loadForProduction(production.id);
+    ref.read(castMembersProvider.notifier).loadForProduction(production.id);
 
-      if (accept == true) {
-        final script = buildParsedScript(production.title, cloudLines);
-        ref.read(currentScriptProvider.notifier).state = script;
-        await persistScript(ref);
-        if (context.mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text('Cloud script accepted'),
-              duration: Duration(seconds: 2),
-            ),
-          );
-        }
-      }
-    } catch (e) {
-      debugPrint('Background cloud sync failed: $e');
+    // Load script in background for routes that need it
+    _ensureScriptLoaded(ref, production);
+
+    switch (action) {
+      case 'editor':
+        context.push('/editor');
+      case 'characters':
+        context.push('/characters');
+      case 'cast':
+        context.push('/cast');
+      case 'voice-config':
+        context.push('/voice-config');
+      case 'record':
+        context.push('/record');
+      case 'history':
+        context.push('/history');
+      case 'ai-models':
+        context.push('/ai-models');
+      case 'settings':
+        context.push('/settings');
     }
   }
 
-  bool _scriptsDiffer(List<ScriptLine> local, List<ScriptLine> cloud) {
-    if (local.length != cloud.length) return true;
-    for (var i = 0; i < local.length; i++) {
-      if (local[i].character != cloud[i].character ||
-          local[i].text != cloud[i].text ||
-          local[i].lineType != cloud[i].lineType ||
-          local[i].stageDirection != cloud[i].stageDirection) {
-        return true;
-      }
+  Future<void> _ensureScriptLoaded(
+      WidgetRef ref, Production production) async {
+    final current = ref.read(currentScriptProvider);
+    if (current != null && current.lines.isNotEmpty) return;
+
+    final saved = await loadPersistedScript(ref, production.id);
+    if (saved != null) {
+      ref.read(currentScriptProvider.notifier).state = ParsedScript(
+        title: production.title,
+        lines: saved.lines,
+        characters: saved.characters,
+        scenes: saved.scenes,
+        rawText: saved.rawText,
+      );
     }
-    return false;
   }
 
   void _createProduction(BuildContext context, WidgetRef ref) {
@@ -341,7 +291,6 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     String organizerId = 'local';
     String joinCode = SupabaseService.generateJoinCode();
 
-    // If signed in, create in Supabase first so IDs match
     if (supa.isSignedIn) {
       try {
         final row = await supa.createProduction(title: title);
@@ -411,6 +360,181 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
           'real cast recordings or text-to-speech.',
         ),
       ],
+    );
+  }
+}
+
+/// Rich production card with Rehearse button and overflow menu.
+class _ProductionCard extends StatelessWidget {
+  final Production production;
+  final String? savedCharacterName;
+  final VoidCallback onRehearse;
+  final VoidCallback onSetUp;
+  final void Function(String action) onMenuAction;
+  final VoidCallback onDelete;
+
+  const _ProductionCard({
+    required this.production,
+    this.savedCharacterName,
+    required this.onRehearse,
+    required this.onSetUp,
+    required this.onMenuAction,
+    required this.onDelete,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final hasCharacter =
+        savedCharacterName != null && savedCharacterName!.isNotEmpty;
+
+    return Card(
+      margin: const EdgeInsets.only(bottom: 16),
+      clipBehavior: Clip.antiAlias,
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            // Title row with overflow menu
+            Row(
+              children: [
+                CircleAvatar(
+                  backgroundColor: theme.colorScheme.primaryContainer,
+                  child: Icon(
+                    Icons.theater_comedy,
+                    color: theme.colorScheme.onPrimaryContainer,
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        production.title,
+                        style: theme.textTheme.titleMedium
+                            ?.copyWith(fontWeight: FontWeight.bold),
+                      ),
+                      const SizedBox(height: 2),
+                      Text(
+                        hasCharacter
+                            ? savedCharacterName!
+                            : 'No character selected',
+                        style: theme.textTheme.bodySmall?.copyWith(
+                          color: hasCharacter
+                              ? theme.colorScheme.onSurface
+                                  .withValues(alpha: 0.7)
+                              : theme.colorScheme.onSurface
+                                  .withValues(alpha: 0.4),
+                          fontStyle: hasCharacter
+                              ? FontStyle.normal
+                              : FontStyle.italic,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                PopupMenuButton<String>(
+                  icon: const Icon(Icons.more_vert),
+                  onSelected: (action) {
+                    if (action == 'delete') {
+                      onDelete();
+                    } else {
+                      onMenuAction(action);
+                    }
+                  },
+                  itemBuilder: (context) => [
+                    const PopupMenuItem(
+                        value: 'editor',
+                        child: ListTile(
+                            leading: Icon(Icons.edit_note),
+                            title: Text('Edit Script'),
+                            dense: true,
+                            contentPadding: EdgeInsets.zero)),
+                    const PopupMenuItem(
+                        value: 'characters',
+                        child: ListTile(
+                            leading: Icon(Icons.person_search),
+                            title: Text('Characters'),
+                            dense: true,
+                            contentPadding: EdgeInsets.zero)),
+                    const PopupMenuItem(
+                        value: 'cast',
+                        child: ListTile(
+                            leading: Icon(Icons.people_outline),
+                            title: Text('Cast'),
+                            dense: true,
+                            contentPadding: EdgeInsets.zero)),
+                    const PopupMenuItem(
+                        value: 'voice-config',
+                        child: ListTile(
+                            leading: Icon(Icons.record_voice_over),
+                            title: Text('Voice Config'),
+                            dense: true,
+                            contentPadding: EdgeInsets.zero)),
+                    const PopupMenuItem(
+                        value: 'record',
+                        child: ListTile(
+                            leading: Icon(Icons.mic),
+                            title: Text('Record Lines'),
+                            dense: true,
+                            contentPadding: EdgeInsets.zero)),
+                    const PopupMenuItem(
+                        value: 'history',
+                        child: ListTile(
+                            leading: Icon(Icons.history),
+                            title: Text('History'),
+                            dense: true,
+                            contentPadding: EdgeInsets.zero)),
+                    const PopupMenuItem(
+                        value: 'ai-models',
+                        child: ListTile(
+                            leading: Icon(Icons.smart_toy),
+                            title: Text('AI Models'),
+                            dense: true,
+                            contentPadding: EdgeInsets.zero)),
+                    const PopupMenuItem(
+                        value: 'settings',
+                        child: ListTile(
+                            leading: Icon(Icons.settings),
+                            title: Text('Settings'),
+                            dense: true,
+                            contentPadding: EdgeInsets.zero)),
+                    const PopupMenuDivider(),
+                    PopupMenuItem(
+                      value: 'delete',
+                      child: ListTile(
+                        leading: Icon(Icons.delete,
+                            color: theme.colorScheme.error),
+                        title: Text('Delete',
+                            style:
+                                TextStyle(color: theme.colorScheme.error)),
+                        dense: true,
+                        contentPadding: EdgeInsets.zero,
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+            const SizedBox(height: 16),
+            // Rehearse / Set Up button
+            SizedBox(
+              width: double.infinity,
+              child: FilledButton.icon(
+                onPressed: onRehearse,
+                icon: const Icon(Icons.play_arrow),
+                label: const Text('Rehearse'),
+                style: FilledButton.styleFrom(
+                  minimumSize: const Size.fromHeight(48),
+                  textStyle: theme.textTheme.titleMedium,
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
     );
   }
 }

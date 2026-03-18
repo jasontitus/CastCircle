@@ -2,11 +2,11 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 
 import '../../app.dart';
 import '../../data/services/supabase_service.dart';
 import '../../main.dart';
+import '../../providers/production_providers.dart';
 
 /// Auth state provider — tracks whether user is signed in.
 final authStateProvider = StateProvider<bool>((ref) {
@@ -36,6 +36,8 @@ class _AuthScreenState extends ConsumerState<AuthScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final pendingJoin = ref.watch(pendingJoinProvider);
+
     return Scaffold(
       body: SafeArea(
         child: Center(
@@ -44,6 +46,59 @@ class _AuthScreenState extends ConsumerState<AuthScreen> {
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
+                // Pending invite banner
+                if (pendingJoin != null) ...[
+                  Card(
+                    color: Theme.of(context).colorScheme.primaryContainer,
+                    child: Padding(
+                      padding: const EdgeInsets.all(16),
+                      child: Row(
+                        children: [
+                          Icon(Icons.mail_outline,
+                              color: Theme.of(context)
+                                  .colorScheme
+                                  .onPrimaryContainer),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  'You\'ve been invited!',
+                                  style: Theme.of(context)
+                                      .textTheme
+                                      .titleSmall
+                                      ?.copyWith(
+                                        color: Theme.of(context)
+                                            .colorScheme
+                                            .onPrimaryContainer,
+                                        fontWeight: FontWeight.bold,
+                                      ),
+                                ),
+                                const SizedBox(height: 2),
+                                Text(
+                                  pendingJoin.characterName != null
+                                      ? 'Join as ${pendingJoin.characterName}'
+                                      : 'Sign in to join the production',
+                                  style: Theme.of(context)
+                                      .textTheme
+                                      .bodySmall
+                                      ?.copyWith(
+                                        color: Theme.of(context)
+                                            .colorScheme
+                                            .onPrimaryContainer
+                                            .withValues(alpha: 0.8),
+                                      ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                ],
                 // Logo area
                 Icon(
                   Icons.theater_comedy,
@@ -138,17 +193,27 @@ class _AuthScreenState extends ConsumerState<AuthScreen> {
                 ),
                 const SizedBox(height: 24),
                 // Skip auth for local-only usage
-                OutlinedButton(
-                  onPressed: _skipAuth,
-                  child: const Text('Continue without account'),
-                ),
-                const SizedBox(height: 8),
-                Text(
-                  'You can sign in later to sync with your cast',
-                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                        color: Colors.grey[600],
-                      ),
-                ),
+                if (pendingJoin != null) ...[
+                  Text(
+                    'An account is required to join shared productions.',
+                    textAlign: TextAlign.center,
+                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                          color: Colors.grey[600],
+                        ),
+                  ),
+                ] else ...[
+                  OutlinedButton(
+                    onPressed: _skipAuth,
+                    child: const Text('Continue without account'),
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                    'You can sign in later to sync with your cast',
+                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                          color: Colors.grey[600],
+                        ),
+                  ),
+                ],
               ],
             ),
           ),
@@ -181,7 +246,14 @@ class _AuthScreenState extends ConsumerState<AuthScreen> {
       if (mounted) {
         ref.read(authStateProvider.notifier).state = true;
         ref.read(authGatePassedProvider.notifier).state = true;
-        context.go('/');
+
+        // If there's a pending join, go straight to join screen
+        final pendingJoin = ref.read(pendingJoinProvider);
+        if (pendingJoin != null) {
+          context.go('/join');
+        } else {
+          context.go('/');
+        }
       }
     } catch (e) {
       if (mounted) {

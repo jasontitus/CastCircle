@@ -630,6 +630,39 @@ class $ScriptLinesTable extends ScriptLines
     requiredDuringInsert: false,
     defaultValue: const Constant(''),
   );
+  static const VerificationMeta _ocrConfidenceMeta = const VerificationMeta(
+    'ocrConfidence',
+  );
+  @override
+  late final GeneratedColumn<double> ocrConfidence = GeneratedColumn<double>(
+    'ocr_confidence',
+    aliasedName,
+    true,
+    type: DriftSqlType.double,
+    requiredDuringInsert: false,
+  );
+  static const VerificationMeta _sourcePageMeta = const VerificationMeta(
+    'sourcePage',
+  );
+  @override
+  late final GeneratedColumn<int> sourcePage = GeneratedColumn<int>(
+    'source_page',
+    aliasedName,
+    true,
+    type: DriftSqlType.int,
+    requiredDuringInsert: false,
+  );
+  static const VerificationMeta _sourceLineOnPageMeta = const VerificationMeta(
+    'sourceLineOnPage',
+  );
+  @override
+  late final GeneratedColumn<int> sourceLineOnPage = GeneratedColumn<int>(
+    'source_line_on_page',
+    aliasedName,
+    true,
+    type: DriftSqlType.int,
+    requiredDuringInsert: false,
+  );
   @override
   List<GeneratedColumn> get $columns => [
     id,
@@ -642,6 +675,9 @@ class $ScriptLinesTable extends ScriptLines
     lineText,
     lineType,
     stageDirection,
+    ocrConfidence,
+    sourcePage,
+    sourceLineOnPage,
   ];
   @override
   String get aliasedName => _alias ?? actualTableName;
@@ -730,6 +766,30 @@ class $ScriptLinesTable extends ScriptLines
         ),
       );
     }
+    if (data.containsKey('ocr_confidence')) {
+      context.handle(
+        _ocrConfidenceMeta,
+        ocrConfidence.isAcceptableOrUnknown(
+          data['ocr_confidence']!,
+          _ocrConfidenceMeta,
+        ),
+      );
+    }
+    if (data.containsKey('source_page')) {
+      context.handle(
+        _sourcePageMeta,
+        sourcePage.isAcceptableOrUnknown(data['source_page']!, _sourcePageMeta),
+      );
+    }
+    if (data.containsKey('source_line_on_page')) {
+      context.handle(
+        _sourceLineOnPageMeta,
+        sourceLineOnPage.isAcceptableOrUnknown(
+          data['source_line_on_page']!,
+          _sourceLineOnPageMeta,
+        ),
+      );
+    }
     return context;
   }
 
@@ -779,6 +839,18 @@ class $ScriptLinesTable extends ScriptLines
         DriftSqlType.string,
         data['${effectivePrefix}stage_direction'],
       )!,
+      ocrConfidence: attachedDatabase.typeMapping.read(
+        DriftSqlType.double,
+        data['${effectivePrefix}ocr_confidence'],
+      ),
+      sourcePage: attachedDatabase.typeMapping.read(
+        DriftSqlType.int,
+        data['${effectivePrefix}source_page'],
+      ),
+      sourceLineOnPage: attachedDatabase.typeMapping.read(
+        DriftSqlType.int,
+        data['${effectivePrefix}source_line_on_page'],
+      ),
     );
   }
 
@@ -799,6 +871,9 @@ class ScriptLine extends DataClass implements Insertable<ScriptLine> {
   final String lineText;
   final String lineType;
   final String stageDirection;
+  final double? ocrConfidence;
+  final int? sourcePage;
+  final int? sourceLineOnPage;
   const ScriptLine({
     required this.id,
     required this.productionId,
@@ -810,6 +885,9 @@ class ScriptLine extends DataClass implements Insertable<ScriptLine> {
     required this.lineText,
     required this.lineType,
     required this.stageDirection,
+    this.ocrConfidence,
+    this.sourcePage,
+    this.sourceLineOnPage,
   });
   @override
   Map<String, Expression> toColumns(bool nullToAbsent) {
@@ -824,6 +902,15 @@ class ScriptLine extends DataClass implements Insertable<ScriptLine> {
     map['line_text'] = Variable<String>(lineText);
     map['line_type'] = Variable<String>(lineType);
     map['stage_direction'] = Variable<String>(stageDirection);
+    if (!nullToAbsent || ocrConfidence != null) {
+      map['ocr_confidence'] = Variable<double>(ocrConfidence);
+    }
+    if (!nullToAbsent || sourcePage != null) {
+      map['source_page'] = Variable<int>(sourcePage);
+    }
+    if (!nullToAbsent || sourceLineOnPage != null) {
+      map['source_line_on_page'] = Variable<int>(sourceLineOnPage);
+    }
     return map;
   }
 
@@ -839,6 +926,15 @@ class ScriptLine extends DataClass implements Insertable<ScriptLine> {
       lineText: Value(lineText),
       lineType: Value(lineType),
       stageDirection: Value(stageDirection),
+      ocrConfidence: ocrConfidence == null && nullToAbsent
+          ? const Value.absent()
+          : Value(ocrConfidence),
+      sourcePage: sourcePage == null && nullToAbsent
+          ? const Value.absent()
+          : Value(sourcePage),
+      sourceLineOnPage: sourceLineOnPage == null && nullToAbsent
+          ? const Value.absent()
+          : Value(sourceLineOnPage),
     );
   }
 
@@ -858,6 +954,9 @@ class ScriptLine extends DataClass implements Insertable<ScriptLine> {
       lineText: serializer.fromJson<String>(json['lineText']),
       lineType: serializer.fromJson<String>(json['lineType']),
       stageDirection: serializer.fromJson<String>(json['stageDirection']),
+      ocrConfidence: serializer.fromJson<double?>(json['ocrConfidence']),
+      sourcePage: serializer.fromJson<int?>(json['sourcePage']),
+      sourceLineOnPage: serializer.fromJson<int?>(json['sourceLineOnPage']),
     );
   }
   @override
@@ -874,6 +973,9 @@ class ScriptLine extends DataClass implements Insertable<ScriptLine> {
       'lineText': serializer.toJson<String>(lineText),
       'lineType': serializer.toJson<String>(lineType),
       'stageDirection': serializer.toJson<String>(stageDirection),
+      'ocrConfidence': serializer.toJson<double?>(ocrConfidence),
+      'sourcePage': serializer.toJson<int?>(sourcePage),
+      'sourceLineOnPage': serializer.toJson<int?>(sourceLineOnPage),
     };
   }
 
@@ -888,6 +990,9 @@ class ScriptLine extends DataClass implements Insertable<ScriptLine> {
     String? lineText,
     String? lineType,
     String? stageDirection,
+    Value<double?> ocrConfidence = const Value.absent(),
+    Value<int?> sourcePage = const Value.absent(),
+    Value<int?> sourceLineOnPage = const Value.absent(),
   }) => ScriptLine(
     id: id ?? this.id,
     productionId: productionId ?? this.productionId,
@@ -899,6 +1004,13 @@ class ScriptLine extends DataClass implements Insertable<ScriptLine> {
     lineText: lineText ?? this.lineText,
     lineType: lineType ?? this.lineType,
     stageDirection: stageDirection ?? this.stageDirection,
+    ocrConfidence: ocrConfidence.present
+        ? ocrConfidence.value
+        : this.ocrConfidence,
+    sourcePage: sourcePage.present ? sourcePage.value : this.sourcePage,
+    sourceLineOnPage: sourceLineOnPage.present
+        ? sourceLineOnPage.value
+        : this.sourceLineOnPage,
   );
   ScriptLine copyWithCompanion(ScriptLinesCompanion data) {
     return ScriptLine(
@@ -920,6 +1032,15 @@ class ScriptLine extends DataClass implements Insertable<ScriptLine> {
       stageDirection: data.stageDirection.present
           ? data.stageDirection.value
           : this.stageDirection,
+      ocrConfidence: data.ocrConfidence.present
+          ? data.ocrConfidence.value
+          : this.ocrConfidence,
+      sourcePage: data.sourcePage.present
+          ? data.sourcePage.value
+          : this.sourcePage,
+      sourceLineOnPage: data.sourceLineOnPage.present
+          ? data.sourceLineOnPage.value
+          : this.sourceLineOnPage,
     );
   }
 
@@ -935,7 +1056,10 @@ class ScriptLine extends DataClass implements Insertable<ScriptLine> {
           ..write('character: $character, ')
           ..write('lineText: $lineText, ')
           ..write('lineType: $lineType, ')
-          ..write('stageDirection: $stageDirection')
+          ..write('stageDirection: $stageDirection, ')
+          ..write('ocrConfidence: $ocrConfidence, ')
+          ..write('sourcePage: $sourcePage, ')
+          ..write('sourceLineOnPage: $sourceLineOnPage')
           ..write(')'))
         .toString();
   }
@@ -952,6 +1076,9 @@ class ScriptLine extends DataClass implements Insertable<ScriptLine> {
     lineText,
     lineType,
     stageDirection,
+    ocrConfidence,
+    sourcePage,
+    sourceLineOnPage,
   );
   @override
   bool operator ==(Object other) =>
@@ -966,7 +1093,10 @@ class ScriptLine extends DataClass implements Insertable<ScriptLine> {
           other.character == this.character &&
           other.lineText == this.lineText &&
           other.lineType == this.lineType &&
-          other.stageDirection == this.stageDirection);
+          other.stageDirection == this.stageDirection &&
+          other.ocrConfidence == this.ocrConfidence &&
+          other.sourcePage == this.sourcePage &&
+          other.sourceLineOnPage == this.sourceLineOnPage);
 }
 
 class ScriptLinesCompanion extends UpdateCompanion<ScriptLine> {
@@ -980,6 +1110,9 @@ class ScriptLinesCompanion extends UpdateCompanion<ScriptLine> {
   final Value<String> lineText;
   final Value<String> lineType;
   final Value<String> stageDirection;
+  final Value<double?> ocrConfidence;
+  final Value<int?> sourcePage;
+  final Value<int?> sourceLineOnPage;
   final Value<int> rowid;
   const ScriptLinesCompanion({
     this.id = const Value.absent(),
@@ -992,6 +1125,9 @@ class ScriptLinesCompanion extends UpdateCompanion<ScriptLine> {
     this.lineText = const Value.absent(),
     this.lineType = const Value.absent(),
     this.stageDirection = const Value.absent(),
+    this.ocrConfidence = const Value.absent(),
+    this.sourcePage = const Value.absent(),
+    this.sourceLineOnPage = const Value.absent(),
     this.rowid = const Value.absent(),
   });
   ScriptLinesCompanion.insert({
@@ -1005,6 +1141,9 @@ class ScriptLinesCompanion extends UpdateCompanion<ScriptLine> {
     required String lineText,
     required String lineType,
     this.stageDirection = const Value.absent(),
+    this.ocrConfidence = const Value.absent(),
+    this.sourcePage = const Value.absent(),
+    this.sourceLineOnPage = const Value.absent(),
     this.rowid = const Value.absent(),
   }) : id = Value(id),
        productionId = Value(productionId),
@@ -1023,6 +1162,9 @@ class ScriptLinesCompanion extends UpdateCompanion<ScriptLine> {
     Expression<String>? lineText,
     Expression<String>? lineType,
     Expression<String>? stageDirection,
+    Expression<double>? ocrConfidence,
+    Expression<int>? sourcePage,
+    Expression<int>? sourceLineOnPage,
     Expression<int>? rowid,
   }) {
     return RawValuesInsertable({
@@ -1036,6 +1178,9 @@ class ScriptLinesCompanion extends UpdateCompanion<ScriptLine> {
       if (lineText != null) 'line_text': lineText,
       if (lineType != null) 'line_type': lineType,
       if (stageDirection != null) 'stage_direction': stageDirection,
+      if (ocrConfidence != null) 'ocr_confidence': ocrConfidence,
+      if (sourcePage != null) 'source_page': sourcePage,
+      if (sourceLineOnPage != null) 'source_line_on_page': sourceLineOnPage,
       if (rowid != null) 'rowid': rowid,
     });
   }
@@ -1051,6 +1196,9 @@ class ScriptLinesCompanion extends UpdateCompanion<ScriptLine> {
     Value<String>? lineText,
     Value<String>? lineType,
     Value<String>? stageDirection,
+    Value<double?>? ocrConfidence,
+    Value<int?>? sourcePage,
+    Value<int?>? sourceLineOnPage,
     Value<int>? rowid,
   }) {
     return ScriptLinesCompanion(
@@ -1064,6 +1212,9 @@ class ScriptLinesCompanion extends UpdateCompanion<ScriptLine> {
       lineText: lineText ?? this.lineText,
       lineType: lineType ?? this.lineType,
       stageDirection: stageDirection ?? this.stageDirection,
+      ocrConfidence: ocrConfidence ?? this.ocrConfidence,
+      sourcePage: sourcePage ?? this.sourcePage,
+      sourceLineOnPage: sourceLineOnPage ?? this.sourceLineOnPage,
       rowid: rowid ?? this.rowid,
     );
   }
@@ -1101,6 +1252,15 @@ class ScriptLinesCompanion extends UpdateCompanion<ScriptLine> {
     if (stageDirection.present) {
       map['stage_direction'] = Variable<String>(stageDirection.value);
     }
+    if (ocrConfidence.present) {
+      map['ocr_confidence'] = Variable<double>(ocrConfidence.value);
+    }
+    if (sourcePage.present) {
+      map['source_page'] = Variable<int>(sourcePage.value);
+    }
+    if (sourceLineOnPage.present) {
+      map['source_line_on_page'] = Variable<int>(sourceLineOnPage.value);
+    }
     if (rowid.present) {
       map['rowid'] = Variable<int>(rowid.value);
     }
@@ -1120,6 +1280,9 @@ class ScriptLinesCompanion extends UpdateCompanion<ScriptLine> {
           ..write('lineText: $lineText, ')
           ..write('lineType: $lineType, ')
           ..write('stageDirection: $stageDirection, ')
+          ..write('ocrConfidence: $ocrConfidence, ')
+          ..write('sourcePage: $sourcePage, ')
+          ..write('sourceLineOnPage: $sourceLineOnPage, ')
           ..write('rowid: $rowid')
           ..write(')'))
         .toString();
@@ -3496,6 +3659,9 @@ typedef $$ScriptLinesTableCreateCompanionBuilder =
       required String lineText,
       required String lineType,
       Value<String> stageDirection,
+      Value<double?> ocrConfidence,
+      Value<int?> sourcePage,
+      Value<int?> sourceLineOnPage,
       Value<int> rowid,
     });
 typedef $$ScriptLinesTableUpdateCompanionBuilder =
@@ -3510,6 +3676,9 @@ typedef $$ScriptLinesTableUpdateCompanionBuilder =
       Value<String> lineText,
       Value<String> lineType,
       Value<String> stageDirection,
+      Value<double?> ocrConfidence,
+      Value<int?> sourcePage,
+      Value<int?> sourceLineOnPage,
       Value<int> rowid,
     });
 
@@ -3609,6 +3778,21 @@ class $$ScriptLinesTableFilterComposer
 
   ColumnFilters<String> get stageDirection => $composableBuilder(
     column: $table.stageDirection,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<double> get ocrConfidence => $composableBuilder(
+    column: $table.ocrConfidence,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<int> get sourcePage => $composableBuilder(
+    column: $table.sourcePage,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<int> get sourceLineOnPage => $composableBuilder(
+    column: $table.sourceLineOnPage,
     builder: (column) => ColumnFilters(column),
   );
 
@@ -3715,6 +3899,21 @@ class $$ScriptLinesTableOrderingComposer
     builder: (column) => ColumnOrderings(column),
   );
 
+  ColumnOrderings<double> get ocrConfidence => $composableBuilder(
+    column: $table.ocrConfidence,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<int> get sourcePage => $composableBuilder(
+    column: $table.sourcePage,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<int> get sourceLineOnPage => $composableBuilder(
+    column: $table.sourceLineOnPage,
+    builder: (column) => ColumnOrderings(column),
+  );
+
   $$ProductionsTableOrderingComposer get productionId {
     final $$ProductionsTableOrderingComposer composer = $composerBuilder(
       composer: this,
@@ -3778,6 +3977,21 @@ class $$ScriptLinesTableAnnotationComposer
 
   GeneratedColumn<String> get stageDirection => $composableBuilder(
     column: $table.stageDirection,
+    builder: (column) => column,
+  );
+
+  GeneratedColumn<double> get ocrConfidence => $composableBuilder(
+    column: $table.ocrConfidence,
+    builder: (column) => column,
+  );
+
+  GeneratedColumn<int> get sourcePage => $composableBuilder(
+    column: $table.sourcePage,
+    builder: (column) => column,
+  );
+
+  GeneratedColumn<int> get sourceLineOnPage => $composableBuilder(
+    column: $table.sourceLineOnPage,
     builder: (column) => column,
   );
 
@@ -3868,6 +4082,9 @@ class $$ScriptLinesTableTableManager
                 Value<String> lineText = const Value.absent(),
                 Value<String> lineType = const Value.absent(),
                 Value<String> stageDirection = const Value.absent(),
+                Value<double?> ocrConfidence = const Value.absent(),
+                Value<int?> sourcePage = const Value.absent(),
+                Value<int?> sourceLineOnPage = const Value.absent(),
                 Value<int> rowid = const Value.absent(),
               }) => ScriptLinesCompanion(
                 id: id,
@@ -3880,6 +4097,9 @@ class $$ScriptLinesTableTableManager
                 lineText: lineText,
                 lineType: lineType,
                 stageDirection: stageDirection,
+                ocrConfidence: ocrConfidence,
+                sourcePage: sourcePage,
+                sourceLineOnPage: sourceLineOnPage,
                 rowid: rowid,
               ),
           createCompanionCallback:
@@ -3894,6 +4114,9 @@ class $$ScriptLinesTableTableManager
                 required String lineText,
                 required String lineType,
                 Value<String> stageDirection = const Value.absent(),
+                Value<double?> ocrConfidence = const Value.absent(),
+                Value<int?> sourcePage = const Value.absent(),
+                Value<int?> sourceLineOnPage = const Value.absent(),
                 Value<int> rowid = const Value.absent(),
               }) => ScriptLinesCompanion.insert(
                 id: id,
@@ -3906,6 +4129,9 @@ class $$ScriptLinesTableTableManager
                 lineText: lineText,
                 lineType: lineType,
                 stageDirection: stageDirection,
+                ocrConfidence: ocrConfidence,
+                sourcePage: sourcePage,
+                sourceLineOnPage: sourceLineOnPage,
                 rowid: rowid,
               ),
           withReferenceMapper: (p0) => p0

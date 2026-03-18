@@ -67,6 +67,19 @@
 	<array>
 		<string>com.tiltastech.castcircle.sync</string>
 	</array>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleTypeRole</key>
+			<string>Viewer</string>
+			<key>CFBundleURLName</key>
+			<string>com.tiltastech.castcircle</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>castcircle</string>
+			</array>
+		</dict>
+	</array>
 	<key>UIApplicationSupportsIndirectInputEvents</key>
 	<true/>
 	<key>UILaunchStoryboardName</key>

@@ -69,20 +69,57 @@ class ScriptImportService {
 
     // Strategy 1: Try native PDFKit text extraction (text-based PDFs)
     try {
-      final nativeText = await PdfTextChannel.extractText(pdfPath);
-      if (nativeText != null && nativeText.trim().length > 200) {
-        debugPrint('PDF import: PDFKit extracted ${nativeText.length} chars');
-        final nativeParser = ScriptParser();
-        final nativeResult = nativeParser.parse(nativeText, title: title);
+      final perPage = await PdfTextChannel.extractTextPerPage(pdfPath);
+      if (perPage != null && perPage.isNotEmpty) {
+        // Build combined text and track which raw line came from which page
+        final buffer = StringBuffer();
+        final linePageMap = <int, int>{}; // raw line index → 1-based page number
+        var rawLineIdx = 0;
 
-        if (_isGoodParse(nativeResult)) {
-          debugPrint('PDF import: Using PDFKit result '
-              '(${nativeResult.characters.length} characters, '
-              '${nativeResult.lines.where((l) => l.lineType == LineType.dialogue).length} lines)');
-          return nativeResult;
+        for (var pageIdx = 0; pageIdx < perPage.length; pageIdx++) {
+          final pageText = perPage[pageIdx];
+          final pageLines = pageText.split('\n');
+          for (final line in pageLines) {
+            buffer.writeln(line);
+            linePageMap[rawLineIdx] = pageIdx + 1; // 1-based
+            rawLineIdx++;
+          }
         }
 
-        debugPrint('PDF import: PDFKit parse quality low, trying OCR...');
+        final nativeText = buffer.toString();
+        if (nativeText.trim().length > 200) {
+          debugPrint('PDF import: PDFKit extracted ${nativeText.length} chars from ${perPage.length} pages');
+          final cleanedText = _cleanPdfKitText(nativeText);
+          final nativeParser = ScriptParser();
+          final nativeResult = nativeParser.parse(cleanedText, title: title);
+
+          if (_isGoodParse(nativeResult)) {
+            // Map source page onto parsed lines
+            final rawLines = nativeText.split('\n');
+            final taggedLines = nativeResult.lines.map((line) {
+              final pageInfo = _findSourcePage(line.text, rawLines, linePageMap);
+              return line.copyWith(
+                sourcePage: () => pageInfo?.page,
+                sourceLineOnPage: () => pageInfo?.lineOnPage,
+              );
+            }).toList();
+
+            debugPrint('PDF import: Using PDFKit result '
+                '(${nativeResult.characters.length} characters, '
+                '${nativeResult.lines.where((l) => l.lineType == LineType.dialogue).length} lines)');
+            return ParsedScript(
+              title: nativeResult.title,
+              lines: taggedLines,
+              characters: nativeResult.characters,
+              scenes: nativeResult.scenes,
+              rawText: nativeResult.rawText,
+            );
+          }
+
+          debugPrint('PDF import: PDFKit parse quality low '
+              '(${nativeResult.characters.length} chars, '
+              '${nativeResult.acts.length} acts), trying OCR...');
+        }
       }
     } catch (e) {
       debugPrint('PDF import: PDFKit extraction failed ($e), trying OCR...');
@@ -90,6 +127,33 @@ class ScriptImportService {
 
     // Strategy 2: OCR pipeline (image-based PDFs like scanned scripts)
     return _importFromPdfOcr(pdfPath, title: title);
+  }
+
+  /// Clean PDFKit-extracted text for parsing.
+  ///
+  /// PDFKit preserves all text layers including Folger FTLN line numbers,
+  /// running headers, and page numbers that confuse the script parser.
+  String _cleanPdfKitText(String text) {
+    var cleaned = text;
+
+    // Remove Folger FTLN line numbers (e.g., "FTLN 0042", "FTLN 0043 30")
+    cleaned = cleaned.replaceAll(RegExp(r'FTLN \d+(\s+\d+)?\s*\n?'), '');
+
+    // Remove running headers like "11 Macbeth ACT 1. SC. 2" or
+    // "23    Macbeth    ACT 2. SC. 3"
+    cleaned = cleaned.replaceAll(
+        RegExp(r'^\d+\s+\w+\s+ACT \d+\.\s*SC\.\s*\d+\s*$',
+            multiLine: true),
+        '');
+
+    // Remove bare page numbers on their own line
+    cleaned = cleaned.replaceAll(
+        RegExp(r'^\d{1,3}\s*$', multiLine: true), '');
+
+    // Collapse 3+ blank lines to 2
+    cleaned = cleaned.replaceAll(RegExp(r'\n{3,}'), '\n\n');
+
+    return cleaned;
   }
 
   /// Check if a parse result looks reasonable (not garbage).
@@ -116,7 +180,7 @@ class ScriptImportService {
 
   /// OCR-based PDF import pipeline.
   /// Renders each page to an image, runs ML Kit text recognition,
-  /// and concatenates the results.
+  /// and maps per-line OCR confidence back onto parsed ScriptLines.
   Future<ParsedScript> _importFromPdfOcr(String pdfPath,
       {required String title}) async {
     final doc = await PdfDocument.openFile(pdfPath);
@@ -124,6 +188,10 @@ class ScriptImportService {
 
     final textRecognizer = TextRecognizer();
     final buffer = StringBuffer();
+    // Track confidence and page per raw text line index (0-based)
+    final lineConfidences = <int, double>{};
+    final linePageMap = <int, int>{}; // raw line index → 1-based page
+    var rawLineIndex = 0;
 
     var failedPages = 0;
     try {
@@ -156,12 +224,18 @@ class ScriptImportService {
           final inputImage = InputImage.fromFilePath(tempFile.path);
           final recognized = await textRecognizer.processImage(inputImage);
 
-          // Reconstruct text preserving line breaks
+          // Reconstruct text preserving line breaks, estimate confidence
           for (final block in recognized.blocks) {
             for (final line in block.lines) {
               buffer.writeln(line.text);
+              // ML Kit on iOS doesn't return confidence scores, so we
+              // estimate quality heuristically from the recognized text.
+              lineConfidences[rawLineIndex] = _estimateLineConfidence(line.text);
+              linePageMap[rawLineIndex] = i; // i is 1-based page number
+              rawLineIndex++;
             }
             buffer.writeln(); // paragraph break between blocks
+            rawLineIndex++; // account for the blank line
           }
 
           // Clean up temp file
@@ -190,7 +264,155 @@ class ScriptImportService {
           'No text found in PDF. The file may be image-only or corrupted.');
     }
 
-    return _parser.parse(rawText, title: title);
+    final script = _parser.parse(rawText, title: title);
+
+    // Map OCR confidence and source page onto parsed ScriptLines.
+    final rawLines = rawText.split('\n');
+    final updatedLines = script.lines.map((line) {
+      final conf = _findConfidenceForParsedLine(
+          line.text, rawLines, lineConfidences);
+      final pageInfo = _findSourcePage(line.text, rawLines, linePageMap);
+      return line.copyWith(
+        ocrConfidence: conf != null ? () => conf : null,
+        sourcePage: pageInfo != null ? () => pageInfo.page : null,
+        sourceLineOnPage: pageInfo != null ? () => pageInfo.lineOnPage : null,
+      );
+    }).toList();
+
+    if (updatedLines.isNotEmpty) {
+      return ParsedScript(
+        title: script.title,
+        lines: updatedLines,
+        characters: script.characters,
+        scenes: script.scenes,
+        rawText: script.rawText,
+      );
+    }
+
+    return script;
+  }
+
+  /// Find the source page for a parsed line by matching against raw lines.
+  ({int page, int lineOnPage})? _findSourcePage(
+    String parsedText,
+    List<String> rawLines,
+    Map<int, int> linePageMap,
+  ) {
+    final searchText = parsedText.trim().toLowerCase();
+    if (searchText.isEmpty) return null;
+
+    // Track line-within-page counters per page
+    final pageLineCounts = <int, int>{};
+
+    for (var i = 0; i < rawLines.length; i++) {
+      final rawTrimmed = rawLines[i].trim().toLowerCase();
+      if (rawTrimmed.isEmpty) continue;
+      final page = linePageMap[i];
+      if (page != null) {
+        pageLineCounts[page] = (pageLineCounts[page] ?? 0) + 1;
+      }
+      if (rawTrimmed.contains(searchText) ||
+          searchText.contains(rawTrimmed)) {
+        if (page != null) {
+          return (page: page, lineOnPage: pageLineCounts[page]!);
+        }
+      }
+    }
+    return null;
+  }
+
+  /// Find the OCR confidence for a parsed line by locating which raw text
+  /// lines contributed to it.
+  double? _findConfidenceForParsedLine(
+    String parsedText,
+    List<String> rawLines,
+    Map<int, double> lineConfidences,
+  ) {
+    final confidences = <double>[];
+    final searchText = parsedText.trim().toLowerCase();
+    if (searchText.isEmpty) return null;
+
+    for (var i = 0; i < rawLines.length; i++) {
+      final rawTrimmed = rawLines[i].trim().toLowerCase();
+      if (rawTrimmed.isEmpty) continue;
+      if (rawTrimmed.contains(searchText) ||
+          searchText.contains(rawTrimmed)) {
+        final conf = lineConfidences[i];
+        if (conf != null) confidences.add(conf);
+      }
+    }
+
+    if (confidences.isEmpty) return null;
+    return confidences.reduce((a, b) => a + b) / confidences.length;
+  }
+
+  /// Estimate OCR confidence for a line based on text heuristics.
+  /// Returns 0.0 (garbage) to 1.0 (clean).
+  static double _estimateLineConfidence(String text) {
+    if (text.trim().isEmpty) return 1.0;
+
+    final trimmed = text.trim();
+    var score = 1.0;
+
+    // 1. Ratio of alphanumeric + common punctuation vs junk characters
+    final cleanChars = trimmed.replaceAll(RegExp(r'''[a-zA-Z0-9 .,;:!?'"()\-/]'''), '');
+    final junkRatio = cleanChars.length / trimmed.length;
+    if (junkRatio > 0.3) score -= 0.4;
+    else if (junkRatio > 0.15) score -= 0.2;
+    else if (junkRatio > 0.05) score -= 0.05;
+
+    // 2. Words without vowels (likely garbled)
+    final words = trimmed.split(RegExp(r'\s+'));
+    if (words.isNotEmpty) {
+      var noVowelCount = 0;
+      for (final word in words) {
+        if (word.length <= 2) continue;
+        if (word == word.toUpperCase() && word.length <= 12) continue;
+        if (!RegExp(r'[aeiouAEIOU]').hasMatch(word)) {
+          noVowelCount++;
+        }
+      }
+      final noVowelRatio = noVowelCount / words.length;
+      if (noVowelRatio > 0.3) score -= 0.3;
+      else if (noVowelRatio > 0.1) score -= 0.15;
+    }
+
+    // 3. Lone single characters (fragmented words)
+    final loneChars = words.where((w) =>
+        w.length == 1 && !RegExp(r'^[IaO0-9]$').hasMatch(w)).length;
+    if (words.length > 2) {
+      final loneRatio = loneChars / words.length;
+      if (loneRatio > 0.3) score -= 0.25;
+      else if (loneRatio > 0.15) score -= 0.1;
+    }
+
+    // 4. Repeated characters (stutter from misread: "tttthe")
+    if (RegExp(r'(.)\1{3,}').hasMatch(trimmed)) {
+      score -= 0.3;
+    } else if (RegExp(r'(.)\1{2}').hasMatch(trimmed.toLowerCase())) {
+      final triples = RegExp(r'(.)\1{2}').allMatches(trimmed.toLowerCase()).length;
+      if (triples > 1) score -= 0.15;
+    }
+
+    // 5. Mixed case within a word (e.g. "hElLo")
+    var mixedCaseWords = 0;
+    for (final word in words) {
+      if (word.length < 3) continue;
+      if (word == word.toUpperCase() || word == word.toLowerCase()) continue;
+      if (word[0] == word[0].toUpperCase() &&
+          word.substring(1) == word.substring(1).toLowerCase()) continue;
+      mixedCaseWords++;
+    }
+    if (words.length > 1 && mixedCaseWords / words.length > 0.3) {
+      score -= 0.2;
+    }
+
+    // 6. Very short line with lots of punctuation (likely noise)
+    if (trimmed.length < 5 && RegExp(r'[^a-zA-Z0-9\s]').hasMatch(trimmed)) {
+      score -= 0.15;
+    }
+
+    return score.clamp(0.0, 1.0);
   }
 
   /// Save a parsed script export to the app's documents directory.

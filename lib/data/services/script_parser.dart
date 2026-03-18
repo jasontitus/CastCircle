@@ -265,6 +265,7 @@ class ScriptParser {
 
   /// Standard format: "ALL CAPS NAME. dialogue" on one line.
   void _detectCharactersStandard(String rawText) {
+    // "NAME. dialogue" format
     final pattern = RegExp(
       r'^([A-Z][A-Z. ,]+(?:, *[A-Z][A-Z. ]+)*)\. ',
       multiLine: true,
@@ -272,18 +273,44 @@ class ScriptParser {
     for (final match in pattern.allMatches(rawText)) {
       _addCharacterCandidate(match.group(1)!);
     }
+
+    // "NAME:" or "NAME (aside):" format (Cyrano, some modern plays)
+    final colonPattern = RegExp(
+      r'^([A-Z][A-Z ]+?)(?:\s*\([^)]*\))?\s*:\s*$',
+      multiLine: true,
+    );
+    for (final match in colonPattern.allMatches(rawText)) {
+      _addCharacterCandidate(match.group(1)!.trim());
+    }
   }
 
   /// Name-on-own-line format: "ALL CAPS NAME." alone on a line.
   void _detectCharactersOwnLine(String rawText) {
-    // Also pick up any that have dialogue on the same line (fallback)
-    final ownLine = RegExp(
+    // Character name on own line with trailing period: "MACBETH."
+    final ownLineWithPeriod = RegExp(
       r'^([A-Z][A-Z. ]+)\.\s*$',
       multiLine: true,
     );
-    for (final match in ownLine.allMatches(rawText)) {
+    for (final match in ownLineWithPeriod.allMatches(rawText)) {
       _addCharacterCandidate(match.group(1)!);
     }
+
+    // Character name on own line WITHOUT period: "MACBETH"
+    // (common in PDFKit-extracted text). Must be ALL CAPS, 2-30 chars,
+    // followed by a line that looks like dialogue (starts lowercase or
+    // with a quote).
+    final ownLineNoPeriod = RegExp(
+      r'^([A-Z][A-Z ]{1,29})\s*$',
+      multiLine: true,
+    );
+    for (final match in ownLineNoPeriod.allMatches(rawText)) {
+      final name = match.group(1)!.trim();
+      // Skip common stage directions and headers
+      if (_isStageDirectionOrHeader(name)) continue;
+      _addCharacterCandidate(name);
+    }
+
+    // Dialogue on same line: "MACBETH. Speak if you can."
     final sameLine = RegExp(
       r'^([A-Z][A-Z. ,]+(?:, *[A-Z][A-Z. ]+)*)\. \S',
       multiLine: true,
@@ -291,6 +318,22 @@ class ScriptParser {
     for (final match in sameLine.allMatches(rawText)) {
       _addCharacterCandidate(match.group(1)!);
     }
+  }
+
+  /// Check if an ALL-CAPS name is actually a stage direction or header.
+  static bool _isStageDirectionOrHeader(String name) {
+    const skip = {
+      'ACT', 'SCENE', 'ENTER', 'EXIT', 'EXEUNT', 'ALARUM', 'ALARUMS',
+      'FLOURISH', 'THUNDER', 'LIGHTNING', 'FRONT MATTER', 'CONTENTS',
+      'SYNOPSIS', 'CHARACTERS IN THE PLAY', 'TEXTUAL INTRODUCTION',
+      'THE TRAGEDY OF MACBETH', 'THE END', 'FINIS',
+      'ACT 1', 'ACT 2', 'ACT 3', 'ACT 4', 'ACT 5',
+    };
+    if (skip.contains(name)) return true;
+    // Skip if it starts with Enter/Exit/Exeunt
+    if (name.startsWith('ENTER') || name.startsWith('EXIT') ||
+        name.startsWith('EXEUNT')) return true;
+    return false;
   }
 
   /// Title-case format: "Name. dialogue" (e.g., First Folio Shakespeare).
@@ -360,8 +403,9 @@ class ScriptParser {
   static String _stripPreamble(String text) {
     // Find all occurrences of the first act header
     final actOnePattern = RegExp(
-      r'^(?:ACT\s+I(?:\b|$)|Actus\s+Primus)',
+      r'^(?:ACT\s+(?:THE\s+)?(?:I(?:\b|$)|1\b|FIRST)\.?|Actus\s+Primus)',
       multiLine: true,
+      caseSensitive: false,
     );
     final matches = actOnePattern.allMatches(text).toList();
     if (matches.length >= 2) {
@@ -387,13 +431,18 @@ class ScriptParser {
   /// Auto-detect the script formatting convention.
   static ScriptFormat _detectFormat(String rawText) {
     // Count lines matching each pattern
+    // "NAME. dialogue" or "NAME: dialogue" or "NAME:"
     final standardCount = RegExp(
-      r'^[A-Z][A-Z. ,]+\. \S',
+      r'^[A-Z][A-Z. ,]+[.:] \S',
+      multiLine: true,
+    ).allMatches(rawText).length +
+    RegExp(
+      r'^[A-Z][A-Z ]+:\s*$',
       multiLine: true,
     ).allMatches(rawText).length;
 
     final ownLineCount = RegExp(
-      r'^[A-Z][A-Z. ]+\.\s*$',
+      r'^[A-Z][A-Z. ]+\.?\s*$',
       multiLine: true,
     ).allMatches(rawText).length;
 
@@ -685,9 +734,26 @@ class ScriptParser {
         return (character: char, dialogue: match.group(1)!);
       }
 
-      // Name-on-own-line: "NAME." with nothing after
+      // "NAME:" or "NAME (aside):" — colon format (Cyrano etc.)
+      final colonMatch = RegExp(
+        '^$escaped(?:\\s*\\([^)]*\\))?\\s*:\$',
+        caseSensitive: caseSensitive,
+      ).firstMatch(line);
+      if (colonMatch != null) {
+        return (character: char, dialogue: '');
+      }
+      // "NAME: dialogue..." — colon with inline dialogue
+      final colonInline = RegExp(
+        '^$escaped(?:\\s*\\([^)]*\\))?\\s*:\\s+(.*)',
+        caseSensitive: caseSensitive,
+      ).firstMatch(line);
+      if (colonInline != null) {
+        return (character: char, dialogue: colonInline.group(1)!);
+      }
+
+      // Name-on-own-line: "NAME." or "NAME" with nothing after
       if (_format == ScriptFormat.nameOnOwnLine) {
-        final ownLine = RegExp('^$escaped\\.\$');
+        final ownLine = RegExp('^$escaped\\.?\$');
         if (ownLine.hasMatch(line)) {
           return (character: char, dialogue: '');
         }
@@ -847,12 +913,16 @@ class ScriptParser {
     for (final rawLine in textLines) {
       final line = rawLine.trim();
 
-      if (_isNoise(line)) continue;
-
-      // ACT headers (includes Latin "Actus Primus" etc.)
-      final actMatch = RegExp(
-        r'^(?:ACT\s+([IV]+|\d+)|Actus\s+\w+)',
-      ).firstMatch(line);
+      // ACT headers — check BEFORE noise filter since "ACT 1" looks like noise.
+      // Matches: "ACT I", "ACT 1", "ACT THE FIRST.", "ACT FIRST.",
+      // "Actus Primus", but NOT Folger running headers "ACT 2. SC. 1"
+      final isRunningHeader = RegExp(r'ACT \d+\. SC\.', caseSensitive: false).hasMatch(line);
+      final actMatch = isRunningHeader
+          ? null
+          : RegExp(
+              r'^(?:ACT\s+(?:THE\s+)?(?:[IV]+|\d+|FIRST|SECOND|THIRD|FOURTH|FIFTH)\.?|Actus\s+\w+)',
+              caseSensitive: false,
+            ).firstMatch(line);
       if (actMatch != null) {
         flushDialogue();
         currentAct = line.trim();
@@ -888,6 +958,9 @@ class ScriptParser {
         dialogueParts = [];
         continue;
       }
+
+      // Noise filter (after act/scene checks which look like noise)
+      if (_isNoise(line)) continue;
 
       final cleaned = _cleanLine(line);
       if (cleaned.isEmpty) continue;

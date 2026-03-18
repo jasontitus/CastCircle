@@ -35,6 +35,9 @@ class ScriptLines extends Table {
   TextColumn get lineText => text()();
   TextColumn get lineType => text()();
   TextColumn get stageDirection => text().withDefault(const Constant(''))();
+  RealColumn get ocrConfidence => real().nullable()();
+  IntColumn get sourcePage => integer().nullable()();
+  IntColumn get sourceLineOnPage => integer().nullable()();
 
   @override
   Set<Column> get primaryKey => {id};
@@ -103,7 +106,7 @@ class AppDatabase extends _$AppDatabase {
   AppDatabase.forTesting(super.e);
 
   @override
-  int get schemaVersion => 3;
+  int get schemaVersion => 5;
 
   @override
   MigrationStrategy get migration => MigrationStrategy(
@@ -115,6 +118,15 @@ class AppDatabase extends _$AppDatabase {
           if (from < 3) {
             // Add joinCode column to productions table
             await migrator.addColumn(productions, productions.joinCode);
+          }
+          if (from < 4) {
+            // Add OCR confidence column to script lines table
+            await migrator.addColumn(scriptLines, scriptLines.ocrConfidence);
+          }
+          if (from < 5) {
+            // Add source page/line columns for page:line references
+            await migrator.addColumn(scriptLines, scriptLines.sourcePage);
+            await migrator.addColumn(scriptLines, scriptLines.sourceLineOnPage);
           }
         },
       );

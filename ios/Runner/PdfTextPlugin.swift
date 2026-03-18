@@ -31,6 +31,16 @@ class PdfTextPlugin: NSObject {
             }
             extractText(path: path, result: result)
 
+        case "extractTextPerPage":
+            guard let args = call.arguments as? [String: Any],
+                  let path = args["path"] as? String else {
+                result(FlutterError(code: "INVALID_ARGS",
+                                    message: "Missing 'path' argument",
+                                    details: nil))
+                return
+            }
+            extractTextPerPage(path: path, result: result)
+
         case "hasEmbeddedText":
             guard let args = call.arguments as? [String: Any],
                   let path = args["path"] as? String else {
@@ -82,6 +92,43 @@ class PdfTextPlugin: NSObject {
                         "text": fullText,
                         "pageCount": pageCount,
                     ])
+                }
+            }
+        }
+    }
+
+    /// Extract text from each page separately, returning an array of strings.
+    private func extractTextPerPage(path: String, result: @escaping FlutterResult) {
+        DispatchQueue.global(qos: .userInitiated).async {
+            let url = URL(fileURLWithPath: path)
+
+            guard let document = PDFDocument(url: url) else {
+                DispatchQueue.main.async {
+                    result(FlutterError(code: "PDF_OPEN_FAILED",
+                                        message: "Could not open PDF at \(path)",
+                                        details: nil))
+                }
+                return
+            }
+
+            var pages: [String] = []
+            var hasAnyText = false
+
+            for i in 0..<document.pageCount {
+                let pageText = document.page(at: i)?.string ?? ""
+                pages.append(pageText)
+                if !pageText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    hasAnyText = true
+                }
+            }
+
+            DispatchQueue.main.async {
+                if !hasAnyText {
+                    result(FlutterError(code: "NO_TEXT",
+                                        message: "PDF has no embedded text",
+                                        details: nil))
+                } else {
+                    result(["pages": pages, "pageCount": document.pageCount])
                 }
             }
         }

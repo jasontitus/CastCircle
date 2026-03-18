@@ -117,6 +117,9 @@ class ProductionRepository {
           lineText: Value(l.text),
           lineType: Value(l.lineType.name),
           stageDirection: Value(l.stageDirection),
+          ocrConfidence: Value(l.ocrConfidence),
+          sourcePage: Value(l.sourcePage),
+          sourceLineOnPage: Value(l.sourceLineOnPage),
         )).toList();
     await _db.insertScriptLines(companions);
   }
@@ -132,6 +135,9 @@ class ProductionRepository {
       text: row.lineText,
       lineType: models.LineType.values.byName(row.lineType),
       stageDirection: row.stageDirection,
+      ocrConfidence: row.ocrConfidence,
+      sourcePage: row.sourcePage,
+      sourceLineOnPage: row.sourceLineOnPage,
     );
   }
 

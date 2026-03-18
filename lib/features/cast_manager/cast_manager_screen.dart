@@ -1,14 +1,21 @@
+import 'dart:ui' as ui;
+
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
+import 'package:path_provider/path_provider.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:uuid/uuid.dart';
+import 'dart:io';
 
 import '../../core/theme/app_theme.dart';
 import '../../data/models/cast_member_model.dart';
 import '../../data/models/script_models.dart';
 import '../../data/models/voice_preset.dart';
+import '../../data/services/contact_picker_service.dart';
+import '../../data/services/deep_link_service.dart';
 import '../../data/services/supabase_service.dart';
 import '../../data/services/voice_config_service.dart';
 import '../../providers/production_providers.dart';
@@ -33,8 +40,61 @@ class _CastManagerScreenState extends ConsumerState<CastManagerScreen> {
       if (production != null) {
         ref.read(castMembersProvider.notifier).loadForProduction(production.id);
         _loadVoiceConfig(production.id);
+        _syncCastFromCloud(production.id);
       }
     });
+  }
+
+  /// Sync cast member statuses from Supabase so we see who has joined.
+  Future<void> _syncCastFromCloud(String productionId) async {
+    final supa = SupabaseService.instance;
+    if (!supa.isSignedIn) return;
+
+    try {
+      final cloudMembers = await supa.fetchCastMembers(productionId);
+      final notifier = ref.read(castMembersProvider.notifier);
+      final cloudIds = <String>{};
+
+      for (final cm in cloudMembers) {
+        final cloudId = cm['id'] as String;
+        final charName = cm['character_name'] as String? ?? '';
+        cloudIds.add(cloudId);
+
+        final member = CastMemberModel(
+          id: cloudId,
+          productionId: productionId,
+          userId: cm['user_id'] as String?,
+          characterName: charName,
+          displayName: cm['display_name'] as String? ?? '',
+          contactInfo: cm['contact_info'] as String?,
+          role: CastRole.fromString(cm['role'] as String? ?? 'actor'),
+          invitedAt: cm['invited_at'] != null
+              ? DateTime.tryParse(cm['invited_at'] as String)
+              : null,
+          joinedAt: cm['joined_at'] != null
+              ? DateTime.tryParse(cm['joined_at'] as String)
+              : null,
+        );
+        await notifier.save(member);
+      }
+
+      // Remove local-only records that have a matching cloud record
+      // for the same character (stale duplicates from before sync)
+      final localMembers = ref.read(castMembersProvider);
+      for (final local in localMembers) {
+        if (cloudIds.contains(local.id)) continue; // it's the cloud record
+        if (local.role == CastRole.organizer) continue; // keep organizer
+        // If there's a cloud record for the same character+role, remove the local duplicate
+        final hasCloudVersion = cloudMembers.any((cm) =>
+            cm['character_name'] == local.characterName &&
+            CastRole.fromString(cm['role'] as String? ?? 'actor') == local.role);
+        if (hasCloudVersion) {
+          await notifier.remove(local.id);
+        }
+      }
+    } catch (e) {
+      debugPrint('Cast cloud sync failed: $e');
+    }
   }
 
   Future<void> _loadVoiceConfig(String productionId) async {
@@ -72,6 +132,13 @@ class _CastManagerScreenState extends ConsumerState<CastManagerScreen> {
     final progressPct =
         totalLines > 0 ? (totalRecordedLines / totalLines * 100).round() : 0;
 
+    // Check if any characters still need actors assigned
+    final unassignedCount = script.characters.where((char) {
+      return castMembers
+          .where((m) => m.characterName == char.name && m.role == CastRole.primary)
+          .isEmpty;
+    }).length;
+
     return Scaffold(
       appBar: AppBar(
         title: const Text('Cast & Roles'),
@@ -94,7 +161,7 @@ class _CastManagerScreenState extends ConsumerState<CastManagerScreen> {
       ),
       body: Column(
         children: [
-          // ── Join code banner ──
+          // -- Join code banner --
           if (joinCode != null)
             Container(
               width: double.infinity,
@@ -151,7 +218,42 @@ class _CastManagerScreenState extends ConsumerState<CastManagerScreen> {
                 ],
               ),
             ),
-          // ── Summary bar ──
+          // -- Bulk setup banner --
+          if (unassignedCount > 0)
+            InkWell(
+              onTap: () => context.push('/cast-setup'),
+              child: Container(
+                width: double.infinity,
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                color: Theme.of(context).colorScheme.tertiaryContainer,
+                child: Row(
+                  children: [
+                    Icon(Icons.group_add,
+                        color: Theme.of(context).colorScheme.onTertiaryContainer,
+                        size: 20),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Text(
+                        '$unassignedCount characters need actors — Set up cast',
+                        style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                              color: Theme.of(context)
+                                  .colorScheme
+                                  .onTertiaryContainer,
+                              fontWeight: FontWeight.w500,
+                            ),
+                      ),
+                    ),
+                    Icon(Icons.arrow_forward_ios,
+                        size: 14,
+                        color: Theme.of(context)
+                            .colorScheme
+                            .onTertiaryContainer
+                            .withValues(alpha: 0.5)),
+                  ],
+                ),
+              ),
+            ),
+          // -- Summary bar --
           Container(
             padding: const EdgeInsets.all(16),
             color: Theme.of(context).colorScheme.surfaceContainerHighest,
@@ -185,7 +287,7 @@ class _CastManagerScreenState extends ConsumerState<CastManagerScreen> {
             ),
           ),
           const Divider(height: 1),
-          // ── Character list ──
+          // -- Character list --
           Expanded(
             child: ListView.builder(
               padding: const EdgeInsets.all(16),
@@ -238,18 +340,15 @@ class _CastManagerScreenState extends ConsumerState<CastManagerScreen> {
     int totalLines,
   ) {
     final script = ref.read(currentScriptProvider)!;
-    final charIndex = script.characters.indexOf(char);
     final override = _voiceOverrides[char.name];
-    final pool = switch (char.gender) {
-      CharacterGender.female => _currentPreset.femaleVoices,
-      CharacterGender.male => _currentPreset.maleVoices,
-      CharacterGender.nonGendered => [
-        ..._currentPreset.femaleVoices,
-        ..._currentPreset.maleVoices,
-      ],
-    };
-    final presetVoice =
-        pool.isNotEmpty ? pool[charIndex % pool.length] : 'af_heart';
+    // Adjacency-aware voice assignment
+    final autoAssignment = VoiceConfigService.assignVoicesFromScript(
+      lines: script.lines,
+      characters: script.characters,
+      femaleVoices: _currentPreset.femaleVoices,
+      maleVoices: _currentPreset.maleVoices,
+    );
+    final presetVoice = autoAssignment[char.name] ?? 'af_heart';
     final activeVoice = override?.voiceId ?? presetVoice;
     final activeSpeed = override?.speed ?? _currentPreset.defaultSpeed;
     final voiceLabel = VoicePresets.voiceLabels[activeVoice] ?? activeVoice;
@@ -486,84 +585,108 @@ class _CastManagerScreenState extends ConsumerState<CastManagerScreen> {
 
     showDialog(
       context: context,
-      builder: (context) => AlertDialog(
-        title: Text('Assign ${role.name} for $characterName'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            TextField(
-              controller: nameController,
-              decoration: const InputDecoration(
-                labelText: 'Actor name',
-                border: OutlineInputBorder(),
-                hintText: 'Enter actor name',
+      builder: (dialogContext) => StatefulBuilder(
+        builder: (dialogContext, setDialogState) => AlertDialog(
+          title: Text('Assign ${role.name} for $characterName'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Row(
+                children: [
+                  Expanded(
+                    child: TextField(
+                      controller: nameController,
+                      decoration: const InputDecoration(
+                        labelText: 'Actor name',
+                        border: OutlineInputBorder(),
+                        hintText: 'Enter actor name',
+                      ),
+                      autofocus: true,
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  IconButton(
+                    icon: const Icon(Icons.contacts),
+                    tooltip: 'Pick from contacts',
+                    onPressed: () async {
+                      try {
+                        final contact = await ContactPickerService.instance.pickContact();
+                        if (contact == null) return;
+                        nameController.text = contact.displayName;
+                        contactController.text = contact.phone ?? contact.email ?? '';
+                        setDialogState(() {});
+                      } catch (e) {
+                        debugPrint('Contact pick failed: $e');
+                      }
+                    },
+                  ),
+                ],
               ),
-              autofocus: true,
+              const SizedBox(height: 12),
+              TextField(
+                controller: contactController,
+                decoration: const InputDecoration(
+                  labelText: 'Phone or email (optional)',
+                  border: OutlineInputBorder(),
+                  hintText: 'For sending join code',
+                ),
+                keyboardType: TextInputType.phone,
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext),
+              child: const Text('Cancel'),
             ),
-            const SizedBox(height: 12),
-            TextField(
-              controller: contactController,
-              decoration: const InputDecoration(
-                labelText: 'Email or phone (optional)',
-                border: OutlineInputBorder(),
-                hintText: 'For sending join code',
-              ),
-              keyboardType: TextInputType.emailAddress,
+            FilledButton(
+              onPressed: () async {
+                final name = nameController.text.trim();
+                if (name.isEmpty) return;
+
+                final production = ref.read(currentProductionProvider);
+                if (production == null) return;
+
+                final contact = contactController.text.trim();
+                final member = CastMemberModel(
+                  id: const Uuid().v4(),
+                  productionId: production.id,
+                  characterName: characterName,
+                  displayName: name,
+                  contactInfo: contact.isNotEmpty ? contact : null,
+                  role: role,
+                  invitedAt: DateTime.now(),
+                );
+
+                await ref.read(castMembersProvider.notifier).save(member);
+
+                // Also save to Supabase if signed in
+                final supa = SupabaseService.instance;
+                if (supa.isSignedIn) {
+                  try {
+                    await supa.createCastInvitation(
+                      productionId: production.id,
+                      characterName: characterName,
+                      displayName: name,
+                      contactInfo: contact.isNotEmpty ? contact : null,
+                      role: role.toSupabaseString(),
+                    );
+                  } catch (e) {
+                    debugPrint('Supabase cast invitation failed: $e');
+                  }
+                }
+
+                if (dialogContext.mounted) Navigator.pop(dialogContext);
+
+                // Immediately open share sheet with the invite
+                if (mounted) {
+                  _inviteActor(characterName);
+                }
+              },
+              child: const Text('Assign'),
             ),
           ],
         ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('Cancel'),
-          ),
-          FilledButton(
-            onPressed: () async {
-              final name = nameController.text.trim();
-              if (name.isEmpty) return;
-
-              final production = ref.read(currentProductionProvider);
-              if (production == null) return;
-
-              final contact = contactController.text.trim();
-              final member = CastMemberModel(
-                id: const Uuid().v4(),
-                productionId: production.id,
-                characterName: characterName,
-                displayName: name,
-                contactInfo: contact.isNotEmpty ? contact : null,
-                role: role,
-                invitedAt: DateTime.now(),
-              );
-
-              await ref.read(castMembersProvider.notifier).save(member);
-
-              // Also save to Supabase if signed in
-              final supa = SupabaseService.instance;
-              if (supa.isSignedIn) {
-                try {
-                  await supa.createCastInvitation(
-                    productionId: production.id,
-                    characterName: characterName,
-                    displayName: name,
-                    contactInfo: contact.isNotEmpty ? contact : null,
-                    role: role.toSupabaseString(),
-                  );
-                } catch (e) {
-                  debugPrint('Supabase cast invitation failed: $e');
-                }
-              }
-
-              if (context.mounted) Navigator.pop(context);
-
-              // Immediately open share sheet with the invite
-              if (mounted) {
-                _inviteActor(characterName);
-              }
-            },
-            child: const Text('Assign'),
-          ),
-        ],
       ),
     );
   }
@@ -572,26 +695,194 @@ class _CastManagerScreenState extends ConsumerState<CastManagerScreen> {
     ref.read(castMembersProvider.notifier).remove(member.id);
   }
 
+  /// Build a smart invite link and share it.
   void _inviteActor(String characterName) {
     final production = ref.read(currentProductionProvider);
     final productionTitle = production?.title ?? 'a production';
     final joinCode = production?.joinCode;
 
-    final shareText = joinCode != null
-        ? 'You\'ve been invited to join "$productionTitle" as $characterName '
-            'on CastCircle! Open the app and enter join code: $joinCode'
-        : 'You\'ve been invited to join "$productionTitle" as $characterName '
-            'on CastCircle! Download the app to get started.';
+    if (joinCode == null) {
+      Share.share(
+        'You\'ve been invited to join "$productionTitle" as $characterName '
+        'on CastCircle! Download the app to get started.',
+        subject: 'CastCircle Invitation',
+      );
+      return;
+    }
+
+    final deepLink = PendingJoin.buildUri(
+      code: joinCode,
+      characterName: characterName,
+    );
+
+    // Show invite options: text or visual card
+    _showInviteOptions(
+      productionTitle: productionTitle,
+      characterName: characterName,
+      joinCode: joinCode,
+      deepLink: deepLink,
+    );
+  }
+
+  void _showInviteOptions({
+    required String productionTitle,
+    required String characterName,
+    required String joinCode,
+    required Uri deepLink,
+  }) {
+    showModalBottomSheet(
+      context: context,
+      builder: (ctx) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const SizedBox(height: 8),
+            Container(
+              width: 40, height: 4,
+              decoration: BoxDecoration(
+                color: Colors.grey[600],
+                borderRadius: BorderRadius.circular(2),
+              ),
+            ),
+            const SizedBox(height: 16),
+            Text('Invite to $characterName',
+                style: Theme.of(context).textTheme.titleMedium),
+            const SizedBox(height: 16),
+            ListTile(
+              leading: const Icon(Icons.message),
+              title: const Text('Send text invite'),
+              subtitle: const Text('Share via Messages, WhatsApp, etc.'),
+              onTap: () {
+                Navigator.pop(ctx);
+                _shareTextInvite(
+                  productionTitle: productionTitle,
+                  characterName: characterName,
+                  joinCode: joinCode,
+                  deepLink: deepLink,
+                );
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.image),
+              title: const Text('Send invite card'),
+              subtitle: const Text('Visual card with QR code'),
+              onTap: () {
+                Navigator.pop(ctx);
+                _shareInviteCard(
+                  productionTitle: productionTitle,
+                  characterName: characterName,
+                  joinCode: joinCode,
+                  deepLink: deepLink,
+                );
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.copy),
+              title: const Text('Copy join code'),
+              onTap: () {
+                Navigator.pop(ctx);
+                Clipboard.setData(ClipboardData(text: joinCode));
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(
+                    content: Text('Join code copied'),
+                    duration: Duration(seconds: 1),
+                  ),
+                );
+              },
+            ),
+            const SizedBox(height: 8),
+          ],
+        ),
+      ),
+    );
+  }
+
+  void _shareTextInvite({
+    required String productionTitle,
+    required String characterName,
+    required String joinCode,
+    required Uri deepLink,
+  }) {
+    final shareText =
+        'You\'ve been invited to play $characterName in "$productionTitle" '
+        'on CastCircle!\n\n'
+        'Tap to join: $deepLink\n\n'
+        'Or open CastCircle and enter code: $joinCode';
 
     Share.share(shareText, subject: 'CastCircle Invitation');
+  }
+
+  Future<void> _shareInviteCard({
+    required String productionTitle,
+    required String characterName,
+    required String joinCode,
+    required Uri deepLink,
+  }) async {
+    // Build the invite card widget off-screen and capture as image
+    final key = GlobalKey();
+    final overlay = Overlay.of(context);
+
+    final entry = OverlayEntry(
+      builder: (_) => Positioned(
+        left: -1000,
+        top: -1000,
+        child: RepaintBoundary(
+          key: key,
+          child: _InviteCardWidget(
+            productionTitle: productionTitle,
+            characterName: characterName,
+            joinCode: joinCode,
+          ),
+        ),
+      ),
+    );
+
+    overlay.insert(entry);
+    await Future.delayed(const Duration(milliseconds: 100));
+
+    try {
+      final boundary =
+          key.currentContext!.findRenderObject() as RenderRepaintBoundary;
+      final image = await boundary.toImage(pixelRatio: 3.0);
+      final byteData = await image.toByteData(format: ui.ImageByteFormat.png);
+      entry.remove();
+
+      if (byteData == null) return;
+
+      final tempDir = await getTemporaryDirectory();
+      final file = File('${tempDir.path}/castcircle_invite.png');
+      await file.writeAsBytes(byteData.buffer.asUint8List());
+
+      await Share.shareXFiles(
+        [XFile(file.path)],
+        text: 'Join "$productionTitle" as $characterName on CastCircle!\n'
+            'Tap to join: $deepLink\n'
+            'Or enter code: $joinCode',
+        subject: 'CastCircle Invitation',
+      );
+    } catch (e) {
+      entry.remove();
+      debugPrint('Invite card share failed: $e');
+      // Fallback to text
+      _shareTextInvite(
+        productionTitle: productionTitle,
+        characterName: characterName,
+        joinCode: joinCode,
+        deepLink: deepLink,
+      );
+    }
   }
 
   void _shareJoinCode(String code) {
     final production = ref.read(currentProductionProvider);
     final title = production?.title ?? 'a production';
 
+    final deepLink = PendingJoin.buildUri(code: code);
+
     Share.share(
-      'Join "$title" on CastCircle!\n\nOpen the app and enter code: $code',
+      'Join "$title" on CastCircle!\n\n'
+      'Tap to join: $deepLink\n\n'
+      'Or open CastCircle and enter code: $code',
       subject: 'CastCircle Join Code',
     );
   }
@@ -601,9 +892,14 @@ class _CastManagerScreenState extends ConsumerState<CastManagerScreen> {
     final title = production?.title ?? 'the production';
     final code = production?.joinCode ?? '';
 
+    final deepLink = PendingJoin.buildUri(
+      code: code,
+      characterName: member.characterName,
+    );
+
     final text =
         'Reminder: You\'re invited to play ${member.characterName} in "$title" '
-        'on CastCircle. Open the app and enter code: $code';
+        'on CastCircle.\n\nTap to join: $deepLink\n\nOr enter code: $code';
 
     Share.share(text, subject: 'CastCircle Reminder');
   }
@@ -645,7 +941,7 @@ class _CastManagerScreenState extends ConsumerState<CastManagerScreen> {
     Share.share(buffer.toString(), subject: 'Cast List');
   }
 
-  // ── Gender helpers ──────────────────────────────────────
+  // -- Gender helpers --
 
   static String _genderLabel(CharacterGender gender) => switch (gender) {
         CharacterGender.female => 'Female',
@@ -695,7 +991,7 @@ class _CastManagerScreenState extends ConsumerState<CastManagerScreen> {
     }
   }
 
-  // ── Voice config ──────────────────────────────────────
+  // -- Voice config --
 
   void _showVoiceSheet(
     ScriptCharacter char,
@@ -814,6 +1110,135 @@ class _CastManagerScreenState extends ConsumerState<CastManagerScreen> {
             ],
           ),
         ),
+      ),
+    );
+  }
+}
+
+/// Visual invite card rendered off-screen and captured as an image.
+class _InviteCardWidget extends StatelessWidget {
+  final String productionTitle;
+  final String characterName;
+  final String joinCode;
+
+  const _InviteCardWidget({
+    required this.productionTitle,
+    required this.characterName,
+    required this.joinCode,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: 400,
+      padding: const EdgeInsets.all(32),
+      decoration: BoxDecoration(
+        gradient: const LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: [Color(0xFF1a1a2e), Color(0xFF16213e)],
+        ),
+        borderRadius: BorderRadius.circular(20),
+      ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          // App branding
+          Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Icon(Icons.theater_comedy, color: Colors.amber[300], size: 28),
+              const SizedBox(width: 8),
+              Text(
+                'CastCircle',
+                style: TextStyle(
+                  color: Colors.amber[300],
+                  fontSize: 20,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 24),
+          // "You're invited"
+          const Text(
+            'YOU\'RE INVITED',
+            style: TextStyle(
+              color: Colors.white70,
+              fontSize: 12,
+              letterSpacing: 3,
+              fontWeight: FontWeight.w500,
+            ),
+          ),
+          const SizedBox(height: 12),
+          // Production title
+          Text(
+            productionTitle,
+            textAlign: TextAlign.center,
+            style: const TextStyle(
+              color: Colors.white,
+              fontSize: 28,
+              fontWeight: FontWeight.bold,
+            ),
+          ),
+          const SizedBox(height: 16),
+          // Character
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
+            decoration: BoxDecoration(
+              color: Colors.amber.withValues(alpha: 0.15),
+              borderRadius: BorderRadius.circular(30),
+              border: Border.all(color: Colors.amber.withValues(alpha: 0.3)),
+            ),
+            child: Text(
+              'as $characterName',
+              style: TextStyle(
+                color: Colors.amber[200],
+                fontSize: 18,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ),
+          const SizedBox(height: 28),
+          // Join code
+          const Text(
+            'JOIN CODE',
+            style: TextStyle(
+              color: Colors.white54,
+              fontSize: 11,
+              letterSpacing: 2,
+            ),
+          ),
+          const SizedBox(height: 8),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+            decoration: BoxDecoration(
+              color: Colors.white.withValues(alpha: 0.1),
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: Colors.white.withValues(alpha: 0.2)),
+            ),
+            child: Text(
+              joinCode,
+              style: const TextStyle(
+                color: Colors.white,
+                fontSize: 36,
+                fontWeight: FontWeight.bold,
+                letterSpacing: 8,
+                fontFamily: 'monospace',
+              ),
+            ),
+          ),
+          const SizedBox(height: 24),
+          // Instructions
+          Text(
+            'Download CastCircle and enter the code above',
+            textAlign: TextAlign.center,
+            style: TextStyle(
+              color: Colors.white.withValues(alpha: 0.5),
+              fontSize: 12,
+            ),
+          ),
+        ],
       ),
     );
   }

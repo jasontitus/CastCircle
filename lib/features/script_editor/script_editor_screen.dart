@@ -267,70 +267,102 @@ class _ScriptEditorScreenState extends ConsumerState<ScriptEditorScreen> {
       case LineType.song:
         final color =
             charColors[line.character] ?? Theme.of(context).colorScheme.primary;
+        final hasLowConfidence =
+            line.ocrConfidence != null && line.ocrConfidence! < 0.85;
         return Padding(
           padding: const EdgeInsets.symmetric(vertical: 2),
           child: InkWell(
             onTap: () => _editLine(context, line),
             borderRadius: BorderRadius.circular(8),
-            child: Padding(
-              padding: const EdgeInsets.symmetric(vertical: 8),
-              child: Row(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  // Line number
-                  SizedBox(
-                    width: 32,
-                    child: Text(
-                      '${line.orderIndex}',
-                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                            color: Theme.of(context)
-                                .colorScheme
-                                .onSurface
-                                .withValues(alpha: 0.3),
-                          ),
-                    ),
-                  ),
-                  // Character color bar
-                  Container(
-                    width: 3,
-                    height: 20,
-                    decoration: BoxDecoration(
-                      color: color,
-                      borderRadius: BorderRadius.circular(2),
-                    ),
-                  ),
-                  const SizedBox(width: 8),
-                  // Content
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          line.character,
-                          style: TextStyle(
-                            fontWeight: FontWeight.bold,
-                            color: color,
-                            fontSize: 13,
-                          ),
+            child: Container(
+              decoration: hasLowConfidence
+                  ? BoxDecoration(
+                      border: Border(
+                        left: BorderSide(
+                          color: Colors.amber.shade700,
+                          width: 3,
                         ),
-                        const SizedBox(height: 2),
-                        if (line.stageDirection.isNotEmpty)
-                          Text(
-                            '(${line.stageDirection})',
-                            style: TextStyle(
-                              fontStyle: FontStyle.italic,
-                              fontSize: 12,
+                      ),
+                    )
+                  : null,
+              child: Padding(
+                padding: const EdgeInsets.symmetric(vertical: 8),
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    // Page:line reference
+                    SizedBox(
+                      width: 42,
+                      child: Text(
+                        line.pageLineRef,
+                        style: Theme.of(context).textTheme.bodySmall?.copyWith(
                               color: Theme.of(context)
                                   .colorScheme
                                   .onSurface
-                                  .withValues(alpha: 0.5),
+                                  .withValues(alpha: 0.35),
+                              fontSize: 10,
+                              fontFeatures: [const FontFeature.tabularFigures()],
                             ),
-                          ),
-                        Text(line.text),
-                      ],
+                      ),
                     ),
-                  ),
-                ],
+                    // Character color bar
+                    Container(
+                      width: 3,
+                      height: 20,
+                      decoration: BoxDecoration(
+                        color: color,
+                        borderRadius: BorderRadius.circular(2),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    // Content
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Row(
+                            children: [
+                              Text(
+                                line.character,
+                                style: TextStyle(
+                                  fontWeight: FontWeight.bold,
+                                  color: color,
+                                  fontSize: 13,
+                                ),
+                              ),
+                              if (hasLowConfidence) ...[
+                                const SizedBox(width: 4),
+                                Tooltip(
+                                  message:
+                                      'OCR confidence: ${(line.ocrConfidence! * 100).toInt()}%',
+                                  child: Icon(
+                                    Icons.warning_amber_rounded,
+                                    size: 14,
+                                    color: Colors.amber.shade700,
+                                  ),
+                                ),
+                              ],
+                            ],
+                          ),
+                          const SizedBox(height: 2),
+                          if (line.stageDirection.isNotEmpty)
+                            Text(
+                              '(${line.stageDirection})',
+                              style: TextStyle(
+                                fontStyle: FontStyle.italic,
+                                fontSize: 12,
+                                color: Theme.of(context)
+                                    .colorScheme
+                                    .onSurface
+                                    .withValues(alpha: 0.5),
+                              ),
+                            ),
+                          Text(line.text),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
               ),
             ),
           ),

@@ -1,7 +1,7 @@
 name: castcircle
 description: "CastCircle - Help actors learn their lines"
 publish_to: 'none'
-version: 0.1.0+9
+version: 0.1.0+15
 
 environment:
   sdk: ^3.11.0
@@ -53,6 +53,12 @@ dependencies:
 
   # Connectivity
   connectivity_plus: ^6.1.0
+
+  # Deep links
+  app_links: ^6.3.3
+  qr_flutter: ^4.1.0
+
+  # Contacts — using native platform channel (flutter_contacts crashes on iOS 26 beta)
 
   # Utilities
   uuid: ^4.5.1

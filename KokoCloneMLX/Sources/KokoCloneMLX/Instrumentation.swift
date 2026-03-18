@@ -33,7 +33,7 @@ public struct PerfMetrics {
 
 /// Instrument a block of code, measuring time and memory.
 public func instrument<T>(_ name: String, _ body: () throws -> T) rethrows -> (result: T, metrics: PerfMetrics) {
-    GPU.peakMemory = 0
+    Memory.peakMemory = 0
     let memBefore = takeMemorySnapshot()
     let start = CFAbsoluteTimeGetCurrent()
 
@@ -55,7 +55,7 @@ public func instrument<T>(_ name: String, _ body: () throws -> T) rethrows -> (r
 
 /// Async variant of instrument.
 public func instrumentAsync<T>(_ name: String, _ body: () async throws -> T) async rethrows -> (result: T, metrics: PerfMetrics) {
-    GPU.peakMemory = 0
+    Memory.peakMemory = 0
     let memBefore = takeMemorySnapshot()
     let start = CFAbsoluteTimeGetCurrent()
 
@@ -77,8 +77,8 @@ public func instrumentAsync<T>(_ name: String, _ body: () async throws -> T) asy
 /// Take a memory snapshot right now.
 public func takeMemorySnapshot() -> MemorySnapshot {
     return MemorySnapshot(
-        gpuActive: GPU.activeMemory,
-        gpuPeak: GPU.peakMemory,
+        gpuActive: Memory.activeMemory,
+        gpuPeak: Memory.peakMemory,
         processRSS: getProcessRSS(),
         timestamp: CFAbsoluteTimeGetCurrent()
     )

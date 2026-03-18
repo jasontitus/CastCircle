@@ -6,11 +6,30 @@ import '../data/models/cast_member_model.dart';
 import '../data/models/production_models.dart';
 import '../data/models/script_models.dart';
 import '../data/repositories/production_repository.dart';
+import '../data/services/deep_link_service.dart';
 import '../data/services/script_import_service.dart';
 import '../data/services/script_parser.dart';
 import '../data/services/voice_config_service.dart';
 import '../data/services/supabase_service.dart';
 import '../main.dart';
+
+/// Pending join data from a deep link. Consumed by the join screen.
+final pendingJoinProvider = StateProvider<PendingJoin?>((ref) => null);
+
+/// Provider for the character the user is rehearsing as.
+final rehearsalCharacterProvider = StateProvider<String?>((ref) => null);
+
+/// Provider for the selected scene to rehearse.
+final selectedSceneProvider = StateProvider<ScriptScene?>((ref) => null);
+
+/// Rehearsal mode: full scene readthrough vs cue-response practice.
+enum RehearsalMode { sceneReadthrough, cuePractice }
+
+final rehearsalModeProvider =
+    StateProvider<RehearsalMode>((ref) => RehearsalMode.sceneReadthrough);
+
+/// When true, the actor's upcoming lines are hidden (blind rehearsal).
+final hideMyLinesProvider = StateProvider<bool>((ref) => false);
 
 /// Repository provider — bridges Drift DB with domain models.
 final productionRepositoryProvider = Provider<ProductionRepository>((ref) {

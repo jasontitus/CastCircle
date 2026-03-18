@@ -118,19 +118,14 @@ class _VoiceConfigScreenState extends ConsumerState<VoiceConfigScreen> {
     final override = _overrides[char.name];
     final hasOverride = override != null;
 
-    // Determine what voice this character would get from the preset
-    final charIndex = script.characters.indexOf(char);
-    final pool = switch (char.gender) {
-      CharacterGender.female => _currentPreset.femaleVoices,
-      CharacterGender.male => _currentPreset.maleVoices,
-      CharacterGender.nonGendered => [
-        ..._currentPreset.femaleVoices,
-        ..._currentPreset.maleVoices,
-      ],
-    };
-    final presetVoice = pool.isNotEmpty
-        ? pool[charIndex % pool.length]
-        : 'af_heart';
+    // Adjacency-aware voice assignment
+    final autoAssignment = VoiceConfigService.assignVoicesFromScript(
+      lines: script.lines,
+      characters: script.characters,
+      femaleVoices: _currentPreset.femaleVoices,
+      maleVoices: _currentPreset.maleVoices,
+    );
+    final presetVoice = autoAssignment[char.name] ?? 'af_heart';
     final activeVoice = hasOverride ? override.voiceId : presetVoice;
     final activeSpeed =
         hasOverride ? override.speed : _currentPreset.defaultSpeed;

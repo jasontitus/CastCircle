@@ -17,6 +17,9 @@ class ScriptLine {
   final String text;
   final LineType lineType;
   final String stageDirection; // inline direction like "(Smiling:)"
+  final double? ocrConfidence; // OCR confidence 0.0–1.0, null for non-OCR imports
+  final int? sourcePage; // 1-based page from original PDF
+  final int? sourceLineOnPage; // 1-based line within that page
 
   const ScriptLine({
     required this.id,
@@ -28,7 +31,22 @@ class ScriptLine {
     required this.text,
     required this.lineType,
     this.stageDirection = '',
+    this.ocrConfidence,
+    this.sourcePage,
+    this.sourceLineOnPage,
   });
+
+  /// Page:line reference string (e.g., "p12:5"). Uses source page if
+  /// available, otherwise computes from orderIndex.
+  String get pageLineRef {
+    if (sourcePage != null && sourceLineOnPage != null) {
+      return 'p$sourcePage:$sourceLineOnPage';
+    }
+    // Fallback: compute from position (42 lines per page convention)
+    final page = (orderIndex ~/ 42) + 1;
+    final line = (orderIndex % 42) + 1;
+    return 'p$page:$line';
+  }
 
   ScriptLine copyWith({
     String? id,
@@ -40,6 +58,9 @@ class ScriptLine {
     String? text,
     LineType? lineType,
     String? stageDirection,
+    double? Function()? ocrConfidence,
+    int? Function()? sourcePage,
+    int? Function()? sourceLineOnPage,
   }) {
     return ScriptLine(
       id: id ?? this.id,
@@ -51,6 +72,9 @@ class ScriptLine {
       text: text ?? this.text,
       lineType: lineType ?? this.lineType,
       stageDirection: stageDirection ?? this.stageDirection,
+      ocrConfidence: ocrConfidence != null ? ocrConfidence() : this.ocrConfidence,
+      sourcePage: sourcePage != null ? sourcePage() : this.sourcePage,
+      sourceLineOnPage: sourceLineOnPage != null ? sourceLineOnPage() : this.sourceLineOnPage,
     );
   }
 
@@ -64,6 +88,9 @@ class ScriptLine {
         'text': text,
         'line_type': lineType.name,
         'stage_direction': stageDirection,
+        if (ocrConfidence != null) 'ocr_confidence': ocrConfidence,
+        if (sourcePage != null) 'source_page': sourcePage,
+        if (sourceLineOnPage != null) 'source_line_on_page': sourceLineOnPage,
       };
 
   factory ScriptLine.fromJson(Map<String, dynamic> json) => ScriptLine(
@@ -76,6 +103,9 @@ class ScriptLine {
         text: json['text'] as String,
         lineType: LineType.values.byName(json['line_type'] as String),
         stageDirection: json['stage_direction'] as String? ?? '',
+        ocrConfidence: (json['ocr_confidence'] as num?)?.toDouble(),
+        sourcePage: json['source_page'] as int?,
+        sourceLineOnPage: json['source_line_on_page'] as int?,
       );
 }
 
@@ -270,6 +300,21 @@ class ParsedScript {
   /// Get scenes filtered to those containing a specific character.
   List<ScriptScene> scenesForCharacter(String characterName) {
     return scenes.where((s) => s.characters.contains(characterName)).toList();
+  }
+
+  /// Find the line index for a page:line reference.
+  /// Searches by sourcePage/sourceLineOnPage first, falls back to computed.
+  int? indexForRef(int page, int lineOnPage) {
+    // Try exact source page match first
+    for (var i = 0; i < lines.length; i++) {
+      if (lines[i].sourcePage == page && lines[i].sourceLineOnPage == lineOnPage) {
+        return i;
+      }
+    }
+    // Fallback: computed from 42 lines/page
+    final idx = (page - 1) * 42 + (lineOnPage - 1);
+    if (idx < 0 || idx >= lines.length) return null;
+    return idx;
   }
 
   /// Get unique act names in order.

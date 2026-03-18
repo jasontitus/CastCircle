@@ -8,12 +8,14 @@ class ValidationCheck {
   final bool passed;
   final String? detail;
   final IconData icon;
+  final bool isWarning; // warning = amber, error = red
 
   const ValidationCheck({
     required this.label,
     required this.passed,
     this.detail,
     this.icon = Icons.check_circle,
+    this.isWarning = false,
   });
 }
 
@@ -107,6 +109,23 @@ List<ValidationCheck> validateScript(ParsedScript script) {
     icon: Icons.format_list_numbered,
   ));
 
+  // 8. OCR confidence — flag lines below 0.85 threshold
+  final lowConfidenceLines = script.lines
+      .where((l) => l.ocrConfidence != null && l.ocrConfidence! < 0.85)
+      .length;
+  final hasOcrData = script.lines.any((l) => l.ocrConfidence != null);
+  if (hasOcrData) {
+    checks.add(ValidationCheck(
+      label: 'OCR quality',
+      passed: lowConfidenceLines == 0,
+      detail: lowConfidenceLines == 0
+          ? 'All OCR lines have good confidence'
+          : '$lowConfidenceLines line${lowConfidenceLines == 1 ? '' : 's'} may need review (low OCR confidence)',
+      icon: Icons.document_scanner,
+      isWarning: true,
+    ));
+  }
+
   return checks;
 }
 
@@ -168,6 +187,12 @@ void showValidationPanel(BuildContext context, ParsedScript script) {
               itemCount: checks.length,
               itemBuilder: (context, index) {
                 final check = checks[index];
+                final failColor = check.isWarning
+                    ? Colors.amber.shade700
+                    : Colors.red;
+                final failDetailColor = check.isWarning
+                    ? Colors.amber.shade600
+                    : Colors.red[300];
                 return Padding(
                   padding: const EdgeInsets.only(bottom: 12),
                   child: Row(
@@ -176,8 +201,10 @@ void showValidationPanel(BuildContext context, ParsedScript script) {
                       Icon(
                         check.passed
                             ? Icons.check_circle
-                            : Icons.cancel,
-                        color: check.passed ? Colors.green : Colors.red,
+                            : (check.isWarning
+                                ? Icons.warning_amber_rounded
+                                : Icons.cancel),
+                        color: check.passed ? Colors.green : failColor,
                         size: 20,
                       ),
                       const SizedBox(width: 12),
@@ -201,7 +228,7 @@ void showValidationPanel(BuildContext context, ParsedScript script) {
                                     ?.copyWith(
                                       color: check.passed
                                           ? Colors.grey[600]
-                                          : Colors.red[300],
+                                          : failDetailColor,
                                     ),
                               ),
                           ],

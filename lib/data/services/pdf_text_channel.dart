@@ -24,6 +24,29 @@ class PdfTextChannel {
     }
   }
 
+  /// Extract text from a PDF file, returning per-page text.
+  ///
+  /// Returns a list where index i is the text of page i+1,
+  /// or null if the PDF has no embedded text.
+  static Future<List<String>?> extractTextPerPage(String path) async {
+    try {
+      final result = await _channel.invokeMethod<Map>('extractTextPerPage', {
+        'path': path,
+      });
+      if (result == null) return null;
+      final pages = result['pages'];
+      if (pages is List) {
+        return pages.cast<String>();
+      }
+      return null;
+    } on PlatformException catch (e) {
+      if (e.code == 'NO_TEXT') return null;
+      rethrow;
+    } on MissingPluginException {
+      return null;
+    }
+  }
+
   /// Check if a PDF has embedded text (vs being image-only).
   ///
   /// Returns true if at least one of the first 3 pages has extractable text.

@@ -77,7 +77,7 @@ public class VoiceConverter {
         kanade = nil
         vocos = nil
         melFilterbank = nil
-        GPU.clearCache()
+        Memory.clearCache()
     }
 
     // MARK: - Voice Conversion
@@ -141,10 +141,10 @@ public class VoiceConverter {
         let waveform = vocos.decode(mel: mel)
 
         let elapsed = CFAbsoluteTimeGetCurrent() - start
-        let rtf = elapsed / (Float(sourceLength) / 24000.0)
+        let rtf = elapsed / (Double(sourceLength) / 24000.0)
         print("  Voice conversion complete: \(String(format: "%.2f", elapsed))s (RTF: \(String(format: "%.2f", rtf)))")
 
-        GPU.clearCache()
+        Memory.clearCache()
 
         return waveform.squeezed(axis: 0)  // (T,)
     }
@@ -187,7 +187,7 @@ public class VoiceConverter {
         )
 
         let waveform = vocos.decode(mel: mel)
-        GPU.clearCache()
+        Memory.clearCache()
 
         return waveform.squeezed(axis: 0)
     }

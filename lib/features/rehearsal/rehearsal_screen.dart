@@ -9,6 +9,7 @@ import 'package:just_audio/just_audio.dart';
 import '../../core/theme/app_theme.dart';
 import '../../data/models/script_models.dart';
 import '../../data/models/rehearsal_models.dart';
+import '../../data/models/voice_preset.dart';
 import '../../data/services/tts_service.dart';
 import '../../data/services/stt_service.dart';
 import '../../data/services/debug_log_service.dart';
@@ -19,7 +20,6 @@ import '../../data/services/voice_clone_service.dart';
 import '../../data/services/voice_config_service.dart';
 import '../../providers/production_providers.dart';
 import '../../features/settings/settings_screen.dart';
-import 'scene_selector_screen.dart';
 import 'rehearsal_history_screen.dart';
 
 /// Rehearsal state machine.
@@ -60,6 +60,7 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen> {
   String _recognizedText = '';
   double _matchScore = 0.0;
   bool _showMatchFeedback = false;
+  bool _showJumpBackHint = true;
 
   // Silence timeout — auto-advance when no new STT results for a while
   Timer? _silenceTimer;
@@ -225,12 +226,19 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen> {
       final overrides = await voiceConfig.getOverrides(production.id);
       final preset = await voiceConfig.getPreset(production.id, locale: locale);
 
+      // Compute adjacency-aware default assignments
+      final autoAssignment = VoiceConfigService.assignVoicesFromScript(
+        lines: script.lines,
+        characters: script.characters,
+        femaleVoices: preset.femaleVoices,
+        maleVoices: preset.maleVoices,
+        genderOverrides: genderOverrides,
+      );
+
       for (var i = 0; i < script.characters.length; i++) {
         final char = script.characters[i];
-        final gender = genderOverrides[char.name] ?? char.gender;
-        final isFemale = gender != CharacterGender.male;
 
-        // Resolve voice without hitting SharedPreferences again
+        // Manual override takes priority
         String voiceId;
         double speed;
         final override = overrides[char.name];
@@ -238,19 +246,23 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen> {
           voiceId = override.voiceId;
           speed = override.speed;
         } else {
-          final pool = isFemale ? preset.femaleVoices : preset.maleVoices;
-          final voices = pool.isNotEmpty
-              ? pool
-              : [...preset.femaleVoices, ...preset.maleVoices];
-          voiceId = voices.isEmpty ? 'af_heart' : voices[i % voices.length];
+          voiceId = autoAssignment[char.name] ?? 'af_heart';
           speed = preset.defaultSpeed;
         }
 
         _tts.assignVoice(char.name, i, voiceId: voiceId, speed: speed);
       }
     } else {
+      // No production — still use adjacency-aware assignment with defaults
+      final autoAssignment = VoiceConfigService.assignVoicesFromScript(
+        lines: script.lines,
+        characters: script.characters,
+        femaleVoices: VoicePresets.modernAmerican.femaleVoices,
+        maleVoices: VoicePresets.modernAmerican.maleVoices,
+      );
       for (var i = 0; i < script.characters.length; i++) {
-        _tts.assignVoice(script.characters[i].name, i);
+        final name = script.characters[i].name;
+        _tts.assignVoice(name, i, voiceId: autoAssignment[name]);
       }
     }
   }
@@ -305,6 +317,9 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen> {
             // Match feedback for STT
             if (_showMatchFeedback && isMyLine)
               _buildMatchFeedback(context),
+            // AirPods / Action Button hint
+            if (_showJumpBackHint && !isComplete)
+              _buildJumpBackHint(context),
             _buildControls(
               context, rehearsalState, isMyLine, isComplete,
               currentIdx, dialogueLines.length, jumpBackLines,
@@ -837,6 +852,29 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen> {
         Text(label,
             style: TextStyle(color: Colors.grey[600], fontSize: 12)),
       ],
+    );
+  }
+
+  Widget _buildJumpBackHint(BuildContext context) {
+    return Container(
+      color: Colors.grey[900]?.withValues(alpha: 0.8),
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+      child: Row(
+        children: [
+          Icon(Icons.headphones, size: 14, color: Colors.grey[500]),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              'Double-tap AirPods or press Action Button to jump back',
+              style: TextStyle(color: Colors.grey[500], fontSize: 12),
+            ),
+          ),
+          GestureDetector(
+            onTap: () => setState(() => _showJumpBackHint = false),
+            child: Icon(Icons.close, size: 16, color: Colors.grey[600]),
+          ),
+        ],
+      ),
     );
   }
 

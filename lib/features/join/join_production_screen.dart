@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import '../../data/models/cast_member_model.dart';
 import '../../data/models/production_models.dart';
+import '../../data/services/deep_link_service.dart';
 import '../../data/services/supabase_service.dart';
 import '../../providers/production_providers.dart';
 
@@ -24,6 +25,33 @@ class _JoinProductionScreenState extends ConsumerState<JoinProductionScreen> {
   Map<String, dynamic>? _foundProduction;
   List<Map<String, dynamic>>? _castMembers;
   String? _selectedCharacter;
+
+  // Deep link pre-fill
+  String? _prefilledCharacter;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _checkPendingJoin();
+    });
+  }
+
+  void _checkPendingJoin() {
+    final pending = ref.read(pendingJoinProvider);
+    if (pending != null) {
+      _codeController.text = pending.code;
+      _prefilledCharacter = pending.characterName;
+      if (pending.actorName != null) {
+        _nameController.text = pending.actorName!;
+      }
+      // Clear the pending join so it doesn't trigger again
+      ref.read(pendingJoinProvider.notifier).state = null;
+      DeepLinkService.instance.clearPending();
+      // Auto-lookup the code
+      _lookupCode();
+    }
+  }
 
   @override
   void dispose() {
@@ -270,13 +298,21 @@ class _JoinProductionScreenState extends ConsumerState<JoinProductionScreen> {
     // Show unclaimed invitations first
     for (final inv in unclaimedInvitations) {
       final charName = inv['character_name'] as String;
+      final isPreselected = _prefilledCharacter != null &&
+          charName.toUpperCase() == _prefilledCharacter!.toUpperCase();
       widgets.add(
         RadioListTile<String>(
           value: charName,
           groupValue: _selectedCharacter,
           title: Text(charName),
           subtitle: Text(
-              'Invited as ${inv['role'] ?? 'actor'} - claim this spot'),
+            isPreselected
+                ? 'You were invited for this role'
+                : 'Invited as ${inv['role'] ?? 'actor'} - claim this spot',
+          ),
+          secondary: isPreselected
+              ? Icon(Icons.star, color: Theme.of(context).colorScheme.primary)
+              : null,
           onChanged: (v) => setState(() => _selectedCharacter = v),
         ),
       );
@@ -313,9 +349,23 @@ class _JoinProductionScreenState extends ConsumerState<JoinProductionScreen> {
       final productionId = production['id'] as String;
       final cast = await supa.fetchCastMembers(productionId);
 
+      // Auto-select the character that was pre-filled from deep link
+      String? autoSelected;
+      if (_prefilledCharacter != null) {
+        for (final cm in cast) {
+          final charName = cm['character_name'] as String? ?? '';
+          if (charName.toUpperCase() == _prefilledCharacter!.toUpperCase() &&
+              cm['user_id'] == null) {
+            autoSelected = charName;
+            break;
+          }
+        }
+      }
+
       setState(() {
         _foundProduction = production;
         _castMembers = cast;
+        _selectedCharacter = autoSelected;
         _loading = false;
       });
     } catch (e) {
