@@ -1,0 +1,1 @@
+{"flutter":{"platforms":{"ios":{"default":{"projectId":"castcircle-app","appId":"1:786015234737:ios:912627f5d9dd0189e2d090","uploadDebugSymbols":false,"fileOutput":"ios/Runner/GoogleService-Info.plist"}},"dart":{"lib/firebase_options.dart":{"projectId":"castcircle-app","configurations":{"ios":"1:786015234737:ios:912627f5d9dd0189e2d090"}}}}}}

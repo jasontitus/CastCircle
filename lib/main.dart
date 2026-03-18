@@ -1,3 +1,10 @@
+import 'dart:async';
+
+import 'package:firebase_core/firebase_core.dart';
+import 'package:firebase_crashlytics/firebase_crashlytics.dart';
+import 'package:firebase_analytics/firebase_analytics.dart';
+import 'package:firebase_performance/firebase_performance.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -10,6 +17,7 @@ import 'data/services/model_download_service.dart';
 import 'data/services/tts_service.dart';
 import 'data/services/stt_service.dart';
 import 'data/services/debug_log_service.dart';
+import 'firebase_options.dart';
 
 /// Global database instance, provided via Riverpod.
 final databaseProvider = Provider<AppDatabase>((ref) {
@@ -25,6 +33,26 @@ final sharedPreferencesProvider = Provider<SharedPreferences>((ref) {
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+
+  // Initialize Firebase
+  await Firebase.initializeApp(
+    options: DefaultFirebaseOptions.currentPlatform,
+  );
+
+  // Crashlytics: catch all Flutter errors
+  FlutterError.onError = FirebaseCrashlytics.instance.recordFlutterFatalError;
+
+  // Crashlytics: catch async errors not caught by Flutter
+  PlatformDispatcher.instance.onError = (error, stack) {
+    FirebaseCrashlytics.instance.recordError(error, stack, fatal: true);
+    return true;
+  };
+
+  // Performance monitoring
+  FirebasePerformance.instance.setPerformanceCollectionEnabled(true);
+
+  // Analytics
+  FirebaseAnalytics.instance.setAnalyticsCollectionEnabled(true);
 
   const supabaseUrl = String.fromEnvironment('SUPABASE_URL',
       defaultValue: 'https://vngpbmqymdaxxnvqptsk.supabase.co');

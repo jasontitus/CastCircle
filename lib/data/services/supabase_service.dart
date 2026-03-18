@@ -117,9 +117,24 @@ class SupabaseService {
 
   Future<List<Map<String, dynamic>>> fetchCastMembers(
       String productionId) async {
+    try {
+      // Try RPC first (bypasses RLS)
+      final rpcResult = await _client.rpc(
+        'fetch_cast_for_join',
+        params: {'prod_id': productionId},
+      );
+      if (rpcResult != null && rpcResult is List) {
+        return List<Map<String, dynamic>>.from(
+            rpcResult.map((e) => Map<String, dynamic>.from(e)));
+      }
+    } catch (e) {
+      debugPrint('RPC fetch_cast_for_join failed: $e');
+    }
+
+    // Fallback: direct query (simpler select without profiles join)
     return _client
         .from('cast_members')
-        .select('*, profiles(*)')
+        .select()
         .eq('production_id', productionId);
   }
 
@@ -165,10 +180,16 @@ class SupabaseService {
     required String castMemberId,
     required String userId,
   }) async {
-    await _client.from('cast_members').update({
-      'user_id': userId,
-      'joined_at': DateTime.now().toIso8601String(),
-    }).eq('id', castMemberId);
+    try {
+      await _client.rpc('claim_cast_invitation',
+          params: {'member_id': castMemberId});
+    } catch (e) {
+      debugPrint('RPC claim failed, trying direct: $e');
+      await _client.from('cast_members').update({
+        'user_id': userId,
+        'joined_at': DateTime.now().toIso8601String(),
+      }).eq('id', castMemberId);
+    }
   }
 
   /// Self-join a production (create a new cast_members row with user_id set).
@@ -179,6 +200,20 @@ class SupabaseService {
     required String displayName,
     required String role,
   }) async {
+    try {
+      final result = await _client.rpc('join_production', params: {
+        'prod_id': productionId,
+        'char_name': characterName,
+        'display_name': displayName,
+        'member_role': role,
+      });
+      if (result != null && result is Map) {
+        return Map<String, dynamic>.from(result);
+      }
+    } catch (e) {
+      debugPrint('RPC join_production failed, trying direct: $e');
+    }
+
     return _client
         .from('cast_members')
         .insert({
