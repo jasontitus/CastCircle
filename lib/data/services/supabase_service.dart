@@ -194,8 +194,19 @@ class SupabaseService {
   }
 
   /// Look up a production by its join code.
+  /// Uses RPC function (SECURITY DEFINER) to bypass RLS.
   Future<Map<String, dynamic>?> lookupByJoinCode(String code) async {
     try {
+      // Try RPC first (bypasses RLS, always works)
+      final rpcResult = await _client.rpc(
+        'lookup_production_by_join_code',
+        params: {'lookup_code': code.toUpperCase()},
+      );
+      if (rpcResult != null && rpcResult is Map) {
+        return Map<String, dynamic>.from(rpcResult);
+      }
+
+      // Fallback: direct query (requires RLS policy)
       final rows = await _client
           .from('productions')
           .select()
