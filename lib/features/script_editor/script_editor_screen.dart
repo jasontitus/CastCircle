@@ -24,6 +24,7 @@ class ScriptEditorScreen extends ConsumerStatefulWidget {
 class _ScriptEditorScreenState extends ConsumerState<ScriptEditorScreen> {
   String? _selectedCharacter;
   bool _showDirections = true;
+  bool _reorderMode = false;
 
   @override
   Widget build(BuildContext context) {
@@ -84,6 +85,8 @@ class _ScriptEditorScreenState extends ConsumerState<ScriptEditorScreen> {
               switch (action) {
                 case 'validate':
                   showValidationPanel(context, script);
+                case 'reorder':
+                  setState(() => _reorderMode = !_reorderMode);
                 case 'export_text':
                   _export(context, script, 'plain');
                 case 'export_md':
@@ -96,6 +99,14 @@ class _ScriptEditorScreenState extends ConsumerState<ScriptEditorScreen> {
                 child: ListTile(
                   leading: Icon(Icons.checklist),
                   title: Text('Validate Script'),
+                  dense: true,
+                ),
+              ),
+              PopupMenuItem(
+                value: 'reorder',
+                child: ListTile(
+                  leading: Icon(_reorderMode ? Icons.check : Icons.swap_vert),
+                  title: Text(_reorderMode ? 'Done Reordering' : 'Reorder Lines'),
                   dense: true,
                 ),
               ),
@@ -177,16 +188,53 @@ class _ScriptEditorScreenState extends ConsumerState<ScriptEditorScreen> {
               ],
             ),
           ),
+          // Reorder mode banner
+          if (_reorderMode)
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+              color: Theme.of(context).colorScheme.tertiaryContainer,
+              child: Row(
+                children: [
+                  Icon(Icons.swap_vert, size: 16,
+                      color: Theme.of(context).colorScheme.onTertiaryContainer),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text('Long press and drag to reorder',
+                        style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                            color: Theme.of(context).colorScheme.onTertiaryContainer)),
+                  ),
+                  TextButton(
+                    onPressed: () => setState(() => _reorderMode = false),
+                    child: const Text('Done'),
+                  ),
+                ],
+              ),
+            ),
           // Script lines
           Expanded(
-            child: ListView.builder(
-              padding: const EdgeInsets.symmetric(horizontal: 16),
-              itemCount: filteredLines.length,
-              itemBuilder: (context, index) {
-                return _buildLineCard(
-                    context, filteredLines[index], charColors);
-              },
-            ),
+            child: _reorderMode && _selectedCharacter == null
+                ? ReorderableListView.builder(
+                    padding: const EdgeInsets.symmetric(horizontal: 16),
+                    itemCount: filteredLines.length,
+                    onReorder: (oldIndex, newIndex) {
+                      _reorderLines(script, filteredLines, oldIndex, newIndex);
+                    },
+                    itemBuilder: (context, index) {
+                      return _buildLineCard(
+                        context, filteredLines[index], charColors,
+                        key: ValueKey(filteredLines[index].id),
+                        showDragHandle: true,
+                      );
+                    },
+                  )
+                : ListView.builder(
+                    padding: const EdgeInsets.symmetric(horizontal: 16),
+                    itemCount: filteredLines.length,
+                    itemBuilder: (context, index) {
+                      return _buildLineCard(
+                          context, filteredLines[index], charColors);
+                    },
+                  ),
           ),
         ],
       ),
@@ -222,14 +270,56 @@ class _ScriptEditorScreenState extends ConsumerState<ScriptEditorScreen> {
     return lines;
   }
 
+  void _reorderLines(ParsedScript script, List<ScriptLine> filteredLines,
+      int oldIndex, int newIndex) {
+    if (newIndex > oldIndex) newIndex--;
+    if (oldIndex == newIndex) return;
+
+    // Work on the full line list
+    final allLines = script.lines.toList();
+    final movedLine = filteredLines[oldIndex];
+    final targetLine = filteredLines[newIndex];
+
+    // Find positions in the full list
+    final fromIdx = allLines.indexWhere((l) => l.id == movedLine.id);
+    final toIdx = allLines.indexWhere((l) => l.id == targetLine.id);
+    if (fromIdx < 0 || toIdx < 0) return;
+
+    // Move the line
+    allLines.removeAt(fromIdx);
+    final insertAt = toIdx > fromIdx ? toIdx : toIdx;
+    allLines.insert(insertAt, movedLine);
+
+    // Reassign orderIndex
+    final reindexed = <ScriptLine>[];
+    for (var i = 0; i < allLines.length; i++) {
+      reindexed.add(allLines[i].copyWith(orderIndex: i));
+    }
+
+    // Update script
+    ref.read(currentScriptProvider.notifier).state = ParsedScript(
+      title: script.title,
+      lines: reindexed,
+      characters: script.characters,
+      scenes: script.scenes,
+      rawText: script.rawText,
+    );
+
+    // Persist
+    persistScript(ref);
+  }
+
   Widget _buildLineCard(
     BuildContext context,
     ScriptLine line,
-    Map<String, Color> charColors,
-  ) {
+    Map<String, Color> charColors, {
+    Key? key,
+    bool showDragHandle = false,
+  }) {
     switch (line.lineType) {
       case LineType.header:
         return Padding(
+          key: key,
           padding: const EdgeInsets.symmetric(vertical: 16),
           child: Text(
             line.text,
@@ -241,6 +331,7 @@ class _ScriptEditorScreenState extends ConsumerState<ScriptEditorScreen> {
 
       case LineType.stageDirection:
         return Padding(
+          key: key,
           padding: const EdgeInsets.symmetric(vertical: 4),
           child: Card(
             color: Theme.of(context)
@@ -270,6 +361,7 @@ class _ScriptEditorScreenState extends ConsumerState<ScriptEditorScreen> {
         final hasLowConfidence =
             line.ocrConfidence != null && line.ocrConfidence! < 0.85;
         return Padding(
+          key: key,
           padding: const EdgeInsets.symmetric(vertical: 2),
           child: InkWell(
             onTap: () => _editLine(context, line),
@@ -361,6 +453,16 @@ class _ScriptEditorScreenState extends ConsumerState<ScriptEditorScreen> {
                         ],
                       ),
                     ),
+                    if (showDragHandle)
+                      Padding(
+                        padding: const EdgeInsets.only(left: 4),
+                        child: Icon(Icons.drag_handle,
+                            size: 20,
+                            color: Theme.of(context)
+                                .colorScheme
+                                .onSurface
+                                .withValues(alpha: 0.3)),
+                      ),
                   ],
                 ),
               ),
