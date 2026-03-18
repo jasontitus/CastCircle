@@ -724,7 +724,7 @@ class _ScriptEditorScreenState extends ConsumerState<ScriptEditorScreen> {
       // Show share sheet — sharePositionOrigin required on iPad/iPhone
       final box = context.findRenderObject() as RenderBox?;
       await Share.shareXFiles(
-        [XFile(filePath)],
+        [XFile(filePath, mimeType: 'text/plain')],
         text: 'CastCircle export: ${script.title}',
         sharePositionOrigin: box != null
             ? box.localToGlobal(Offset.zero) & box.size

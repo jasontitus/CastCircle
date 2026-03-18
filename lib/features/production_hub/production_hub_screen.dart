@@ -884,7 +884,7 @@ class _ProductionHubScreenState extends ConsumerState<ProductionHubScreen> {
 
       final box = context.findRenderObject() as RenderBox?;
       await Share.shareXFiles(
-        [XFile(filePath)],
+        [XFile(filePath, mimeType: 'text/plain')],
         text: 'CastCircle export: ${production.title}',
         sharePositionOrigin: box != null
             ? box.localToGlobal(Offset.zero) & box.size
