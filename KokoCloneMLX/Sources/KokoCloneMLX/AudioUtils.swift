@@ -1,5 +1,6 @@
 import Foundation
 import MLX
+import MLXFFT
 
 // MARK: - WAV File I/O
 
@@ -171,7 +172,7 @@ public func melSpectrogram(
 
     // Compute rfft per frame using MLX
     let framesArray = MLXArray(frames).reshaped([numFrames, nFFT])
-    let spectrum = MLX.FFT.rfft(framesArray, axis: -1)  // (numFrames, nFreqs) complex
+    let spectrum = MLXFFT.rfft(framesArray, axis: -1)  // (numFrames, nFreqs) complex
 
     // Power spectrogram (magnitude)
     let real = spectrum.realPart()

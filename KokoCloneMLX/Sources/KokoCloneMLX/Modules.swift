@@ -1,7 +1,5 @@
 import Foundation
 import MLX
-import MLXNN
-import MLXFast
 
 // MARK: - Rotary Position Embeddings
 
@@ -125,7 +123,7 @@ public class RoPEAttention {
         let scores = MLX.matmul(q, k.transposed(0, 1, 3, 2)) * MLXArray(scale)
 
         // Causal mask is NOT used for encoder self-attention in Kanade
-        let attnWeights = softmax(scores, axis: -1)
+        let attnWeights = MLX.softmax(scores, axis: -1)
         let attnOutput = MLX.matmul(attnWeights, v)
 
         // Reshape back: (B, nHeads, T, headDim) -> (B, T, dim)
@@ -304,7 +302,7 @@ public class AttentiveStatsPool {
         alpha = MLX.tanh(alpha)
         alpha = MLX.conv1d(alpha.transposed(0, 2, 1), attn2Weight, stride: 1, padding: 0)
         alpha = alpha.transposed(0, 2, 1) + attn2Bias.reshaped([1, -1, 1])
-        alpha = softmax(alpha, axis: 2)  // (B, channels, T)
+        alpha = MLX.softmax(alpha, axis: 2)  // (B, channels, T)
 
         // Weighted mean and std
         let mean = MLX.sum(alpha * x, axis: 2)  // (B, channels)

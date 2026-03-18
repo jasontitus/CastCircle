@@ -1,6 +1,5 @@
 import Foundation
 import MLX
-import MLXNN
 
 /// Kanade-25Hz voice conversion model.
 ///

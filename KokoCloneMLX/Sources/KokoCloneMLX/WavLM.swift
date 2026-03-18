@@ -1,6 +1,5 @@
 import Foundation
 import MLX
-import MLXNN
 
 /// WavLM-Base+ feature extractor (94M params).
 ///
@@ -248,7 +247,7 @@ public class WavLMTransformerLayer {
         // Attention scores
         let scale = MLXArray(Float(1.0 / sqrt(Float(headDim))))
         let scores = MLX.matmul(q, k.transposed(0, 1, 3, 2)) * scale + gatedBias
-        let attnWeights = softmax(scores, axis: -1)
+        let attnWeights = MLX.softmax(scores, axis: -1)
         let attnOut = MLX.matmul(attnWeights, v)
 
         // Reshape and project
