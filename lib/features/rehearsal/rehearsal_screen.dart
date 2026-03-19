@@ -897,7 +897,7 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen> {
                     style: TextStyle(fontWeight: FontWeight.bold),
                   ),
                   TextSpan(
-                    text: 'Use AirPods "previous track" or lock screen controls to jump back to your last cue',
+                    text: 'Double-tap either AirPod to jump back to your last cue',
                   ),
                 ],
               ),

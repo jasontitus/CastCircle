@@ -46,17 +46,18 @@ class MediaControlPlugin: NSObject {
 
         let center = MPRemoteCommandCenter.shared()
 
-        // Previous track → jump back
+        // Previous track → jump back (double-tap left AirPod)
         center.previousTrackCommand.isEnabled = true
         center.previousTrackCommand.addTarget { [weak self] _ in
             self?.channel.invokeMethod("onMediaCommand", arguments: "jumpBack")
             return .success
         }
 
-        // Next track → skip forward
+        // Next track → ALSO jump back (double-tap right AirPod)
+        // Users only need "go back and try again" — no use case for skipping ahead
         center.nextTrackCommand.isEnabled = true
         center.nextTrackCommand.addTarget { [weak self] _ in
-            self?.channel.invokeMethod("onMediaCommand", arguments: "skip")
+            self?.channel.invokeMethod("onMediaCommand", arguments: "jumpBack")
             return .success
         }
 
