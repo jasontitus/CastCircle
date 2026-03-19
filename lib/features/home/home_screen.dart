@@ -163,24 +163,30 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
       return;
     }
 
-    final cloudLines = await fetchCloudScriptLines(production.id);
-
-    if (cloudLines != null && cloudLines.isNotEmpty) {
-      final script = buildParsedScript(production.title, cloudLines);
-      ref.read(currentScriptProvider.notifier).state = script;
-      await persistScript(ref);
-      if (context.mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Loaded ${cloudLines.length} lines from cloud'),
-            duration: const Duration(seconds: 2),
-          ),
-        );
-        context.push('/production');
+    // Try cloud (Supabase)
+    try {
+      final cloudLines = await fetchCloudScriptLines(production.id);
+      if (cloudLines != null && cloudLines.isNotEmpty) {
+        final script = buildParsedScript(production.title, cloudLines);
+        ref.read(currentScriptProvider.notifier).state = script;
+        await persistScript(ref);
+        if (context.mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('Loaded ${cloudLines.length} lines from cloud'),
+              duration: const Duration(seconds: 2),
+            ),
+          );
+          context.push('/production');
+        }
+        return;
       }
-    } else {
-      if (context.mounted) context.push('/import');
+    } catch (e) {
+      debugPrint('Cloud script fetch failed: $e');
     }
+
+    // Nothing found anywhere — go to import
+    if (context.mounted) context.push('/import');
   }
 
   Future<void> _openProductionForSetup(
