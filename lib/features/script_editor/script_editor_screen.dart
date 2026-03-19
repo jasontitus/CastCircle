@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
@@ -6,6 +7,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:path/path.dart' as p;
+import 'package:pdfrx/pdfrx.dart';
 import 'package:share_plus/share_plus.dart';
 
 import '../../core/theme/app_theme.dart';
@@ -25,6 +27,7 @@ class _ScriptEditorScreenState extends ConsumerState<ScriptEditorScreen> {
   String? _selectedCharacter;
   bool _showDirections = true;
   bool _reorderMode = false;
+  bool _showLowConfidenceOnly = false;
 
   @override
   Widget build(BuildContext context) {
@@ -141,11 +144,27 @@ class _ScriptEditorScreenState extends ConsumerState<ScriptEditorScreen> {
               children: [
                 FilterChip(
                   label: const Text('All'),
-                  selected: _selectedCharacter == null,
+                  selected: _selectedCharacter == null && !_showLowConfidenceOnly,
                   onSelected: (_) =>
-                      setState(() => _selectedCharacter = null),
+                      setState(() { _selectedCharacter = null; _showLowConfidenceOnly = false; }),
                 ),
                 const SizedBox(width: 8),
+                if (script.lines.any((l) => l.ocrConfidence != null && l.ocrConfidence! < 0.85))
+                  Padding(
+                    padding: const EdgeInsets.only(right: 8),
+                    child: FilterChip(
+                      avatar: Icon(Icons.warning_amber_rounded, size: 16, color: Colors.amber.shade700),
+                      label: Text(
+                        'Low OCR (${script.lines.where((l) => l.ocrConfidence != null && l.ocrConfidence! < 0.85).length})',
+                      ),
+                      selected: _showLowConfidenceOnly,
+                      selectedColor: Colors.amber.shade100,
+                      onSelected: (_) => setState(() {
+                        _showLowConfidenceOnly = !_showLowConfidenceOnly;
+                        if (_showLowConfidenceOnly) _selectedCharacter = null;
+                      }),
+                    ),
+                  ),
                 ...script.characters.map((char) => Padding(
                       padding: const EdgeInsets.only(right: 8),
                       child: FilterChip(
@@ -177,7 +196,14 @@ class _ScriptEditorScreenState extends ConsumerState<ScriptEditorScreen> {
                   style: Theme.of(context).textTheme.bodySmall,
                 ),
                 const Spacer(),
-                if (_selectedCharacter != null)
+                if (_showLowConfidenceOnly)
+                  Text(
+                    'Showing low-confidence OCR lines',
+                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                          color: Colors.amber.shade700,
+                        ),
+                  )
+                else if (_selectedCharacter != null)
                   Text(
                     'Showing $_selectedCharacter only',
                     style: Theme.of(context).textTheme.bodySmall?.copyWith(
@@ -247,6 +273,13 @@ class _ScriptEditorScreenState extends ConsumerState<ScriptEditorScreen> {
       lines = lines
           .where((l) => l.lineType != LineType.stageDirection)
           .toList();
+    }
+
+    if (_showLowConfidenceOnly) {
+      lines = lines
+          .where((l) => l.ocrConfidence != null && l.ocrConfidence! < 0.85)
+          .toList();
+      return lines;
     }
 
     if (_selectedCharacter != null) {
@@ -474,14 +507,26 @@ class _ScriptEditorScreenState extends ConsumerState<ScriptEditorScreen> {
   void _editLine(BuildContext context, ScriptLine line) {
     final textController = TextEditingController(text: line.text);
     final script = ref.read(currentScriptProvider);
+    final production = ref.read(currentProductionProvider);
     final charNames = script?.characters.map((c) => c.name).toList() ?? [];
     var selectedChar = line.character;
     final newCharController = TextEditingController();
     var isNewChar = !charNames.contains(selectedChar) && selectedChar.isNotEmpty;
 
+    // Check if we have a PDF source page to show
+    final pdfPath = production?.scriptPath;
+    final hasPdfPage = pdfPath != null &&
+        line.sourcePage != null &&
+        File(pdfPath).existsSync();
+
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
+      useSafeArea: true,
+      constraints: hasPdfPage
+          ? BoxConstraints(
+              maxHeight: MediaQuery.of(context).size.height * 0.92)
+          : null,
       builder: (context) {
         return StatefulBuilder(
           builder: (context, setModalState) => Padding(
@@ -492,14 +537,15 @@ class _ScriptEditorScreenState extends ConsumerState<ScriptEditorScreen> {
               top: 16,
             ),
             child: Column(
-              mainAxisSize: MainAxisSize.min,
+              mainAxisSize: hasPdfPage ? MainAxisSize.max : MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
+                // ── Header row ──
                 Row(
                   children: [
                     Expanded(
                       child: Text(
-                        'Edit Line #${line.orderIndex}',
+                        'Edit Line #${line.orderIndex}${line.sourcePage != null ? '  (p${line.sourcePage})' : ''}',
                         style: Theme.of(context).textTheme.titleMedium,
                       ),
                     ),
@@ -541,7 +587,33 @@ class _ScriptEditorScreenState extends ConsumerState<ScriptEditorScreen> {
                     ),
                   ],
                 ),
-                const SizedBox(height: 16),
+
+                // ── PDF page viewer (pinch-to-zoom) ──
+                if (hasPdfPage) ...[
+                  const SizedBox(height: 8),
+                  Expanded(
+                    child: ClipRRect(
+                      borderRadius: BorderRadius.circular(8),
+                      child: Container(
+                        decoration: BoxDecoration(
+                          border: Border.all(
+                            color: Theme.of(context).colorScheme.outline,
+                            width: 0.5,
+                          ),
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                        child: _PdfPageView(
+                          pdfPath: pdfPath,
+                          pageNumber: line.sourcePage!,
+                          lineOnPage: line.sourceLineOnPage,
+                        ),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                ],
+
+                // ── Character selector ──
                 if (line.lineType == LineType.dialogue ||
                     line.lineType == LineType.song) ...[
                   DropdownButtonFormField<String>(
@@ -549,6 +621,7 @@ class _ScriptEditorScreenState extends ConsumerState<ScriptEditorScreen> {
                     decoration: const InputDecoration(
                       labelText: 'Character',
                       border: OutlineInputBorder(),
+                      isDense: true,
                     ),
                     items: [
                       ...charNames.map((name) => DropdownMenuItem(
@@ -573,7 +646,7 @@ class _ScriptEditorScreenState extends ConsumerState<ScriptEditorScreen> {
                     },
                   ),
                   if (isNewChar) ...[
-                    const SizedBox(height: 12),
+                    const SizedBox(height: 8),
                     TextField(
                       controller: newCharController,
                       textCapitalization: TextCapitalization.characters,
@@ -581,20 +654,33 @@ class _ScriptEditorScreenState extends ConsumerState<ScriptEditorScreen> {
                         labelText: 'New character name',
                         border: OutlineInputBorder(),
                         hintText: 'e.g. DARCY',
+                        isDense: true,
                       ),
                     ),
                   ],
-                  const SizedBox(height: 12),
+                  const SizedBox(height: 8),
                 ],
+
+                // ── Text editor ──
                 TextField(
                   controller: textController,
-                  maxLines: 4,
-                  decoration: const InputDecoration(
+                  maxLines: hasPdfPage ? 3 : 4,
+                  decoration: InputDecoration(
                     labelText: 'Line text',
-                    border: OutlineInputBorder(),
+                    border: const OutlineInputBorder(),
+                    isDense: true,
+                    suffixIcon: line.ocrConfidence != null && line.ocrConfidence! < 0.85
+                        ? Tooltip(
+                            message: 'OCR confidence: ${(line.ocrConfidence! * 100).toInt()}%',
+                            child: Icon(Icons.warning_amber_rounded,
+                                color: Colors.amber.shade700, size: 20),
+                          )
+                        : null,
                   ),
                 ),
-                const SizedBox(height: 16),
+                const SizedBox(height: 12),
+
+                // ── Action buttons ──
                 Row(
                   mainAxisAlignment: MainAxisAlignment.end,
                   children: [
@@ -619,7 +705,7 @@ class _ScriptEditorScreenState extends ConsumerState<ScriptEditorScreen> {
                     ),
                   ],
                 ),
-                const SizedBox(height: 16),
+                const SizedBox(height: 12),
               ],
             ),
           ),
@@ -893,5 +979,174 @@ class _ScriptEditorScreenState extends ConsumerState<ScriptEditorScreen> {
         .replaceAll(RegExp(r'[^\w\s-]'), '')
         .replaceAll(RegExp(r'\s+'), '_')
         .toLowerCase();
+  }
+}
+
+/// Renders a single PDF page as an image with pinch-to-zoom,
+/// initially zoomed to the quadrant where the script line is.
+class _PdfPageView extends StatefulWidget {
+  final String pdfPath;
+  final int pageNumber;
+  final int? lineOnPage;
+
+  const _PdfPageView({
+    required this.pdfPath,
+    required this.pageNumber,
+    this.lineOnPage,
+  });
+
+  @override
+  State<_PdfPageView> createState() => _PdfPageViewState();
+}
+
+class _PdfPageViewState extends State<_PdfPageView> {
+  ui.Image? _pageImage;
+  bool _loading = true;
+  final _txController = TransformationController();
+  bool _zoomApplied = false;
+  late int _currentPage;
+  int _totalPages = 0;
+
+  @override
+  void initState() {
+    super.initState();
+    _currentPage = widget.pageNumber;
+    _renderPage();
+  }
+
+  @override
+  void dispose() {
+    _pageImage?.dispose();
+    _txController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _renderPage() async {
+    setState(() => _loading = true);
+    _pageImage?.dispose();
+    _pageImage = null;
+    _zoomApplied = false;
+    _txController.value = Matrix4.identity();
+
+    try {
+      Pdfrx.getCacheDirectory ??= () async {
+        final dir = await getTemporaryDirectory();
+        return dir.path;
+      };
+
+      final doc = await PdfDocument.openFile(widget.pdfPath);
+      _totalPages = doc.pages.length;
+      final pageIdx = _currentPage - 1;
+      if (pageIdx < 0 || pageIdx >= doc.pages.length) {
+        await doc.dispose();
+        if (mounted) setState(() => _loading = false);
+        return;
+      }
+
+      final page = doc.pages[pageIdx];
+      final pdfImage = await page.render(
+        fullWidth: page.width * 3,
+        fullHeight: page.height * 3,
+      );
+      await doc.dispose();
+
+      if (pdfImage == null || !mounted) return;
+
+      final image = await pdfImage.createImage();
+      pdfImage.dispose();
+
+      if (mounted) {
+        setState(() {
+          _pageImage = image;
+          _loading = false;
+        });
+      }
+    } catch (e) {
+      debugPrint('PDF page render failed: $e');
+      if (mounted) setState(() => _loading = false);
+    }
+  }
+
+  void _goToPage(int page) {
+    if (page < 1 || page > _totalPages) return;
+    _currentPage = page;
+    _renderPage();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      children: [
+        Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            IconButton(
+              icon: const Icon(Icons.chevron_left, size: 20),
+              onPressed: _currentPage > 1 ? () => _goToPage(_currentPage - 1) : null,
+              visualDensity: VisualDensity.compact,
+            ),
+            Text(
+              'Page $_currentPage${_totalPages > 0 ? '/$_totalPages' : ''}',
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                    fontWeight: FontWeight.bold,
+                  ),
+            ),
+            IconButton(
+              icon: const Icon(Icons.chevron_right, size: 20),
+              onPressed: _currentPage < _totalPages ? () => _goToPage(_currentPage + 1) : null,
+              visualDensity: VisualDensity.compact,
+            ),
+          ],
+        ),
+        Expanded(
+          child: _loading
+              ? const Center(child: CircularProgressIndicator())
+              : _pageImage != null
+                  ? LayoutBuilder(
+                      builder: (context, constraints) {
+                        final viewW = constraints.maxWidth;
+                        final viewH = constraints.maxHeight;
+                        final imgW = _pageImage!.width.toDouble();
+                        final imgH = _pageImage!.height.toDouble();
+
+                        // How the image fits in the view (BoxFit.contain)
+                        final fitScale = (viewW / imgW).clamp(0.0, viewH / imgH);
+                        final fittedW = imgW * fitScale;
+                        final fittedH = imgH * fitScale;
+                        final imgTop = (viewH - fittedH) / 2;
+
+                        // Apply initial zoom once after first layout
+                        if (!_zoomApplied && widget.lineOnPage != null) {
+                          _zoomApplied = true;
+                          final lineRatio = ((widget.lineOnPage! - 1) / 40.0).clamp(0.0, 0.85);
+                          const zoom = 2.5;
+                          final targetY = imgTop + fittedH * lineRatio;
+                          final tx = -(fittedW * zoom - viewW) / 2;
+                          final ty = -targetY * zoom + viewH * 0.3;
+                          _txController.value = Matrix4.identity()
+                            ..translate(tx, ty)
+                            ..scale(zoom);
+                        }
+
+                        return InteractiveViewer(
+                          transformationController: _txController,
+                          minScale: 0.5,
+                          maxScale: 8.0,
+                          constrained: false,
+                          child: SizedBox(
+                            width: fittedW,
+                            height: fittedH,
+                            child: RawImage(
+                              image: _pageImage,
+                              fit: BoxFit.contain,
+                            ),
+                          ),
+                        );
+                      },
+                    )
+                  : const Center(child: Text('Could not load page')),
+        ),
+      ],
+    );
   }
 }

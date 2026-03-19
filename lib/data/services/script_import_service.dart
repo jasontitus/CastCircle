@@ -5,9 +5,10 @@ import 'package:flutter/foundation.dart';
 import 'package:google_mlkit_text_recognition/google_mlkit_text_recognition.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
-import 'package:pdf_render/pdf_render.dart';
+import 'package:pdfrx/pdfrx.dart';
 
 import '../models/script_models.dart';
+import 'ocr_confidence_service.dart';
 import 'script_parser.dart';
 import 'script_export.dart';
 import 'pdf_text_channel.dart';
@@ -107,13 +108,13 @@ class ScriptImportService {
             debugPrint('PDF import: Using PDFKit result '
                 '(${nativeResult.characters.length} characters, '
                 '${nativeResult.lines.where((l) => l.lineType == LineType.dialogue).length} lines)');
-            return ParsedScript(
+            return _scoreConfidence(ParsedScript(
               title: nativeResult.title,
               lines: taggedLines,
               characters: nativeResult.characters,
               scenes: nativeResult.scenes,
               rawText: nativeResult.rawText,
-            );
+            ));
           }
 
           debugPrint('PDF import: PDFKit parse quality low '
@@ -126,7 +127,33 @@ class ScriptImportService {
     }
 
     // Strategy 2: OCR pipeline (image-based PDFs like scanned scripts)
-    return _importFromPdfOcr(pdfPath, title: title);
+    final ocrResult = await _importFromPdfOcr(pdfPath, title: title);
+    return _scoreConfidence(ocrResult);
+  }
+
+  /// Run dictionary-based spell checking on all lines to score OCR confidence.
+  /// Disposes the dictionary after scoring to free memory.
+  ParsedScript _scoreConfidence(ParsedScript script) {
+    final scorer = OcrConfidenceService.instance;
+    try {
+      final scoredLines = scorer.scoreScript(
+        script.lines,
+        characters: script.characters,
+      );
+      final lowCount = scoredLines.where(
+        (l) => l.ocrConfidence != null && l.ocrConfidence! < 0.8,
+      ).length;
+      debugPrint('OCR confidence: $lowCount of ${scoredLines.length} lines flagged as low confidence');
+      return ParsedScript(
+        title: script.title,
+        lines: scoredLines,
+        characters: script.characters,
+        scenes: script.scenes,
+        rawText: script.rawText,
+      );
+    } finally {
+      scorer.dispose(); // free ~3MB dictionary
+    }
   }
 
   /// Clean PDFKit-extracted text for parsing.
@@ -183,8 +210,13 @@ class ScriptImportService {
   /// and maps per-line OCR confidence back onto parsed ScriptLines.
   Future<ParsedScript> _importFromPdfOcr(String pdfPath,
       {required String title}) async {
+    // Ensure pdfrx cache directory is set (required before first use)
+    Pdfrx.getCacheDirectory ??= () async {
+      final dir = await getTemporaryDirectory();
+      return dir.path;
+    };
     final doc = await PdfDocument.openFile(pdfPath);
-    final pageCount = doc.pageCount;
+    final pageCount = doc.pages.length;
 
     final textRecognizer = TextRecognizer();
     final buffer = StringBuffer();
@@ -198,12 +230,18 @@ class ScriptImportService {
       for (var i = 1; i <= pageCount; i++) {
         try {
           // Render page to image at 2x for good OCR quality
-          final page = await doc.getPage(i);
-          final pageImage = await page.render(
-            width: (page.width * 2).toInt(),
-            height: (page.height * 2).toInt(),
+          final page = doc.pages[i - 1]; // 0-indexed
+          final pdfImage = await page.render(
+            fullWidth: page.width * 2,
+            fullHeight: page.height * 2,
           );
-          final image = await pageImage.createImageDetached();
+          if (pdfImage == null) {
+            debugPrint('PDF OCR: Page $i/$pageCount — render returned null, skipping');
+            failedPages++;
+            continue;
+          }
+          final image = await pdfImage.createImage();
+          pdfImage.dispose();
 
           // Save to temp file for ML Kit (requires file path)
           final byteData =
@@ -251,7 +289,7 @@ class ScriptImportService {
       }
     } finally {
       textRecognizer.close();
-      doc.dispose();
+      await doc.dispose();
     }
 
     if (failedPages > 0) {

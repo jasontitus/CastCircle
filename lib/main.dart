@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io';
 
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_crashlytics/firebase_crashlytics.dart';
@@ -31,29 +32,40 @@ final sharedPreferencesProvider = Provider<SharedPreferences>((ref) {
   throw UnimplementedError('Must be overridden in ProviderScope');
 });
 
+/// Whether Firebase was successfully initialized (false on Android until configured).
+bool firebaseAvailable = false;
+
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
-  // Initialize Firebase
-  await Firebase.initializeApp(
-    options: DefaultFirebaseOptions.currentPlatform,
-  );
+  // Initialize Firebase (Android not yet configured — skip gracefully)
+  firebaseAvailable = false;
+  try {
+    await Firebase.initializeApp(
+      options: DefaultFirebaseOptions.currentPlatform,
+    );
+    firebaseAvailable = true;
+  } catch (e) {
+    debugPrint('Firebase not configured for this platform — skipping ($e)');
+  }
 
-  // Crashlytics: enable collection and catch all errors
-  await FirebaseCrashlytics.instance.setCrashlyticsCollectionEnabled(true);
-  FlutterError.onError = FirebaseCrashlytics.instance.recordFlutterFatalError;
+  if (firebaseAvailable) {
+    // Crashlytics: enable collection and catch all errors
+    await FirebaseCrashlytics.instance.setCrashlyticsCollectionEnabled(true);
+    FlutterError.onError = FirebaseCrashlytics.instance.recordFlutterFatalError;
 
-  // Crashlytics: catch async errors not caught by Flutter
-  PlatformDispatcher.instance.onError = (error, stack) {
-    FirebaseCrashlytics.instance.recordError(error, stack, fatal: true);
-    return true;
-  };
+    // Crashlytics: catch async errors not caught by Flutter
+    PlatformDispatcher.instance.onError = (error, stack) {
+      FirebaseCrashlytics.instance.recordError(error, stack, fatal: true);
+      return true;
+    };
 
-  // Performance monitoring
-  FirebasePerformance.instance.setPerformanceCollectionEnabled(true);
+    // Performance monitoring
+    FirebasePerformance.instance.setPerformanceCollectionEnabled(true);
 
-  // Analytics
-  FirebaseAnalytics.instance.setAnalyticsCollectionEnabled(true);
+    // Analytics
+    FirebaseAnalytics.instance.setAnalyticsCollectionEnabled(true);
+  }
 
   const supabaseUrl = String.fromEnvironment('SUPABASE_URL',
       defaultValue: 'https://vngpbmqymdaxxnvqptsk.supabase.co');
@@ -80,14 +92,16 @@ void main() async {
     await TtsService.instance.init();
     await SttService.instance.init();
 
-    // Auto-download Kokoro TTS models if not already present
-    final modelService = ModelDownloadService.instance;
-    await modelService.refreshDownloadedStatus();
-    if (!await modelService.isKokoroReady()) {
-      debugPrint('Auto-downloading Kokoro TTS models...');
-      for (final model in ModelDownloadService.availableModels) {
-        if (model.subdir == 'kokoro_mlx') {
-          await modelService.download(model);
+    // Auto-download Kokoro TTS models if not already present (iOS only — MLX not available on Android)
+    if (Platform.isIOS) {
+      final modelService = ModelDownloadService.instance;
+      await modelService.refreshDownloadedStatus();
+      if (!await modelService.isKokoroReady()) {
+        debugPrint('Auto-downloading Kokoro TTS models...');
+        for (final model in ModelDownloadService.availableModels) {
+          if (model.subdir == 'kokoro_mlx') {
+            await modelService.download(model);
+          }
         }
       }
     }

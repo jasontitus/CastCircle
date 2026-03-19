@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:firebase_analytics/firebase_analytics.dart';
 import 'package:flutter/material.dart';
+import 'main.dart' show firebaseAvailable;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'core/theme/app_theme.dart';
@@ -242,6 +243,7 @@ class _AnalyticsRouteObserver extends NavigatorObserver {
   }
 
   void _logScreen(Route route) {
+    if (!firebaseAvailable) return;
     final path = route.settings.name;
     if (path == null) return;
     final screenName = _screenNames[path] ?? path;

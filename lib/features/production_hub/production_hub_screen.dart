@@ -89,6 +89,11 @@ class _ProductionHubScreenState extends ConsumerState<ProductionHubScreen> {
   }
 
   Future<void> _checkModels() async {
+    // Skip model check on Android — Kokoro MLX is iOS only
+    if (Platform.isAndroid) {
+      if (mounted) setState(() { _checkedModels = true; _modelsReady = false; });
+      return;
+    }
     final ready = await ModelManager.instance.isAllReady();
     if (mounted) {
       setState(() {
@@ -141,7 +146,10 @@ class _ProductionHubScreenState extends ConsumerState<ProductionHubScreen> {
     final script = ref.watch(currentScriptProvider);
     final myCharacter = ref.watch(rehearsalCharacterProvider);
 
+    debugPrint('ProductionHub.build: production=${production?.title}, script=${script?.lines.length} lines, char=$myCharacter');
+
     if (production == null) {
+      debugPrint('ProductionHub.build: production is NULL — showing placeholder');
       return Scaffold(
         appBar: AppBar(title: const Text('Production')),
         body: const Center(child: Text('No production selected')),
@@ -149,6 +157,50 @@ class _ProductionHubScreenState extends ConsumerState<ProductionHubScreen> {
     }
 
     final hasScript = script != null && script.lines.isNotEmpty;
+    debugPrint('ProductionHub.build: hasScript=$hasScript, lines=${script?.lines.length}, chars=${script?.characters.length}');
+
+    // DEBUG: Test if Scaffold renders at all on Android
+    if (Platform.isAndroid) {
+      return Scaffold(
+        appBar: AppBar(title: Text(production.title)),
+        body: ListView(
+          children: [
+            ListTile(
+              title: const Text('Script loaded'),
+              subtitle: Text('${script?.lines.length ?? 0} lines, ${script?.characters.length ?? 0} characters'),
+            ),
+            if (hasScript) ...[
+              const Divider(),
+              ListTile(
+                leading: const Icon(Icons.edit),
+                title: const Text('Edit Script'),
+                onTap: () => context.push('/editor'),
+              ),
+              ListTile(
+                leading: const Icon(Icons.play_arrow),
+                title: const Text('Rehearsal'),
+                onTap: () => context.push('/rehearsal'),
+              ),
+              ListTile(
+                leading: const Icon(Icons.people),
+                title: const Text('Characters'),
+                onTap: () => context.push('/characters'),
+              ),
+              ListTile(
+                leading: const Icon(Icons.home),
+                title: const Text('Back to Home'),
+                onTap: () => context.go('/'),
+              ),
+              const Divider(),
+              ...script!.characters.map((c) => ListTile(
+                title: Text(c.name),
+                trailing: Text('${c.lineCount} lines'),
+              )),
+            ],
+          ],
+        ),
+      );
+    }
 
     return Scaffold(
       appBar: AppBar(

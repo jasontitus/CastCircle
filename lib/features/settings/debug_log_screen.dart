@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:firebase_crashlytics/firebase_crashlytics.dart';
+import '../../main.dart' show firebaseAvailable;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
@@ -70,7 +71,7 @@ class _DebugLogScreenState extends State<DebugLogScreen> {
           ),
           PopupMenuButton<String>(
             onSelected: (action) {
-              if (action == 'test_crash') {
+              if (action == 'test_crash' && firebaseAvailable) {
                 // Force a test crash to verify Crashlytics
                 FirebaseCrashlytics.instance.crash();
               }

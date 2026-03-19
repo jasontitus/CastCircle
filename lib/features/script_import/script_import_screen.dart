@@ -1,7 +1,11 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:go_router/go_router.dart';
+import 'package:path/path.dart' as p;
+import 'package:path_provider/path_provider.dart';
 
 import '../../data/models/script_models.dart';
 import '../../data/services/voice_config_service.dart';
@@ -19,6 +23,7 @@ class _ScriptImportScreenState extends ConsumerState<ScriptImportScreen> {
   bool _loading = false;
   String? _error;
   ParsedScript? _preview;
+  String? _importedPdfPath; // persisted copy of imported PDF for page viewer
 
   @override
   Widget build(BuildContext context) {
@@ -404,6 +409,21 @@ class _ScriptImportScreenState extends ConsumerState<ScriptImportScreen> {
 
       try {
         final script = await service.importFromPdf(filePath);
+
+        // Copy PDF to app documents so it persists for the page viewer
+        final production = ref.read(currentProductionProvider);
+        if (production != null) {
+          final docsDir = await getApplicationDocumentsDirectory();
+          final pdfDir = Directory(p.join(docsDir.path, 'scripts'));
+          if (!pdfDir.existsSync()) pdfDir.createSync(recursive: true);
+          final destPath = p.join(pdfDir.path, '${production.id}.pdf');
+          await File(filePath).copy(destPath);
+          _importedPdfPath = destPath;
+          final updated = production.copyWith(scriptPath: destPath);
+          ref.read(productionsProvider.notifier).update(updated);
+          ref.read(currentProductionProvider.notifier).state = updated;
+        }
+
         setState(() {
           _preview = script;
           _loading = false;
