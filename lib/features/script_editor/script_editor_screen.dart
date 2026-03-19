@@ -87,6 +87,8 @@ class _ScriptEditorScreenState extends ConsumerState<ScriptEditorScreen> {
                   showValidationPanel(context, script);
                 case 'reorder':
                   setState(() => _reorderMode = !_reorderMode);
+                case 'sync_cloud':
+                  _syncToCloud(context);
                 case 'export_text':
                   _export(context, script, 'plain');
                 case 'export_md':
@@ -107,6 +109,14 @@ class _ScriptEditorScreenState extends ConsumerState<ScriptEditorScreen> {
                 child: ListTile(
                   leading: Icon(_reorderMode ? Icons.check : Icons.swap_vert),
                   title: Text(_reorderMode ? 'Done Reordering' : 'Reorder Lines'),
+                  dense: true,
+                ),
+              ),
+              const PopupMenuItem(
+                value: 'sync_cloud',
+                child: ListTile(
+                  leading: Icon(Icons.cloud_upload),
+                  title: Text('Push to Cloud'),
                   dense: true,
                 ),
               ),
@@ -812,6 +822,23 @@ class _ScriptEditorScreenState extends ConsumerState<ScriptEditorScreen> {
       scenes: script.scenes,
       rawText: script.rawText,
     );
+  }
+
+  Future<void> _syncToCloud(BuildContext context) async {
+    try {
+      await pushScriptToCloud(ref);
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Script pushed to cloud')),
+        );
+      }
+    } catch (e) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Cloud sync failed: $e')),
+        );
+      }
+    }
   }
 
   Future<void> _export(

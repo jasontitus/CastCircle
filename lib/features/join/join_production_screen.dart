@@ -335,11 +335,22 @@ class _JoinProductionScreenState extends ConsumerState<JoinProductionScreen> {
 
     try {
       final supa = SupabaseService.instance;
+
+      if (!supa.isInitialized) {
+        setState(() {
+          _error = 'Not connected to server. Check your internet connection.';
+          _loading = false;
+        });
+        return;
+      }
+
       final production = await supa.lookupByJoinCode(code);
 
       if (production == null) {
         setState(() {
-          _error = 'No production found with that code';
+          _error = 'No production found with code "$code". '
+              'Check the code and try again. '
+              '(signed in: ${supa.isSignedIn})';
           _loading = false;
         });
         return;
@@ -368,11 +379,12 @@ class _JoinProductionScreenState extends ConsumerState<JoinProductionScreen> {
         _selectedCharacter = autoSelected;
         _loading = false;
       });
-    } catch (e) {
+    } catch (e, stack) {
       setState(() {
         _error = 'Lookup failed: $e';
         _loading = false;
       });
+      debugPrint('Join lookup error: $e\n$stack');
     }
   }
 

@@ -6,6 +6,8 @@ import 'dart:typed_data';
 import 'package:flutter/foundation.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
+import 'debug_log_service.dart';
+
 /// Lightweight Supabase service for production management, auth, and recording sync.
 ///
 /// Architecture notes:
@@ -231,40 +233,50 @@ class SupabaseService {
   /// Look up a production by its join code.
   /// Uses RPC function (SECURITY DEFINER) to bypass RLS.
   Future<Map<String, dynamic>?> lookupByJoinCode(String code) async {
+    final dlog = DebugLogService.instance;
+    dlog.log(LogCategory.network,
+        'Join lookup: code=$code, initialized=$_initialized, signedIn=$isSignedIn');
+
     try {
       // Try RPC first (bypasses RLS, always works)
       final rpcResult = await _client.rpc(
         'lookup_production_by_join_code',
         params: {'lookup_code': code.toUpperCase()},
       );
-      debugPrint('RPC result type: ${rpcResult.runtimeType}, value: $rpcResult');
+      dlog.log(LogCategory.network,
+          'RPC result: type=${rpcResult.runtimeType}, isMap=${rpcResult is Map}, value=$rpcResult');
 
       if (rpcResult is Map) {
+        dlog.log(LogCategory.network, 'RPC success: ${rpcResult['title']}');
         return Map<String, dynamic>.from(rpcResult);
       }
-      // Some Supabase versions return the JSON as a Map<String, dynamic> directly
       if (rpcResult != null) {
         try {
-          return Map<String, dynamic>.from(rpcResult as dynamic);
-        } catch (_) {
-          debugPrint('Could not cast RPC result to Map');
+          final map = Map<String, dynamic>.from(rpcResult as dynamic);
+          dlog.log(LogCategory.network, 'RPC cast success: ${map['title']}');
+          return map;
+        } catch (e) {
+          dlog.logError(LogCategory.network, 'Could not cast RPC result: $e');
         }
       }
+      dlog.log(LogCategory.network, 'RPC returned null/non-Map, trying direct query');
     } catch (e) {
-      debugPrint('RPC lookup failed: $e');
+      dlog.logError(LogCategory.network, 'RPC lookup failed: $e');
     }
 
     // Fallback: direct query
     try {
+      dlog.log(LogCategory.network, 'Trying direct query for join_code=$code');
       final rows = await _client
           .from('productions')
           .select()
           .eq('join_code', code.toUpperCase())
           .limit(1);
+      dlog.log(LogCategory.network, 'Direct query: ${rows.length} rows');
       if (rows.isEmpty) return null;
       return rows.first;
     } catch (e) {
-      debugPrint('Direct lookup also failed: $e');
+      dlog.logError(LogCategory.network, 'Direct lookup also failed: $e');
       return null;
     }
   }

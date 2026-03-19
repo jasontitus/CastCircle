@@ -224,10 +224,10 @@ class _ScriptImportScreenState extends ConsumerState<ScriptImportScreen> {
                 const SizedBox(width: 12),
                 Expanded(
                   child: FilledButton.icon(
-                    onPressed: () {
+                    onPressed: () async {
                       ref.read(currentScriptProvider.notifier).state = script;
-                      persistScript(ref);
-                      context.push('/production');
+                      await persistScript(ref);
+                      if (context.mounted) context.push('/production');
                     },
                     icon: const Icon(Icons.check),
                     label: const Text('Accept Script'),
