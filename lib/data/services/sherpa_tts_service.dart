@@ -7,44 +7,25 @@ import 'package:path_provider/path_provider.dart';
 import 'package:sherpa_onnx/sherpa_onnx.dart' as sherpa;
 
 import 'debug_log_service.dart';
+import 'model_manager.dart';
 
 /// Cross-platform Kokoro TTS via sherpa-onnx ONNX Runtime.
 ///
 /// Works on both iOS and Android (unlike Kokoro MLX which is iOS-only).
-/// Uses the Kokoro-82M int8 quantized model (~92MB).
-///
-/// Model files needed in the models/kokoro_onnx/ directory:
-///   - model.onnx (the int8 quantized model)
-///   - voices.bin (voice embeddings)
-///   - tokens.txt (token vocabulary)
-///   - lexicon/ directory (optional, for improved phonemization)
+/// Uses the Kokoro-82M model from the sherpa-onnx release archive (~600MB).
+/// Downloads via ModelManager which handles streaming bzip2 extraction.
 class SherpaTtsService {
   SherpaTtsService._();
   static final instance = SherpaTtsService._();
 
   sherpa.OfflineTts? _tts;
   bool _initialized = false;
-  String? _modelsDir;
 
   bool get isInitialized => _initialized;
 
-  /// Get the models directory path.
-  Future<String> get modelsDir async {
-    if (_modelsDir != null) return _modelsDir!;
-    final appDir = await getApplicationDocumentsDirectory();
-    _modelsDir = p.join(appDir.path, 'models', 'kokoro_onnx');
-    return _modelsDir!;
-  }
-
   /// Check if the Kokoro ONNX model files are downloaded.
   Future<bool> isModelDownloaded() async {
-    final dir = await modelsDir;
-    final modelFile = File(p.join(dir, 'model.onnx'));
-    final voicesFile = File(p.join(dir, 'voices.bin'));
-    final tokensFile = File(p.join(dir, 'tokens.txt'));
-    return modelFile.existsSync() &&
-        voicesFile.existsSync() &&
-        tokensFile.existsSync();
+    return ModelManager.instance.isKokoroReady();
   }
 
   /// Initialize the sherpa-onnx TTS engine with Kokoro model.
@@ -52,8 +33,9 @@ class SherpaTtsService {
     if (_initialized) return true;
 
     final dlog = DebugLogService.instance;
+    final paths = await ModelManager.instance.getKokoroPaths();
 
-    if (!await isModelDownloaded()) {
+    if (paths == null) {
       dlog.log(LogCategory.tts, 'Sherpa Kokoro ONNX: model files not found');
       return false;
     }
@@ -61,14 +43,13 @@ class SherpaTtsService {
     try {
       sherpa.initBindings();
 
-      final dir = await modelsDir;
       final config = sherpa.OfflineTtsConfig(
         model: sherpa.OfflineTtsModelConfig(
           kokoro: sherpa.OfflineTtsKokoroModelConfig(
-            model: p.join(dir, 'model.onnx'),
-            voices: p.join(dir, 'voices.bin'),
-            tokens: p.join(dir, 'tokens.txt'),
-            dataDir: p.join(dir, 'espeak-ng-data'),
+            model: paths.model,
+            voices: paths.voices,
+            tokens: paths.tokens,
+            dataDir: paths.dataDir,
             lengthScale: 1.0,
           ),
           numThreads: 2,
