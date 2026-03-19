@@ -1484,6 +1484,7 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen> {
   }
 
   void _jumpBack(int jumpCount, int totalLines) {
+    if (totalLines <= 0) return;
     _silenceTimer?.cancel();
     _matchConfirmTimer?.cancel();
     _tts.stop(reason: 'jumpBack');
@@ -1571,7 +1572,7 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen> {
     final dialogueLines = _getRehearsalLines(script, scene, mc);
     final mode = ref.read(rehearsalModeProvider);
 
-    if (mc != null && mode != RehearsalMode.readthrough) {
+    if (mc != null && mode != RehearsalMode.readthrough && dialogueLines.length > 1) {
       // Find the actor's PREVIOUS cue line (not the one they're
       // currently on, but the one before that), then go 2 lines
       // before it so they hear the full cue leading in.
@@ -1579,29 +1580,30 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen> {
       final maxIdx = dialogueLines.length - 1;
 
       // Step 1: Walk back to find the actor's current/most recent line
-      var myLine = (current > maxIdx ? maxIdx : current);
+      var myLine = current.clamp(0, maxIdx);
       while (myLine > 0 && dialogueLines[myLine].character != mc) {
         myLine--;
       }
 
       // Step 2: Walk back past it to find the PREVIOUS actor line
-      var prevMyLine = myLine - 1;
+      var prevMyLine = (myLine - 1).clamp(0, maxIdx);
       while (prevMyLine > 0 && dialogueLines[prevMyLine].character != mc) {
         prevMyLine--;
       }
       // If we couldn't find a previous line, use the current one
-      if (prevMyLine < 0 || dialogueLines[prevMyLine].character != mc) {
+      if (dialogueLines[prevMyLine].character != mc) {
         prevMyLine = myLine;
       }
 
       // Step 3: Go 2 lines before that previous cue
       final target = (prevMyLine - 2).clamp(0, maxIdx);
+      final jumpCount = (current - target).clamp(1, current);
 
       _dlog.log(LogCategory.rehearsal,
           'Jump back: current=$current, myLine=$myLine, '
-          'prevMyLine=$prevMyLine, target=$target');
+          'prevMyLine=$prevMyLine, target=$target, jump=$jumpCount');
 
-      _jumpBack(current - target, dialogueLines.length);
+      _jumpBack(jumpCount, dialogueLines.length);
     } else {
       // Listen/readthrough mode — use configured jump count
       final jumpCount = ref.read(jumpBackLinesProvider);
