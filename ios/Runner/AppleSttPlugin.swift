@@ -169,6 +169,11 @@ class AppleSttPlugin: NSObject {
 
         // Install audio tap and start engine
         let inputNode = audioEngine.inputNode
+
+        // Remove any existing tap first to prevent "tap already installed" crash
+        // when rapidly jumping back during rehearsal
+        inputNode.removeTap(onBus: 0)
+
         let recordingFormat = inputNode.outputFormat(forBus: 0)
 
         inputNode.installTap(onBus: 0, bufferSize: 4096, format: recordingFormat) { [weak self] buffer, _ in
