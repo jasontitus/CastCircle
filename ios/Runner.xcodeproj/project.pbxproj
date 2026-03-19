@@ -30,6 +30,7 @@
 		BGDL000200000000000001 /* BackgroundDownloadPlugin.swift in Sources */ = {isa = PBXBuildFile; fileRef = BGDL000100000000000001 /* BackgroundDownloadPlugin.swift */; };
 		C0C0C0C0C0C0C0C000000001 /* ContactPickerPlugin.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0C0C0C0C0C0C0C000000002 /* ContactPickerPlugin.swift */; };
 		D0D0D0D0D0D0D0D000000001 /* PdfTextPlugin.swift in Sources */ = {isa = PBXBuildFile; fileRef = D0D0D0D0D0D0D0D000000002 /* PdfTextPlugin.swift */; };
+		E0E0E0E0E0E0E0E000000001 /* ObjCExceptionCatcher.m in Sources */ = {isa = PBXBuildFile; fileRef = E0E0E0E0E0E0E0E000000002 /* ObjCExceptionCatcher.m */; };
 		DE692ADA3E0BB1A2C1F59A64 /* GoogleService-Info.plist in Resources */ = {isa = PBXBuildFile; fileRef = BF4A753B5CF707B8A544B3E9 /* GoogleService-Info.plist */; };
 		FFAB98203095BFA6CE48969C /* Pods_RunnerTests.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 6C27C3A984572946223BDF96 /* Pods_RunnerTests.framework */; };
 		KOKORO000200000000000001 /* AlbertEmbeddings.swift in Sources */ = {isa = PBXBuildFile; fileRef = KOKORO000100000000000001 /* AlbertEmbeddings.swift */; };
@@ -162,6 +163,8 @@
 		BGDL000100000000000001 /* BackgroundDownloadPlugin.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BackgroundDownloadPlugin.swift; sourceTree = "<group>"; };
 		C0C0C0C0C0C0C0C000000002 /* ContactPickerPlugin.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ContactPickerPlugin.swift; sourceTree = "<group>"; };
 		D0D0D0D0D0D0D0D000000002 /* PdfTextPlugin.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = PdfTextPlugin.swift; sourceTree = "<group>"; };
+		E0E0E0E0E0E0E0E000000002 /* ObjCExceptionCatcher.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = ObjCExceptionCatcher.m; sourceTree = "<group>"; };
+		E0E0E0E0E0E0E0E000000003 /* ObjCExceptionCatcher.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ObjCExceptionCatcher.h; sourceTree = "<group>"; };
 		ENTL000100000000000001 /* Runner.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = Runner.entitlements; sourceTree = "<group>"; };
 		KOKORO000100000000000001 /* AlbertEmbeddings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AlbertEmbeddings.swift; sourceTree = "<group>"; };
 		KOKORO000100000000000002 /* AlbertEncoder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AlbertEncoder.swift; sourceTree = "<group>"; };
@@ -327,6 +330,8 @@
 				9E8E620EB48706A30AA540AC /* MediaControlPlugin.swift */,
 				C0C0C0C0C0C0C0C000000002 /* ContactPickerPlugin.swift */,
 				D0D0D0D0D0D0D0D000000002 /* PdfTextPlugin.swift */,
+				E0E0E0E0E0E0E0E000000002 /* ObjCExceptionCatcher.m */,
+				E0E0E0E0E0E0E0E000000003 /* ObjCExceptionCatcher.h */,
 			);
 			path = Runner;
 			sourceTree = "<group>";
@@ -875,6 +880,7 @@
 				435E218509157EDD3CA4E645 /* MediaControlPlugin.swift in Sources */,
 				C0C0C0C0C0C0C0C000000001 /* ContactPickerPlugin.swift in Sources */,
 				D0D0D0D0D0D0D0D000000001 /* PdfTextPlugin.swift in Sources */,
+				E0E0E0E0E0E0E0E000000001 /* ObjCExceptionCatcher.m in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

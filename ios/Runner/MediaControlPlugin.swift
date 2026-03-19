@@ -46,39 +46,39 @@ class MediaControlPlugin: NSObject {
 
         let center = MPRemoteCommandCenter.shared()
 
-        // Previous track → jump back (double-tap left AirPod)
+        // ALL remote commands → jump back.
+        // AirPods can be configured to send different commands per ear
+        // (next track, previous track, play/pause, etc.)
+        // Rather than asking users to change their AirPods settings,
+        // we map everything to jump back — the only action needed.
+
         center.previousTrackCommand.isEnabled = true
         center.previousTrackCommand.addTarget { [weak self] _ in
             self?.channel.invokeMethod("onMediaCommand", arguments: "jumpBack")
             return .success
         }
 
-        // Next track → ALSO jump back (double-tap right AirPod)
-        // Users only need "go back and try again" — no use case for skipping ahead
         center.nextTrackCommand.isEnabled = true
         center.nextTrackCommand.addTarget { [weak self] _ in
             self?.channel.invokeMethod("onMediaCommand", arguments: "jumpBack")
             return .success
         }
 
-        // Play/pause → toggle pause
         center.togglePlayPauseCommand.isEnabled = true
         center.togglePlayPauseCommand.addTarget { [weak self] _ in
-            self?.channel.invokeMethod("onMediaCommand", arguments: "playPause")
+            self?.channel.invokeMethod("onMediaCommand", arguments: "jumpBack")
             return .success
         }
 
-        // Also handle discrete play and pause commands (some headphones send these
-        // instead of togglePlayPause)
         center.playCommand.isEnabled = true
         center.playCommand.addTarget { [weak self] _ in
-            self?.channel.invokeMethod("onMediaCommand", arguments: "playPause")
+            self?.channel.invokeMethod("onMediaCommand", arguments: "jumpBack")
             return .success
         }
 
         center.pauseCommand.isEnabled = true
         center.pauseCommand.addTarget { [weak self] _ in
-            self?.channel.invokeMethod("onMediaCommand", arguments: "playPause")
+            self?.channel.invokeMethod("onMediaCommand", arguments: "jumpBack")
             return .success
         }
 

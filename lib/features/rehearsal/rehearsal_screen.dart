@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:wakelock_plus/wakelock_plus.dart';
 import 'package:go_router/go_router.dart';
 import 'package:just_audio/just_audio.dart';
 
@@ -117,6 +118,9 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen> {
     _dlog.log(LogCategory.rehearsal, 'Rehearsal starting');
     _dlog.startMemoryMonitoring();
 
+    // Keep screen on during rehearsal
+    WakelockPlus.enable();
+
     // Show AirPods/Action Button hint for the first 5 sessions
     final prefs = await SharedPreferences.getInstance();
     final hintCount = prefs.getInt('jumpback_hint_shown') ?? 0;
@@ -211,6 +215,7 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen> {
 
   @override
   void dispose() {
+    WakelockPlus.disable(); // Allow screen to sleep again
     _dlog.stopMemoryMonitoring();
     _dlog.log(LogCategory.rehearsal, 'Rehearsal ended');
     _silenceTimer?.cancel();
@@ -901,7 +906,7 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen> {
                     style: TextStyle(fontWeight: FontWeight.bold),
                   ),
                   TextSpan(
-                    text: 'Double-tap either AirPod to jump back to your last cue',
+                    text: 'Tap your AirPods to jump back to your last cue',
                   ),
                 ],
               ),
@@ -1121,6 +1126,7 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen> {
     if (currentIdx >= dialogueLines.length) {
       ref.read(rehearsalStateProvider.notifier).state =
           RehearsalState.sceneComplete;
+      WakelockPlus.disable(); // Allow screen to sleep at scene end
       _saveSession(dialogueLines);
       return;
     }
@@ -1611,7 +1617,15 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen> {
       }
 
       // Step 3: Go 2 lines before that previous cue
-      final target = (prevMyLine - 2).clamp(0, maxIdx);
+      var target = (prevMyLine - 2).clamp(0, maxIdx);
+
+      // NEVER land on the actor's own line — always land on a cue line
+      // so TTS plays and the actor hears the setup
+      while (target < maxIdx && dialogueLines[target].character == mc) {
+        target = (target - 1).clamp(0, maxIdx);
+        if (target == 0) break; // can't go further back
+      }
+
       final jumpCount = (current - target).clamp(1, current);
 
       _dlog.log(LogCategory.rehearsal,
