@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:package_info_plus/package_info_plus.dart';
 import 'package:go_router/go_router.dart';
 
 import '../../app.dart';
@@ -45,6 +46,15 @@ final voiceCloningEnabledProvider = StateProvider<bool>((ref) => true);
 /// When true, fall back to understudy recordings when the primary actor
 /// hasn't recorded a line.
 final understudyFallbackProvider = StateProvider<bool>((ref) => true);
+
+Future<String> _getVersionString() async {
+  try {
+    final info = await PackageInfo.fromPlatform();
+    return 'Version ${info.version} (${info.buildNumber})';
+  } catch (_) {
+    return 'Version ${AppConstants.appVersion}';
+  }
+}
 
 class SettingsScreen extends ConsumerWidget {
   const SettingsScreen({super.key});
@@ -265,10 +275,13 @@ class SettingsScreen extends ConsumerWidget {
             onTap: () => _signOut(context, ref),
           ),
           _sectionHeader(context, 'About'),
-          const ListTile(
-            title: Text('CastCircle'),
-            subtitle: Text('Version ${AppConstants.appVersion}'),
-            leading: Icon(Icons.theater_comedy),
+          FutureBuilder<String>(
+            future: _getVersionString(),
+            builder: (context, snap) => ListTile(
+              title: const Text('CastCircle'),
+              subtitle: Text(snap.data ?? 'Version ${AppConstants.appVersion}'),
+              leading: const Icon(Icons.theater_comedy),
+            ),
           ),
         ],
       ),

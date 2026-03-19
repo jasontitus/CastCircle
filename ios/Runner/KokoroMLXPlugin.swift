@@ -49,6 +49,13 @@ class KokoroMLXPlugin: NSObject {
             let speed = args["speed"] as? Double ?? 1.0
 
             Task {
+                // Request background time so synthesis can finish if app is backgrounded
+                var bgTask: UIBackgroundTaskIdentifier = .invalid
+                bgTask = UIApplication.shared.beginBackgroundTask(withName: "KokoroSynth") {
+                    UIApplication.shared.endBackgroundTask(bgTask)
+                    bgTask = .invalid
+                }
+
                 do {
                     let audioPath = try await kokoroService.synthesize(
                         text: text, voice: voice, speed: Float(speed)
@@ -62,6 +69,10 @@ class KokoroMLXPlugin: NSObject {
                             details: nil
                         ))
                     }
+                }
+
+                if bgTask != .invalid {
+                    UIApplication.shared.endBackgroundTask(bgTask)
                 }
             }
 
