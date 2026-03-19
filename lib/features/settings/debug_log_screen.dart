@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:firebase_crashlytics/firebase_crashlytics.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
@@ -66,6 +67,20 @@ class _DebugLogScreenState extends State<DebugLogScreen> {
               await _log.clear();
               setState(() {});
             },
+          ),
+          PopupMenuButton<String>(
+            onSelected: (action) {
+              if (action == 'test_crash') {
+                // Force a test crash to verify Crashlytics
+                FirebaseCrashlytics.instance.crash();
+              }
+            },
+            itemBuilder: (_) => [
+              const PopupMenuItem(
+                value: 'test_crash',
+                child: Text('Test Crash (Crashlytics)'),
+              ),
+            ],
           ),
         ],
       ),
