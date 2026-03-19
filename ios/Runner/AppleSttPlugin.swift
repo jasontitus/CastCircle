@@ -73,6 +73,10 @@ class AppleSttPlugin: NSObject {
     }
 
     private func listen(contextualStrings: [String], onDevice: Bool, locale: String?, result: @escaping FlutterResult) {
+        // Always fully stop any previous session first to prevent
+        // "tap already installed" crash from rapid jump-backs
+        stopCurrentSession()
+
         // If a different locale is requested, recreate the recognizer
         if let locale = locale {
             let newRecognizer = SFSpeechRecognizer(locale: Locale(identifier: locale))
