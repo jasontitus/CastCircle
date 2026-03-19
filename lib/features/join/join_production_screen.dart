@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
+import '../../app.dart';
 import '../../data/models/cast_member_model.dart';
 import '../../data/models/production_models.dart';
 import '../../data/services/deep_link_service.dart';
@@ -112,7 +113,11 @@ class _JoinProductionScreenState extends ConsumerState<JoinProductionScreen> {
                       ),
                       const SizedBox(height: 16),
                       FilledButton(
-                        onPressed: () => context.go('/auth'),
+                        onPressed: () {
+                          // Reset auth gate so router allows auth screen
+                          ref.read(authGatePassedProvider.notifier).state = false;
+                          context.go('/auth');
+                        },
                         child: const Text('Sign In'),
                       ),
                     ],
