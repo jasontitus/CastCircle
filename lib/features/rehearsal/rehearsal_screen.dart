@@ -1569,8 +1569,26 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen> {
     final mc = ref.read(rehearsalCharacterProvider);
     if (script == null || scene == null) return;
     final dialogueLines = _getRehearsalLines(script, scene, mc);
-    final jumpCount = ref.read(jumpBackLinesProvider);
-    _jumpBack(jumpCount, dialogueLines.length);
+    final mode = ref.read(rehearsalModeProvider);
+
+    if (mc != null && mode != RehearsalMode.readthrough) {
+      // Jump to 2 lines before the actor's most recent line, so they
+      // hear their cue before trying again.
+      final current = ref.read(currentLineIndexProvider);
+      var target = current - 1;
+      // Walk back to find the actor's previous line
+      while (target >= 0 && dialogueLines[target].character != mc) {
+        target--;
+      }
+      // Then go 2 more lines back for the cue context
+      target = (target - 2).clamp(0, dialogueLines.length - 1);
+      final jumpCount = current - target;
+      _jumpBack(jumpCount, dialogueLines.length);
+    } else {
+      // Listen/readthrough mode — use configured jump count
+      final jumpCount = ref.read(jumpBackLinesProvider);
+      _jumpBack(jumpCount, dialogueLines.length);
+    }
   }
 
   void _handleRemoteSkip() {
