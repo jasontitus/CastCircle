@@ -7,13 +7,17 @@ import 'package:just_audio/just_audio.dart';
 
 import 'debug_log_service.dart';
 import 'model_manager.dart';
+import 'sherpa_tts_service.dart';
 
 /// TTS engine type.
 enum TtsEngine {
-  /// Kokoro on-device neural TTS via MLX (default, higher quality).
+  /// Kokoro on-device neural TTS via MLX (iOS only, highest quality).
   kokoroMlx,
 
-  /// System TTS (last resort if Kokoro model not loaded).
+  /// Kokoro via sherpa-onnx ONNX Runtime (cross-platform, high quality).
+  kokoroOnnx,
+
+  /// System TTS (last resort if no Kokoro model loaded).
   system,
 }
 
@@ -105,8 +109,20 @@ class TtsService {
       _activeEngine = TtsEngine.kokoroMlx;
       dlog.log(LogCategory.tts, 'Kokoro MLX loaded successfully');
     } else {
-      _activeEngine = TtsEngine.system;
-      dlog.log(LogCategory.tts, 'Kokoro MLX NOT available — falling back to system TTS');
+      // Try sherpa-onnx Kokoro on Android (MLX not available)
+      if (Platform.isAndroid) {
+        final sherpaOk = await SherpaTtsService.instance.init();
+        if (sherpaOk) {
+          _activeEngine = TtsEngine.kokoroOnnx;
+          dlog.log(LogCategory.tts, 'Kokoro ONNX (sherpa) loaded successfully');
+        } else {
+          _activeEngine = TtsEngine.system;
+          dlog.log(LogCategory.tts, 'Kokoro ONNX not available — system TTS fallback');
+        }
+      } else {
+        _activeEngine = TtsEngine.system;
+        dlog.log(LogCategory.tts, 'Kokoro MLX not loaded — system TTS fallback');
+      }
     }
 
     // Initialize system TTS as fallback
@@ -230,12 +246,35 @@ class TtsService {
     _isSpeaking = true;
     _usingSystemTts = false; // Reset — only set true if we actually use system TTS
 
-    // Try Kokoro MLX first
+    // Try Kokoro MLX first (iOS only)
     if (_kokoroLoaded) {
-      dlog.log(LogCategory.tts, 'Kokoro speak: "$preview" (char=$character, gen=$_speakGen)');
+      dlog.log(LogCategory.tts, 'Kokoro MLX speak: "$preview" (char=$character, gen=$_speakGen)');
       final spoke = await _speakWithKokoroMlx(text, character: character);
-      if (spoke) return; // completion will fire from _audioPlayer stream
-      dlog.log(LogCategory.tts, 'Kokoro failed, falling back to system TTS');
+      if (spoke) return;
+      dlog.log(LogCategory.tts, 'Kokoro MLX failed, trying ONNX...');
+    }
+
+    // Try Kokoro ONNX (cross-platform via sherpa-onnx)
+    if (_activeEngine == TtsEngine.kokoroOnnx || SherpaTtsService.instance.isInitialized) {
+      final voice = (character != null && _characterVoices.containsKey(character))
+          ? _characterVoices[character]!
+          : 'af_heart';
+      final speed = (character != null && _characterSpeeds.containsKey(character))
+          ? _characterSpeeds[character]!
+          : 1.0;
+      dlog.log(LogCategory.tts, 'Kokoro ONNX speak: "$preview" (voice=$voice, gen=$_speakGen)');
+      final wavPath = await SherpaTtsService.instance.synthesize(text, voice: voice, speed: speed);
+      if (wavPath != null) {
+        final gen = _speakGen;
+        await _audioPlayer.setFilePath(wavPath);
+        await _audioPlayer.play();
+        // Fire completion after playback
+        if (_speakGen == gen) {
+          _fireCompletion('kokoroOnnx');
+        }
+        return;
+      }
+      dlog.log(LogCategory.tts, 'Kokoro ONNX failed, falling back to system TTS');
     }
 
     // Fall back to system TTS

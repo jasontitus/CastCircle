@@ -369,7 +369,7 @@ class _ScriptEditorScreenState extends ConsumerState<ScriptEditorScreen> {
             color: Theme.of(context)
                 .colorScheme
                 .surfaceContainerHighest
-                .withValues(alpha: 0.5),
+                .withOpacity( 0.5),
             child: Padding(
               padding: const EdgeInsets.all(12),
               child: Text(
@@ -379,7 +379,7 @@ class _ScriptEditorScreenState extends ConsumerState<ScriptEditorScreen> {
                   color: Theme.of(context)
                       .colorScheme
                       .onSurface
-                      .withValues(alpha: 0.6),
+                      .withOpacity( 0.6),
                 ),
               ),
             ),
@@ -423,7 +423,7 @@ class _ScriptEditorScreenState extends ConsumerState<ScriptEditorScreen> {
                               color: Theme.of(context)
                                   .colorScheme
                                   .onSurface
-                                  .withValues(alpha: 0.35),
+                                  .withOpacity( 0.35),
                               fontSize: 10,
                               fontFeatures: [const FontFeature.tabularFigures()],
                             ),
@@ -478,7 +478,7 @@ class _ScriptEditorScreenState extends ConsumerState<ScriptEditorScreen> {
                                 color: Theme.of(context)
                                     .colorScheme
                                     .onSurface
-                                    .withValues(alpha: 0.5),
+                                    .withOpacity( 0.5),
                               ),
                             ),
                           Text(line.text),
@@ -493,7 +493,7 @@ class _ScriptEditorScreenState extends ConsumerState<ScriptEditorScreen> {
                             color: Theme.of(context)
                                 .colorScheme
                                 .onSurface
-                                .withValues(alpha: 0.3)),
+                                .withOpacity( 0.3)),
                       ),
                   ],
                 ),

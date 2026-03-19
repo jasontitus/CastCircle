@@ -61,6 +61,8 @@ PODS:
   - PromisesObjC (2.4.0)
   - record_darwin (1.0.0):
     - Flutter
+  - sherpa_onnx_ios (1.12.29):
+    - Flutter
 
 DEPENDENCIES:
   - Flutter (from `Flutter`)
@@ -68,6 +70,7 @@ DEPENDENCIES:
   - google_mlkit_commons (from `.symlinks/plugins/google_mlkit_commons/ios`)
   - google_mlkit_text_recognition (from `.symlinks/plugins/google_mlkit_text_recognition/ios`)
   - record_darwin (from `.symlinks/plugins/record_darwin/ios`)
+  - sherpa_onnx_ios (from `.symlinks/plugins/sherpa_onnx_ios/ios`)
 
 SPEC REPOS:
   trunk:
@@ -95,6 +98,8 @@ EXTERNAL SOURCES:
     :path: ".symlinks/plugins/google_mlkit_text_recognition/ios"
   record_darwin:
     :path: ".symlinks/plugins/record_darwin/ios"
+  sherpa_onnx_ios:
+    :path: ".symlinks/plugins/sherpa_onnx_ios/ios"
 
 SPEC CHECKSUMS:
   Flutter: cabc95a1d2626b1b06e7179b784ebcf0c0cde467
@@ -114,6 +119,7 @@ SPEC CHECKSUMS:
   nanopb: fad817b59e0457d11a5dfbde799381cd727c1275
   PromisesObjC: f5707f49cb48b9636751c5b2e7d227e43fba9f47
   record_darwin: fb1f375f1d9603714f55b8708a903bbb91ffdb0a
+  sherpa_onnx_ios: ca675c478cd4dcc1ce4a41530366b0cd29cb5ac4
 
 PODFILE CHECKSUM: ba0d7af98d1a0db7cbf744edd0331fd4de934cd6
 

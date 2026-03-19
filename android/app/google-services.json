@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "786015234737",
+    "project_id": "castcircle-app",
+    "storage_bucket": "castcircle-app.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:786015234737:android:10879f9140ea5337e2d090",
+        "android_client_info": {
+          "package_name": "com.tiltastech.castcircle"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDewlE17WUSQoh0dUgQBfnNybDWAyanfm4"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

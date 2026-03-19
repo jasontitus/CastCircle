@@ -157,50 +157,6 @@ class _ProductionHubScreenState extends ConsumerState<ProductionHubScreen> {
     }
 
     final hasScript = script != null && script.lines.isNotEmpty;
-    debugPrint('ProductionHub.build: hasScript=$hasScript, lines=${script?.lines.length}, chars=${script?.characters.length}');
-
-    // DEBUG: Test if Scaffold renders at all on Android
-    if (Platform.isAndroid) {
-      return Scaffold(
-        appBar: AppBar(title: Text(production.title)),
-        body: ListView(
-          children: [
-            ListTile(
-              title: const Text('Script loaded'),
-              subtitle: Text('${script?.lines.length ?? 0} lines, ${script?.characters.length ?? 0} characters'),
-            ),
-            if (hasScript) ...[
-              const Divider(),
-              ListTile(
-                leading: const Icon(Icons.edit),
-                title: const Text('Edit Script'),
-                onTap: () => context.push('/editor'),
-              ),
-              ListTile(
-                leading: const Icon(Icons.play_arrow),
-                title: const Text('Rehearsal'),
-                onTap: () => context.push('/rehearsal'),
-              ),
-              ListTile(
-                leading: const Icon(Icons.people),
-                title: const Text('Characters'),
-                onTap: () => context.push('/characters'),
-              ),
-              ListTile(
-                leading: const Icon(Icons.home),
-                title: const Text('Back to Home'),
-                onTap: () => context.go('/'),
-              ),
-              const Divider(),
-              ...script!.characters.map((c) => ListTile(
-                title: Text(c.name),
-                trailing: Text('${c.lineCount} lines'),
-              )),
-            ],
-          ],
-        ),
-      );
-    }
 
     return Scaffold(
       appBar: AppBar(
@@ -347,7 +303,7 @@ class _ProductionHubScreenState extends ConsumerState<ProductionHubScreen> {
                       Icons.bolt,
                       color: ref.watch(fastModeEnabledProvider)
                           ? Colors.amber
-                          : theme.colorScheme.onSurface.withValues(alpha: 0.3),
+                          : theme.colorScheme.onSurface.withOpacity( 0.3),
                     ),
                     tooltip: ref.watch(fastModeEnabledProvider)
                         ? 'Fast mode ON'
@@ -462,7 +418,7 @@ class _ProductionHubScreenState extends ConsumerState<ProductionHubScreen> {
                         : Theme.of(context)
                             .colorScheme
                             .outline
-                            .withValues(alpha: 0.3),
+                            .withOpacity( 0.3),
                     width: 4,
                   ),
                 ),
@@ -505,7 +461,7 @@ class _ProductionHubScreenState extends ConsumerState<ProductionHubScreen> {
                             color: Theme.of(context)
                                 .colorScheme
                                 .onSurface
-                                .withValues(alpha: 0.5)),
+                                .withOpacity( 0.5)),
                         const SizedBox(width: 4),
                         Text(
                           scene.location,
@@ -516,7 +472,7 @@ class _ProductionHubScreenState extends ConsumerState<ProductionHubScreen> {
                                 color: Theme.of(context)
                                     .colorScheme
                                     .onSurface
-                                    .withValues(alpha: 0.6),
+                                    .withOpacity( 0.6),
                               ),
                         ),
                       ],
@@ -539,8 +495,8 @@ class _ProductionHubScreenState extends ConsumerState<ProductionHubScreen> {
                             horizontal: 8, vertical: 2),
                         decoration: BoxDecoration(
                           color: isMe
-                              ? color.withValues(alpha: 0.3)
-                              : color.withValues(alpha: 0.1),
+                              ? color.withOpacity( 0.3)
+                              : color.withOpacity( 0.1),
                           borderRadius: BorderRadius.circular(12),
                           border: isMe
                               ? Border.all(color: color, width: 1.5)
@@ -565,7 +521,7 @@ class _ProductionHubScreenState extends ConsumerState<ProductionHubScreen> {
                           color: Theme.of(context)
                               .colorScheme
                               .onSurface
-                              .withValues(alpha: 0.4),
+                              .withOpacity( 0.4),
                         ),
                   ),
                 ],
@@ -610,7 +566,7 @@ class _ProductionHubScreenState extends ConsumerState<ProductionHubScreen> {
                         color: Theme.of(context)
                             .colorScheme
                             .onPrimaryContainer
-                            .withValues(alpha: 0.7),
+                            .withOpacity( 0.7),
                       ),
                 ),
               ],
@@ -736,7 +692,7 @@ class _ProductionHubScreenState extends ConsumerState<ProductionHubScreen> {
               color: Theme.of(context)
                   .colorScheme
                   .primary
-                  .withValues(alpha: 0.5),
+                  .withOpacity( 0.5),
             ),
             const SizedBox(height: 24),
             Text(
@@ -750,7 +706,7 @@ class _ProductionHubScreenState extends ConsumerState<ProductionHubScreen> {
                     color: Theme.of(context)
                         .colorScheme
                         .onSurface
-                        .withValues(alpha: 0.6),
+                        .withOpacity( 0.6),
                   ),
             ),
             const SizedBox(height: 24),

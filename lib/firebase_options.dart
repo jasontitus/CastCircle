@@ -24,10 +24,7 @@ class DefaultFirebaseOptions {
     }
     switch (defaultTargetPlatform) {
       case TargetPlatform.android:
-        throw UnsupportedError(
-          'DefaultFirebaseOptions have not been configured for android - '
-          'you can reconfigure this by running the FlutterFire CLI again.',
-        );
+        return android;
       case TargetPlatform.iOS:
         return ios;
       case TargetPlatform.macOS:
@@ -60,4 +57,13 @@ class DefaultFirebaseOptions {
     storageBucket: 'castcircle-app.firebasestorage.app',
     iosBundleId: 'com.tiltastech.castcircle',
   );
+
+  static const FirebaseOptions android = FirebaseOptions(
+    apiKey: 'AIzaSyDewlE17WUSQoh0dUgQBfnNybDWAyanfm4',
+    appId: '1:786015234737:android:10879f9140ea5337e2d090',
+    messagingSenderId: '786015234737',
+    projectId: 'castcircle-app',
+    storageBucket: 'castcircle-app.firebasestorage.app',
+  );
+
 }
