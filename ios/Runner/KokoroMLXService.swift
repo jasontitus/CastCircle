@@ -30,6 +30,11 @@ class KokoroMLXService {
     private var ttsEngine: KokoroTTS?
     private var voices: [String: MLXArray] = [:]
 
+    /// Serial actor to prevent concurrent synthesis (NLTagger is not thread-safe).
+    private let synthQueue = DispatchQueue(label: "com.castcircle.kokoro-synth")
+    /// Incremented on each synthesize call; older calls bail out early.
+    private var synthGeneration: Int = 0
+
     var isModelLoaded: Bool { ttsEngine != nil && !voices.isEmpty }
 
     var isModelDownloaded: Bool {
@@ -94,6 +99,7 @@ class KokoroMLXService {
     // MARK: - Synthesis
 
     /// Synthesize speech and return the path to a WAV file.
+    /// Serialized to prevent concurrent NLTagger/MLX access which causes SIGSEGV.
     func synthesize(text: String, voice: String, speed: Float) async throws -> String {
         guard let ttsEngine = ttsEngine else {
             throw KokoroError.modelNotLoaded
@@ -105,37 +111,69 @@ class KokoroMLXService {
             throw KokoroError.voiceNotFound(voice)
         }
 
+        // Mark this generation so older in-flight calls can bail out
+        synthGeneration += 1
+        let myGeneration = synthGeneration
+
         // Determine language from voice prefix
         let language: Language = voice.hasPrefix("a") ? .enUS : .enGB
 
-        // Generate audio via Kokoro MLX inference
-        let (audioSamples, _) = try ttsEngine.generateAudio(
-            voice: voiceEmbedding,
-            language: language,
-            text: text,
-            speed: speed
-        )
+        // Run synthesis on a serial queue to prevent concurrent NLTagger access
+        let result: String = try await withCheckedThrowingContinuation { continuation in
+            synthQueue.async { [weak self] in
+                guard let self = self else {
+                    continuation.resume(throwing: KokoroError.modelNotLoaded)
+                    return
+                }
 
-        guard !audioSamples.isEmpty else {
-            throw KokoroError.emptyAudio
+                // If a newer synthesis was requested, skip this one
+                if myGeneration != self.synthGeneration {
+                    continuation.resume(throwing: KokoroError.cancelled)
+                    return
+                }
+
+                do {
+                    // Generate audio via Kokoro MLX inference
+                    let (audioSamples, _) = try ttsEngine.generateAudio(
+                        voice: voiceEmbedding,
+                        language: language,
+                        text: text,
+                        speed: speed
+                    )
+
+                    // Force GPU sync to catch Metal errors before they fire
+                    // asynchronously and crash the process via check_error()
+                    Stream.gpu.synchronize()
+
+                    guard !audioSamples.isEmpty else {
+                        continuation.resume(throwing: KokoroError.emptyAudio)
+                        return
+                    }
+
+                    // Write to a cached WAV file
+                    let outputPath = self.cacheURL(for: text, voice: voice, speed: speed)
+                    let sampleRate = KokoroTTS.Constants.samplingRate
+                    try self.writeWAV(samples: audioSamples, sampleRate: sampleRate, to: outputPath)
+
+                    // Free MLX intermediate computation buffers
+                    Memory.clearCache()
+
+                    // Reconfigure audio session for playback before returning.
+                    // STT sets it to .record — without this, just_audio can't produce sound.
+                    let audioSession = AVAudioSession.sharedInstance()
+                    try audioSession.setCategory(.playback, mode: .default)
+                    try audioSession.setActive(true)
+
+                    continuation.resume(returning: outputPath.path)
+                } catch {
+                    // Clear GPU state on error to prevent cascading Metal failures
+                    Memory.clearCache()
+                    continuation.resume(throwing: error)
+                }
+            }
         }
 
-        // Write to a cached WAV file
-        let outputPath = cacheURL(for: text, voice: voice, speed: speed)
-        let sampleRate = KokoroTTS.Constants.samplingRate
-        try writeWAV(samples: audioSamples, sampleRate: sampleRate, to: outputPath)
-
-        // Free MLX intermediate computation buffers after each synthesis
-        // to prevent memory accumulation from attention/hidden state tensors
-        Memory.clearCache()
-
-        // Reconfigure audio session for playback before returning.
-        // STT sets it to .record — without this, just_audio can't produce sound.
-        let audioSession = AVAudioSession.sharedInstance()
-        try audioSession.setCategory(.playback, mode: .default)
-        try audioSession.setActive(true)
-
-        return outputPath.path
+        return result
     }
 
     // MARK: - Audio encoding
@@ -203,6 +241,7 @@ enum KokoroError: LocalizedError {
     case voicesNotDownloaded
     case voiceNotFound(String)
     case emptyAudio
+    case cancelled
 
     var errorDescription: String? {
         switch self {
@@ -211,6 +250,7 @@ enum KokoroError: LocalizedError {
         case .voicesNotDownloaded: return "Voice embeddings file not found. Download voices.npz first."
         case .voiceNotFound(let v): return "Voice '\(v)' not found in voice embeddings."
         case .emptyAudio: return "No audio generated for the given text."
+        case .cancelled: return "Synthesis cancelled (newer request superseded)."
         }
     }
 }

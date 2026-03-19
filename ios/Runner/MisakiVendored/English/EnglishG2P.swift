@@ -192,18 +192,24 @@ final public class EnglishG2P {
     
   private func tokenize(preprocessedText: PreprocessTuple) -> [MToken] {
     var mutableTokens: [MToken] = []
-    
+
+    // Guard against empty or whitespace-only text that crashes NLTagger/ICU
+    let text = preprocessedText.text
+    guard !text.isEmpty, text.rangeOfCharacter(from: .alphanumerics) != nil else {
+      return mutableTokens
+    }
+
     // Tokenize and perform part-of-speech tagging
-    tagger.string = preprocessedText.text
-    tagger.setLanguage(.english, range: preprocessedText.text.startIndex..<preprocessedText.text.endIndex)
+    tagger.string = text
+    tagger.setLanguage(.english, range: text.startIndex..<text.endIndex)
     let options: NLTagger.Options = []
     tagger.enumerateTags(
-      in: preprocessedText.text.startIndex..<preprocessedText.text.endIndex,
+      in: text.startIndex..<text.endIndex,
       unit: .word,
       scheme: .nameTypeOrLexicalClass,
       options: options) { tag, tokenRange in
       if let tag = tag {
-        let word = String(preprocessedText.text[tokenRange])
+        let word = String(text[tokenRange])
         if tag == .whitespace, let lastToken = mutableTokens.last {
           lastToken.whitespace = word
         } else {
