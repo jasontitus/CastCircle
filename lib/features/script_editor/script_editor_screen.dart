@@ -60,6 +60,40 @@ class _ScriptEditorScreenState extends ConsumerState<ScriptEditorScreen> {
         ),
         actions: [
           IconButton(
+            icon: const Icon(Icons.language),
+            tooltip: 'Edit on web',
+            onPressed: () {
+              showDialog(
+                context: context,
+                builder: (ctx) => AlertDialog(
+                  icon: const Icon(Icons.desktop_windows, size: 40),
+                  title: const Text('Edit on a Big Screen'),
+                  content: const Text(
+                    'Editing scripts is easier with a real keyboard and mouse. '
+                    'Share this link to open the web editor in any browser — '
+                    'your script syncs automatically via the cloud.',
+                  ),
+                  actions: [
+                    TextButton(
+                      onPressed: () => Navigator.pop(ctx),
+                      child: const Text('Not Now'),
+                    ),
+                    FilledButton.icon(
+                      onPressed: () {
+                        Navigator.pop(ctx);
+                        Share.share(
+                          'Edit your CastCircle script on the web:\nhttps://castcircle-app.web.app',
+                        );
+                      },
+                      icon: const Icon(Icons.share),
+                      label: const Text('Share Link'),
+                    ),
+                  ],
+                ),
+              );
+            },
+          ),
+          IconButton(
             icon: const Icon(Icons.cloud_upload_outlined),
             tooltip: 'Sync to cloud',
             onPressed: () async {
