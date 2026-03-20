@@ -1746,35 +1746,50 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen> {
   Future<void> _startCaptureForLine(ScriptLine line) async {
     try {
       final dir = await getTemporaryDirectory();
-      final path = p.join(dir.path, 'rehearsal_${line.id}.wav');
+      final path = p.join(dir.path, 'rehearsal_${line.id}.m4a');
+      _dlog.log(LogCategory.rehearsal, 'Capture: starting for ${line.id.substring(0, 8)}...');
       final ok = await _stt.startRecording(path);
+      _dlog.log(LogCategory.rehearsal, 'Capture: startRecording returned $ok');
       if (ok) {
         _isCapturingAudio = true;
-        _dlog.log(LogCategory.rehearsal, 'Capture started for ${line.id}');
+      } else {
+        _dlog.log(LogCategory.rehearsal, 'Capture: startRecording FAILED (returned false)');
       }
     } catch (e) {
-      _dlog.logError(LogCategory.error, 'Capture start failed', e);
+      _dlog.logError(LogCategory.error, 'Capture: start exception', e);
     }
   }
 
   Future<void> _stopCaptureForLine(ScriptLine line) async {
-    if (!_isCapturingAudio) return;
+    if (!_isCapturingAudio) {
+      _dlog.log(LogCategory.rehearsal, 'Capture: stop skipped (not capturing)');
+      return;
+    }
     _isCapturingAudio = false;
 
     try {
+      _dlog.log(LogCategory.rehearsal, 'Capture: stopping...');
       final result = await _stt.stopRecording();
       if (result != null) {
         final path = result['path'] as String?;
         final durationMs = result['durationMs'] as int? ?? 0;
-        if (path != null && durationMs > 500) {
-          // Only keep recordings longer than 0.5s
+        final fileExists = path != null && File(path).existsSync();
+        final fileSize = fileExists ? File(path).lengthSync() : 0;
+        _dlog.log(LogCategory.rehearsal,
+            'Capture: stopped — ${durationMs}ms, ${fileSize}B, exists=$fileExists');
+        if (path != null && durationMs > 500 && fileExists && fileSize > 100) {
           _capturedAudio[line.id] = _CapturedLine(path: path, durationMs: durationMs);
           _dlog.log(LogCategory.rehearsal,
-              'Captured ${line.id} (${durationMs}ms)');
+              'Capture: saved ${line.id.substring(0, 8)}... (${durationMs}ms, ${fileSize ~/ 1024}KB)');
+        } else {
+          _dlog.log(LogCategory.rehearsal,
+              'Capture: DISCARDED (too short or empty)');
         }
+      } else {
+        _dlog.log(LogCategory.rehearsal, 'Capture: stopRecording returned null');
       }
     } catch (e) {
-      _dlog.logError(LogCategory.error, 'Capture stop failed', e);
+      _dlog.logError(LogCategory.error, 'Capture: stop exception', e);
     }
   }
 
@@ -1840,7 +1855,7 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen> {
       if (!tempFile.existsSync()) continue;
 
       // Move from temp to permanent recordings directory
-      final destPath = p.join(recordingsDir.path, '$lineId.wav');
+      final destPath = p.join(recordingsDir.path, '$lineId.m4a');
       try {
         await tempFile.copy(destPath);
         await tempFile.delete();
@@ -1873,7 +1888,14 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen> {
     _capturedAudio.clear();
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Saved $saved rehearsal recordings')),
+        SnackBar(
+          content: Text('Saved $saved rehearsal recordings'),
+          action: SnackBarAction(
+            label: 'Review',
+            onPressed: () => context.push('/recordings'),
+          ),
+          duration: const Duration(seconds: 5),
+        ),
       );
     }
     _dlog.log(LogCategory.rehearsal, 'Saved $saved rehearsal recordings');

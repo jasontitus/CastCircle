@@ -17,6 +17,7 @@ class AppleSttPlugin: NSObject {
     private var audioFile: AVAudioFile?
     private var recordingStartTime: Date?
     private var recordingPath: String?
+    private var tapFormat: AVAudioFormat? // cached from installTap
 
     init(messenger: FlutterBinaryMessenger) {
         channel = FlutterMethodChannel(
@@ -192,6 +193,7 @@ class AppleSttPlugin: NSObject {
         inputNode.removeTap(onBus: 0)
 
         let recordingFormat = inputNode.outputFormat(forBus: 0)
+        tapFormat = recordingFormat // cache for startRecording
 
         // installTap throws an ObjC NSException (not a Swift error) if a tap
         // is already installed. Wrap in ObjC exception catcher.
@@ -200,7 +202,14 @@ class AppleSttPlugin: NSObject {
             inputNode.installTap(onBus: 0, bufferSize: 4096, format: recordingFormat) { [weak self] buffer, _ in
                 self?.recognitionRequest?.append(buffer)
                 // Concurrent recording: write same audio buffers to file
-                try? self?.audioFile?.write(from: buffer)
+                if let file = self?.audioFile {
+                    do {
+                        try file.write(from: buffer)
+                    } catch {
+                        NSLog("AppleStt: audioFile.write FAILED: \(error)")
+                        self?.audioFile = nil // stop trying after first failure
+                    }
+                }
             }
             tapInstalled = true
         }, catch: { exception in
@@ -239,28 +248,29 @@ class AppleSttPlugin: NSObject {
         recordingPath = path
         recordingStartTime = Date()
 
-        // Write directly as WAV — universally playable, no conversion needed.
-        // The tap format is whatever the hardware provides (typically 48kHz float32).
-        let inputNode = audioEngine.inputNode
-        let format = inputNode.outputFormat(forBus: 0)
+        guard let format = tapFormat else {
+            NSLog("AppleStt: startRecording FAILED — no tap format (engine not running?)")
+            result(false)
+            return
+        }
 
-        // Create WAV file settings (PCM in a WAV container)
-        let wavSettings: [String: Any] = [
-            AVFormatIDKey: Int(kAudioFormatLinearPCM),
-            AVSampleRateKey: format.sampleRate,
-            AVNumberOfChannelsKey: format.channelCount,
-            AVLinearPCMBitDepthKey: 16,
-            AVLinearPCMIsFloatKey: false,
-            AVLinearPCMIsBigEndianKey: false,
-            AVLinearPCMIsNonInterleaved: false,
+        // Write as AAC (.m4a) — compact and natively supported.
+        // AVAudioFile auto-converts from the tap's PCM format to AAC.
+        let aacSettings: [String: Any] = [
+            AVFormatIDKey: Int(kAudioFormatMPEG4AAC),
+            AVSampleRateKey: 44100.0,
+            AVNumberOfChannelsKey: 1,
+            AVEncoderBitRateKey: 128000,
         ]
 
         do {
             audioFile = try AVAudioFile(
                 forWriting: URL(fileURLWithPath: path),
-                settings: wavSettings
+                settings: aacSettings,
+                commonFormat: format.commonFormat,
+                interleaved: format.isInterleaved
             )
-            NSLog("AppleStt: Recording started → \(path) (WAV \(format.sampleRate)Hz)")
+            NSLog("AppleStt: Recording started → \(path) (AAC 44.1kHz, tap: \(format.sampleRate)Hz \(format.channelCount)ch)")
             result(true)
         } catch {
             NSLog("AppleStt: Failed to create audio file: \(error)")
