@@ -1795,9 +1795,17 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen> {
 
   /// Show prompt to save captured rehearsal audio as recordings.
   void _offerToSaveRehearsalRecordings() {
+    // Delay slightly — the last capture's async stopRecording may still
+    // be in flight when scene-complete fires synchronously.
+    Future.delayed(const Duration(milliseconds: 500), () {
+      if (!mounted) return;
+      _showSaveRecordingsPrompt();
+    });
+  }
+
+  void _showSaveRecordingsPrompt() {
     if (_capturedAudio.isEmpty) return;
 
-    final count = _capturedAudio.length;
     final character = ref.read(rehearsalCharacterProvider) ?? '';
 
     if (!_hasPromptedUpload) {

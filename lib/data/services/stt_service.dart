@@ -250,13 +250,28 @@ class SttService {
   /// Start recording audio alongside STT (same mic tap).
   /// The audio file will be saved to [path] as .m4a.
   Future<bool> startRecording(String path) async {
-    return _appleChannel.startRecording(path);
+    DebugLogService.instance.log(LogCategory.rehearsal,
+        'STT.startRecording: $path');
+    final ok = await _appleChannel.startRecording(path);
+    DebugLogService.instance.log(LogCategory.rehearsal,
+        'STT.startRecording → $ok');
+    return ok;
   }
 
   /// Stop recording and finalize the file.
   /// Returns {path, durationMs} or null.
   Future<Map<String, dynamic>?> stopRecording() async {
-    return _appleChannel.stopRecording();
+    DebugLogService.instance.log(LogCategory.rehearsal,
+        'STT.stopRecording: calling...');
+    final result = await _appleChannel.stopRecording();
+    if (result != null) {
+      DebugLogService.instance.log(LogCategory.rehearsal,
+          'STT.stopRecording → path=${result['path']}, duration=${result['durationMs']}ms');
+    } else {
+      DebugLogService.instance.log(LogCategory.rehearsal,
+          'STT.stopRecording → null (not recording?)');
+    }
+    return result;
   }
 
   // ── Helpers ───────────────────────────────────────────

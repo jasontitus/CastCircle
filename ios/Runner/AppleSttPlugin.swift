@@ -254,23 +254,18 @@ class AppleSttPlugin: NSObject {
             return
         }
 
-        // Write as AAC (.m4a) — compact and natively supported.
-        // AVAudioFile auto-converts from the tap's PCM format to AAC.
-        let aacSettings: [String: Any] = [
-            AVFormatIDKey: Int(kAudioFormatMPEG4AAC),
-            AVSampleRateKey: 44100.0,
-            AVNumberOfChannelsKey: 1,
-            AVEncoderBitRateKey: 128000,
-        ]
+        // Write PCM in native tap format (.caf) — convert to AAC on stop.
+        // AVAudioFile.write() only works reliably with PCM output formats.
+        let cafPath = path + ".caf"
 
         do {
             audioFile = try AVAudioFile(
-                forWriting: URL(fileURLWithPath: path),
-                settings: aacSettings,
+                forWriting: URL(fileURLWithPath: cafPath),
+                settings: format.settings,
                 commonFormat: format.commonFormat,
                 interleaved: format.isInterleaved
             )
-            NSLog("AppleStt: Recording started → \(path) (AAC 44.1kHz, tap: \(format.sampleRate)Hz \(format.channelCount)ch)")
+            NSLog("AppleStt: Recording started → \(cafPath) (PCM \(format.sampleRate)Hz \(format.channelCount)ch)")
             result(true)
         } catch {
             NSLog("AppleStt: Failed to create audio file: \(error)")
@@ -281,7 +276,7 @@ class AppleSttPlugin: NSObject {
         }
     }
 
-    /// Stop recording. Returns {path, durationMs}.
+    /// Stop recording, convert CAF→M4A, return {path, durationMs}.
     private func stopRecording(result: @escaping FlutterResult) {
         guard let _ = audioFile, let destPath = recordingPath else {
             result(nil)
@@ -289,15 +284,58 @@ class AppleSttPlugin: NSObject {
         }
 
         let durationMs = Int((Date().timeIntervalSince(recordingStartTime ?? Date())) * 1000)
+        let cafPath = destPath + ".caf"
 
-        // Close the file by releasing the reference
+        // Close the PCM file
         audioFile = nil
         recordingStartTime = nil
         recordingPath = nil
 
-        let fileSize = (try? FileManager.default.attributesOfItem(atPath: destPath)[.size] as? Int) ?? 0
-        NSLog("AppleStt: Recording saved → \(destPath) (\(durationMs)ms, \(fileSize / 1024)KB)")
-        result(["path": destPath, "durationMs": durationMs])
+        let cafSize = (try? FileManager.default.attributesOfItem(atPath: cafPath)[.size] as? Int) ?? 0
+        NSLog("AppleStt: PCM captured → \(cafPath) (\(durationMs)ms, \(cafSize / 1024)KB)")
+
+        if cafSize < 100 {
+            NSLog("AppleStt: PCM file too small, discarding")
+            try? FileManager.default.removeItem(atPath: cafPath)
+            result(["path": destPath, "durationMs": durationMs])
+            return
+        }
+
+        // Convert PCM CAF → AAC M4A
+        DispatchQueue.global(qos: .userInitiated).async {
+            let cafUrl = URL(fileURLWithPath: cafPath)
+            let destUrl = URL(fileURLWithPath: destPath)
+            try? FileManager.default.removeItem(at: destUrl)
+
+            guard let exportSession = AVAssetExportSession(
+                asset: AVAsset(url: cafUrl),
+                presetName: AVAssetExportPresetAppleM4A
+            ) else {
+                NSLog("AppleStt: No export session available, keeping CAF")
+                try? FileManager.default.moveItem(at: cafUrl, to: destUrl)
+                DispatchQueue.main.async {
+                    result(["path": destPath, "durationMs": durationMs])
+                }
+                return
+            }
+
+            exportSession.outputURL = destUrl
+            exportSession.outputFileType = .m4a
+
+            exportSession.exportAsynchronously {
+                try? FileManager.default.removeItem(at: cafUrl)
+
+                let m4aSize = (try? FileManager.default.attributesOfItem(atPath: destPath)[.size] as? Int) ?? 0
+                DispatchQueue.main.async {
+                    if exportSession.status == .completed {
+                        NSLog("AppleStt: Converted → \(destPath) (\(m4aSize / 1024)KB M4A)")
+                    } else {
+                        NSLog("AppleStt: Export failed: \(exportSession.error?.localizedDescription ?? "unknown")")
+                    }
+                    result(["path": destPath, "durationMs": durationMs])
+                }
+            }
+        }
     }
 
     private func stopCurrentSession() {
