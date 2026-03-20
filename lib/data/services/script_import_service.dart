@@ -47,15 +47,14 @@ class ScriptImportService {
     var text = md;
     // Remove markdown headers (## ACT I -> ACT I)
     text = text.replaceAll(RegExp(r'^#{1,6}\s*', multiLine: true), '');
-    // Remove bold/italic markers
-    text = text.replaceAll(RegExp(r'\*{1,3}(.+?)\*{1,3}'), r'$1');
-    text = text.replaceAll(RegExp(r'_{1,3}(.+?)_{1,3}'), r'$1');
+    // Remove bold/italic markers (**text** -> text)
+    text = text.replaceAll(RegExp(r'\*{2,3}'), '');
     // Remove horizontal rules
     text = text.replaceAll(RegExp(r'^[-*_]{3,}\s*$', multiLine: true), '');
     // Remove link syntax [text](url) -> text
-    text = text.replaceAll(RegExp(r'\[([^\]]+)\]\([^)]+\)'), r'$1');
+    text = text.replaceAllMapped(RegExp(r'\[([^\]]+)\]\([^)]+\)'), (m) => m[1]!);
     // Remove inline code backticks
-    text = text.replaceAll(RegExp(r'`([^`]+)`'), r'$1');
+    text = text.replaceAllMapped(RegExp(r'`([^`]+)`'), (m) => m[1]!);
     return text;
   }
 
