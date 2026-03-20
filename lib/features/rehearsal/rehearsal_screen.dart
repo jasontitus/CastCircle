@@ -1,9 +1,13 @@
 import 'dart:async';
+import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:path/path.dart' as p;
+import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:uuid/uuid.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 import 'package:go_router/go_router.dart';
 import 'package:just_audio/just_audio.dart';
@@ -20,6 +24,7 @@ import '../../data/services/stt_vocabulary_service.dart';
 import '../../data/services/analytics_service.dart';
 import '../../data/services/media_control_service.dart';
 import '../../data/services/recording_sync_service.dart';
+import '../../data/services/sync_queue.dart';
 import '../../data/services/voice_config_service.dart';
 import '../../providers/production_providers.dart';
 import '../../features/settings/settings_screen.dart';
@@ -63,6 +68,11 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen> {
   double _matchScore = 0.0;
   bool _showMatchFeedback = false;
   bool _showJumpBackHint = false; // Set in initState based on how many times shown
+
+  // Rehearsal audio capture: record the user's lines for later use
+  final Map<String, String> _capturedAudioPaths = {}; // lineId → temp .m4a path
+  bool _isCapturingAudio = false;
+  bool _hasPromptedUpload = false; // only prompt once per session
 
   // Debounce rapid taps to prevent stack overflow from reentrancy
   bool _jumpBackInProgress = false;
@@ -870,6 +880,22 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen> {
                 ),
               ),
             ],
+            if (_capturedAudioPaths.isNotEmpty && _hasPromptedUpload) ...[
+              const SizedBox(height: 24),
+              FilledButton.icon(
+                onPressed: () {
+                  final character = ref.read(rehearsalCharacterProvider) ?? '';
+                  _saveRehearsalCaptures(character);
+                },
+                icon: const Icon(Icons.upload),
+                label: Text('Save ${_capturedAudioPaths.length} Recorded Lines'),
+                style: FilledButton.styleFrom(
+                  padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 16),
+                  textStyle: const TextStyle(fontSize: 16),
+                  backgroundColor: Colors.green,
+                ),
+              ),
+            ],
             const SizedBox(height: 32),
             FilledButton.icon(
               onPressed: _restartScene,
@@ -1158,6 +1184,7 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen> {
           RehearsalState.sceneComplete;
       WakelockPlus.disable(); // Allow screen to sleep at scene end
       _saveSession(dialogueLines);
+      _offerToSaveRehearsalRecordings();
       return;
     }
 
@@ -1284,6 +1311,7 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen> {
       ref.read(rehearsalStateProvider.notifier).state =
           RehearsalState.sceneComplete;
       _saveSession(dialogueLines);
+      _offerToSaveRehearsalRecordings();
       _scrollToCurrentLine();
       return;
     }
@@ -1410,6 +1438,7 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen> {
             if (ref.read(rehearsalStateProvider) != RehearsalState.listeningForMe) return;
 
             _silenceTimer?.cancel();
+            _stopCaptureForLine(line);
             _stt.stop();
             HapticFeedback.lightImpact();
 
@@ -1450,6 +1479,9 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen> {
       },
       vocabularyHints: vocabHints,
     );
+
+    // Start audio capture AFTER listen() — the audio engine must be running
+    _startCaptureForLine(line);
   }
 
   /// Reset the silence timer. When no new STT results arrive for
@@ -1462,6 +1494,7 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen> {
       if (state != RehearsalState.listeningForMe) return;
 
       debugPrint('Rehearsal: Silence timeout — auto-advancing');
+      _stopCaptureForLine(line);
       _stt.stop();
 
       // Record the attempt with whatever score was achieved
@@ -1481,6 +1514,11 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen> {
   void _advanceLine(int totalLines) {
     _silenceTimer?.cancel();
     _matchConfirmTimer?.cancel();
+    // Stop any in-progress audio capture before advancing
+    if (_isCapturingAudio) {
+      _stt.stopRecording(); // fire-and-forget, file will be finalized
+      _isCapturingAudio = false;
+    }
     _tts.stop(reason: 'advanceLine');
     _stt.stop(discard: true);
     try { _player.stop(); } catch (_) {}
@@ -1490,6 +1528,7 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen> {
       ref.read(currentLineIndexProvider.notifier).state = current + 1;
       ref.read(rehearsalStateProvider.notifier).state =
           RehearsalState.sceneComplete;
+      _offerToSaveRehearsalRecordings();
       _scrollToCurrentLine();
       return;
     }
@@ -1700,6 +1739,152 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen> {
         _recordAttempt(line, skipped: skipped);
       }
     }
+  }
+
+  // ── Rehearsal Audio Capture ──────────────────────────
+
+  Future<void> _startCaptureForLine(ScriptLine line) async {
+    try {
+      final dir = await getTemporaryDirectory();
+      final path = p.join(dir.path, 'rehearsal_${line.id}.m4a');
+      final ok = await _stt.startRecording(path);
+      if (ok) {
+        _isCapturingAudio = true;
+        _dlog.log(LogCategory.rehearsal, 'Capture started for ${line.id}');
+      }
+    } catch (e) {
+      _dlog.logError(LogCategory.error, 'Capture start failed', e);
+    }
+  }
+
+  Future<void> _stopCaptureForLine(ScriptLine line) async {
+    if (!_isCapturingAudio) return;
+    _isCapturingAudio = false;
+
+    try {
+      final result = await _stt.stopRecording();
+      if (result != null) {
+        final path = result['path'] as String?;
+        final durationMs = result['durationMs'] as int? ?? 0;
+        if (path != null && durationMs > 500) {
+          // Only keep recordings longer than 0.5s
+          _capturedAudioPaths[line.id] = path;
+          _dlog.log(LogCategory.rehearsal,
+              'Captured ${line.id} (${durationMs}ms)');
+        }
+      }
+    } catch (e) {
+      _dlog.logError(LogCategory.error, 'Capture stop failed', e);
+    }
+  }
+
+  /// Show prompt to save captured rehearsal audio as recordings.
+  void _offerToSaveRehearsalRecordings() {
+    if (_capturedAudioPaths.isEmpty) return;
+
+    final count = _capturedAudioPaths.length;
+    final character = ref.read(rehearsalCharacterProvider) ?? '';
+
+    if (!_hasPromptedUpload) {
+      _hasPromptedUpload = true;
+      // First run: show dialog
+      showDialog(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          icon: const Icon(Icons.mic, size: 40),
+          title: const Text('Save Your Performance?'),
+          content: Text(
+            'We captured $count of your lines during rehearsal. '
+            'Save them as your recorded lines so other cast members '
+            'can hear your voice during their rehearsals?\n\n'
+            'You can review and re-record individual lines later.',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () {
+                Navigator.pop(ctx);
+                _purgeRehearsalCaptures();
+              },
+              child: const Text('Discard'),
+            ),
+            FilledButton.icon(
+              onPressed: () {
+                Navigator.pop(ctx);
+                _saveRehearsalCaptures(character);
+              },
+              icon: const Icon(Icons.upload),
+              label: const Text('Save Recordings'),
+            ),
+          ],
+        ),
+      );
+    }
+    // After first prompt, the button is shown in the completion UI
+  }
+
+  Future<void> _saveRehearsalCaptures(String character) async {
+    final production = ref.read(currentProductionProvider);
+    if (production == null) return;
+
+    final docsDir = await getApplicationDocumentsDirectory();
+    final recordingsDir = Directory(p.join(docsDir.path, 'recordings'));
+    if (!recordingsDir.existsSync()) {
+      recordingsDir.createSync(recursive: true);
+    }
+
+    int saved = 0;
+    for (final entry in _capturedAudioPaths.entries) {
+      final lineId = entry.key;
+      final tempPath = entry.value;
+      final tempFile = File(tempPath);
+      if (!tempFile.existsSync()) continue;
+
+      // Move from temp to permanent recordings directory
+      final destPath = p.join(recordingsDir.path, '$lineId.m4a');
+      try {
+        await tempFile.copy(destPath);
+        await tempFile.delete();
+
+        final stat = File(destPath).statSync();
+        final recording = Recording(
+          id: const Uuid().v4(),
+          scriptLineId: lineId,
+          character: character,
+          localPath: destPath,
+          durationMs: 0, // will be filled on playback
+          recordedAt: DateTime.now(),
+        );
+        ref.read(recordingsProvider.notifier).add(recording);
+
+        // Enqueue for cloud upload
+        SyncQueue.instance.enqueue(
+          productionId: production.id,
+          characterName: character,
+          lineId: lineId,
+          localPath: destPath,
+          durationMs: 0,
+        );
+
+        saved++;
+      } catch (e) {
+        _dlog.logError(LogCategory.error, 'Save capture failed for $lineId', e);
+      }
+    }
+
+    _capturedAudioPaths.clear();
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Saved $saved rehearsal recordings')),
+      );
+    }
+    _dlog.log(LogCategory.rehearsal, 'Saved $saved rehearsal recordings');
+  }
+
+  void _purgeRehearsalCaptures() {
+    for (final path in _capturedAudioPaths.values) {
+      try { File(path).deleteSync(); } catch (_) {}
+    }
+    _capturedAudioPaths.clear();
   }
 
   /// Save the completed rehearsal session to history.

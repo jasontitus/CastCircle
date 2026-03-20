@@ -85,6 +85,10 @@ class ScriptParser {
     // Strip Project Gutenberg preamble/postamble if present
     rawText = _stripGutenbergWrapper(rawText);
 
+    // Strip markdown formatting (bold/italic) so character names parse correctly
+    // e.g. "**MRS. BENNET.** Hello" → "MRS. BENNET. Hello"
+    rawText = _stripMarkdown(rawText);
+
     // Pre-process: dehyphenate OCR line breaks ("dan-\ngerous" → "dangerous")
     rawText = _dehyphenate(rawText);
 
@@ -389,6 +393,19 @@ class ScriptParser {
     }
     if (_titlePrefixes.contains(name)) return;
     knownCharacters.add(name);
+  }
+
+  /// Strip markdown bold/italic markers so character names parse correctly.
+  /// "**MRS. BENNET.** Hello" → "MRS. BENNET. Hello"
+  /// Only strips bold markers (** and ***), not headings or rules,
+  /// to avoid breaking plain-text Gutenberg files.
+  static String _stripMarkdown(String text) {
+    // Bold/bold-italic: ***text*** or **text**
+    text = text.replaceAll(RegExp(r'\*{2,3}'), '');
+    // Markdown heading markers (only if followed by a letter — avoids
+    // stripping Gutenberg *** markers which are already removed)
+    text = text.replaceAll(RegExp(r'^#{1,6}\s+(?=[A-Z])', multiLine: true), '');
+    return text;
   }
 
   /// Strip Project Gutenberg preamble (before "*** START OF") and

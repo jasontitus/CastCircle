@@ -111,6 +111,36 @@ class AppleSttChannel {
     }
   }
 
+  /// Start recording audio alongside STT (same mic tap).
+  /// Audio is saved to [path] as .m4a.
+  Future<bool> startRecording(String path) async {
+    try {
+      return await _channel.invokeMethod<bool>('startRecording', {
+        'path': path,
+      }) ?? false;
+    } on PlatformException catch (e) {
+      debugPrint('AppleStt: startRecording failed: ${e.message}');
+      return false;
+    } on MissingPluginException {
+      return false;
+    }
+  }
+
+  /// Stop recording and finalize the audio file.
+  /// Returns {path, durationMs} or null if not recording.
+  Future<Map<String, dynamic>?> stopRecording() async {
+    try {
+      final result = await _channel.invokeMethod<Map>('stopRecording');
+      if (result == null) return null;
+      return Map<String, dynamic>.from(result);
+    } on PlatformException catch (e) {
+      debugPrint('AppleStt: stopRecording failed: ${e.message}');
+      return null;
+    } on MissingPluginException {
+      return null;
+    }
+  }
+
   Future<void> dispose() async {
     await stop();
     _onResult = null;

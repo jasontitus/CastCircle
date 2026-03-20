@@ -13,6 +13,11 @@ class AppleSttPlugin: NSObject {
     private let audioEngine = AVAudioEngine()
     private var authorized = false
 
+    // Concurrent audio recording during STT
+    private var audioFile: AVAudioFile?
+    private var recordingStartTime: Date?
+    private var recordingPath: String?
+
     init(messenger: FlutterBinaryMessenger) {
         channel = FlutterMethodChannel(
             name: "com.lineguide/apple_stt",
@@ -36,6 +41,12 @@ class AppleSttPlugin: NSObject {
             listen(contextualStrings: hints, onDevice: onDevice, locale: locale, result: result)
         case "stop":
             stopListening(result: result)
+        case "startRecording":
+            let args = call.arguments as? [String: Any] ?? [:]
+            let path = args["path"] as? String ?? ""
+            startRecording(path: path, result: result)
+        case "stopRecording":
+            stopRecording(result: result)
         case "isAvailable":
             result(recognizer?.isAvailable ?? false)
         case "dispose":
@@ -188,6 +199,8 @@ class AppleSttPlugin: NSObject {
         ObjCExceptionCatcher.try({
             inputNode.installTap(onBus: 0, bufferSize: 4096, format: recordingFormat) { [weak self] buffer, _ in
                 self?.recognitionRequest?.append(buffer)
+                // Concurrent recording: write same audio buffers to file
+                try? self?.audioFile?.write(from: buffer)
             }
             tapInstalled = true
         }, catch: { exception in
@@ -216,6 +229,94 @@ class AppleSttPlugin: NSObject {
     private func stopListening(result: @escaping FlutterResult) {
         stopCurrentSession()
         result(nil)
+    }
+
+    // MARK: - Concurrent Recording
+
+    /// Start recording audio to a file alongside STT.
+    /// The audio is captured from the same AVAudioEngine tap.
+    private func startRecording(path: String, result: @escaping FlutterResult) {
+        // Write PCM to a temp CAF file first, convert to AAC after stop
+        let pcmPath = path + ".caf"
+        recordingPath = path
+        recordingStartTime = Date()
+
+        let inputNode = audioEngine.inputNode
+        let format = inputNode.outputFormat(forBus: 0)
+
+        do {
+            audioFile = try AVAudioFile(
+                forWriting: URL(fileURLWithPath: pcmPath),
+                settings: format.settings,
+                commonFormat: format.commonFormat,
+                interleaved: format.isInterleaved
+            )
+            NSLog("AppleStt: Recording started → \(pcmPath)")
+            result(true)
+        } catch {
+            NSLog("AppleStt: Failed to create audio file: \(error)")
+            audioFile = nil
+            recordingPath = nil
+            result(FlutterError(code: "RECORD_ERROR",
+                                message: error.localizedDescription, details: nil))
+        }
+    }
+
+    /// Stop recording and convert PCM → AAC .m4a.
+    /// Returns {path, durationMs}.
+    private func stopRecording(result: @escaping FlutterResult) {
+        guard let file = audioFile, let destPath = recordingPath else {
+            result(nil)
+            return
+        }
+
+        let durationMs = Int((Date().timeIntervalSince(recordingStartTime ?? Date())) * 1000)
+        let pcmPath = destPath + ".caf"
+
+        // Close the file
+        audioFile = nil
+        recordingStartTime = nil
+        recordingPath = nil
+
+        // Convert PCM CAF → AAC M4A in background
+        DispatchQueue.global(qos: .userInitiated).async {
+            let pcmUrl = URL(fileURLWithPath: pcmPath)
+            let destUrl = URL(fileURLWithPath: destPath)
+
+            // Remove existing destination
+            try? FileManager.default.removeItem(at: destUrl)
+
+            let asset = AVAsset(url: pcmUrl)
+            guard let exportSession = AVAssetExportSession(
+                asset: asset,
+                presetName: AVAssetExportPresetAppleM4A
+            ) else {
+                // Fallback: just rename the CAF file
+                try? FileManager.default.moveItem(at: pcmUrl, to: destUrl)
+                DispatchQueue.main.async {
+                    result(["path": destPath, "durationMs": durationMs])
+                }
+                return
+            }
+
+            exportSession.outputURL = destUrl
+            exportSession.outputFileType = .m4a
+
+            exportSession.exportAsynchronously {
+                // Clean up temp PCM file
+                try? FileManager.default.removeItem(at: pcmUrl)
+
+                DispatchQueue.main.async {
+                    if exportSession.status == .completed {
+                        NSLog("AppleStt: Recording saved → \(destPath) (\(durationMs)ms)")
+                        result(["path": destPath, "durationMs": durationMs])
+                    } else {
+                        NSLog("AppleStt: Export failed: \(exportSession.error?.localizedDescription ?? "unknown")")
+                        result(["path": destPath, "durationMs": durationMs])
+                    }
+                }
+            }
+        }
     }
 
     private func stopCurrentSession() {

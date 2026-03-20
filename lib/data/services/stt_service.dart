@@ -245,6 +245,20 @@ class SttService {
     return text.toLowerCase().replaceAll(RegExp(r'[^\w\s]'), '').trim();
   }
 
+  // ── Concurrent Recording ─────────────────────────────
+
+  /// Start recording audio alongside STT (same mic tap).
+  /// The audio file will be saved to [path] as .m4a.
+  Future<bool> startRecording(String path) async {
+    return _appleChannel.startRecording(path);
+  }
+
+  /// Stop recording and finalize the file.
+  /// Returns {path, durationMs} or null.
+  Future<Map<String, dynamic>?> stopRecording() async {
+    return _appleChannel.stopRecording();
+  }
+
   // ── Helpers ───────────────────────────────────────────
 
   void dispose() {
