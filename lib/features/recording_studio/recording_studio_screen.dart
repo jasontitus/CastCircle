@@ -14,6 +14,7 @@ import '../../core/constants.dart';
 import '../../core/theme/app_theme.dart';
 import '../../data/models/script_models.dart';
 import '../../data/services/stt_adaptation_service.dart';
+import '../../data/services/sync_queue.dart';
 import '../../providers/production_providers.dart';
 import '../../features/settings/settings_screen.dart';
 
@@ -474,9 +475,17 @@ class _RecordingStudioScreenState extends ConsumerState<RecordingStudioScreen> {
       );
       ref.read(recordingsProvider.notifier).add(recording);
 
-      // Feed into per-actor training pipelines
+      // Upload to cloud via sync queue
       final production = ref.read(currentProductionProvider);
       if (production != null) {
+        SyncQueue.instance.enqueue(
+          productionId: production.id,
+          characterName: _character!,
+          lineId: line.id,
+          localPath: path,
+          durationMs: _recordingDuration.inMilliseconds,
+        );
+
         // STT adaptation: recording + transcript as training data
         SttAdaptationService.instance.addSample(
           productionId: production.id,
@@ -485,7 +494,6 @@ class _RecordingStudioScreenState extends ConsumerState<RecordingStudioScreen> {
           transcript: line.text,
           durationMs: _recordingDuration.inMilliseconds,
         );
-
       }
 
       setState(() => _status = RecordingStatus.recorded);

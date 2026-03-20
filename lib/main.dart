@@ -18,6 +18,7 @@ import 'data/services/model_download_service.dart';
 import 'data/services/tts_service.dart';
 import 'data/services/stt_service.dart';
 import 'data/services/debug_log_service.dart';
+import 'data/services/sync_queue.dart';
 import 'firebase_options.dart';
 
 /// Global database instance, provided via Riverpod.
@@ -101,6 +102,9 @@ void main() async {
 
   // Initialize debug logging first so other services can use it
   await DebugLogService.instance.init();
+
+  // Start recording upload queue so local recordings sync to cloud
+  SyncQueue.instance.start();
 
   // Deep link service is initialized lazily in CastCircleApp to avoid
   // blocking app startup if app_links has issues on cold start.

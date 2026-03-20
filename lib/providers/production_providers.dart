@@ -128,6 +128,11 @@ class RecordingsNotifier extends StateNotifier<Map<String, Recording>> {
     state = Map.from(state)..remove(scriptLineId);
   }
 
+  /// Load recordings from a pre-built map (e.g. from recording sync cache).
+  void loadFromMap(Map<String, Recording> recordings) {
+    state = {...state, ...recordings};
+  }
+
   void clear() {
     _productionId = null;
     state = {};
