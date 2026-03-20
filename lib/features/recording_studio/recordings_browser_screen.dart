@@ -1,9 +1,12 @@
 import 'dart:io';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:just_audio/just_audio.dart';
+import 'package:path/path.dart' as p;
+import 'package:path_provider/path_provider.dart';
 
 import '../../core/theme/app_theme.dart';
 import '../../data/models/script_models.dart';
@@ -223,7 +226,8 @@ class _RecordingsBrowserScreenState
         script.characters.indexWhere((c) => c.name == line.character);
     final charColor =
         charIdx >= 0 ? AppTheme.colorForCharacter(charIdx) : Colors.blue;
-    final fileExists = File(recording.localPath).existsSync();
+    // Don't check fileExists synchronously — the path resolver handles stale paths
+    const fileExists = true;
 
     return Dismissible(
       key: ValueKey(recording.id),
@@ -385,16 +389,52 @@ class _RecordingsBrowserScreenState
     }
   }
 
-  Future<void> _playRecording(Recording recording, String lineId) async {
-    final file = File(recording.localPath);
-    final exists = file.existsSync();
-    final size = exists ? file.lengthSync() : 0;
-    debugPrint('PlayRecording: path=${recording.localPath} exists=$exists size=$size');
+  /// Resolve a recording's local path — if the stored absolute path is stale
+  /// (app container UUID changed after reinstall), try the current Documents dir.
+  Future<String?> _resolveRecordingPath(Recording recording) async {
+    // Try stored path first
+    if (File(recording.localPath).existsSync()) return recording.localPath;
 
-    if (!exists || size < 100) {
+    // Try current Documents/recordings/{filename}
+    final docsDir = await getApplicationDocumentsDirectory();
+    final filename = p.basename(recording.localPath);
+    final resolved = p.join(docsDir.path, 'recordings', filename);
+    if (File(resolved).existsSync()) return resolved;
+
+    // Try recording cache (downloaded from cloud)
+    final cacheDir = p.join(docsDir.path, 'recording_cache');
+    final cacheFile = Directory(cacheDir).existsSync()
+        ? Directory(cacheDir)
+            .listSync(recursive: true)
+            .whereType<File>()
+            .where((f) => p.basename(f.path) == filename ||
+                f.path.contains(recording.scriptLineId))
+            .firstOrNull
+        : null;
+    if (cacheFile != null) return cacheFile.path;
+
+    return null;
+  }
+
+  Future<void> _playRecording(Recording recording, String lineId) async {
+    final resolvedPath = await _resolveRecordingPath(recording);
+
+    if (resolvedPath == null) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('File missing or empty (${recording.localPath.split('/').last}, ${size}B)')),
+          SnackBar(content: Text('Recording file not found (${p.basename(recording.localPath)})')),
+        );
+      }
+      return;
+    }
+
+    final size = File(resolvedPath).lengthSync();
+    debugPrint('PlayRecording: path=$resolvedPath size=$size');
+
+    if (size < 100) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Recording file is empty')),
         );
       }
       return;
@@ -402,7 +442,7 @@ class _RecordingsBrowserScreenState
 
     try {
       await _player.stop();
-      await _player.setFilePath(recording.localPath);
+      await _player.setFilePath(resolvedPath);
       setState(() => _playingLineId = lineId);
       await _player.play();
     } catch (e) {
