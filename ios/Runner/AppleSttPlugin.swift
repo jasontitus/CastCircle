@@ -322,6 +322,15 @@ class AppleSttPlugin: NSObject {
             exportSession.outputURL = destUrl
             exportSession.outputFileType = .m4a
 
+            // Trim leading and trailing silence by analyzing audio amplitude
+            let timeRange = Self.detectSpeechRange(in: AVAsset(url: cafUrl))
+            if let timeRange = timeRange {
+                exportSession.timeRange = timeRange
+                let startMs = Int(CMTimeGetSeconds(timeRange.start) * 1000)
+                let endMs = Int(CMTimeGetSeconds(CMTimeAdd(timeRange.start, timeRange.duration)) * 1000)
+                NSLog("AppleStt: Trimming silence — speech at \(startMs)ms-\(endMs)ms of \(durationMs)ms")
+            }
+
             exportSession.exportAsynchronously {
                 try? FileManager.default.removeItem(at: cafUrl)
 
@@ -336,6 +345,93 @@ class AppleSttPlugin: NSObject {
                 }
             }
         }
+    }
+
+    /// Analyze audio to find where speech starts and ends.
+    /// Returns a time range excluding leading/trailing silence,
+    /// with a small padding to avoid cutting off speech edges.
+    private static func detectSpeechRange(in asset: AVAsset) -> CMTimeRange? {
+        guard let track = asset.tracks(withMediaType: .audio).first else { return nil }
+
+        let totalDuration = asset.duration
+        let totalSeconds = CMTimeGetSeconds(totalDuration)
+        if totalSeconds < 1.0 { return nil } // too short to trim
+
+        // Read audio samples
+        guard let reader = try? AVAssetReader(asset: asset) else { return nil }
+        let outputSettings: [String: Any] = [
+            AVFormatIDKey: Int(kAudioFormatLinearPCM),
+            AVLinearPCMBitDepthKey: 16,
+            AVLinearPCMIsFloatKey: false,
+            AVLinearPCMIsBigEndianKey: false,
+            AVLinearPCMIsNonInterleaved: false,
+        ]
+        let output = AVAssetReaderTrackOutput(track: track, outputSettings: outputSettings)
+        reader.add(output)
+        reader.startReading()
+
+        // Analyze in 50ms windows — find RMS amplitude per window
+        let sampleRate = 44100.0 // approximate; actual may vary
+        let windowSamples = Int(sampleRate * 0.05) // 50ms
+        var windowRMS: [Float] = []
+        var sampleBuffer: [Int16] = []
+
+        while let buffer = output.copyNextSampleBuffer() {
+            guard let blockBuffer = CMSampleBufferGetDataBuffer(buffer) else { continue }
+            var length = 0
+            var dataPointer: UnsafeMutablePointer<Int8>?
+            CMBlockBufferGetDataPointer(blockBuffer, atOffset: 0, lengthAtOffsetOut: nil,
+                                        totalLengthOut: &length, dataPointerOut: &dataPointer)
+            guard let ptr = dataPointer else { continue }
+
+            let int16Ptr = ptr.withMemoryRebound(to: Int16.self, capacity: length / 2) { $0 }
+            let count = length / 2
+
+            for i in 0..<count {
+                sampleBuffer.append(int16Ptr[i])
+                if sampleBuffer.count >= windowSamples {
+                    let rms = sqrt(sampleBuffer.reduce(Float(0)) { $0 + Float($1) * Float($1) / Float(windowSamples) })
+                    windowRMS.append(rms)
+                    sampleBuffer.removeAll(keepingCapacity: true)
+                }
+            }
+        }
+
+        reader.cancelReading()
+
+        if windowRMS.isEmpty { return nil }
+
+        // Find silence threshold: use 5% of peak RMS
+        let peakRMS = windowRMS.max() ?? 0
+        let threshold = peakRMS * 0.05
+        if threshold < 10 { return nil } // entire recording is silent
+
+        // Find first and last windows above threshold
+        var firstSpeech = 0
+        var lastSpeech = windowRMS.count - 1
+
+        for i in 0..<windowRMS.count {
+            if windowRMS[i] > threshold { firstSpeech = i; break }
+        }
+        for i in stride(from: windowRMS.count - 1, through: 0, by: -1) {
+            if windowRMS[i] > threshold { lastSpeech = i; break }
+        }
+
+        // Add 150ms padding on each side to avoid cutting off speech edges
+        let windowDuration = 0.05 // 50ms per window
+        let paddingWindows = 3 // 150ms
+        firstSpeech = max(0, firstSpeech - paddingWindows)
+        lastSpeech = min(windowRMS.count - 1, lastSpeech + paddingWindows)
+
+        let startTime = CMTime(seconds: Double(firstSpeech) * windowDuration, preferredTimescale: 1000)
+        let endTime = CMTime(seconds: Double(lastSpeech + 1) * windowDuration, preferredTimescale: 1000)
+
+        // Only trim if we'd remove at least 300ms total
+        let trimmedStart = CMTimeGetSeconds(startTime)
+        let trimmedEnd = totalSeconds - CMTimeGetSeconds(endTime)
+        if trimmedStart + trimmedEnd < 0.3 { return nil }
+
+        return CMTimeRange(start: startTime, end: endTime)
     }
 
     private func stopCurrentSession() {

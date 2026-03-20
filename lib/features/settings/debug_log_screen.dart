@@ -73,9 +73,11 @@ class _DebugLogScreenState extends State<DebugLogScreen> {
                   'content': text,
                   'entry_count': entries.length,
                 });
+                await _log.clear();
                 if (mounted) {
+                  setState(() {});
                   ScaffoldMessenger.of(context).showSnackBar(
-                    SnackBar(content: Text('Sent $label log (${entries.length} entries)')),
+                    SnackBar(content: Text('Sent $label log (${entries.length} entries) — log cleared')),
                   );
                 }
               } catch (e) {

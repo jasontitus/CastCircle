@@ -392,6 +392,21 @@ class ScriptParser {
       return;
     }
     if (_titlePrefixes.contains(name)) return;
+
+    // Reject fragments: very short ALL-CAPS strings that aren't real names
+    // (e.g. "EA", "INE" from broken markdown parsing)
+    final letters = name.replaceAll(RegExp(r'[^A-Za-z]'), '');
+    if (letters.length < 2) return;
+
+    // Reject names that contain ". " followed by more text (e.g. "JANE. MI",
+    // "ELIZABETH. E") — these are broken character cue + dialogue fragments
+    if (RegExp(r'\.\s+[A-Z]').hasMatch(name) &&
+        !name.startsWith('MR') && !name.startsWith('MRS') &&
+        !name.startsWith('DR') && !name.startsWith('ST.') &&
+        !name.startsWith('SIR')) {
+      return;
+    }
+
     knownCharacters.add(name);
   }
 
