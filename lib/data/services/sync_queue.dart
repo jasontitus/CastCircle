@@ -48,6 +48,9 @@ class SyncQueue {
   List<SyncJob> get failed => List.unmodifiable(_failed);
   int get pendingCount => _pending.length + _failed.length;
 
+  /// Called after a successful upload with (lineId, remoteUrl).
+  void Function(String lineId, String remoteUrl)? onUploaded;
+
   /// Start monitoring connectivity and processing the queue.
   void start() {
     _connectivitySub?.cancel();
@@ -132,6 +135,7 @@ class SyncQueue {
 
         _pending.removeAt(0);
         debugPrint('SyncQueue: Uploaded ${job.lineId}');
+        onUploaded?.call(job.lineId, url);
       } catch (e) {
         debugPrint('SyncQueue: Failed ${job.lineId} (attempt ${job.retryCount + 1}): $e');
         job.retryCount++;

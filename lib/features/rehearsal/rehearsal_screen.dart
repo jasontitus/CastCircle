@@ -70,7 +70,7 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen> {
   bool _showJumpBackHint = false; // Set in initState based on how many times shown
 
   // Rehearsal audio capture: record the user's lines for later use
-  final Map<String, String> _capturedAudioPaths = {}; // lineId → temp .m4a path
+  final Map<String, _CapturedLine> _capturedAudio = {};
   bool _isCapturingAudio = false;
   bool _hasPromptedUpload = false; // only prompt once per session
 
@@ -880,7 +880,7 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen> {
                 ),
               ),
             ],
-            if (_capturedAudioPaths.isNotEmpty && _hasPromptedUpload) ...[
+            if (_capturedAudio.isNotEmpty && _hasPromptedUpload) ...[
               const SizedBox(height: 24),
               FilledButton.icon(
                 onPressed: () {
@@ -888,7 +888,7 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen> {
                   _saveRehearsalCaptures(character);
                 },
                 icon: const Icon(Icons.upload),
-                label: Text('Save ${_capturedAudioPaths.length} Recorded Lines'),
+                label: Text('Save ${_capturedAudio.length} Recorded Lines'),
                 style: FilledButton.styleFrom(
                   padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 16),
                   textStyle: const TextStyle(fontSize: 16),
@@ -1768,7 +1768,7 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen> {
         final durationMs = result['durationMs'] as int? ?? 0;
         if (path != null && durationMs > 500) {
           // Only keep recordings longer than 0.5s
-          _capturedAudioPaths[line.id] = path;
+          _capturedAudio[line.id] = _CapturedLine(path: path, durationMs: durationMs);
           _dlog.log(LogCategory.rehearsal,
               'Captured ${line.id} (${durationMs}ms)');
         }
@@ -1780,9 +1780,9 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen> {
 
   /// Show prompt to save captured rehearsal audio as recordings.
   void _offerToSaveRehearsalRecordings() {
-    if (_capturedAudioPaths.isEmpty) return;
+    if (_capturedAudio.isEmpty) return;
 
-    final count = _capturedAudioPaths.length;
+    final count = _capturedAudio.length;
     final character = ref.read(rehearsalCharacterProvider) ?? '';
 
     if (!_hasPromptedUpload) {
@@ -1833,10 +1833,10 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen> {
     }
 
     int saved = 0;
-    for (final entry in _capturedAudioPaths.entries) {
+    for (final entry in _capturedAudio.entries) {
       final lineId = entry.key;
-      final tempPath = entry.value;
-      final tempFile = File(tempPath);
+      final captured = entry.value;
+      final tempFile = File(captured.path);
       if (!tempFile.existsSync()) continue;
 
       // Move from temp to permanent recordings directory
@@ -1845,13 +1845,12 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen> {
         await tempFile.copy(destPath);
         await tempFile.delete();
 
-        final stat = File(destPath).statSync();
         final recording = Recording(
           id: const Uuid().v4(),
           scriptLineId: lineId,
           character: character,
           localPath: destPath,
-          durationMs: 0, // will be filled on playback
+          durationMs: captured.durationMs,
           recordedAt: DateTime.now(),
         );
         ref.read(recordingsProvider.notifier).add(recording);
@@ -1862,7 +1861,7 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen> {
           characterName: character,
           lineId: lineId,
           localPath: destPath,
-          durationMs: 0,
+          durationMs: captured.durationMs,
         );
 
         saved++;
@@ -1871,7 +1870,7 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen> {
       }
     }
 
-    _capturedAudioPaths.clear();
+    _capturedAudio.clear();
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('Saved $saved rehearsal recordings')),
@@ -1881,10 +1880,10 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen> {
   }
 
   void _purgeRehearsalCaptures() {
-    for (final path in _capturedAudioPaths.values) {
-      try { File(path).deleteSync(); } catch (_) {}
+    for (final captured in _capturedAudio.values) {
+      try { File(captured.path).deleteSync(); } catch (_) {}
     }
-    _capturedAudioPaths.clear();
+    _capturedAudio.clear();
   }
 
   /// Save the completed rehearsal session to history.
@@ -1952,4 +1951,10 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen> {
       }
     });
   }
+}
+
+class _CapturedLine {
+  final String path;
+  final int durationMs;
+  const _CapturedLine({required this.path, required this.durationMs});
 }

@@ -346,11 +346,7 @@ class _RecordingsBrowserScreenState
                   ),
                   const SizedBox(height: 4),
                   if (!fileExists)
-                    Icon(Icons.cloud_off, size: 14, color: Colors.grey[600])
-                  else if (recording.remoteUrl != null)
-                    Icon(Icons.cloud_done, size: 14, color: Colors.green[400])
-                  else
-                    Icon(Icons.phone_android, size: 14, color: Colors.grey[500]),
+                    Icon(Icons.cloud_off, size: 14, color: Colors.grey[600]),
                 ],
               ),
               const SizedBox(width: 4),
@@ -359,7 +355,7 @@ class _RecordingsBrowserScreenState
                 icon: const Icon(Icons.mic, size: 18),
                 tooltip: 'Re-record',
                 onPressed: () {
-                  context.push('/recording-studio');
+                  context.push('/record');
                 },
                 padding: EdgeInsets.zero,
                 constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
