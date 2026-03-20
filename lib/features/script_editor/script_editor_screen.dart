@@ -92,8 +92,12 @@ class _ScriptEditorScreenState extends ConsumerState<ScriptEditorScreen> {
                         final origin = box != null
                             ? box.localToGlobal(Offset.zero) & box.size
                             : null;
+                        final productionId = production?.id ?? '';
+                        final url = productionId.isNotEmpty
+                            ? 'https://castcircle-app.web.app?production=$productionId'
+                            : 'https://castcircle-app.web.app';
                         final text = 'Edit "$productionName" on the web:\n'
-                            'https://castcircle-app.web.app\n'
+                            '$url\n'
                             '${email.isNotEmpty ? '\nSign in with: $email' : ''}';
                         Share.share(
                           text,

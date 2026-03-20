@@ -1348,6 +1348,26 @@ function toggleAuthMode() {
   document.getElementById('auth-error').textContent = '';
 }
 
+/// Check URL for ?production=ID and auto-open that production after login.
+async function autoOpenFromUrl() {
+  const params = new URLSearchParams(window.location.search);
+  const prodId = params.get('production');
+  if (!prodId) return false;
+
+  // Fetch the production title
+  const { data: prod } = await sb
+    .from('productions')
+    .select('id, title')
+    .eq('id', prodId)
+    .single();
+
+  if (prod) {
+    await selectProduction(prod.id, prod.title);
+    return true;
+  }
+  return false;
+}
+
 async function doAuth() {
   const email = document.getElementById('auth-email').value.trim();
   const password = document.getElementById('auth-password').value;
@@ -1364,7 +1384,9 @@ async function doAuth() {
     }
     if (result.error) throw result.error;
     currentUser = result.data.user;
-    showProductionScreen();
+    if (!await autoOpenFromUrl()) {
+      showProductionScreen();
+    }
   } catch (e) {
     errEl.textContent = e.message || 'Auth failed';
   }
@@ -3226,7 +3248,9 @@ function wireEvents() {
     const { data: { session } } = await sb.auth.getSession();
     if (session?.user) {
       currentUser = session.user;
-      showProductionScreen();
+      if (!await autoOpenFromUrl()) {
+        showProductionScreen();
+      }
     } else {
       showScreen('auth-screen');
     }

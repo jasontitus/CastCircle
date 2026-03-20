@@ -288,8 +288,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
       case 'web-editor':
         final email = SupabaseService.instance.currentUser?.email ?? '';
         final prodTitle = production.title;
+        final url = 'https://castcircle-app.web.app?production=${production.id}';
         final text = 'Edit "$prodTitle" on the web:\n'
-            'https://castcircle-app.web.app'
+            '$url'
             '${email.isNotEmpty ? '\n\nSign in with: $email' : ''}';
         Share.share(text, subject: 'CastCircle: Edit $prodTitle');
     }
