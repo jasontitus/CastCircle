@@ -116,6 +116,9 @@ class RecordingSyncService {
         continue;
       }
 
+      // Skip if this line already exists in the cloud
+      if (cloudByLine.containsKey(lineId)) continue;
+
       // Skip if file doesn't exist
       if (!File(recording.localPath).existsSync()) continue;
 

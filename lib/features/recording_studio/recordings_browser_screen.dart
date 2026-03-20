@@ -225,7 +225,37 @@ class _RecordingsBrowserScreenState
         charIdx >= 0 ? AppTheme.colorForCharacter(charIdx) : Colors.blue;
     final fileExists = File(recording.localPath).existsSync();
 
-    return Card(
+    return Dismissible(
+      key: ValueKey(recording.id),
+      direction: DismissDirection.endToStart,
+      background: Container(
+        alignment: Alignment.centerRight,
+        padding: const EdgeInsets.only(right: 24),
+        margin: const EdgeInsets.only(bottom: 8),
+        decoration: BoxDecoration(
+          color: Colors.red,
+          borderRadius: BorderRadius.circular(12),
+        ),
+        child: const Icon(Icons.delete, color: Colors.white),
+      ),
+      confirmDismiss: (_) async {
+        return await showDialog<bool>(
+          context: context,
+          builder: (ctx) => AlertDialog(
+            title: const Text('Delete Recording?'),
+            content: Text('Delete recording for "${line.text.length > 50 ? '${line.text.substring(0, 47)}...' : line.text}"?'),
+            actions: [
+              TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
+              TextButton(
+                onPressed: () => Navigator.pop(ctx, true),
+                child: const Text('Delete', style: TextStyle(color: Colors.red)),
+              ),
+            ],
+          ),
+        );
+      },
+      onDismissed: (_) => _deleteRecording(recording),
+      child: Card(
       margin: const EdgeInsets.only(bottom: 8),
       child: InkWell(
         borderRadius: BorderRadius.circular(12),
@@ -323,11 +353,40 @@ class _RecordingsBrowserScreenState
                     Icon(Icons.phone_android, size: 14, color: Colors.grey[500]),
                 ],
               ),
+              const SizedBox(width: 4),
+              // Re-record button
+              IconButton(
+                icon: const Icon(Icons.mic, size: 18),
+                tooltip: 'Re-record',
+                onPressed: () {
+                  context.push('/recording-studio');
+                },
+                padding: EdgeInsets.zero,
+                constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
+              ),
             ],
           ),
         ),
       ),
+    ),
     );
+  }
+
+  Future<void> _deleteRecording(Recording recording) async {
+    // Delete local file
+    try {
+      final file = File(recording.localPath);
+      if (file.existsSync()) await file.delete();
+    } catch (_) {}
+
+    // Remove from provider (and Drift DB)
+    ref.read(recordingsProvider.notifier).remove(recording.scriptLineId);
+
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Recording deleted')),
+      );
+    }
   }
 
   Future<void> _playRecording(Recording recording, String lineId) async {
