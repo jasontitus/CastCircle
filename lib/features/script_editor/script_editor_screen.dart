@@ -79,10 +79,17 @@ class _ScriptEditorScreenState extends ConsumerState<ScriptEditorScreen> {
                       child: const Text('Not Now'),
                     ),
                     FilledButton.icon(
-                      onPressed: () {
+                      onPressed: () async {
                         Navigator.pop(ctx);
+                        // Wait for dialog dismiss animation before showing share sheet
+                        await Future.delayed(const Duration(milliseconds: 300));
+                        final box = context.findRenderObject() as RenderBox?;
+                        final origin = box != null
+                            ? box.localToGlobal(Offset.zero) & box.size
+                            : null;
                         Share.share(
                           'Edit your CastCircle script on the web:\nhttps://castcircle-app.web.app',
+                          sharePositionOrigin: origin,
                         );
                       },
                       icon: const Icon(Icons.share),
