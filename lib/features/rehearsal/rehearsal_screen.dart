@@ -1808,8 +1808,8 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen> {
         builder: (ctx) => AlertDialog(
           icon: const Icon(Icons.mic, size: 40),
           title: const Text('Save Your Performance?'),
-          content: Text(
-            'We captured $count of your lines during rehearsal. '
+          content: const Text(
+            'We captured your lines during rehearsal. '
             'Save them as your recorded lines so other cast members '
             'can hear your voice during their rehearsals?\n\n'
             'You can review and re-record individual lines later.',
