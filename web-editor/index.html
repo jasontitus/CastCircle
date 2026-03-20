@@ -523,6 +523,106 @@
     .char-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
     .char-count { margin-left: auto; font-size: 10px; color: var(--text-dim); }
 
+    /* Recordings panel */
+    .recordings-filter-select {
+      width: 100%;
+      padding: 6px 8px;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 5px;
+      color: var(--text);
+      font-size: 12px;
+      cursor: pointer;
+    }
+
+    .rec-item {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 6px 8px;
+      border-radius: 5px;
+      cursor: pointer;
+      transition: background 0.1s;
+      font-size: 12px;
+      position: relative;
+    }
+
+    .rec-item:hover { background: rgba(255,255,255,0.05); }
+    .rec-item.is-playing { background: rgba(233, 69, 96, 0.12); }
+
+    .rec-item-char {
+      font-weight: 600;
+      font-size: 11px;
+      flex-shrink: 0;
+      max-width: 70px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .rec-item-text {
+      flex: 1;
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      color: var(--text-dim);
+      font-size: 11px;
+    }
+
+    .rec-item-dur {
+      font-size: 10px;
+      color: var(--text-dim);
+      flex-shrink: 0;
+      font-family: monospace;
+    }
+
+    .rec-item-play {
+      padding: 2px 5px;
+      font-size: 12px;
+      line-height: 1;
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      color: var(--text);
+      cursor: pointer;
+      flex-shrink: 0;
+    }
+
+    .rec-item-play:hover { background: var(--accent2); }
+
+    .rec-item-delete {
+      padding: 2px 5px;
+      font-size: 12px;
+      line-height: 1;
+      background: transparent;
+      border: 1px solid transparent;
+      border-radius: 4px;
+      color: var(--text-dim);
+      cursor: pointer;
+      flex-shrink: 0;
+      opacity: 0;
+      transition: opacity 0.15s;
+    }
+
+    .rec-item:hover .rec-item-delete { opacity: 1; }
+    .rec-item-delete:hover { color: var(--accent); border-color: var(--accent); }
+
+    .recordings-summary-text {
+      font-size: 10px;
+      color: var(--text-dim);
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      font-weight: 600;
+    }
+
+    .recordings-empty {
+      padding: 20px 14px;
+      text-align: center;
+      color: var(--text-dim);
+      font-size: 12px;
+    }
+
     /* Cast list */
     .cast-member-item {
       display: flex;
@@ -1038,6 +1138,7 @@
         <div class="sidebar-tab active" data-tab="script">Script</div>
         <div class="sidebar-tab" data-tab="cast">Cast</div>
         <div class="sidebar-tab" data-tab="scenes">Scenes</div>
+        <div class="sidebar-tab" data-tab="recordings">Recordings</div>
       </div>
 
       <!-- Script / Characters Panel -->
@@ -1083,6 +1184,19 @@
           <button class="btn btn-sm" id="btn-merge-scenes">Merge Scenes</button>
           <button class="btn btn-sm" id="btn-set-act-scene">Set Act/Scene</button>
         </div>
+      </div>
+
+      <!-- Recordings Panel -->
+      <div class="sidebar-panel" id="panel-recordings">
+        <div class="sidebar-section-title">
+          <span id="recordings-summary">Recordings</span>
+        </div>
+        <div style="padding:0 8px 6px">
+          <select id="recordings-char-filter" class="recordings-filter-select">
+            <option value="">All Characters</option>
+          </select>
+        </div>
+        <div class="sidebar-scroll" id="recordings-list"></div>
       </div>
     </div>
 
@@ -2281,6 +2395,7 @@ function render() {
 
   // Update scene panel if visible
   if (activeTab === 'scenes') renderScenePanel();
+  if (activeTab === 'recordings') renderRecordingsPanel();
 }
 
 // ══════════════════════════════════════════════════════════
@@ -3100,6 +3215,143 @@ function closeModal(id) {
 }
 
 // ══════════════════════════════════════════════════════════
+// RECORDINGS PANEL
+// ══════════════════════════════════════════════════════════
+
+let recordingsFilterChar = '';
+
+function renderRecordingsPanel() {
+  const list = document.getElementById('recordings-list');
+  const summary = document.getElementById('recordings-summary');
+  const filterSelect = document.getElementById('recordings-char-filter');
+
+  // Populate character filter dropdown
+  const chars = getCharacters();
+  const prevFilter = recordingsFilterChar;
+  filterSelect.innerHTML = '<option value="">All Characters</option>' +
+    chars.map(c => `<option value="${escAttr(c.name)}" ${c.name === prevFilter ? 'selected' : ''}>${escHtml(c.name)}</option>`).join('');
+
+  // Build recording entries
+  const entries = [];
+  for (const [lineId, rec] of Object.entries(recordingsByLineId)) {
+    const line = scriptLines.find(l => l.id === lineId);
+    const charName = line?.character || 'Unknown';
+    const lineText = line?.text || '';
+    const lineIndex = line ? scriptLines.indexOf(line) : -1;
+    if (recordingsFilterChar && charName !== recordingsFilterChar) continue;
+    entries.push({ lineId, charName, lineText, lineIndex, duration_ms: rec.duration_ms || 0 });
+  }
+
+  // Sort by line order in script
+  entries.sort((a, b) => {
+    if (a.lineIndex < 0) return 1;
+    if (b.lineIndex < 0) return -1;
+    return a.lineIndex - b.lineIndex;
+  });
+
+  // Summary
+  const totalMs = entries.reduce((sum, e) => sum + e.duration_ms, 0);
+  const totalFormatted = formatDurationMs(totalMs);
+  summary.textContent = `Recordings (${entries.length}${totalFormatted ? ' \u00b7 ' + totalFormatted : ''})`;
+
+  if (entries.length === 0) {
+    list.innerHTML = '<div class="recordings-empty">No recordings yet.<br>Record lines in the app to see them here.</div>';
+    return;
+  }
+
+  list.innerHTML = entries.map(e => {
+    const color = charColor(e.charName);
+    const isPlaying = playingLineId === e.lineId;
+    const truncText = e.lineText.length > 40 ? e.lineText.slice(0, 40) + '\u2026' : e.lineText;
+    return `
+      <div class="rec-item ${isPlaying ? 'is-playing' : ''}" data-line-id="${escAttr(e.lineId)}" data-line-index="${e.lineIndex}">
+        <span class="rec-item-char" style="color:${color}">${escHtml(e.charName)}</span>
+        <span class="rec-item-text" title="${escAttr(e.lineText)}">${escHtml(truncText)}</span>
+        <span class="rec-item-dur">${formatDurationMs(e.duration_ms)}</span>
+        <button class="rec-item-play" data-rec-play="${escAttr(e.lineId)}" title="${isPlaying ? 'Stop' : 'Play'}">${isPlaying ? '\u25A0' : '\u25B6'}</button>
+        <button class="rec-item-delete" data-rec-delete="${escAttr(e.lineId)}" data-char-name="${escAttr(e.charName)}" title="Delete recording">&times;</button>
+      </div>
+    `;
+  }).join('');
+
+  // Attach listeners
+  list.querySelectorAll('.rec-item').forEach(el => {
+    // Click row to scroll to line in script
+    el.addEventListener('click', (e) => {
+      if (e.target.closest('[data-rec-play]') || e.target.closest('[data-rec-delete]')) return;
+      const idx = parseInt(el.dataset.lineIndex, 10);
+      if (idx >= 0) {
+        switchTab('script');
+        setTimeout(() => scrollToLine(idx), 100);
+      }
+    });
+  });
+
+  list.querySelectorAll('[data-rec-play]').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const lineId = btn.dataset.recPlay;
+      playRecording(lineId);
+      // Re-render to update play/stop state
+      if (activeTab === 'recordings') renderRecordingsPanel();
+    });
+  });
+
+  list.querySelectorAll('[data-rec-delete]').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const lineId = btn.dataset.recDelete;
+      const charName = btn.dataset.charName;
+      deleteRecording(lineId, charName);
+    });
+  });
+}
+
+async function deleteRecording(lineId, charName) {
+  if (!confirm(`Delete recording for this line?`)) return;
+
+  try {
+    // Delete from recordings table
+    const { error: dbError } = await sb
+      .from('recordings')
+      .delete()
+      .eq('line_id', lineId)
+      .eq('production_id', currentProductionId);
+
+    if (dbError) {
+      console.error('Failed to delete recording row:', dbError);
+      toast('Failed to delete recording');
+      return;
+    }
+
+    // Delete from storage bucket
+    const storagePath = `${currentProductionId}/${charName}/${lineId}.m4a`;
+    const { error: storageError } = await sb.storage
+      .from('recordings')
+      .remove([storagePath]);
+
+    if (storageError) {
+      console.warn('Storage delete failed (file may not exist):', storageError);
+    }
+
+    // Remove from local state
+    delete recordingsByLineId[lineId];
+
+    // Stop playback if this was playing
+    if (playingLineId === lineId) {
+      stopPlayback();
+    }
+
+    toast('Recording deleted');
+    renderRecordingsPanel();
+    render(); // Re-render script to remove play button from that line
+  } catch (e) {
+    console.error('Delete recording error:', e);
+    toast('Failed to delete recording');
+  }
+}
+
+// ══════════════════════════════════════════════════════════
 // SIDEBAR TABS
 // ══════════════════════════════════════════════════════════
 
@@ -3114,6 +3366,7 @@ function switchTab(tabName) {
 
   if (tabName === 'cast') renderCastPanel();
   if (tabName === 'scenes') renderScenePanel();
+  if (tabName === 'recordings') renderRecordingsPanel();
 }
 
 // ══════════════════════════════════════════════════════════
@@ -3391,6 +3644,12 @@ function wireEvents() {
   document.getElementById('btn-split-scene').addEventListener('click', splitScene);
   document.getElementById('btn-merge-scenes').addEventListener('click', mergeScenes);
   document.getElementById('btn-set-act-scene').addEventListener('click', setActSceneOnSelected);
+
+  // Recordings panel filter
+  document.getElementById('recordings-char-filter').addEventListener('change', (e) => {
+    recordingsFilterChar = e.target.value;
+    renderRecordingsPanel();
+  });
 
   // Edit modal
   document.getElementById('edit-type').addEventListener('change', updateEditModalFields);
