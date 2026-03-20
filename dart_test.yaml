@@ -1,0 +1,5 @@
+# Extended tests (parser accuracy) are slow (~90s).
+# Default: flutter test --exclude-tags extended
+# Full suite: flutter test
+tags:
+  extended:

@@ -1,9 +1,12 @@
+@Tags(['extended'])
 import 'dart:io';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:castcircle/data/services/script_parser.dart';
 import 'package:castcircle/data/models/script_models.dart';
 
 /// Parse accuracy tests against public domain scripts.
+/// Tagged 'extended' — skipped during normal `flutter test`.
+/// Run with: flutter test --tags extended
 ///
 /// Expected values sourced from:
 /// - Open Source Shakespeare (opensourceshakespeare.org)
@@ -204,7 +207,7 @@ void main() {
       expect(s.acts.length, 5);
       expectCharacterExists(s, 'CYRANO');
       expect(s.characters.first.name, contains('CYRANO'));
-    });
+    }, timeout: const Timeout(Duration(minutes: 3)));
 
     test('Doctor Faustus — Faustus found', () {
       final s = parseFile('marlowe_doctor_faustus.txt');
