@@ -611,6 +611,11 @@ class _ProductionHubScreenState extends ConsumerState<ProductionHubScreen> {
               Navigator.pop(context);
               context.push('/record');
             }),
+          if (hasScript)
+            _drawerItem(Icons.library_music, 'Browse Recordings', () {
+              Navigator.pop(context);
+              context.push('/recordings');
+            }),
           const Divider(),
           // ── Cloud Sync ──
           if (isSignedIn) ...[

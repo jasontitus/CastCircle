@@ -1194,6 +1194,11 @@ let isDirty = false;
 let activeTab = 'script';
 let activeSceneKey = null;
 
+// Recording playback
+let recordingsByLineId = {}; // lineId → {audio_url, duration_ms}
+let currentAudio = null; // HTMLAudioElement
+let playingLineId = null;
+
 // Undo/Redo
 const undoStack = [];
 const redoStack = [];
@@ -1510,11 +1515,64 @@ async function selectProduction(id, title) {
     isDirty = false;
     undoStack.length = 0;
     redoStack.length = 0;
+    await fetchRecordings();
     showEditor();
     toast(`Loaded ${scriptLines.length} lines`);
   } else {
     showImportScreen();
   }
+}
+
+async function fetchRecordings() {
+  if (!currentProductionId) return;
+  try {
+    const { data } = await sb
+      .from('recordings')
+      .select('line_id, audio_url, duration_ms')
+      .eq('production_id', currentProductionId);
+    recordingsByLineId = {};
+    if (data) {
+      for (const r of data) {
+        recordingsByLineId[r.line_id] = {
+          audio_url: r.audio_url,
+          duration_ms: r.duration_ms,
+        };
+      }
+    }
+  } catch (e) {
+    console.log('Failed to fetch recordings:', e);
+  }
+}
+
+function playRecording(lineId) {
+  const rec = recordingsByLineId[lineId];
+  if (!rec || !rec.audio_url) return;
+
+  if (currentAudio) {
+    currentAudio.pause();
+    currentAudio = null;
+  }
+
+  if (playingLineId === lineId) {
+    playingLineId = null;
+    render();
+    return;
+  }
+
+  currentAudio = new Audio(rec.audio_url);
+  playingLineId = lineId;
+  render();
+
+  currentAudio.play().catch(e => {
+    console.log('Playback failed:', e);
+    toast('Playback failed');
+  });
+
+  currentAudio.addEventListener('ended', () => {
+    playingLineId = null;
+    currentAudio = null;
+    render();
+  });
 }
 
 // ══════════════════════════════════════════════════════════
@@ -1999,6 +2057,7 @@ function render() {
         ${line.character ? `<div class="line-char" style="color:${color}">${escHtml(line.character)}.</div>` : '<div class="line-char"></div>'}
         ${line.stageDirection ? `<div class="line-direction">(${escHtml(line.stageDirection)})</div>` : ''}
         <div class="line-text ${textClass}" data-line-index="${i}">${escHtml(line.text)}</div>
+        ${recordingsByLineId[line.id] ? `<button class="btn btn-xs btn-icon ${playingLineId === line.id ? 'playing' : ''}" data-action="play" title="Play recording" style="color:${playingLineId === line.id ? 'var(--success)' : 'var(--text-dim)'}">&#9654;</button>` : ''}
         <div class="line-actions">
           <button class="btn btn-xs btn-icon" data-action="edit" title="Edit (Enter)">&#9998;</button>
           <button class="btn btn-xs btn-icon" data-action="delete" title="Delete">&times;</button>
@@ -2035,6 +2094,10 @@ function render() {
         e.stopPropagation();
         if (btn.dataset.action === 'edit') openEditModal(idx);
         if (btn.dataset.action === 'delete') deleteLine(idx);
+        if (btn.dataset.action === 'play') {
+          const line = scriptLines[idx];
+          if (line) playRecording(line.id);
+        }
       });
     });
 

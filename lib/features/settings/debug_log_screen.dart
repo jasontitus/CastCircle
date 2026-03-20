@@ -55,9 +55,12 @@ class _DebugLogScreenState extends State<DebugLogScreen> {
             icon: const Icon(Icons.copy),
             tooltip: 'Copy log',
             onPressed: () {
-              Clipboard.setData(ClipboardData(text: _log.export()));
+              final entries = _log.entriesForCategory(_filter);
+              final text = entries.map((e) => e.toLine()).join('\n');
+              Clipboard.setData(ClipboardData(text: text));
+              final label = _filter != null ? '${_filter!.tag} log' : 'full log';
               ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(content: Text('Log copied to clipboard')),
+                SnackBar(content: Text('Copied $label (${entries.length} entries)')),
               );
             },
           ),
