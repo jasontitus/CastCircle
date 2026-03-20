@@ -156,11 +156,14 @@ class RecordingSyncService {
       final cloud = entry.value;
       final cloudUserId = cloud['user_id'] as String?;
 
-      // Skip our own recordings — we already have them locally
-      if (cloudUserId == userId) continue;
-
       // Skip if we already have a local recording for this line
-      if (localRecordings.containsKey(lineId)) continue;
+      // (regardless of who recorded it — handles multi-device for same user)
+      if (localRecordings.containsKey(lineId)) {
+        final local = localRecordings[lineId]!;
+        // But if the local file doesn't exist (e.g. different device),
+        // still download it
+        if (File(local.localPath).existsSync()) continue;
+      }
 
       final cloudTimestamp = _parseTimestamp(cloud['recorded_at']);
       final cached = _cache[lineId];

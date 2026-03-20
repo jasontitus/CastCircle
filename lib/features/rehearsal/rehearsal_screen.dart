@@ -20,8 +20,6 @@ import '../../data/services/stt_vocabulary_service.dart';
 import '../../data/services/analytics_service.dart';
 import '../../data/services/media_control_service.dart';
 import '../../data/services/recording_sync_service.dart';
-import '../../data/services/supabase_service.dart';
-import '../../data/services/sync_queue.dart';
 import '../../data/services/voice_config_service.dart';
 import '../../providers/production_providers.dart';
 import '../../features/settings/settings_screen.dart';
@@ -146,43 +144,7 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen> {
     );
     await _tts.init();
 
-    // Start upload queue and sync recordings with cloud
-    SyncQueue.instance.start();
-
     final production = ref.read(currentProductionProvider);
-
-    // Sync recordings: upload local, download others' recordings
-    if (production != null) {
-      final localRecordings = ref.read(recordingsProvider);
-      final userId = SupabaseService.instance.currentUser?.id;
-
-      // Run sync in background — don't block rehearsal start
-      RecordingSyncService.instance
-        ..onRecordingReady = (lineId, path) {
-          // When a new recording arrives, update the understudyRecordings
-          // so it's available for playback immediately
-          if (mounted) {
-            final cached = RecordingSyncService.instance.getCachedRecordings();
-            ref.read(understudyRecordingsProvider.notifier).loadFromMap(cached);
-          }
-        }
-        ..subscribe(productionId: production.id, myUserId: userId);
-
-      RecordingSyncService.instance
-          .syncForProduction(
-            productionId: production.id,
-            localRecordings: localRecordings,
-            myUserId: userId,
-          )
-          .then((downloaded) {
-        if (downloaded > 0 && mounted) {
-          final cached = RecordingSyncService.instance.getCachedRecordings();
-          ref.read(understudyRecordingsProvider.notifier).loadFromMap(cached);
-          _dlog.log(LogCategory.rehearsal,
-              'Loaded $downloaded cast recordings from cloud');
-        }
-      });
-    }
     final myCharacter = ref.read(rehearsalCharacterProvider);
     final script = ref.read(currentScriptProvider);
 
@@ -271,7 +233,6 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen> {
     _stt.stop();
     _mediaControl.deactivate();
     RecordingSyncService.instance.unsubscribe();
-    SyncQueue.instance.stop();
     super.dispose();
   }
 

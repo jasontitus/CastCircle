@@ -7,6 +7,7 @@ import 'package:uuid/uuid.dart';
 
 import '../../core/responsive.dart';
 import '../../data/services/analytics_service.dart';
+import '../../data/services/recording_sync_service.dart';
 import '../../core/theme/app_theme.dart';
 import '../../data/models/production_models.dart';
 import '../../data/models/script_models.dart';
@@ -200,6 +201,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     ref.read(recordingsProvider.notifier).loadForProduction(production.id);
     ref.read(castMembersProvider.notifier).loadForProduction(production.id);
 
+    // Sync recordings in background — upload local, download others'
+    _syncRecordingsInBackground(ref, production.id);
+
     final savedScript = await loadPersistedScript(ref, production.id);
 
     if (savedScript != null) {
@@ -294,6 +298,39 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
             '${email.isNotEmpty ? '\n\nSign in with: $email' : ''}';
         Share.share(text, subject: 'CastCircle: Edit $prodTitle');
     }
+  }
+
+  /// Sync recordings in the background when opening a production.
+  /// Uploads local recordings and downloads other cast members' recordings
+  /// so they're ready before rehearsal starts.
+  void _syncRecordingsInBackground(WidgetRef ref, String productionId) {
+    final userId = SupabaseService.instance.currentUser?.id;
+
+    // Subscribe to realtime for new recordings
+    RecordingSyncService.instance
+      ..onRecordingReady = (lineId, path) {
+        final cached = RecordingSyncService.instance.getCachedRecordings();
+        ref.read(understudyRecordingsProvider.notifier).loadFromMap(cached);
+      }
+      ..subscribe(productionId: productionId, myUserId: userId);
+
+    // Run full sync in background — don't await
+    Future(() async {
+      // Wait briefly for recordingsProvider to finish loading from Drift
+      await Future.delayed(const Duration(milliseconds: 500));
+      final localRecordings = ref.read(recordingsProvider);
+
+      final downloaded = await RecordingSyncService.instance.syncForProduction(
+        productionId: productionId,
+        localRecordings: localRecordings,
+        myUserId: userId,
+      );
+
+      if (downloaded > 0) {
+        final cached = RecordingSyncService.instance.getCachedRecordings();
+        ref.read(understudyRecordingsProvider.notifier).loadFromMap(cached);
+      }
+    });
   }
 
   Future<void> _ensureScriptLoaded(
