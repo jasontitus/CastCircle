@@ -1708,9 +1708,21 @@ async function fetchRecordings() {
     recordingsByLineId = {};
     if (data) {
       for (const r of data) {
+        // Extract character name from storage URL path:
+        // .../recordings/{productionId}/{characterName}/{lineId}.m4a
+        let charFromUrl = '';
+        try {
+          const urlParts = new URL(r.audio_url).pathname.split('/');
+          const prodIdx = urlParts.findIndex(p => p === currentProductionId);
+          if (prodIdx >= 0 && prodIdx + 1 < urlParts.length) {
+            charFromUrl = decodeURIComponent(urlParts[prodIdx + 1]);
+          }
+        } catch (_) {}
+
         recordingsByLineId[r.line_id] = {
           audio_url: r.audio_url,
           duration_ms: r.duration_ms,
+          character: charFromUrl,
         };
       }
     }
@@ -3235,11 +3247,12 @@ function renderRecordingsPanel() {
   const entries = [];
   for (const [lineId, rec] of Object.entries(recordingsByLineId)) {
     const line = scriptLines.find(l => l.id === lineId);
-    const charName = line?.character || 'Unknown';
+    const charName = line?.character || rec.character || 'Unknown';
     const lineText = line?.text || '';
     const lineIndex = line ? scriptLines.indexOf(line) : -1;
+    const lineNum = lineIndex >= 0 ? lineIndex + 1 : '?';
     if (recordingsFilterChar && charName !== recordingsFilterChar) continue;
-    entries.push({ lineId, charName, lineText, lineIndex, duration_ms: rec.duration_ms || 0 });
+    entries.push({ lineId, charName, lineText, lineIndex, lineNum, duration_ms: rec.duration_ms || 0 });
   }
 
   // Sort by line order in script
@@ -3265,8 +3278,8 @@ function renderRecordingsPanel() {
     const truncText = e.lineText.length > 40 ? e.lineText.slice(0, 40) + '\u2026' : e.lineText;
     return `
       <div class="rec-item ${isPlaying ? 'is-playing' : ''}" data-line-id="${escAttr(e.lineId)}" data-line-index="${e.lineIndex}">
-        <span class="rec-item-char" style="color:${color}">${escHtml(e.charName)}</span>
-        <span class="rec-item-text" title="${escAttr(e.lineText)}">${escHtml(truncText)}</span>
+        <span class="rec-item-char" style="color:${color}">#${e.lineNum} ${escHtml(e.charName)}</span>
+        <span class="rec-item-text" title="${escAttr(e.lineText)}">${escHtml(truncText || '(no matching line)')}</span>
         <span class="rec-item-dur">${formatDurationMs(e.duration_ms)}</span>
         <button class="rec-item-play" data-rec-play="${escAttr(e.lineId)}" title="${isPlaying ? 'Stop' : 'Play'}">${isPlaying ? '\u25A0' : '\u25B6'}</button>
         <button class="rec-item-delete" data-rec-delete="${escAttr(e.lineId)}" data-char-name="${escAttr(e.charName)}" title="Delete recording">&times;</button>
