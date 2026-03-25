@@ -11,16 +11,14 @@ import 'package:path_provider/path_provider.dart';
 import 'package:share_plus/share_plus.dart';
 
 import '../../core/theme/app_theme.dart';
-import '../../data/models/production_models.dart';
 import '../../data/models/script_models.dart';
 import '../../data/services/model_manager.dart';
 import '../../data/services/script_export.dart';
 import '../../data/services/supabase_service.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
-import '../../data/services/voice_config_service.dart';
 import '../../providers/production_providers.dart';
-import '../rehearsal/rehearsal_history_screen.dart';
+import '../script_editor/cloud_sync_dialog.dart';
 import '../settings/settings_screen.dart';
 
 class ProductionHubScreen extends ConsumerStatefulWidget {
@@ -768,8 +766,40 @@ class _ProductionHubScreenState extends ConsumerState<ProductionHubScreen> {
         return;
       }
 
-      final script = buildParsedScript(production.title, cloudLines);
-      ref.read(currentScriptProvider.notifier).state = script;
+      final cloudScript = buildParsedScript(production.title, cloudLines);
+      final localScript = ref.read(currentScriptProvider);
+
+      if (localScript != null &&
+          diffScriptLines(localScript.lines, cloudScript.lines)
+              .every((diff) => diff.type == DiffType.unchanged)) {
+        if (context.mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Local script is already up to date')),
+          );
+        }
+        return;
+      }
+
+      var shouldReplaceLocal = true;
+      if (localScript != null && context.mounted) {
+        final choice = await showCloudSyncDialog(
+          context: context,
+          localLines: localScript.lines,
+          cloudLines: cloudScript.lines,
+        );
+        shouldReplaceLocal = choice == true;
+      }
+
+      if (!shouldReplaceLocal) {
+        if (context.mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Kept local script')),
+          );
+        }
+        return;
+      }
+
+      ref.read(currentScriptProvider.notifier).state = cloudScript;
       await persistScript(ref);
 
       if (context.mounted) {

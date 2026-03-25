@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:drift/drift.dart';
 
 import '../database/app_database.dart';
@@ -38,7 +40,20 @@ class ProductionRepository {
   }
 
   Future<void> deleteProduction(String id) async {
+    final recordings = await _db.getRecordingsForProduction(id);
+    for (final recording in recordings) {
+      try {
+        final file = File(recording.localPath);
+        if (await file.exists()) {
+          await file.delete();
+        }
+      } catch (_) {
+        // Best-effort cleanup: deleting the DB row matters more than the file.
+      }
+    }
+
     // Cascade: delete related data first
+    await _db.deleteRecordingsForProduction(id);
     await _db.deleteScriptLinesForProduction(id);
     await _db.deleteScenesForProduction(id);
     await _db.deleteCastForProduction(id);

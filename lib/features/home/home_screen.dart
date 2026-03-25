@@ -8,7 +8,6 @@ import 'package:uuid/uuid.dart';
 import '../../core/responsive.dart';
 import '../../data/services/analytics_service.dart';
 import '../../data/services/recording_sync_service.dart';
-import '../../core/theme/app_theme.dart';
 import '../../data/models/production_models.dart';
 import '../../data/models/script_models.dart';
 import '../../data/services/supabase_service.dart';
@@ -21,6 +20,16 @@ final savedCharacterProvider =
   final prefs = await SharedPreferences.getInstance();
   return prefs.getString('rehearsal_character_$productionId');
 });
+
+bool shouldReuseLoadedScript({
+  required String? currentProductionId,
+  required String targetProductionId,
+  required ParsedScript? currentScript,
+}) {
+  return currentProductionId == targetProductionId &&
+      currentScript != null &&
+      currentScript.lines.isNotEmpty;
+}
 
 class HomeScreen extends ConsumerStatefulWidget {
   const HomeScreen({super.key});
@@ -137,7 +146,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
             onSetUp: () => _openProductionForSetup(context, ref, production),
             onMenuAction: (action) =>
                 _handleMenuAction(context, ref, production, action),
-            onDelete: () async {
+          onDelete: () async {
               final confirmed = await showDialog<bool>(
                 context: context,
                 builder: (ctx) => AlertDialog(
@@ -156,7 +165,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                 ),
               );
               if (confirmed == true) {
-                ref.read(productionsProvider.notifier).remove(production.id);
+                if (!context.mounted) return;
+                await _deleteProduction(context, ref, production);
               }
             },
           );
@@ -182,7 +192,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
             final confirmed =
                 await _confirmDeleteProduction(context, production);
             if (confirmed == true) {
-              ref.read(productionsProvider.notifier).remove(production.id);
+              if (!context.mounted) return;
+              await _deleteProduction(context, ref, production);
             }
           },
         );
@@ -195,6 +206,12 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     WidgetRef ref,
     Production production,
   ) async {
+    final previousProduction = ref.read(currentProductionProvider);
+    if (previousProduction?.id != production.id) {
+      ref.read(currentScriptProvider.notifier).state = null;
+      ref.read(understudyRecordingsProvider.notifier).clear();
+    }
+
     ref.read(currentProductionProvider.notifier).state = production;
     ref.read(rehearsalCharacterProvider.notifier).state = null;
     ref.read(selectedSceneProvider.notifier).state = null;
@@ -207,13 +224,26 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     final savedScript = await loadPersistedScript(ref, production.id);
 
     if (savedScript != null) {
-      ref.read(currentScriptProvider.notifier).state = ParsedScript(
+      var script = ParsedScript(
         title: production.title,
         lines: savedScript.lines,
         characters: savedScript.characters,
         scenes: savedScript.scenes,
         rawText: savedScript.rawText,
       );
+
+      final cloudScript = await _resolveCloudScript(
+        production,
+        localScript: script,
+      );
+      if (!mounted) return;
+      if (cloudScript != null) {
+        script = cloudScript;
+        await _persistResolvedScript(ref, script);
+      } else {
+        ref.read(currentScriptProvider.notifier).state = script;
+      }
+
       if (context.mounted) context.push('/production');
       return;
     }
@@ -223,8 +253,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
       final cloudLines = await fetchCloudScriptLines(production.id);
       if (cloudLines != null && cloudLines.isNotEmpty) {
         final script = buildParsedScript(production.title, cloudLines);
-        ref.read(currentScriptProvider.notifier).state = script;
-        await persistScript(ref);
+        await _persistResolvedScript(ref, script);
         if (context.mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(
@@ -249,6 +278,12 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     WidgetRef ref,
     Production production,
   ) async {
+    final previousProduction = ref.read(currentProductionProvider);
+    if (previousProduction?.id != production.id) {
+      ref.read(currentScriptProvider.notifier).state = null;
+      ref.read(understudyRecordingsProvider.notifier).clear();
+    }
+
     ref.read(currentProductionProvider.notifier).state = production;
     ref.read(rehearsalCharacterProvider.notifier).state = null;
     ref.read(selectedSceneProvider.notifier).state = null;
@@ -264,6 +299,12 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     Production production,
     String action,
   ) {
+    final previousProduction = ref.read(currentProductionProvider);
+    if (previousProduction?.id != production.id) {
+      ref.read(currentScriptProvider.notifier).state = null;
+      ref.read(understudyRecordingsProvider.notifier).clear();
+    }
+
     // Set as current production first
     ref.read(currentProductionProvider.notifier).state = production;
     ref.read(recordingsProvider.notifier).loadForProduction(production.id);
@@ -335,8 +376,15 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
 
   Future<void> _ensureScriptLoaded(
       WidgetRef ref, Production production) async {
+    final currentProduction = ref.read(currentProductionProvider);
     final current = ref.read(currentScriptProvider);
-    if (current != null && current.lines.isNotEmpty) return;
+    if (shouldReuseLoadedScript(
+      currentProductionId: currentProduction?.id,
+      targetProductionId: production.id,
+      currentScript: current,
+    )) {
+      return;
+    }
 
     final saved = await loadPersistedScript(ref, production.id);
     if (saved != null) {
@@ -346,6 +394,75 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
         characters: saved.characters,
         scenes: saved.scenes,
         rawText: saved.rawText,
+      );
+    }
+  }
+
+  Future<void> _persistResolvedScript(
+    WidgetRef ref,
+    ParsedScript script,
+  ) async {
+    ref.read(currentScriptProvider.notifier).state = script;
+    await persistScript(ref);
+  }
+
+  bool _scriptsDiffer(ParsedScript localScript, ParsedScript cloudScript) {
+    return diffScriptLines(localScript.lines, cloudScript.lines)
+        .any((diff) => diff.type != DiffType.unchanged);
+  }
+
+  Future<ParsedScript?> _resolveCloudScript(
+    Production production, {
+    required ParsedScript localScript,
+  }) async {
+    final cloudLines = await fetchCloudScriptLines(production.id);
+    if (cloudLines == null || cloudLines.isEmpty) return null;
+
+    final cloudScript = buildParsedScript(production.title, cloudLines);
+    if (!_scriptsDiffer(localScript, cloudScript)) {
+      return null;
+    }
+
+    if (!mounted) return null;
+    final useCloud = await showCloudSyncDialog(
+      context: context,
+      localLines: localScript.lines,
+      cloudLines: cloudScript.lines,
+    );
+
+    if (useCloud == true) {
+      return cloudScript;
+    }
+    return null;
+  }
+
+  Future<void> _deleteProduction(
+    BuildContext context,
+    WidgetRef ref,
+    Production production,
+  ) async {
+    await RecordingSyncService.instance.clearCache(production.id);
+
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove('script_backup_${production.id}');
+    await prefs.remove('rehearsal_character_${production.id}');
+
+    await ref.read(productionsProvider.notifier).remove(production.id);
+
+    final currentProduction = ref.read(currentProductionProvider);
+    if (currentProduction?.id == production.id) {
+      ref.read(currentProductionProvider.notifier).state = null;
+      ref.read(currentScriptProvider.notifier).state = null;
+      ref.read(recordingsProvider.notifier).clear();
+      ref.read(understudyRecordingsProvider.notifier).clear();
+      ref.read(castMembersProvider.notifier).clear();
+      ref.read(rehearsalCharacterProvider.notifier).state = null;
+      ref.read(selectedSceneProvider.notifier).state = null;
+    }
+
+    if (context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Deleted "${production.title}"')),
       );
     }
   }

@@ -77,86 +77,107 @@ GoRouter _buildRouter(Ref ref) => GoRouter(
   },
   routes: [
     GoRoute(
+      name: '/auth',
       path: '/auth',
       builder: (context, state) => const AuthScreen(),
     ),
     GoRoute(
+      name: '/',
       path: '/',
       builder: (context, state) => const HomeScreen(),
     ),
     GoRoute(
+      name: '/settings',
       path: '/settings',
       builder: (context, state) => const SettingsScreen(),
     ),
     GoRoute(
+      name: '/production',
       path: '/production',
       builder: (context, state) => const ProductionHubScreen(),
     ),
     GoRoute(
+      name: '/import',
       path: '/import',
       builder: (context, state) => const ScriptImportScreen(),
     ),
     GoRoute(
+      name: '/editor',
       path: '/editor',
       builder: (context, state) => const ScriptEditorScreen(),
     ),
     GoRoute(
+      name: '/characters',
       path: '/characters',
       builder: (context, state) => const CharacterManagerScreen(),
     ),
     GoRoute(
+      name: '/scenes',
       path: '/scenes',
       builder: (context, state) => const SceneEditorScreen(),
     ),
     GoRoute(
+      name: '/cast',
       path: '/cast',
       builder: (context, state) => const CastManagerScreen(),
     ),
     GoRoute(
+      name: '/cast-setup',
       path: '/cast-setup',
       builder: (context, state) => const BulkCastSetupScreen(),
     ),
     GoRoute(
+      name: '/join',
       path: '/join',
       builder: (context, state) => const JoinProductionScreen(),
     ),
     GoRoute(
+      name: '/voice-config',
       path: '/voice-config',
       builder: (context, state) => const VoiceConfigScreen(),
     ),
     GoRoute(
+      name: '/record',
       path: '/record',
       builder: (context, state) => const RecordingCharacterScreen(),
     ),
     GoRoute(
+      name: '/recording-studio',
       path: '/recording-studio',
       builder: (context, state) => const RecordingStudioScreen(),
     ),
     GoRoute(
+      name: '/recordings',
       path: '/recordings',
       builder: (context, state) => const RecordingsBrowserScreen(),
     ),
     GoRoute(
+      name: '/rehearsal',
       path: '/rehearsal',
       builder: (context, state) => const RehearsalScreen(),
     ),
     GoRoute(
+      name: '/history',
       path: '/history',
       builder: (context, state) => const RehearsalHistoryScreen(),
     ),
     GoRoute(
+      name: '/ai-models',
       path: '/ai-models',
       builder: (context, state) => const AiModelsScreen(),
     ),
     GoRoute(
+      name: '/kokoro-debug',
       path: '/kokoro-debug',
       builder: (context, state) => const KokoroDebugScreen(),
     ),
     GoRoute(
+      name: '/parakeet-debug',
       path: '/parakeet-debug',
       builder: (context, state) => const ParakeetDebugScreen(),
     ),
     GoRoute(
+      name: '/debug-log',
       path: '/debug-log',
       builder: (context, state) => const DebugLogScreen(),
     ),
@@ -235,6 +256,11 @@ class _AnalyticsRouteObserver extends NavigatorObserver {
   @override
   void didPush(Route route, Route? previousRoute) {
     _logScreen(route);
+  }
+
+  @override
+  void didPop(Route route, Route? previousRoute) {
+    if (previousRoute != null) _logScreen(previousRoute);
   }
 
   @override

@@ -206,6 +206,10 @@ class AppDatabase extends _$AppDatabase {
   Future<int> insertRecording(RecordingsCompanion entry) =>
       into(recordings).insert(entry, mode: InsertMode.insertOrReplace);
 
+  Future<int> deleteRecordingsForProduction(String productionId) =>
+      (delete(recordings)..where((r) => r.productionId.equals(productionId)))
+          .go();
+
   Future<int> deleteRecording(String id) =>
       (delete(recordings)..where((r) => r.id.equals(id))).go();
 
