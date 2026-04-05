@@ -110,11 +110,11 @@ class ModelDownloadService {
     AiModel(
       id: 'parakeet_model',
       name: 'Parakeet STT Model',
-      description: 'MLX neural speech-to-text (0.6B params)',
+      description: 'MLX neural speech-to-text (0.6B params, v2)',
       sizeLabel: '~2.5 GB',
-      sizeBytes: 2508288736,
+      sizeBytes: 2470000000,
       downloadUrl:
-          'https://huggingface.co/mlx-community/parakeet-tdt-0.6b-v3/resolve/main/model.safetensors',
+          'https://huggingface.co/mlx-community/parakeet-tdt-0.6b-v2/resolve/main/model.safetensors',
       filename: 'model.safetensors',
       subdir: 'parakeet_stt',
     ),
@@ -122,10 +122,10 @@ class ModelDownloadService {
       id: 'parakeet_config',
       name: 'Parakeet STT Config',
       description: 'Model configuration and vocabulary',
-      sizeLabel: '~244 KB',
-      sizeBytes: 244093,
+      sizeLabel: '~36 KB',
+      sizeBytes: 36200,
       downloadUrl:
-          'https://huggingface.co/mlx-community/parakeet-tdt-0.6b-v3/resolve/main/config.json',
+          'https://huggingface.co/mlx-community/parakeet-tdt-0.6b-v2/resolve/main/config.json',
       filename: 'config.json',
       subdir: 'parakeet_stt',
     ),

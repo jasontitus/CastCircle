@@ -14,7 +14,7 @@ class MLXSttPlugin: NSObject, FlutterStreamHandler {
 
     /// The loaded Parakeet STT model.
     private var sttModel: ParakeetModel? = nil
-    private static let modelId = "mlx-community/parakeet-tdt-0.6b-v3"
+    private static let modelId = "mlx-community/parakeet-tdt-0.6b-v2"
 
     /// Model directory — downloaded model files live here.
     private static var modelDir: URL? {
@@ -36,7 +36,7 @@ class MLXSttPlugin: NSObject, FlutterStreamHandler {
         let cacheDir = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first!
         let hfDir = cacheDir
             .appendingPathComponent("huggingface/hub")
-            .appendingPathComponent("models--mlx-community--parakeet-tdt-0.6b-v3")
+            .appendingPathComponent("models--mlx-community--parakeet-tdt-0.6b-v2")
         if FileManager.default.fileExists(atPath: hfDir.path) {
             let snapshotsDir = hfDir.appendingPathComponent("snapshots")
             if let snapshots = try? FileManager.default.contentsOfDirectory(at: snapshotsDir, includingPropertiesForKeys: nil),
