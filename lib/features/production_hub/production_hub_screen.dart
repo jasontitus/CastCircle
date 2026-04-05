@@ -89,11 +89,6 @@ class _ProductionHubScreenState extends ConsumerState<ProductionHubScreen> {
   }
 
   Future<void> _checkModels() async {
-    // Skip model check on Android — Kokoro MLX is iOS only
-    if (Platform.isAndroid) {
-      if (mounted) setState(() { _checkedModels = true; _modelsReady = false; });
-      return;
-    }
     final ready = await ModelManager.instance.isAllReady();
     if (mounted) {
       setState(() {

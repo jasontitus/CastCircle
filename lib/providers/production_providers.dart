@@ -2,6 +2,8 @@ import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+
+import '../data/services/debug_log_service.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:uuid/uuid.dart';
 
@@ -65,8 +67,15 @@ class ProductionsNotifier extends StateNotifier<List<Production>> {
   }
 
   Future<void> add(Production production) async {
+    final dlog = DebugLogService.instance;
+    dlog.log(LogCategory.general,
+        'ProductionsNotifier.add: "${production.title}" id=${production.id}, '
+        'state has ${state.length} items, ids=${state.map((p) => p.id).toList()}');
     await _repo.saveProduction(production);
-    state = [...state, production];
+    // Reload from DB to guarantee no duplicates (DB uses insertOrReplace).
+    state = await _repo.getAllProductions();
+    dlog.log(LogCategory.general,
+        'ProductionsNotifier.add: after reload, state has ${state.length} items');
   }
 
   Future<void> update(Production production) async {

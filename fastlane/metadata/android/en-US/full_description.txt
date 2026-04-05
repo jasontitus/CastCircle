@@ -1,0 +1,26 @@
+CastCircle is the line-learning app built for actors. Import your script, rehearse with AI scene partners, and track your progress — all powered by on-device AI that keeps your data private.
+
+IMPORT ANY SCRIPT
+Import scripts from PDF, plain text, or Markdown. CastCircle uses on-device OCR to extract text from scanned PDFs and intelligently parses characters, acts, scenes, and stage directions automatically.
+
+REHEARSE WITH AI SCENE PARTNERS
+Select your character and start rehearsing. CastCircle reads your scene partners' lines aloud using natural text-to-speech, then listens as you speak your lines and checks your accuracy using on-device speech recognition.
+
+COLLABORATE WITH YOUR CAST
+Share a join code with your cast so everyone can access the script. Track rehearsal progress across your entire production — see who's learned their lines and who needs more practice.
+
+100% ON-DEVICE AI
+All speech processing happens locally on your device. Your scripts, voice recordings, and personal data never leave your phone. No cloud AI services, no data harvesting.
+
+WORKS OFFLINE
+Core features work without an internet connection. Import scripts, rehearse, and record — anytime, anywhere. Cloud sync is optional for backing up and sharing across devices.
+
+KEY FEATURES
+- PDF import with on-device OCR
+- Intelligent script parsing (characters, acts, scenes, stage directions)
+- Text-to-speech with configurable voices per character
+- Speech-to-text line accuracy checking
+- Cast management with join codes
+- Rehearsal progress tracking
+- Cloud sync (optional)
+- Works completely offline

@@ -46,6 +46,7 @@ class TtsService {
 
   // System TTS voices (fallback)
   final Map<String, Map<String, String>> _characterSystemVoices = {};
+  final Map<String, double> _characterPitches = {}; // gender-based pitch
   List<dynamic> _availableSystemVoices = [];
 
   // Kokoro MLX state
@@ -62,6 +63,27 @@ class TtsService {
   TtsEngine get activeEngine => _activeEngine;
   bool get isKokoroLoaded => _kokoroLoaded;
   bool get isInitialized => _initialized;
+
+  /// Set the system TTS language to match the production locale.
+  /// Also refreshes and logs the filtered voice pool for diagnostics.
+  Future<void> setLocale(String locale) async {
+    await _systemTts.setLanguage(locale);
+    _availableSystemVoices = await _systemTts.getVoices as List<dynamic>;
+    // Log available voices for the locale so we can debug accent/gender issues
+    final matching = _availableSystemVoices.where((v) {
+      if (v is! Map) return false;
+      final vLocale = v['locale']?.toString().replaceAll('_', '-').toLowerCase() ?? '';
+      return vLocale == locale.replaceAll('_', '-').toLowerCase();
+    }).toList();
+    final names = matching.map((v) => (v as Map)['name'] ?? '?').toList();
+    DebugLogService.instance.log(LogCategory.tts,
+        'System TTS locale=$locale, ${matching.length} exact voices: $names');
+    // Log full metadata of first 3 voices to discover available fields
+    for (var i = 0; i < matching.length && i < 3; i++) {
+      DebugLogService.instance.log(LogCategory.tts,
+          'Voice[$i] full data: ${matching[i]}');
+    }
+  }
 
   /// Try to load Kokoro after model files are downloaded.
   /// Call this when the model download completes post-init.
@@ -115,12 +137,27 @@ class TtsService {
       dlog.log(LogCategory.tts, 'Kokoro MLX not available — system TTS fallback');
     }
 
-    // Initialize system TTS as fallback
+    // Initialize system TTS as fallback (language updated per-session in setLocale)
     await _systemTts.setLanguage('en-US');
     await _systemTts.setSpeechRate(0.5);
     await _systemTts.setVolume(1.0);
     await _systemTts.setPitch(1.0);
     _availableSystemVoices = await _systemTts.getVoices as List<dynamic>;
+
+    _systemTts.setStartHandler(() {
+      DebugLogService.instance.log(LogCategory.tts,
+          'System TTS started speaking (gen=$_activeGen)');
+    });
+
+    _systemTts.setErrorHandler((msg) {
+      DebugLogService.instance.logError(LogCategory.tts,
+          'System TTS error: $msg (gen=$_activeGen)');
+      // Fire completion on error so rehearsal doesn't stall
+      if (_usingSystemTts && _speakGen == _activeGen) {
+        _usingSystemTts = false;
+        _fireCompletion('systemTtsError');
+      }
+    });
 
     _systemTts.setCompletionHandler(() {
       // Only fire if system TTS is actually the active engine for this speak() call.
@@ -192,8 +229,10 @@ class TtsService {
   /// Assign a specific Kokoro voice and speed to a character.
   ///
   /// Called by rehearsal screen after resolving voice config (preset + overrides).
+  /// [locale] filters system TTS voices to matching language (e.g. "en-GB").
+  /// [isMale] selects male/female system TTS voices by name heuristic.
   void assignVoice(String character, int characterIndex,
-      {String? voiceId, double? speed}) {
+      {String? voiceId, double? speed, String? locale, bool? isMale}) {
     // Use provided voiceId or fall back to round-robin from kokoroVoices
     final assignedVoice =
         voiceId ?? kokoroVoices[characterIndex % kokoroVoices.length];
@@ -206,14 +245,92 @@ class TtsService {
     DebugLogService.instance.log(LogCategory.tts,
         'Voice assigned: $character → $assignedVoice (idx=$characterIndex, speed=${speed ?? _currentSpeed})');
 
-    // Also assign a system TTS voice as fallback
+    // Also assign a system TTS voice as fallback, filtered by locale and gender
     if (_availableSystemVoices.isNotEmpty) {
-      final sysIdx = characterIndex % _availableSystemVoices.length;
-      final voice = _availableSystemVoices[sysIdx];
+      final targetLocale = locale ?? 'en-US';
+      // Filter voices matching the requested locale (e.g. en-GB, en-US)
+      final localeVoices = _availableSystemVoices.where((v) {
+        if (v is! Map) return false;
+        final vLocale = v['locale']?.toString() ?? '';
+        return vLocale.replaceAll('_', '-').toLowerCase() ==
+                targetLocale.replaceAll('_', '-').toLowerCase() ||
+            vLocale.split(RegExp(r'[-_]')).first.toLowerCase() ==
+                targetLocale.split(RegExp(r'[-_]')).first.toLowerCase();
+      }).toList();
+
+      // Prefer exact locale match, fall back to same-language voices
+      final exactMatch = localeVoices.where((v) {
+        final vLocale = (v as Map)['locale']?.toString().replaceAll('_', '-').toLowerCase() ?? '';
+        return vLocale == targetLocale.replaceAll('_', '-').toLowerCase();
+      }).toList();
+
+      final pool = exactMatch.isNotEmpty ? exactMatch : localeVoices.isNotEmpty ? localeVoices : _availableSystemVoices;
+
+      // Filter by gender using Google TTS voice name conventions.
+      // On-device voices use pattern: en-{cc}-x-{prefix}{letter}-{local|network}
+      // The letter maps to Cloud TTS gender (cloud.google.com/text-to-speech/docs/voices).
+      List<dynamic> genderPool = pool;
+      if (isMale != null && pool.length > 1) {
+        final filtered = pool.where((v) {
+          if (v is! Map) return false;
+          final name = (v['name']?.toString() ?? '').toLowerCase();
+          final voiceGender = _googleTtsVoiceGender(name);
+          if (voiceGender == null) return true; // unknown → include in both
+          return isMale ? voiceGender == 'male' : voiceGender == 'female';
+        }).toList();
+        if (filtered.isNotEmpty) genderPool = filtered;
+      }
+
+      final sysIdx = characterIndex % genderPool.length;
+      final voice = genderPool[sysIdx];
       if (voice is Map) {
         _characterSystemVoices[character] = Map<String, String>.from(voice);
+        // Subtle pitch reinforcement for gender
+        _characterPitches[character] = (isMale == true) ? 0.9 : 1.05;
+        DebugLogService.instance.log(LogCategory.tts,
+            'System voice: $character → ${voice['name']} (locale=${voice['locale']}, isMale=$isMale, pitch=${_characterPitches[character]})');
       }
     }
+  }
+
+  /// Determine gender of a Google TTS on-device voice from its name.
+  /// Maps voice name suffixes to Cloud TTS documented genders.
+  /// Returns 'male', 'female', or null if unknown.
+  static String? _googleTtsVoiceGender(String voiceName) {
+    // Known male voices by full prefix (e.g. "rjs" is always male)
+    if (voiceName.contains('-rjs-')) return 'male';
+
+    // en-GB voices: en-gb-x-gb{letter} → Cloud en-GB-Standard-{letter}
+    // A=F, B=M, C=F, D=M, F=F, G=F, N=F, O=M
+    final gbMatch = RegExp(r'en-gb-x-gb([a-z])').firstMatch(voiceName);
+    if (gbMatch != null) {
+      return _cloudTtsGender('gb', gbMatch.group(1)!);
+    }
+
+    // en-US voices: en-us-x-{prefix}{letter}
+    // A=M, B=M, C=F, D=M, E=F, F=F, G=F, H=F, I=M, J=M
+    final usMatch = RegExp(r'en-us-x-\w\w([a-z])').firstMatch(voiceName);
+    if (usMatch != null) {
+      return _cloudTtsGender('us', usMatch.group(1)!);
+    }
+
+    return null;
+  }
+
+  /// Cloud TTS gender by locale and voice letter.
+  static String? _cloudTtsGender(String locale, String letter) {
+    const genderMap = {
+      'gb': {
+        'a': 'female', 'b': 'male', 'c': 'female', 'd': 'male',
+        'f': 'female', 'g': 'female', 'n': 'female', 'o': 'male',
+      },
+      'us': {
+        'a': 'male', 'b': 'male', 'c': 'female', 'd': 'male',
+        'e': 'female', 'f': 'female', 'g': 'female', 'h': 'female',
+        'i': 'male', 'j': 'male',
+      },
+    };
+    return genderMap[locale]?[letter];
   }
 
   /// Override the playback speed for a specific character.
@@ -250,7 +367,11 @@ class TtsService {
       dlog.log(LogCategory.tts, 'Kokoro MLX failed, falling back to system TTS');
     }
 
-    // Fall back to system TTS
+    // Fall back to system TTS.
+    // Release just_audio's audio session first — on Android, it holds exclusive
+    // audio focus and flutter_tts silently fails to acquire it, producing no audio
+    // and no completion callback, which stalls rehearsal.
+    await _audioPlayer.stop();
     _usingSystemTts = true;
     dlog.log(LogCategory.tts, 'System TTS: "$preview"');
     if (character != null &&
@@ -258,6 +379,11 @@ class TtsService {
       final voice = _characterSystemVoices[character]!;
       await _systemTts.setVoice(voice);
     }
+    // Apply gender-based pitch (male=0.8 deeper, female=1.15 higher)
+    final pitch = (character != null && _characterPitches.containsKey(character))
+        ? _characterPitches[character]!
+        : 1.0;
+    await _systemTts.setPitch(pitch);
     await _systemTts.speak(text);
   }
 

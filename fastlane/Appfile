@@ -1,2 +1,8 @@
 app_identifier("com.tiltastech.castcircle")
+
+# iOS
 team_id("A6G8H8NGAM")
+
+# Android
+json_key_file("~/.google-play/play-store-key.json")
+package_name("com.tiltastech.castcircle")

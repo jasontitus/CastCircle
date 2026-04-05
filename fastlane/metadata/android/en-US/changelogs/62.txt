@@ -1,0 +1,7 @@
+Initial Android release with full feature parity:
+- Script import from PDF, text, and Markdown
+- On-device text-to-speech and speech recognition
+- Rehearsal mode with AI scene partners
+- Cast management with join codes
+- Cloud sync and offline support
+- Deep link support for cast invitations

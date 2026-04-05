@@ -166,7 +166,8 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen> {
       if (charLocale != null) locale = charLocale;
     }
 
-    // Assign voices (fast — batched SharedPreferences reads)
+    // Set system TTS locale and assign voices
+    await _tts.setLocale(locale);
     await _assignVoices(production, script, locale);
 
     _tts.setCompletionHandler(() {
@@ -273,6 +274,7 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen> {
 
       for (var i = 0; i < script.characters.length; i++) {
         final char = script.characters[i];
+        final gender = genderOverrides[char.name] ?? char.gender;
 
         // Manual override takes priority
         String voiceId;
@@ -286,7 +288,9 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen> {
           speed = preset.defaultSpeed;
         }
 
-        _tts.assignVoice(char.name, i, voiceId: voiceId, speed: speed);
+        _tts.assignVoice(char.name, i,
+            voiceId: voiceId, speed: speed, locale: locale,
+            isMale: gender == CharacterGender.male);
       }
     } else {
       // No production — still use adjacency-aware assignment with defaults
@@ -297,8 +301,9 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen> {
         maleVoices: VoicePresets.modernAmerican.maleVoices,
       );
       for (var i = 0; i < script.characters.length; i++) {
-        final name = script.characters[i].name;
-        _tts.assignVoice(name, i, voiceId: autoAssignment[name]);
+        final char = script.characters[i];
+        _tts.assignVoice(char.name, i, voiceId: autoAssignment[char.name],
+            locale: locale, isMale: char.gender == CharacterGender.male);
       }
     }
   }

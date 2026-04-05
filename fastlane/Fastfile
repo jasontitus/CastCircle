@@ -1,5 +1,72 @@
 default_platform(:ios)
 
+# ─── Android ────────────────────────────────────────────────
+
+platform :android do
+  desc "Build release AAB for Play Store"
+  lane :build do
+    sh("cd ../.. && flutter build appbundle --release")
+  end
+
+  desc "Build and upload to Play Store internal test track"
+  lane :beta do
+    sh("cd ../.. && flutter build appbundle --release")
+
+    upload_to_play_store(
+      track: "internal",
+      aab: "../build/app/outputs/bundle/release/app-release.aab",
+      json_key: play_store_key_path,
+      skip_upload_metadata: true,
+      skip_upload_changelogs: true,
+      skip_upload_images: true,
+      skip_upload_screenshots: true
+    )
+  end
+
+  desc "Promote internal to production"
+  lane :promote do
+    upload_to_play_store(
+      track: "internal",
+      track_promote_to: "production",
+      json_key: play_store_key_path,
+      skip_upload_aab: true,
+      skip_upload_metadata: true,
+      skip_upload_changelogs: true,
+      skip_upload_images: true,
+      skip_upload_screenshots: true
+    )
+  end
+
+  desc "Upload metadata and screenshots to Play Store"
+  lane :metadata do
+    upload_to_play_store(
+      json_key: play_store_key_path,
+      skip_upload_aab: true,
+      skip_upload_images: false,
+      skip_upload_screenshots: false,
+      metadata_path: "fastlane/metadata/android"
+    )
+  end
+
+  desc "Upload metadata only (no screenshots)"
+  lane :metadata_only do
+    upload_to_play_store(
+      json_key: play_store_key_path,
+      skip_upload_aab: true,
+      skip_upload_images: true,
+      skip_upload_screenshots: true,
+      metadata_path: "fastlane/metadata/android"
+    )
+  end
+
+  # Path to Google Play service account JSON key
+  private_lane :play_store_key_path do
+    File.expand_path("~/.google-play/play-store-key.json")
+  end
+end
+
+# ─── iOS ────────────────────────────────────────────────────
+
 platform :ios do
   desc "Build and upload to TestFlight"
   lane :beta do

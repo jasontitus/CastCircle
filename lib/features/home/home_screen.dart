@@ -7,6 +7,7 @@ import 'package:uuid/uuid.dart';
 
 import '../../core/responsive.dart';
 import '../../data/services/analytics_service.dart';
+import '../../data/services/debug_log_service.dart';
 import '../../data/services/recording_sync_service.dart';
 import '../../data/models/production_models.dart';
 import '../../data/models/script_models.dart';
@@ -39,6 +40,8 @@ class HomeScreen extends ConsumerStatefulWidget {
 }
 
 class _HomeScreenState extends ConsumerState<HomeScreen> {
+  bool _submittingProduction = false;
+
   @override
   Widget build(BuildContext context) {
     final productions = ref.watch(productionsProvider);
@@ -224,7 +227,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     final savedScript = await loadPersistedScript(ref, production.id);
 
     if (savedScript != null) {
-      var script = ParsedScript(
+      final script = ParsedScript(
         title: production.title,
         lines: savedScript.lines,
         characters: savedScript.characters,
@@ -232,18 +235,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
         rawText: savedScript.rawText,
       );
 
-      final cloudScript = await _resolveCloudScript(
-        production,
-        localScript: script,
-      );
-      if (!mounted) return;
-      if (cloudScript != null) {
-        script = cloudScript;
-        await _persistResolvedScript(ref, script);
-      } else {
-        ref.read(currentScriptProvider.notifier).state = script;
-      }
-
+      ref.read(currentScriptProvider.notifier).state = script;
       if (context.mounted) context.push('/production');
       return;
     }
@@ -502,8 +494,21 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     WidgetRef ref,
     TextEditingController controller,
   ) async {
+    final dlog = DebugLogService.instance;
     final title = controller.text.trim();
     if (title.isEmpty) return;
+    if (_submittingProduction) {
+      dlog.log(LogCategory.general,
+          '_submitProduction: BLOCKED by _submittingProduction guard');
+      return;
+    }
+    _submittingProduction = true;
+    dlog.log(LogCategory.general,
+        '_submitProduction: starting for "$title"');
+
+    // Close dialog immediately to prevent any double-trigger.
+    controller.clear();
+    if (context.mounted) Navigator.pop(context);
 
     final supa = SupabaseService.instance;
     String productionId = const Uuid().v4();
@@ -517,7 +522,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
         organizerId = supa.currentUser!.id;
         joinCode = row['join_code'] as String? ?? joinCode;
       } catch (e) {
-        debugPrint('Cloud production create failed: $e');
+        dlog.log(LogCategory.error,
+            '_submitProduction: cloud create failed: $e');
       }
     }
 
@@ -530,11 +536,15 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
       joinCode: joinCode,
     );
 
-    ref.read(productionsProvider.notifier).add(production);
+    dlog.log(LogCategory.general,
+        '_submitProduction: adding production id=$productionId');
+    await ref.read(productionsProvider.notifier).add(production);
     ref.read(currentProductionProvider.notifier).state = production;
     AnalyticsService.instance.logProductionCreated();
-    if (context.mounted) {
-      Navigator.pop(context);
+    _submittingProduction = false;
+    dlog.log(LogCategory.general,
+        '_submitProduction: done, navigating to /import');
+    if (mounted) {
       context.push('/import');
     }
   }
