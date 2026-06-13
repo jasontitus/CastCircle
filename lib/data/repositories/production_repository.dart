@@ -226,6 +226,12 @@ class ProductionRepository {
     await _db.deleteRecording(id);
   }
 
+  /// Persist the remote URL on a recording after a successful upload.
+  Future<void> markRecordingUploaded(
+      String productionId, String scriptLineId, String remoteUrl) async {
+    await _db.markRecordingUploaded(productionId, scriptLineId, remoteUrl);
+  }
+
   models.Recording _recordingFromRow(Recording row) {
     return models.Recording(
       id: row.id,

@@ -23,7 +23,6 @@ import '../../data/services/stt_adaptation_service.dart';
 import '../../data/services/stt_vocabulary_service.dart';
 import '../../data/services/analytics_service.dart';
 import '../../data/services/media_control_service.dart';
-import '../../data/services/recording_sync_service.dart';
 import '../../data/services/sync_queue.dart';
 import '../../data/services/voice_config_service.dart';
 import '../../providers/production_providers.dart';
@@ -243,7 +242,9 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen> {
     _tts.stop(reason: 'dispose');
     _stt.stop();
     _mediaControl.deactivate();
-    RecordingSyncService.instance.unsubscribe();
+    // Note: the production-level recording subscription is owned by the
+    // home screen (set up when the production is opened) — do not tear
+    // it down here or castmates' new recordings stop arriving.
     super.dispose();
   }
 
@@ -1854,6 +1855,13 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen> {
   Future<void> _saveRehearsalCaptures(String character) async {
     final production = ref.read(currentProductionProvider);
     if (production == null) return;
+    if (character.isEmpty) {
+      // Without a character the cloud storage path would be malformed
+      // ({prod}//{line}.m4a) and other devices couldn't resolve it.
+      _dlog.log(LogCategory.rehearsal,
+          'Save captures skipped: no rehearsal character set');
+      return;
+    }
 
     final docsDir = await getApplicationDocumentsDirectory();
     final recordingsDir = Directory(p.join(docsDir.path, 'recordings'));
@@ -1891,6 +1899,7 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen> {
           lineId: lineId,
           localPath: destPath,
           durationMs: captured.durationMs,
+          recordedAt: recording.recordedAt,
         );
 
         saved++;

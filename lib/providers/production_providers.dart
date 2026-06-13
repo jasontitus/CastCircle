@@ -142,6 +142,20 @@ class RecordingsNotifier extends StateNotifier<Map<String, Recording>> {
     state = {...state, ...recordings};
   }
 
+  /// Persist the remote URL after a successful cloud upload so the app
+  /// knows the recording is synced (and won't re-upload it).
+  Future<void> markUploaded(
+      String productionId, String scriptLineId, String remoteUrl) async {
+    await _repo.markRecordingUploaded(productionId, scriptLineId, remoteUrl);
+    final existing = state[scriptLineId];
+    if (existing != null && _productionId == productionId) {
+      state = {
+        ...state,
+        scriptLineId: existing.copyWith(remoteUrl: remoteUrl),
+      };
+    }
+  }
+
   void clear() {
     _productionId = null;
     state = {};

@@ -390,21 +390,31 @@ class SupabaseService {
   }
 
   /// Save recording metadata after upload.
+  ///
+  /// [recordedAt] should be the time the audio was actually recorded so
+  /// that other devices can compare freshness; defaults to now.
   Future<void> saveRecordingMetadata({
     required String productionId,
     required String lineId,
     required String userId,
     required String audioUrl,
     required int durationMs,
+    DateTime? recordedAt,
   }) async {
-    await _client.from('recordings').upsert({
-      'production_id': productionId,
-      'line_id': lineId,
-      'user_id': userId,
-      'audio_url': audioUrl,
-      'duration_ms': durationMs,
-      'recorded_at': DateTime.now().toIso8601String(),
-    });
+    // The recordings table has UNIQUE (production_id, line_id, user_id);
+    // without onConflict the upsert resolves against the primary key only,
+    // so re-recording a line would fail with a unique violation.
+    await _client.from('recordings').upsert(
+      {
+        'production_id': productionId,
+        'line_id': lineId,
+        'user_id': userId,
+        'audio_url': audioUrl,
+        'duration_ms': durationMs,
+        'recorded_at': (recordedAt ?? DateTime.now()).toUtc().toIso8601String(),
+      },
+      onConflict: 'production_id,line_id,user_id',
+    );
   }
 
   // ── Script Lines (cloud sync) ────────────────────────

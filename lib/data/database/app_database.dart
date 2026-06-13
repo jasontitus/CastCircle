@@ -206,6 +206,15 @@ class AppDatabase extends _$AppDatabase {
   Future<int> insertRecording(RecordingsCompanion entry) =>
       into(recordings).insert(entry, mode: InsertMode.insertOrReplace);
 
+  /// Mark a recording as uploaded by setting its remote URL.
+  Future<int> markRecordingUploaded(
+          String productionId, String scriptLineId, String remoteUrl) =>
+      (update(recordings)
+            ..where((r) =>
+                r.productionId.equals(productionId) &
+                r.scriptLineId.equals(scriptLineId)))
+          .write(RecordingsCompanion(remoteUrl: Value(remoteUrl)));
+
   Future<int> deleteRecordingsForProduction(String productionId) =>
       (delete(recordings)..where((r) => r.productionId.equals(productionId)))
           .go();

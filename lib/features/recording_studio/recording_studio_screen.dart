@@ -484,6 +484,7 @@ class _RecordingStudioScreenState extends ConsumerState<RecordingStudioScreen> {
           lineId: line.id,
           localPath: path,
           durationMs: _recordingDuration.inMilliseconds,
+          recordedAt: recording.recordedAt,
         );
 
         // STT adaptation: recording + transcript as training data

@@ -1,14 +1,106 @@
-import 'dart:async';
 import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:flutter/foundation.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
+import 'package:supabase_flutter/supabase_flutter.dart' show RealtimeChannel;
 
 import '../models/script_models.dart';
 import 'debug_log_service.dart';
 import 'supabase_service.dart';
+
+/// Abstraction over the cloud calls used by [RecordingSyncService] so the
+/// sync logic can be tested without a live Supabase backend.
+abstract class RecordingCloud {
+  /// Whether cloud calls can proceed (initialized and signed in).
+  bool get isReady;
+
+  /// The signed-in user's id, if any.
+  String? get currentUserId;
+
+  Future<List<Map<String, dynamic>>> fetchRecordings(String productionId);
+
+  Future<String> uploadRecording({
+    required String productionId,
+    required String characterName,
+    required String lineId,
+    required File audioFile,
+  });
+
+  Future<void> saveRecordingMetadata({
+    required String productionId,
+    required String lineId,
+    required String userId,
+    required String audioUrl,
+    required int durationMs,
+    DateTime? recordedAt,
+  });
+
+  Future<Uint8List> downloadRecording({
+    required String productionId,
+    required String characterName,
+    required String lineId,
+  });
+}
+
+class _SupabaseRecordingCloud implements RecordingCloud {
+  SupabaseService get _supa => SupabaseService.instance;
+
+  @override
+  bool get isReady => _supa.isInitialized && _supa.isSignedIn;
+
+  @override
+  String? get currentUserId => _supa.currentUser?.id;
+
+  @override
+  Future<List<Map<String, dynamic>>> fetchRecordings(String productionId) =>
+      _supa.fetchRecordings(productionId);
+
+  @override
+  Future<String> uploadRecording({
+    required String productionId,
+    required String characterName,
+    required String lineId,
+    required File audioFile,
+  }) =>
+      _supa.uploadRecording(
+        productionId: productionId,
+        characterName: characterName,
+        lineId: lineId,
+        audioFile: audioFile,
+      );
+
+  @override
+  Future<void> saveRecordingMetadata({
+    required String productionId,
+    required String lineId,
+    required String userId,
+    required String audioUrl,
+    required int durationMs,
+    DateTime? recordedAt,
+  }) =>
+      _supa.saveRecordingMetadata(
+        productionId: productionId,
+        lineId: lineId,
+        userId: userId,
+        audioUrl: audioUrl,
+        durationMs: durationMs,
+        recordedAt: recordedAt,
+      );
+
+  @override
+  Future<Uint8List> downloadRecording({
+    required String productionId,
+    required String characterName,
+    required String lineId,
+  }) =>
+      _supa.downloadRecording(
+        productionId: productionId,
+        characterName: characterName,
+        lineId: lineId,
+      );
+}
 
 /// Syncs recordings between local device and Supabase cloud.
 ///
@@ -22,9 +114,15 @@ import 'supabase_service.dart';
 /// reordering. Deleted lines orphan recordings but don't lose them —
 /// they can be re-associated if the line is restored.
 class RecordingSyncService {
-  RecordingSyncService._();
+  RecordingSyncService._() : _cloud = _SupabaseRecordingCloud();
+
+  @visibleForTesting
+  RecordingSyncService.forTesting(this._cloud, {String? cacheDirectory})
+      : _cacheDir = cacheDirectory;
+
   static final instance = RecordingSyncService._();
 
+  final RecordingCloud _cloud;
   final _dlog = DebugLogService.instance;
 
   /// Cache dir for downloaded recordings: Documents/recording_cache/
@@ -33,11 +131,15 @@ class RecordingSyncService {
   /// Metadata for cached recordings: lineId → {recordedAt, userId, path}
   final Map<String, _CachedRecording> _cache = {};
 
-  /// Realtime subscription
-  StreamSubscription? _realtimeSub;
+  /// Active realtime channel (null when not subscribed).
+  RealtimeChannel? _realtimeChannel;
 
   /// Callback when a new recording is downloaded and ready
   void Function(String lineId, String localPath)? onRecordingReady;
+
+  /// Callback when a local recording was uploaded during [syncForProduction]
+  /// with (lineId, remoteUrl) — used to persist the remote URL locally.
+  void Function(String lineId, String remoteUrl)? onLocalUploaded;
 
   /// Get or create the cache directory.
   Future<String> get cacheDir async {
@@ -64,7 +166,9 @@ class RecordingSyncService {
   // ── Full Sync ──────────────────────────────────────────
 
   /// Sync all recordings for a production.
-  /// 1. Upload any local recordings missing from cloud
+  /// 1. Upload any local recordings that are missing from the cloud or
+  ///    newer than the cloud copy (e.g. re-records, or uploads lost when
+  ///    the app was killed before the in-memory queue drained)
   /// 2. Download any cloud recordings missing locally
   /// Returns the number of recordings downloaded.
   Future<int> syncForProduction({
@@ -72,8 +176,7 @@ class RecordingSyncService {
     required Map<String, Recording> localRecordings,
     String? myUserId,
   }) async {
-    final supa = SupabaseService.instance;
-    if (!supa.isInitialized || !supa.isSignedIn) return 0;
+    if (!_cloud.isReady) return 0;
 
     _dlog.log(LogCategory.general,
         'RecordingSync: starting for $productionId (${localRecordings.length} local)');
@@ -81,7 +184,7 @@ class RecordingSyncService {
     // Fetch all cloud recording metadata for this production
     List<Map<String, dynamic>> cloudRecordings;
     try {
-      cloudRecordings = await supa.fetchRecordings(productionId);
+      cloudRecordings = await _cloud.fetchRecordings(productionId);
     } catch (e) {
       _dlog.logError(LogCategory.error, 'RecordingSync: fetch failed', e);
       return 0;
@@ -104,8 +207,8 @@ class RecordingSyncService {
       }
     }
 
-    // ── Upload local recordings not in cloud ──
-    final userId = myUserId ?? supa.currentUser?.id;
+    // ── Upload local recordings that are missing or newer in cloud ──
+    final userId = myUserId ?? _cloud.currentUserId;
     int uploaded = 0;
     for (final entry in localRecordings.entries) {
       final lineId = entry.key;
@@ -116,29 +219,38 @@ class RecordingSyncService {
         continue;
       }
 
-      // Skip if this line already exists in the cloud
-      if (cloudByLine.containsKey(lineId)) continue;
+      // Skip if the cloud already has this line and it's at least as new
+      // as our local take. (A strictly newer local take — a re-record —
+      // must still be uploaded.)
+      final cloud = cloudByLine[lineId];
+      if (cloud != null &&
+          _parseTimestamp(cloud['recorded_at']) >=
+              recording.recordedAt.millisecondsSinceEpoch) {
+        continue;
+      }
 
       // Skip if file doesn't exist
       if (!File(recording.localPath).existsSync()) continue;
 
       try {
-        final url = await supa.uploadRecording(
+        final url = await _cloud.uploadRecording(
           productionId: productionId,
           characterName: recording.character,
           lineId: lineId,
           audioFile: File(recording.localPath),
         );
 
-        await supa.saveRecordingMetadata(
+        await _cloud.saveRecordingMetadata(
           productionId: productionId,
           lineId: lineId,
           userId: userId ?? 'local',
           audioUrl: url,
           durationMs: recording.durationMs,
+          recordedAt: recording.recordedAt,
         );
 
         uploaded++;
+        onLocalUploaded?.call(lineId, url);
         _dlog.log(LogCategory.general,
             'RecordingSync: uploaded $lineId (${recording.character})');
       } catch (e) {
@@ -171,8 +283,12 @@ class RecordingSyncService {
       final cloudTimestamp = _parseTimestamp(cloud['recorded_at']);
       final cached = _cache[lineId];
 
-      // Skip if cached version is up to date
-      if (cached != null && cached.recordedAt >= cloudTimestamp) continue;
+      // Skip if cached version is up to date (and the file still exists)
+      if (cached != null &&
+          cached.recordedAt >= cloudTimestamp &&
+          File(cached.localPath).existsSync()) {
+        continue;
+      }
 
       // Download the recording
       try {
@@ -182,7 +298,7 @@ class RecordingSyncService {
         final characterName =
             _extractCharacterFromUrl(audioUrl, productionId);
 
-        final bytes = await supa.downloadRecording(
+        final bytes = await _cloud.downloadRecording(
           productionId: productionId,
           characterName: characterName,
           lineId: lineId,
@@ -249,54 +365,19 @@ class RecordingSyncService {
     required String productionId,
     String? myUserId,
   }) {
-    _realtimeSub?.cancel();
+    unsubscribe();
 
     final supa = SupabaseService.instance;
     if (!supa.isInitialized || !supa.isSignedIn) return;
 
     try {
-      supa.subscribeToRecordings(
+      _realtimeChannel = supa.subscribeToRecordings(
         productionId: productionId,
-        onNewRecording: (payload) async {
-          final lineId = payload['line_id'] as String?;
-          final recordUserId = payload['user_id'] as String?;
-          if (lineId == null) return;
-
-          // Skip our own recordings
-          if (recordUserId == (myUserId ?? supa.currentUser?.id)) return;
-
-          final audioUrl = payload['audio_url'] as String? ?? '';
-          final characterName =
-              _extractCharacterFromUrl(audioUrl, productionId);
-
-          _dlog.log(LogCategory.general,
-              'RecordingSync: realtime — new recording for $lineId ($characterName)');
-
-          try {
-            final bytes = await supa.downloadRecording(
-              productionId: productionId,
-              characterName: characterName,
-              lineId: lineId,
-            );
-
-            final path = await cachePath(productionId, lineId);
-            await File(path).writeAsBytes(bytes);
-
-            _cache[lineId] = _CachedRecording(
-              lineId: lineId,
-              userId: recordUserId ?? '',
-              localPath: path,
-              recordedAt: _parseTimestamp(payload['recorded_at']),
-              durationMs: payload['duration_ms'] as int? ?? 0,
-              character: characterName,
-            );
-
-            onRecordingReady?.call(lineId, path);
-          } catch (e) {
-            _dlog.logError(LogCategory.error,
-                'RecordingSync: realtime download failed for $lineId', e);
-          }
-        },
+        onNewRecording: (payload) => handleRealtimeRecording(
+          payload,
+          productionId: productionId,
+          myUserId: myUserId,
+        ),
       );
 
       _dlog.log(
@@ -307,10 +388,65 @@ class RecordingSyncService {
     }
   }
 
+  /// Handle a realtime "new recording" payload: download the audio and add
+  /// it to the cache. Exposed for tests.
+  @visibleForTesting
+  Future<void> handleRealtimeRecording(
+    Map<String, dynamic> payload, {
+    required String productionId,
+    String? myUserId,
+  }) async {
+    final lineId = payload['line_id'] as String?;
+    final recordUserId = payload['user_id'] as String?;
+    if (lineId == null) return;
+
+    // Skip our own recordings
+    if (recordUserId == (myUserId ?? _cloud.currentUserId)) return;
+
+    final audioUrl = payload['audio_url'] as String? ?? '';
+    final characterName = _extractCharacterFromUrl(audioUrl, productionId);
+
+    _dlog.log(LogCategory.general,
+        'RecordingSync: realtime — new recording for $lineId ($characterName)');
+
+    try {
+      final bytes = await _cloud.downloadRecording(
+        productionId: productionId,
+        characterName: characterName,
+        lineId: lineId,
+      );
+
+      final path = await cachePath(productionId, lineId);
+      await File(path).writeAsBytes(bytes);
+
+      _cache[lineId] = _CachedRecording(
+        lineId: lineId,
+        userId: recordUserId ?? '',
+        localPath: path,
+        recordedAt: _parseTimestamp(payload['recorded_at']),
+        durationMs: payload['duration_ms'] as int? ?? 0,
+        character: characterName,
+      );
+
+      onRecordingReady?.call(lineId, path);
+    } catch (e) {
+      _dlog.logError(LogCategory.error,
+          'RecordingSync: realtime download failed for $lineId', e);
+    }
+  }
+
   /// Unsubscribe from real-time updates.
   void unsubscribe() {
-    _realtimeSub?.cancel();
-    _realtimeSub = null;
+    final channel = _realtimeChannel;
+    _realtimeChannel = null;
+    if (channel != null) {
+      try {
+        SupabaseService.instance.unsubscribe(channel);
+      } catch (e) {
+        _dlog.logError(
+            LogCategory.error, 'RecordingSync: unsubscribe failed', e);
+      }
+    }
   }
 
   // ── Cleanup ──────────────────────────────────────────────
@@ -351,6 +487,10 @@ class RecordingSyncService {
 
   /// Extract character name from a Supabase Storage URL.
   /// URL format: .../recordings/{productionId}/{characterName}/{lineId}.m4a
+  @visibleForTesting
+  static String extractCharacterFromUrl(String url, String productionId) =>
+      _extractCharacterFromUrl(url, productionId);
+
   static String _extractCharacterFromUrl(String url, String productionId) {
     try {
       final uri = Uri.parse(url);

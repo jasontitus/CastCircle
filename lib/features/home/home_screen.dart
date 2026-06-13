@@ -9,6 +9,7 @@ import '../../core/responsive.dart';
 import '../../data/services/analytics_service.dart';
 import '../../data/services/debug_log_service.dart';
 import '../../data/services/recording_sync_service.dart';
+import '../../data/services/sync_queue.dart';
 import '../../data/models/production_models.dart';
 import '../../data/models/script_models.dart';
 import '../../data/services/supabase_service.dart';
@@ -339,11 +340,24 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   void _syncRecordingsInBackground(WidgetRef ref, String productionId) {
     final userId = SupabaseService.instance.currentUser?.id;
 
+    // Persist remote URLs locally when uploads complete so recordings
+    // aren't re-uploaded and sync status is accurate.
+    SyncQueue.instance.onUploaded = (prodId, lineId, url) {
+      ref
+          .read(recordingsProvider.notifier)
+          .markUploaded(prodId, lineId, url);
+    };
+
     // Subscribe to realtime for new recordings
     RecordingSyncService.instance
       ..onRecordingReady = (lineId, path) {
         final cached = RecordingSyncService.instance.getCachedRecordings();
         ref.read(understudyRecordingsProvider.notifier).loadFromMap(cached);
+      }
+      ..onLocalUploaded = (lineId, url) {
+        ref
+            .read(recordingsProvider.notifier)
+            .markUploaded(productionId, lineId, url);
       }
       ..subscribe(productionId: productionId, myUserId: userId);
 
