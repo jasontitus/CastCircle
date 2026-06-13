@@ -48,6 +48,9 @@ class AiScriptStructuringService {
 
   final OnDeviceLlmProvider _provider;
 
+  /// Raw text the model produced on the last [structure] call (for debugging).
+  String lastRawOutput = '';
+
   bool get isAvailable => _provider.isAvailable;
 
   /// Structure a script. Provide [rawText] for the text path and/or
@@ -84,6 +87,10 @@ class AiScriptStructuringService {
       log.logError(LogCategory.ai, 'model returned no output');
       return null;
     }
+    lastRawOutput = response;
+    final outPreview =
+        response.length > 400 ? '${response.substring(0, 400)}…' : response;
+    log.log(LogCategory.ai, 'model output (${response.length} chars): $outPreview');
 
     final json = _extractJsonObject(response);
     if (json == null) {

@@ -128,14 +128,16 @@ MR. BENNET. You want to tell me, and I have no objection to hearing it.
     final result = await svc.structure(rawText: sample, title: 'Sample');
     sw.stop();
     if (!mounted) return;
+    final summary = result == null
+        ? 'structure() returned null'
+        : 'parsed: ${result.characters.length} characters, '
+            '${result.lines.where((l) => l.lineType.name == "dialogue").length} lines'
+            '${result.characters.isEmpty ? "" : " — ${result.characters.map((c) => c.name).join(", ")}"}';
     setState(() {
       _busy = false;
       _elapsed = '${sw.elapsedMilliseconds} ms';
-      _output = result == null
-          ? 'structure() returned null — see debug log for the reason'
-          : 'OK: ${result.characters.length} characters, '
-              '${result.lines.where((l) => l.lineType.name == "dialogue").length} lines\n'
-              '${result.characters.map((c) => c.name).join(", ")}';
+      _output = '$summary\n\n--- raw model output ---\n'
+          '${svc.lastRawOutput.isEmpty ? "(none)" : svc.lastRawOutput}';
     });
   }
 
