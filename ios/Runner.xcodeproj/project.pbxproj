@@ -22,6 +22,8 @@
 		A1B2C3D401000001E0000001 /* KokoroMLXPlugin.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D401000002E0000001 /* KokoroMLXPlugin.swift */; };
 		A1B2C3D401000003E0000001 /* KokoroMLXService.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D401000004E0000001 /* KokoroMLXService.swift */; };
 		A1B2C3D40100000AE0000001 /* MLX in Frameworks */ = {isa = PBXBuildFile; productRef = A1B2C3D40100000BE0000001 /* MLX */; };
+		7AED110000000000000000C1 /* MLXLLM in Frameworks */ = {isa = PBXBuildFile; productRef = 7AED110000000000000000B1 /* MLXLLM */; };
+		7AED110000000000000000C2 /* MLXLMCommon in Frameworks */ = {isa = PBXBuildFile; productRef = 7AED110000000000000000B2 /* MLXLMCommon */; };
 		A1B2C3D40100000DE0000001 /* MLXFast in Frameworks */ = {isa = PBXBuildFile; productRef = A1B2C3D40100000EE0000001 /* MLXFast */; };
 		A1B2C3D401000010E0000001 /* MLXNN in Frameworks */ = {isa = PBXBuildFile; productRef = A1B2C3D401000011E0000001 /* MLXNN */; };
 		A1B2C3D401000012E0000001 /* MLXRandom in Frameworks */ = {isa = PBXBuildFile; productRef = A1B2C3D401000013E0000001 /* MLXRandom */; };
@@ -256,6 +258,8 @@
 				14692237A6EC9A5B95750614 /* Pods_Runner.framework in Frameworks */,
 				KOKORO000600000000000001 /* MLXUtilsLibrary in Frameworks */,
 				A1B2C3D40100000AE0000001 /* MLX in Frameworks */,
+				7AED110000000000000000C1 /* MLXLLM in Frameworks */,
+				7AED110000000000000000C2 /* MLXLMCommon in Frameworks */,
 				A1B2C3D40100000DE0000001 /* MLXFast in Frameworks */,
 				A1B2C3D401000010E0000001 /* MLXNN in Frameworks */,
 				A1B2C3D401000012E0000001 /* MLXRandom in Frameworks */,
@@ -607,6 +611,8 @@
 				A1B2C3D401000015E0000001 /* MLXFFT */,
 				KOKORO000500000000000001 /* MLXUtilsLibrary */,
 				PRKT000400000000000001 /* ParakeetSTT */,
+				7AED110000000000000000B1 /* MLXLLM */,
+				7AED110000000000000000B2 /* MLXLMCommon */,
 			);
 			productName = Runner;
 			productReference = 97C146EE1CF9000F007C117D /* Runner.app */;
@@ -646,6 +652,7 @@
 				A1B2C3D40100000CE0000001 /* XCRemoteSwiftPackageReference "mlx-swift" */,
 				KOKORO000400000000000002 /* XCRemoteSwiftPackageReference "MLXUtilsLibrary" */,
 				PRKT000300000000000001 /* XCLocalSwiftPackageReference "parakeet-stt" */,
+				7AED110000000000000000A1 /* XCRemoteSwiftPackageReference "mlx-swift-lm" */,
 			);
 			productRefGroup = 97C146EF1CF9000F007C117D /* Products */;
 			projectDirPath = "";
@@ -1283,6 +1290,14 @@
 				minimumVersion = 0.0.6;
 			};
 		};
+		7AED110000000000000000A1 /* XCRemoteSwiftPackageReference "mlx-swift-lm" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/ml-explore/mlx-swift-lm.git";
+			requirement = {
+				kind = branch;
+				branch = main;
+			};
+		};
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
@@ -1323,6 +1338,16 @@
 		PRKT000400000000000001 /* ParakeetSTT */ = {
 			isa = XCSwiftPackageProductDependency;
 			productName = ParakeetSTT;
+		};
+		7AED110000000000000000B1 /* MLXLLM */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 7AED110000000000000000A1 /* XCRemoteSwiftPackageReference "mlx-swift-lm" */;
+			productName = MLXLLM;
+		};
+		7AED110000000000000000B2 /* MLXLMCommon */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 7AED110000000000000000A1 /* XCRemoteSwiftPackageReference "mlx-swift-lm" */;
+			productName = MLXLMCommon;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

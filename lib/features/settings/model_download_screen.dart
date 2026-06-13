@@ -31,7 +31,6 @@ class _ModelDownloadScreenState extends ConsumerState<ModelDownloadScreen> {
     'gemma_config',
     'gemma_tokenizer',
     'gemma_tokenizer_config',
-    'gemma_special_tokens',
   ];
 
   @override

@@ -31,13 +31,13 @@ class _ScriptImportScreenState extends ConsumerState<ScriptImportScreen> {
 
   final _downloadService = ModelDownloadService.instance;
   bool _gemmaReady = false;
+  bool _aiRunning = false;
 
   static const _gemmaIds = [
     'gemma_model',
     'gemma_config',
     'gemma_tokenizer',
     'gemma_tokenizer_config',
-    'gemma_special_tokens',
   ];
 
   @override
@@ -257,6 +257,53 @@ class _ScriptImportScreenState extends ConsumerState<ScriptImportScreen> {
     );
   }
 
+  /// Re-structure the current preview with the on-device model. User-triggered
+  /// (no auto "low quality" detection) — the organizer decides when the parse
+  /// looks off enough to be worth it.
+  Future<void> _cleanUpWithAi() async {
+    final preview = _preview;
+    if (preview == null) return;
+    final source = preview.rawText;
+    if (source.trim().isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+        content: Text('No source text available to re-structure.'),
+      ));
+      return;
+    }
+
+    setState(() => _aiRunning = true);
+    try {
+      final service = ref.read(scriptImportServiceProvider);
+      final result = await service.structureWithAi(
+        rawText: source,
+        title: preview.title.isNotEmpty ? preview.title : 'Script',
+      );
+      if (!mounted) return;
+      if (result != null) {
+        setState(() => _preview = result);
+        final lines =
+            result.lines.where((l) => l.lineType == LineType.dialogue).length;
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text(
+              'AI cleanup: ${result.characters.length} characters, $lines lines'),
+        ));
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content: Text(
+              "Script AI isn't ready yet — make sure the model finished downloading."),
+        ));
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('AI cleanup failed: $e')),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _aiRunning = false);
+    }
+  }
+
   Widget _buildPreview(BuildContext context) {
     final script = _preview!;
 
@@ -287,6 +334,37 @@ class _ScriptImportScreenState extends ConsumerState<ScriptImportScreen> {
             ],
           ),
         ),
+        // Clean up with AI (shown once the on-device model is installed)
+        if (_gemmaReady)
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
+            child: SizedBox(
+              width: double.infinity,
+              child: _aiRunning
+                  ? const Center(
+                      child: Padding(
+                        padding: EdgeInsets.all(10),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            SizedBox(
+                                width: 16,
+                                height: 16,
+                                child:
+                                    CircularProgressIndicator(strokeWidth: 2)),
+                            SizedBox(width: 12),
+                            Text('Cleaning up with AI…'),
+                          ],
+                        ),
+                      ),
+                    )
+                  : OutlinedButton.icon(
+                      onPressed: _cleanUpWithAi,
+                      icon: const Icon(Icons.auto_awesome, size: 18),
+                      label: const Text('Clean up with AI'),
+                    ),
+            ),
+          ),
         // Dialect selector
         _buildDialectSelector(context),
         // Character list

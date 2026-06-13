@@ -23,8 +23,8 @@ class ScriptImportService {
 
   final ScriptParser _parser = ScriptParser();
 
-  /// On-device LLM structuring fallback (Gemma 4). Used only when the heuristic
-  /// parse looks poor and a model is loaded; otherwise a no-op.
+  /// On-device LLM structurer (Gemma). Invoked on demand via [structureWithAi]
+  /// from the import preview — never automatically.
   final AiScriptStructuringService _aiStructurer;
 
   /// Import a script from a text file (already OCR'd or plain text).
@@ -132,15 +132,7 @@ class ScriptImportService {
 
           debugPrint('PDF import: PDFKit parse quality low '
               '(${nativeResult.characters.length} chars, '
-              '${nativeResult.acts.length} acts), trying AI/OCR...');
-
-          // Strategy 1b: on-device AI structuring of the extracted text.
-          // Fixes format/structure brittleness the heuristic parser misses,
-          // without paying the OCR render cost. No-op unless a model is loaded.
-          final aiResult = await _tryAiStructure(rawText: cleanedText, title: title);
-          if (aiResult != null && _isGoodParse(aiResult)) {
-            return _scoreConfidence(aiResult);
-          }
+              '${nativeResult.acts.length} acts), trying OCR...');
         }
       }
     } catch (e) {
@@ -149,28 +141,23 @@ class ScriptImportService {
 
     // Strategy 2: OCR pipeline (image-based PDFs like scanned scripts)
     final ocrResult = await _importFromPdfOcr(pdfPath, title: title);
-
-    // Strategy 2b: if OCR text still parses poorly, let the on-device model
-    // restructure it — OCR output is the prime beneficiary of LLM cleanup.
-    if (!_isGoodParse(ocrResult)) {
-      final aiResult =
-          await _tryAiStructure(rawText: ocrResult.rawText, title: title);
-      if (aiResult != null && _isGoodParse(aiResult)) {
-        return _scoreConfidence(aiResult);
-      }
-    }
     return _scoreConfidence(ocrResult);
   }
 
-  /// Attempt on-device AI structuring. Returns null when no model is loaded
-  /// (the common case today) so callers fall back to the heuristic result.
-  Future<ParsedScript?> _tryAiStructure({
+  /// Whether an on-device AI model is loaded and ready to restructure a parse.
+  bool get isAiAvailable => _aiStructurer.isAvailable;
+
+  /// Run on-device AI structuring on already-extracted text (or page images)
+  /// and re-score confidence. Returns null when no model is loaded. Invoked on
+  /// demand from the import preview's "Clean up with AI" button — not
+  /// automatically, since we have no reliable "low-quality parse" signal.
+  Future<ParsedScript?> structureWithAi({
     String? rawText,
     List<String> pageImagePaths = const [],
     required String title,
   }) async {
     if (!_aiStructurer.isAvailable) return null;
-    debugPrint('PDF import: trying on-device AI structuring fallback...');
+    debugPrint('PDF import: running on-device AI structuring...');
     final result = await _aiStructurer.structure(
       rawText: rawText,
       pageImagePaths: pageImagePaths,
@@ -181,8 +168,9 @@ class ScriptImportService {
           result.lines.where((l) => l.lineType == LineType.dialogue).length;
       debugPrint('PDF import: AI structuring → '
           '${result.characters.length} characters, $dialogue lines');
+      return _scoreConfidence(result);
     }
-    return result;
+    return null;
   }
 
   /// Run dictionary-based spell checking on all lines to score OCR confidence.

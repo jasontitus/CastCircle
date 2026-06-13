@@ -131,20 +131,19 @@ class ModelDownloadService {
       subdir: 'parakeet_stt',
     ),
 
-    // ── Gemma (on-device script structuring) ──────────────────
-    // MLX checkpoint loaded by OnDeviceLlmPlugin.swift via MLXLLM. The repo
-    // below is a small, runtime-supported Gemma 3 build; swap to a Gemma 4 E2B
-    // MLX repo once mlx-swift-lm ships the Gemma 4 architecture (the file set
-    // and subdir stay the same). All five files land in models/gemma_llm/.
-    // NOTE: confirm these exact paths exist on Hugging Face before release.
+    // ── Gemma 4 E2B (on-device script structuring) ────────────
+    // MLX checkpoint loaded by OnDeviceLlmPlugin.swift. Uses the QAT
+    // (quantization-aware-trained) 4-bit build: standard MLX format AND robust
+    // to quantization — naive gemma-4 4-bit quants emit garbage because they
+    // 4-bit the Per-Layer-Embedding layers. Four files land in models/gemma_llm/.
     AiModel(
       id: 'gemma_model',
-      name: 'Gemma (script AI)',
+      name: 'Gemma 4 (script AI)',
       description: 'On-device LLM that cleans up imported scripts',
-      sizeLabel: '~0.8 GB',
-      sizeBytes: 806 * 1024 * 1024,
+      sizeLabel: '~1.5 GB',
+      sizeBytes: 1500 * 1024 * 1024,
       downloadUrl:
-          'https://huggingface.co/mlx-community/gemma-3-1b-it-4bit/resolve/main/model.safetensors',
+          'https://huggingface.co/mlx-community/gemma-4-E2B-it-qat-4bit/resolve/main/model.safetensors',
       filename: 'model.safetensors',
       subdir: 'gemma_llm',
     ),
@@ -155,7 +154,7 @@ class ModelDownloadService {
       sizeLabel: '~2 KB',
       sizeBytes: 2048,
       downloadUrl:
-          'https://huggingface.co/mlx-community/gemma-3-1b-it-4bit/resolve/main/config.json',
+          'https://huggingface.co/mlx-community/gemma-4-E2B-it-qat-4bit/resolve/main/config.json',
       filename: 'config.json',
       subdir: 'gemma_llm',
     ),
@@ -166,7 +165,7 @@ class ModelDownloadService {
       sizeLabel: '~17 MB',
       sizeBytes: 17 * 1024 * 1024,
       downloadUrl:
-          'https://huggingface.co/mlx-community/gemma-3-1b-it-4bit/resolve/main/tokenizer.json',
+          'https://huggingface.co/mlx-community/gemma-4-E2B-it-qat-4bit/resolve/main/tokenizer.json',
       filename: 'tokenizer.json',
       subdir: 'gemma_llm',
     ),
@@ -177,19 +176,8 @@ class ModelDownloadService {
       sizeLabel: '~50 KB',
       sizeBytes: 50 * 1024,
       downloadUrl:
-          'https://huggingface.co/mlx-community/gemma-3-1b-it-4bit/resolve/main/tokenizer_config.json',
+          'https://huggingface.co/mlx-community/gemma-4-E2B-it-qat-4bit/resolve/main/tokenizer_config.json',
       filename: 'tokenizer_config.json',
-      subdir: 'gemma_llm',
-    ),
-    AiModel(
-      id: 'gemma_special_tokens',
-      name: 'Gemma Special Tokens',
-      description: 'Special token map',
-      sizeLabel: '~1 KB',
-      sizeBytes: 1024,
-      downloadUrl:
-          'https://huggingface.co/mlx-community/gemma-3-1b-it-4bit/resolve/main/special_tokens_map.json',
-      filename: 'special_tokens_map.json',
       subdir: 'gemma_llm',
     ),
   ];

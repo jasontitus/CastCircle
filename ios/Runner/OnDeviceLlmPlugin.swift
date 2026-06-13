@@ -1,20 +1,25 @@
 import Flutter
 import UIKit
 
-// The Gemma runtime lives in the mlx-swift-lm package (MLXLLM/MLXLMCommon).
-// Until that package is added to the Runner target, this whole block is
-// compiled out and the plugin reports "unavailable" — so the app builds and
-// ships today, and real inference turns on automatically once the package is
-// linked (no code change here). Verify the generate() API against the
-// installed mlx-swift-lm version when you enable it.
-#if canImport(MLXLLM)
+// The real Gemma runtime is written against mlx-swift-lm's current
+// (macro-based) convenience API, but gated behind the GEMMA_RUNTIME compile
+// flag so the app builds today. mlx-swift-lm already resolves and
+// MLXLLM/MLXLMCommon are linked. To turn inference on:
+//   1. Link the MLXHuggingFace product (+ the HuggingFace and Tokenizers
+//      modules its macros expand into) to the Runner target.
+//   2. Add GEMMA_RUNTIME to the target's Active Compilation Conditions.
+//   3. Validate on-device: model load + a prompt round-trip. Use a QAT /
+//      PLE-safe Gemma 4 4-bit quant or it emits garbage.
+#if GEMMA_RUNTIME
 import MLXLLM
 import MLXLMCommon
-import MLX
+import MLXHuggingFace
+import HuggingFace
+import Tokenizers
 #endif
 
-/// Flutter platform channel for on-device script structuring with an MLX LLM
-/// (Gemma). Mirrors `MLXSttPlugin`: talks over `com.lineguide/on_device_llm`,
+/// Flutter platform channel for on-device script structuring with Gemma
+/// (MLX). Mirrors `MLXSttPlugin`: talks over `com.lineguide/on_device_llm`,
 /// loads weights downloaded to Documents/models/gemma_llm/, and degrades
 /// gracefully when the runtime or model isn't present.
 class OnDeviceLlmPlugin: NSObject {
@@ -22,7 +27,7 @@ class OnDeviceLlmPlugin: NSObject {
     private var isReady = false
     private var modelPath: String?
 
-    #if canImport(MLXLLM)
+    #if GEMMA_RUNTIME
     private var container: ModelContainer?
     #endif
 
@@ -84,11 +89,11 @@ class OnDeviceLlmPlugin: NSObject {
         }
         modelPath = path
 
-        #if canImport(MLXLLM)
+        #if GEMMA_RUNTIME
         do {
-            NSLog("OnDeviceLlm: loading MLX LLM from \(path)…")
+            NSLog("OnDeviceLlm: loading Gemma from \(path)…")
             let configuration = ModelConfiguration(directory: URL(fileURLWithPath: path))
-            container = try await LLMModelFactory.shared.loadContainer(configuration: configuration)
+            container = try await #huggingFaceLoadModelContainer(configuration: configuration)
             isReady = true
             NSLog("OnDeviceLlm: model loaded")
             result(true)
@@ -97,7 +102,7 @@ class OnDeviceLlmPlugin: NSObject {
             result(FlutterError(code: "INIT_FAILED", message: error.localizedDescription, details: nil))
         }
         #else
-        NSLog("OnDeviceLlm: MLXLLM not linked — add the mlx-swift-lm SPM package to enable Gemma inference")
+        NSLog("OnDeviceLlm: MLXHuggingFace not linked — Gemma runtime gated off")
         isReady = false
         result(false)
         #endif
@@ -111,8 +116,8 @@ class OnDeviceLlmPlugin: NSObject {
             result(FlutterError(code: "INVALID_ARGS", message: "prompt required", details: nil))
             return
         }
-        // imagePaths are reserved for the multimodal (MLXVLM) path; the text
-        // path ignores them.
+        // imagePaths are reserved for the multimodal (VLM) path; the text path
+        // ignores them.
         _ = args["imagePaths"] as? [String]
 
         guard isReady else {
@@ -120,25 +125,18 @@ class OnDeviceLlmPlugin: NSObject {
             return
         }
 
-        #if canImport(MLXLLM)
+        #if GEMMA_RUNTIME
         guard let container = container else {
             result(FlutterError(code: "NOT_READY", message: "No model container", details: nil))
             return
         }
         do {
-            let text = try await container.perform { (context) -> String in
-                let input = try await context.processor.prepare(input: UserInput(prompt: prompt))
-                var output = ""
-                let stream = try MLXLMCommon.generate(
-                    input: input,
-                    parameters: GenerateParameters(maxTokens: 4096, temperature: 0.0),
-                    context: context
-                )
-                for await item in stream {
-                    if case .chunk(let piece) = item { output += piece }
-                }
-                return output
-            }
+            // Fresh session per call — script structuring is one-shot, no history.
+            let session = ChatSession(
+                container,
+                generateParameters: GenerateParameters(temperature: 0.0)
+            )
+            let text = try await session.respond(to: prompt)
             result(text)
         } catch {
             NSLog("OnDeviceLlm: generate failed: \(error.localizedDescription)")
@@ -147,14 +145,14 @@ class OnDeviceLlmPlugin: NSObject {
         #else
         result(FlutterError(
             code: "NOT_IMPLEMENTED",
-            message: "Gemma runtime not bundled. Add the mlx-swift-lm SPM package.",
+            message: "Gemma runtime not linked (MLXHuggingFace).",
             details: nil
         ))
         #endif
     }
 
     private func dispose(result: @escaping FlutterResult) {
-        #if canImport(MLXLLM)
+        #if GEMMA_RUNTIME
         container = nil
         #endif
         isReady = false
