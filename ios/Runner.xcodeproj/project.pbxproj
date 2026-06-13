@@ -617,6 +617,7 @@
 				A1B2C3D401000015E0000001 /* MLXFFT */,
 				KOKORO000500000000000001 /* MLXUtilsLibrary */,
 				PRKT000400000000000001 /* ParakeetSTT */,
+				LCPP00000000000000000002 /* LlamaCpp */,
 				7AED110000000000000000B1 /* MLXLLM */,
 				7AED110000000000000000B2 /* MLXLMCommon */,
 				5F00CC0000000000000B01 /* MLXHuggingFace */,
@@ -661,6 +662,7 @@
 				A1B2C3D40100000CE0000001 /* XCRemoteSwiftPackageReference "mlx-swift" */,
 				KOKORO000400000000000002 /* XCRemoteSwiftPackageReference "MLXUtilsLibrary" */,
 				PRKT000300000000000001 /* XCLocalSwiftPackageReference "parakeet-stt" */,
+				LCPP00000000000000000001 /* XCLocalSwiftPackageReference "LlamaCpp" */,
 				7AED110000000000000000A1 /* XCRemoteSwiftPackageReference "mlx-swift-lm" */,
 				5F00AA0000000000000A01 /* XCRemoteSwiftPackageReference "swift-huggingface" */,
 				5F00BB0000000000000A01 /* XCRemoteSwiftPackageReference "swift-transformers" */,
@@ -1282,6 +1284,10 @@
 			isa = XCLocalSwiftPackageReference;
 			relativePath = "LocalPackages/parakeet-stt";
 		};
+		LCPP00000000000000000001 /* XCLocalSwiftPackageReference "LlamaCpp" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = "LocalPackages/LlamaCpp";
+		};
 /* End XCLocalSwiftPackageReference section */
 
 /* Begin XCRemoteSwiftPackageReference section */
@@ -1365,6 +1371,11 @@
 		PRKT000400000000000001 /* ParakeetSTT */ = {
 			isa = XCSwiftPackageProductDependency;
 			productName = ParakeetSTT;
+		};
+		LCPP00000000000000000002 /* LlamaCpp */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = LCPP00000000000000000001 /* XCLocalSwiftPackageReference "LlamaCpp" */;
+			productName = LlamaCpp;
 		};
 		7AED110000000000000000B1 /* MLXLLM */ = {
 			isa = XCSwiftPackageProductDependency;

@@ -132,52 +132,19 @@ class ModelDownloadService {
     ),
 
     // ── Gemma 4 E2B (on-device script structuring) ────────────
-    // MLX checkpoint loaded by OnDeviceLlmPlugin.swift. Uses the QAT
-    // (quantization-aware-trained) 4-bit build: standard MLX format AND robust
-    // to quantization — naive gemma-4 4-bit quants emit garbage because they
-    // 4-bit the Per-Layer-Embedding layers. Four files land in models/gemma_llm/.
+    // Official Google QAT q4_0 GGUF, loaded by OnDeviceLlmPlugin.swift through
+    // llama.cpp (prebuilt xcframework, Metal). Single self-contained file —
+    // tokenizer + chat template are embedded in the GGUF, so unlike the MLX
+    // path there's no multi-file bundle. ~3.35 GB.
     AiModel(
       id: 'gemma_model',
       name: 'Gemma 4 (script AI)',
       description: 'On-device LLM that cleans up imported scripts',
-      sizeLabel: '~1.5 GB',
-      sizeBytes: 1500 * 1024 * 1024,
+      sizeLabel: '~3.35 GB',
+      sizeBytes: 3349514112,
       downloadUrl:
-          'https://huggingface.co/mlx-community/gemma-4-E2B-it-qat-4bit/resolve/main/model.safetensors',
-      filename: 'model.safetensors',
-      subdir: 'gemma_llm',
-    ),
-    AiModel(
-      id: 'gemma_config',
-      name: 'Gemma Config',
-      description: 'Model configuration',
-      sizeLabel: '~2 KB',
-      sizeBytes: 2048,
-      downloadUrl:
-          'https://huggingface.co/mlx-community/gemma-4-E2B-it-qat-4bit/resolve/main/config.json',
-      filename: 'config.json',
-      subdir: 'gemma_llm',
-    ),
-    AiModel(
-      id: 'gemma_tokenizer',
-      name: 'Gemma Tokenizer',
-      description: 'Tokenizer vocabulary',
-      sizeLabel: '~17 MB',
-      sizeBytes: 17 * 1024 * 1024,
-      downloadUrl:
-          'https://huggingface.co/mlx-community/gemma-4-E2B-it-qat-4bit/resolve/main/tokenizer.json',
-      filename: 'tokenizer.json',
-      subdir: 'gemma_llm',
-    ),
-    AiModel(
-      id: 'gemma_tokenizer_config',
-      name: 'Gemma Tokenizer Config',
-      description: 'Tokenizer configuration',
-      sizeLabel: '~50 KB',
-      sizeBytes: 50 * 1024,
-      downloadUrl:
-          'https://huggingface.co/mlx-community/gemma-4-E2B-it-qat-4bit/resolve/main/tokenizer_config.json',
-      filename: 'tokenizer_config.json',
+          'https://huggingface.co/google/gemma-4-E2B-it-qat-q4_0-gguf/resolve/main/gemma-4-E2B_q4_0-it.gguf',
+      filename: 'gemma-4-E2B_q4_0-it.gguf',
       subdir: 'gemma_llm',
     ),
   ];
@@ -437,6 +404,24 @@ class ModelDownloadService {
     }
     for (final model in availableModels) {
       if (model.subdir == 'kokoro_mlx') {
+        _states[model.id] = const ModelDownloadState();
+      }
+    }
+    _notify();
+  }
+
+  /// Delete the entire Gemma model directory. Wipes the GGUF (and any leftover
+  /// files from a previous MLX-format download) and disposes the loaded model
+  /// so its memory is freed before a re-download.
+  Future<void> deleteGemma() async {
+    await OnDeviceLlmChannel.instance.dispose();
+    final appDir = await getApplicationDocumentsDirectory();
+    final dir = Directory(p.join(appDir.path, 'models', 'gemma_llm'));
+    if (dir.existsSync()) {
+      await dir.delete(recursive: true);
+    }
+    for (final model in availableModels) {
+      if (model.subdir == 'gemma_llm') {
         _states[model.id] = const ModelDownloadState();
       }
     }

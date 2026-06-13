@@ -23,6 +23,15 @@ class _MockLlm implements OnDeviceLlmProvider {
     lastImagePaths = imagePaths;
     return _response;
   }
+
+  @override
+  Future<List<String?>> generateBatch(List<String> prompts) async {
+    final out = <String?>[];
+    for (final p in prompts) {
+      out.add(await generate(prompt: p));
+    }
+    return out;
+  }
 }
 
 // Canned model output exercising the cases the heuristic parser fails on:

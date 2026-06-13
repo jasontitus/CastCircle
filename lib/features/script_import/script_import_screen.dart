@@ -11,6 +11,7 @@ import '../../data/models/script_models.dart';
 import '../../data/services/analytics_service.dart';
 import '../../data/services/model_download_service.dart';
 import '../../data/services/on_device_llm_channel.dart';
+import '../../data/services/script_ai_cleanup_controller.dart';
 import '../../data/services/supabase_service.dart';
 import '../../data/services/voice_config_service.dart';
 import '../../providers/production_providers.dart';
@@ -31,21 +32,17 @@ class _ScriptImportScreenState extends ConsumerState<ScriptImportScreen> {
   String? _importedPdfPath; // persisted copy of imported PDF for page viewer
 
   final _downloadService = ModelDownloadService.instance;
+  final _cleanup = ScriptAiCleanupController.instance;
   bool _gemmaReady = false;
-  bool _aiRunning = false;
   bool _aiAvailable = false; // an on-device LLM is loaded (Foundation Models or Gemma)
 
-  static const _gemmaIds = [
-    'gemma_model',
-    'gemma_config',
-    'gemma_tokenizer',
-    'gemma_tokenizer_config',
-  ];
+  static const _gemmaIds = ['gemma_model'];
 
   @override
   void initState() {
     super.initState();
     _downloadService.addListener(_onDownloadUpdate);
+    _cleanup.addListener(_onCleanupUpdate);
     _downloadService.isGemmaReady().then((ready) {
       if (mounted) setState(() => _gemmaReady = ready);
     });
@@ -56,12 +53,58 @@ class _ScriptImportScreenState extends ConsumerState<ScriptImportScreen> {
         if (mounted) setState(() => _aiAvailable = ready);
       });
     });
+    // If a cleanup was interrupted (app killed mid-run while backgrounded),
+    // pick it back up from its checkpoint using the persisted source text.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) {
+        _cleanup.resumeIfPending(ref.read(scriptImportServiceProvider));
+      }
+    });
   }
 
   @override
   void dispose() {
     _downloadService.removeListener(_onDownloadUpdate);
+    _cleanup.removeListener(_onCleanupUpdate);
     super.dispose();
+  }
+
+  /// React to the long-running cleanup controller. The job outlives this
+  /// screen, so when it finishes we fold the result back into the preview here
+  /// (if we're still showing the script it was run against) and acknowledge it.
+  void _onCleanupUpdate() {
+    if (!mounted) return;
+    switch (_cleanup.phase) {
+      case CleanupPhase.done:
+        final result = _cleanup.result;
+        if (result != null) {
+          setState(() => _preview = result);
+          final lines =
+              result.lines.where((l) => l.lineType == LineType.dialogue).length;
+          ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+            content: Text(
+                'AI cleanup: ${result.characters.length} characters, $lines lines'),
+          ));
+        }
+        _cleanup.acknowledge();
+        break;
+      case CleanupPhase.cancelled:
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('AI cleanup cancelled.')),
+        );
+        _cleanup.acknowledge();
+        break;
+      case CleanupPhase.failed:
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text('AI cleanup failed: ${_cleanup.error ?? "unknown error"}'),
+        ));
+        _cleanup.acknowledge();
+        break;
+      case CleanupPhase.running:
+      case CleanupPhase.idle:
+        setState(() {}); // refresh progress bar / counter
+        break;
+    }
   }
 
   void _onDownloadUpdate() {
@@ -106,7 +149,40 @@ class _ScriptImportScreenState extends ConsumerState<ScriptImportScreen> {
             )
           : _preview != null
               ? _buildPreview(context)
-              : _buildImportOptions(context),
+              : (_cleanup.isRunning
+                  ? _buildResumingCleanup(context)
+                  : _buildImportOptions(context)),
+    );
+  }
+
+  /// Shown when a cleanup is running but we have no preview to fold it into
+  /// (e.g. resumed from a checkpoint after the app was killed). The result
+  /// lands in [_preview] when the job finishes (see [_onCleanupUpdate]).
+  Widget _buildResumingCleanup(BuildContext context) {
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(24),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text('Resuming AI cleanup',
+                style: Theme.of(context).textTheme.titleMedium),
+            const SizedBox(height: 4),
+            Text(
+              'Picking up where it left off before the app closed.',
+              textAlign: TextAlign.center,
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                    color: Theme.of(context)
+                        .colorScheme
+                        .onSurface
+                        .withValues(alpha: 0.6),
+                  ),
+            ),
+            const SizedBox(height: 16),
+            _buildAiProgress(context),
+          ],
+        ),
+      ),
     );
   }
 
@@ -251,13 +327,13 @@ class _ScriptImportScreenState extends ConsumerState<ScriptImportScreen> {
                   if (mounted) {
                     ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
                       content: Text(
-                          'Downloading Script AI model (~0.8 GB). It will turn '
+                          'Downloading Script AI model (~3.3 GB). It will turn '
                           'on automatically when ready.'),
                     ));
                   }
                 },
                 icon: const Icon(Icons.download, size: 18),
-                label: const Text('Enable Script AI (~0.8 GB)'),
+                label: const Text('Enable Script AI (~3.3 GB)'),
               ),
             ),
           ],
@@ -280,37 +356,97 @@ class _ScriptImportScreenState extends ConsumerState<ScriptImportScreen> {
       return;
     }
 
-    setState(() => _aiRunning = true);
-    try {
-      final service = ref.read(scriptImportServiceProvider);
-      final result = await service.structureWithAi(
-        rawText: source,
-        title: preview.title.isNotEmpty ? preview.title : 'Script',
-      );
-      if (!mounted) return;
-      if (result != null) {
-        setState(() => _preview = result);
-        final lines =
-            result.lines.where((l) => l.lineType == LineType.dialogue).length;
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-          content: Text(
-              'AI cleanup: ${result.characters.length} characters, $lines lines'),
-        ));
-      } else {
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-          content: Text(
-              "Script AI isn't ready yet — make sure the model finished downloading."),
-        ));
-      }
-    } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('AI cleanup failed: $e')),
-        );
-      }
-    } finally {
-      if (mounted) setState(() => _aiRunning = false);
+    // Hand the job to the long-running controller so it survives navigation
+    // within the app and fires a notification on completion. The controller's
+    // listener ([_onCleanupUpdate]) folds the result back into the preview.
+    final service = ref.read(scriptImportServiceProvider);
+    final started = await _cleanup.start(
+      rawText: source,
+      title: preview.title.isNotEmpty ? preview.title : 'Script',
+      service: service,
+    );
+    if (!started && mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+        content: Text('AI cleanup is already running.'),
+      ));
     }
+  }
+
+  static String _formatEta(Duration d) {
+    if (d.inMinutes >= 1) {
+      final s = d.inSeconds % 60;
+      return s > 0 ? '${d.inMinutes}m ${s}s' : '${d.inMinutes}m';
+    }
+    return '${d.inSeconds}s';
+  }
+
+  /// Live progress for the chunked AI cleanup: a determinate bar over chunks,
+  /// the current native step (model load / token count), and a Cancel button.
+  Widget _buildAiProgress(BuildContext context) {
+    final theme = Theme.of(context);
+    final total = _cleanup.chunkTotal;
+    final done = _cleanup.chunkDone;
+    final cancelling = _cleanup.cancelRequested;
+    final value = total > 0 ? done / total : null;
+    return Card(
+      color: theme.colorScheme.surfaceContainerHighest,
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Icon(Icons.auto_awesome,
+                    size: 18, color: theme.colorScheme.primary),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    total > 0
+                        ? 'Cleaning up with AI… chunk $done of $total'
+                        : 'Cleaning up with AI…',
+                    style: theme.textTheme.bodyMedium,
+                  ),
+                ),
+                TextButton(
+                  onPressed: cancelling ? null : _cleanup.cancel,
+                  child: Text(cancelling ? 'Cancelling…' : 'Cancel'),
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            LinearProgressIndicator(value: value),
+            if (_cleanup.eta != null) ...[
+              const SizedBox(height: 4),
+              Text(
+                '~${_formatEta(_cleanup.eta!)} remaining',
+                style: theme.textTheme.bodySmall?.copyWith(
+                  color: theme.colorScheme.onSurface.withValues(alpha: 0.7),
+                ),
+              ),
+            ],
+            const SizedBox(height: 8),
+            ValueListenableBuilder<String>(
+              valueListenable: _cleanup.nativeProgress,
+              builder: (_, msg, _) => Text(
+                msg.isEmpty ? 'starting…' : msg,
+                style: theme.textTheme.bodySmall?.copyWith(
+                  color: theme.colorScheme.onSurface.withValues(alpha: 0.6),
+                ),
+              ),
+            ),
+            const SizedBox(height: 4),
+            Text(
+              'You can leave this screen — cleanup keeps running and you\'ll get '
+              'a notification when it\'s done. Leaving the app pauses it.',
+              style: theme.textTheme.bodySmall?.copyWith(
+                color: theme.colorScheme.onSurface.withValues(alpha: 0.5),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
   }
 
   Widget _buildPreview(BuildContext context) {
@@ -349,24 +485,8 @@ class _ScriptImportScreenState extends ConsumerState<ScriptImportScreen> {
             padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
             child: SizedBox(
               width: double.infinity,
-              child: _aiRunning
-                  ? const Center(
-                      child: Padding(
-                        padding: EdgeInsets.all(10),
-                        child: Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            SizedBox(
-                                width: 16,
-                                height: 16,
-                                child:
-                                    CircularProgressIndicator(strokeWidth: 2)),
-                            SizedBox(width: 12),
-                            Text('Cleaning up with AI…'),
-                          ],
-                        ),
-                      ),
-                    )
+              child: _cleanup.isRunning
+                  ? _buildAiProgress(context)
                   : OutlinedButton.icon(
                       onPressed: _cleanUpWithAi,
                       icon: const Icon(Icons.auto_awesome, size: 18),

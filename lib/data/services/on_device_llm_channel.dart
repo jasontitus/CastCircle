@@ -115,6 +115,87 @@ class OnDeviceLlmChannel implements OnDeviceLlmProvider {
     }
   }
 
+  /// Begin a native background-task assertion so a long cleanup survives a
+  /// brief app-switch (iOS still caps the grace window — minutes-long compute
+  /// can't run fully backgrounded). Best-effort; no-op without the plugin.
+  Future<void> beginBackgroundExecution(String reason) async {
+    try {
+      await _channel.invokeMethod<void>('beginBackground', {'reason': reason});
+    } on PlatformException catch (e) {
+      debugPrint('OnDeviceLlm: beginBackground failed: ${e.message}');
+    } on MissingPluginException {
+      // No native plugin on this platform.
+    }
+  }
+
+  /// End the background-task assertion started by [beginBackgroundExecution].
+  Future<void> endBackgroundExecution() async {
+    try {
+      await _channel.invokeMethod<void>('endBackground');
+    } on PlatformException catch (e) {
+      debugPrint('OnDeviceLlm: endBackground failed: ${e.message}');
+    } on MissingPluginException {
+      // No native plugin on this platform.
+    }
+  }
+
+  /// Post a local notification (e.g. "cleanup complete"). Requests
+  /// authorization on first use. Best-effort; silently no-ops if the user
+  /// declined notifications or the plugin is unavailable.
+  Future<void> postLocalNotification({
+    required String title,
+    required String body,
+  }) async {
+    try {
+      await _channel.invokeMethod<void>('notify', {
+        'title': title,
+        'body': body,
+      });
+    } on PlatformException catch (e) {
+      debugPrint('OnDeviceLlm: notify failed: ${e.message}');
+    } on MissingPluginException {
+      // No native plugin on this platform.
+    }
+  }
+
+  @override
+  Future<List<String?>> generateBatch(List<String> prompts) async {
+    if (!_initialized) return List<String?>.filled(prompts.length, null);
+    final log = DebugLogService.instance;
+    try {
+      log.log(LogCategory.ai, 'generateBatch (N=${prompts.length})…');
+      final out = await _channel.invokeMethod<List<dynamic>>('generateBatch', {
+        'prompts': prompts,
+      }).timeout(const Duration(seconds: 600));
+      final results = (out ?? const [])
+          .map((e) => e as String?)
+          .toList(growable: false);
+      log.log(LogCategory.ai, 'generateBatch returned ${results.length} results');
+      // Pad/truncate defensively so the caller always gets one slot per prompt.
+      if (results.length != prompts.length) {
+        return List<String?>.generate(
+            prompts.length, (i) => i < results.length ? results[i] : null);
+      }
+      return results;
+    } on TimeoutException {
+      log.logError(LogCategory.ai, 'generateBatch timed out (>600s)');
+      return List<String?>.filled(prompts.length, null);
+    } on PlatformException catch (e) {
+      if (e.code == 'NOT_IMPLEMENTED') {
+        // No batched runtime (Foundation Models) → fall back to sequential.
+        final out = <String?>[];
+        for (final p in prompts) {
+          out.add(await generate(prompt: p));
+        }
+        return out;
+      }
+      log.logError(LogCategory.ai, 'generateBatch failed (${e.code}): ${e.message}', e);
+      return List<String?>.filled(prompts.length, null);
+    } on MissingPluginException {
+      return List<String?>.filled(prompts.length, null);
+    }
+  }
+
   /// Free the model's memory (the checkpoint is large). Best-effort.
   Future<void> dispose() async {
     if (!_initialized) return;

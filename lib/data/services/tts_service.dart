@@ -612,6 +612,22 @@ class TtsService {
     // _fireCompletion which provides the _isSpeaking guard.
   }
 
+  /// Unload the Kokoro MLX model from memory (keeps the files on disk),
+  /// clearing its MLX/Metal buffers. Used to free RAM before a heavy operation
+  /// like on-device LLM script cleanup, where Kokoro + a multi-GB LLM can't
+  /// both be resident. Falls back to system TTS until [tryLoadKokoro] reloads.
+  Future<void> unloadKokoro() async {
+    if (!_kokoroLoaded) return;
+    try {
+      await _channel.invokeMethod('unloadModel');
+    } catch (e) {
+      debugPrint('Kokoro MLX: unload failed: $e');
+    } finally {
+      _kokoroLoaded = false;
+      _activeEngine = TtsEngine.system;
+    }
+  }
+
   /// Delete the on-device Kokoro model to free storage.
   Future<void> deleteModel() async {
     try {

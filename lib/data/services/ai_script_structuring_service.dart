@@ -1,5 +1,7 @@
 import 'dart:convert';
+import 'dart:io';
 
+import 'package:path_provider/path_provider.dart';
 import 'package:uuid/uuid.dart';
 
 import '../models/script_models.dart';
@@ -27,6 +29,18 @@ abstract class OnDeviceLlmProvider {
     required String prompt,
     List<String> imagePaths = const [],
   });
+
+  /// Run [prompts] in parallel and return one output per prompt (in order;
+  /// null on a per-prompt failure). On-device generation is memory-bandwidth-
+  /// bound, so decoding N sequences together is ~N× faster than one at a time.
+  /// Default is sequential — override for true batched decoding.
+  Future<List<String?>> generateBatch(List<String> prompts) async {
+    final out = <String?>[];
+    for (final p in prompts) {
+      out.add(await generate(prompt: p));
+    }
+    return out;
+  }
 }
 
 /// Structures raw script text (or page images) into a [ParsedScript] using an
@@ -87,6 +101,13 @@ class AiScriptStructuringService {
       log.logError(LogCategory.ai, 'model returned no output');
       return null;
     }
+    return _parseResponse(response, title);
+  }
+
+  /// Parse a model's raw completion into a [ParsedScript], logging diagnostics.
+  /// Shared by the single-shot [structure] and the batched [structureChunked].
+  ParsedScript? _parseResponse(String response, String title) {
+    final log = DebugLogService.instance;
     lastRawOutput = response;
     final outPreview =
         response.length > 400 ? '${response.substring(0, 400)}…' : response;
@@ -99,7 +120,6 @@ class AiScriptStructuringService {
           'no JSON object in model output (got ${response.length} chars): $preview');
       return null;
     }
-
     try {
       final script = _toParsedScript(json, title: title);
       final dialogue =
@@ -113,6 +133,181 @@ class AiScriptStructuringService {
     }
   }
 
+  /// Structure a long script by splitting it into line windows, running each
+  /// through the model, and stitching the results. On-device models can't take
+  /// a whole script in one prompt (the full P&P script is ~140k chars — far
+  /// over the context window), so real imports must be chunked.
+  ///
+  /// [onProgress] reports (done, total) chunks; [isCancelled] lets the caller
+  /// stop early. [batchSize] chunks are decoded in parallel per model call
+  /// (on-device generation is memory-bandwidth-bound, so this is ~Nx faster).
+  Future<ParsedScript?> structureChunked({
+    required String rawText,
+    required String title,
+    int linesPerChunk = 60,
+    int batchSize = 4,
+    void Function(int done, int total)? onProgress,
+    bool Function()? isCancelled,
+  }) async {
+    final log = DebugLogService.instance;
+    if (!_provider.isAvailable) {
+      log.logError(LogCategory.ai, 'chunked structure skipped — no runtime');
+      return null;
+    }
+
+    final srcLines = rawText.split('\n');
+    final chunks = <String>[];
+    for (var i = 0; i < srcLines.length; i += linesPerChunk) {
+      final end =
+          i + linesPerChunk < srcLines.length ? i + linesPerChunk : srcLines.length;
+      final chunk = srcLines.sublist(i, end).join('\n').trim();
+      if (chunk.isNotEmpty) chunks.add(chunk);
+    }
+
+    // Resume from a checkpoint if one exists for this exact script — a
+    // multi-minute run that was backgrounded/killed picks up where it stopped
+    // instead of restarting from chunk 1.
+    final key = _checkpointKey(title, rawText, linesPerChunk, chunks.length);
+    final merged = <ScriptLine>[];
+    var startChunk = 0;
+    final ckpt = await _loadCheckpoint(key);
+    if (ckpt != null) {
+      merged.addAll(ckpt.lines);
+      startChunk = ckpt.nextChunk;
+      log.log(LogCategory.ai,
+          'resuming cleanup from checkpoint: chunk ${startChunk + 1}/${chunks.length}, ${merged.length} lines so far');
+    }
+    final n = batchSize < 1 ? 1 : batchSize;
+    log.log(LogCategory.ai,
+        'chunked structuring: ${chunks.length} chunks (~$linesPerChunk lines each), batchSize=$n, starting at ${startChunk + 1}');
+
+    var cancelled = false;
+    for (var b = startChunk; b < chunks.length; b += n) {
+      if (isCancelled?.call() ?? false) {
+        cancelled = true;
+        log.log(LogCategory.ai,
+            'chunked structuring cancelled at ${b + 1}/${chunks.length} — checkpoint kept for resume');
+        break;
+      }
+      final end = (b + n < chunks.length) ? b + n : chunks.length;
+      // Build all prompts in the batch, decode them in parallel, parse each.
+      final prompts = [
+        for (var i = b; i < end; i++) _buildPrompt(rawText: chunks[i], hasImages: false)
+      ];
+      onProgress?.call(end, chunks.length);
+      final outputs = await _provider.generateBatch(prompts);
+      for (final out in outputs) {
+        if (out == null) continue;
+        final parsed = _parseResponse(out, title);
+        if (parsed != null) merged.addAll(parsed.lines);
+      }
+      // Checkpoint after each batch so progress survives a kill. The source
+      // text + title are stored too, so a resume works even after the app was
+      // killed and the in-memory import preview is gone.
+      await _saveCheckpoint(key, end, merged, rawText, title);
+    }
+
+    // Keep the checkpoint on cancel (for resume); clear it once the run
+    // finishes so a later, different cleanup starts clean.
+    if (!cancelled) await _deleteCheckpoint();
+
+    if (merged.isEmpty) return null;
+
+    // Renumber order across chunks and rebuild character/scene aggregates.
+    var order = 0;
+    final lines = merged.map((l) => l.copyWith(orderIndex: ++order)).toList();
+    return ParsedScript(
+      title: title,
+      lines: lines,
+      characters: _buildCharacters(lines),
+      scenes: _buildScenes(lines),
+      rawText: '',
+    );
+  }
+
+  // ── Checkpoint persistence (resume a long chunked run after a kill) ──────
+
+  /// Stable content signature (FNV-1a) so a resumed run matches the exact
+  /// script + chunking it was started with. Deterministic across app restarts
+  /// (unlike String.hashCode).
+  static String _checkpointKey(
+      String title, String rawText, int linesPerChunk, int chunkCount) {
+    const fnvPrime = 0x01000193;
+    var hash = 0x811c9dc5;
+    final s = '$title $linesPerChunk ${rawText.length} $rawText';
+    for (var i = 0; i < s.length; i++) {
+      hash ^= s.codeUnitAt(i) & 0xff;
+      hash = (hash * fnvPrime) & 0xffffffff;
+    }
+    return '${hash.toRadixString(16)}_$chunkCount';
+  }
+
+  Future<File> _checkpointFile() async {
+    final dir = await getApplicationDocumentsDirectory();
+    return File('${dir.path}/ai_cleanup_checkpoint.json');
+  }
+
+  Future<({int nextChunk, List<ScriptLine> lines})?> _loadCheckpoint(
+      String key) async {
+    try {
+      final file = await _checkpointFile();
+      if (!file.existsSync()) return null;
+      final data = jsonDecode(await file.readAsString()) as Map<String, dynamic>;
+      if (data['key'] != key) return null; // different script — ignore
+      final lines = (data['lines'] as List)
+          .map((j) => ScriptLine.fromJson(j as Map<String, dynamic>))
+          .toList();
+      return (nextChunk: data['nextChunk'] as int, lines: lines);
+    } catch (e) {
+      DebugLogService.instance
+          .logError(LogCategory.ai, 'checkpoint load failed', e);
+      return null;
+    }
+  }
+
+  /// Source text + title of an in-progress cleanup, for resuming after a kill.
+  /// Null when there's no checkpoint.
+  Future<({String rawText, String title})?> loadCheckpointMeta() async {
+    try {
+      final file = await _checkpointFile();
+      if (!file.existsSync()) return null;
+      final data = jsonDecode(await file.readAsString()) as Map<String, dynamic>;
+      final raw = data['rawText'] as String?;
+      if (raw == null || raw.isEmpty) return null;
+      return (rawText: raw, title: (data['title'] as String?) ?? 'Script');
+    } catch (_) {
+      return null;
+    }
+  }
+
+  Future<void> _saveCheckpoint(String key, int nextChunk, List<ScriptLine> lines,
+      String rawText, String title) async {
+    try {
+      final file = await _checkpointFile();
+      final payload = jsonEncode({
+        'key': key,
+        'nextChunk': nextChunk,
+        'rawText': rawText,
+        'title': title,
+        'lines': lines.map((l) => l.toJson()).toList(),
+      });
+      // Atomic write: a kill mid-write can't corrupt the live checkpoint.
+      final tmp = File('${file.path}.tmp');
+      await tmp.writeAsString(payload, flush: true);
+      await tmp.rename(file.path);
+    } catch (e) {
+      DebugLogService.instance
+          .logError(LogCategory.ai, 'checkpoint save failed', e);
+    }
+  }
+
+  Future<void> _deleteCheckpoint() async {
+    try {
+      final file = await _checkpointFile();
+      if (file.existsSync()) await file.delete();
+    } catch (_) {/* best effort */}
+  }
+
   /// Build the structuring instruction. Kept deliberately strict about output
   /// shape — small on-device models follow a tight schema far more reliably
   /// than open-ended prose.
@@ -121,30 +316,36 @@ class AiScriptStructuringService {
         ? 'the page image(s) of a play script'
         : 'the raw extracted text of a play script below';
 
+    // NOTE: the angle-bracket values below are FIELD DESCRIPTIONS, not sample
+    // content. Earlier versions used realistic examples ("MACBETH" / "So foul
+    // and fair a day…") and small models copied them verbatim into the output
+    // whenever a chunk was sparse. Placeholders + an explicit "never copy these"
+    // rule + an empty-result escape hatch stop the echoing.
     final schema = '''
-Return ONLY a JSON object, no prose, with this exact shape:
+Return ONLY a JSON object, no prose. The angle-bracket values below describe
+each field — never copy them; fill every field using ONLY the SCRIPT TEXT.
 {
-  "title": "<play title or empty string>",
+  "title": "<the play's title, or an empty string>",
   "lines": [
-    { "type": "header",    "act": "ACT I", "scene": "Scene 1" },
-    { "type": "dialogue",  "act": "ACT I", "scene": "Scene 1",
-      "character": "MACBETH", "text": "So foul and fair a day I have not seen." },
-    { "type": "stage",     "text": "Enter BANQUO" },
-    { "type": "dialogue",  "character": "MACBETH AND BANQUO",
-      "characters": ["MACBETH", "BANQUO"], "text": "Speak, if you can: what are you?" }
+    { "type": "header",   "act": "<act label>", "scene": "<scene label>" },
+    { "type": "dialogue", "act": "<act label>", "scene": "<scene label>",
+      "character": "<SPEAKER NAME>", "text": "<the exact words this speaker says>" },
+    { "type": "stage",    "text": "<a stage direction>" }
   ]
 }
 
 Rules:
+- Use ONLY names and words found in the SCRIPT TEXT below. Never output the
+  placeholder words above, and never invent characters or lines.
+- If the SCRIPT TEXT contains no dialogue, return exactly {"title":"","lines":[]}.
 - "type" is one of: "dialogue", "stage", "header".
 - Use UPPERCASE character names. Keep honorifics attached: "MRS. ALVING", not "MRS".
-- For lines spoken by multiple characters, set "character" to the combined cue
-  and "characters" to the array of individuals.
+- For a line spoken by multiple characters, set "character" to the combined cue
+  and add "characters": ["NAME1","NAME2"].
 - Emit a "header" line at each act/scene change. Carry the current "act"/"scene"
-  onto every dialogue line.
-- "stage" lines are stage directions (entrances, exits, action). No "character".
-- Preserve dialogue text verbatim; fix obvious OCR garbling only.
-- Do not invent characters or lines that are not present.''';
+  onto every following dialogue line.
+- "stage" lines are stage directions (entrances, exits, action), with no character.
+- Preserve dialogue text verbatim; fix only obvious OCR garbling.''';
 
     final buffer = StringBuffer()
       ..writeln('You are a theatrical script parser. Convert $source into '
@@ -162,7 +363,9 @@ Rules:
   }
 
   /// Pull the first balanced top-level JSON object out of a model completion.
-  /// Tolerates ```json fences and leading/trailing prose.
+  /// Tolerates ```json fences and leading/trailing prose. If the object is
+  /// truncated (small models cap output mid-array), salvages the complete
+  /// `lines[]` elements rather than discarding the whole chunk.
   static Map<String, dynamic>? _extractJsonObject(String raw) {
     var text = raw.trim();
     // Strip markdown code fences if present.
@@ -196,12 +399,125 @@ Rules:
         depth--;
         if (depth == 0) {
           final candidate = text.substring(start, i + 1);
-          final decoded = jsonDecode(candidate);
-          return decoded is Map<String, dynamic> ? decoded : null;
+          final decoded = _decodeObject(candidate);
+          if (decoded != null) return decoded;
+          return _salvageTruncatedObject(text, start);
         }
       }
     }
+    // Never balanced → truncated output. Salvage what completed.
+    return _salvageTruncatedObject(text, start);
+  }
+
+  /// Recover a usable object from output that was cut off before its closing
+  /// braces. Pulls the `"lines": [` array and keeps every fully-formed `{…}`
+  /// element, dropping the half-written final one, then re-closes the object.
+  static Map<String, dynamic>? _salvageTruncatedObject(String text, int start) {
+    final linesKey = text.indexOf('"lines"', start);
+    if (linesKey < 0) return null;
+    final arrStart = text.indexOf('[', linesKey);
+    if (arrStart < 0) return null;
+
+    // Collect complete top-level objects within the lines array.
+    final elements = <String>[];
+    var depth = 0;
+    var elemStart = -1;
+    var inString = false;
+    var escaped = false;
+    for (var i = arrStart + 1; i < text.length; i++) {
+      final ch = text[i];
+      if (inString) {
+        if (escaped) {
+          escaped = false;
+        } else if (ch == r'\') {
+          escaped = true;
+        } else if (ch == '"') {
+          inString = false;
+        }
+        continue;
+      }
+      if (ch == '"') {
+        inString = true;
+      } else if (ch == '{') {
+        if (depth == 0) elemStart = i;
+        depth++;
+      } else if (ch == '}') {
+        depth--;
+        if (depth == 0 && elemStart >= 0) {
+          elements.add(text.substring(elemStart, i + 1));
+          elemStart = -1;
+        }
+      } else if (ch == ']' && depth == 0) {
+        break; // array closed cleanly
+      }
+    }
+    if (elements.isEmpty) return null;
+
+    final titleMatch =
+        RegExp(r'"title"\s*:\s*"((?:[^"\\]|\\.)*)"').firstMatch(text);
+    final title = titleMatch?.group(1) ?? '';
+    final rebuilt = '{"title":"$title","lines":[${elements.join(',')}]}';
+    return _decodeObject(rebuilt);
+  }
+
+  /// Decode a JSON object string, tolerating raw control characters that small
+  /// models sometimes emit *inside* string values (literal newlines/tabs),
+  /// which strict [jsonDecode] rejects. Returns null if it still can't parse.
+  static Map<String, dynamic>? _decodeObject(String candidate) {
+    for (final s in [candidate, _escapeControlCharsInStrings(candidate)]) {
+      try {
+        final decoded = jsonDecode(s);
+        if (decoded is Map<String, dynamic>) return decoded;
+      } catch (_) {
+        // Try the next (sanitized) form.
+      }
+    }
     return null;
+  }
+
+  /// Escape raw control characters that appear inside JSON string literals so a
+  /// strict decoder accepts them. Structure and already-escaped sequences are
+  /// left untouched.
+  static String _escapeControlCharsInStrings(String s) {
+    final out = StringBuffer();
+    var inString = false;
+    var escaped = false;
+    for (var i = 0; i < s.length; i++) {
+      final ch = s[i];
+      if (inString) {
+        if (escaped) {
+          out.write(ch);
+          escaped = false;
+          continue;
+        }
+        if (ch == r'\') {
+          out.write(ch);
+          escaped = true;
+          continue;
+        }
+        if (ch == '"') {
+          out.write(ch);
+          inString = false;
+          continue;
+        }
+        final code = ch.codeUnitAt(0);
+        if (ch == '\n') {
+          out.write(r'\n');
+        } else if (ch == '\r') {
+          out.write(r'\r');
+        } else if (ch == '\t') {
+          out.write(r'\t');
+        } else if (code < 0x20) {
+          out.write('\\u${code.toRadixString(16).padLeft(4, '0')}');
+        } else {
+          out.write(ch);
+        }
+        continue;
+      }
+      out.write(ch);
+      if (ch == '"') inString = true;
+    }
+    return out.toString();
   }
 
   /// Convert the model's JSON into a [ParsedScript], reusing existing gender

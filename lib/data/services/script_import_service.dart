@@ -147,6 +147,11 @@ class ScriptImportService {
   /// Whether an on-device AI model is loaded and ready to restructure a parse.
   bool get isAiAvailable => _aiStructurer.isAvailable;
 
+  /// Source text + title of an interrupted AI cleanup, if one can be resumed
+  /// (the app was killed mid-run). Null when there's nothing to resume.
+  Future<({String rawText, String title})?> pendingCleanup() =>
+      _aiStructurer.loadCheckpointMeta();
+
   /// Run on-device AI structuring on already-extracted text (or page images)
   /// and re-score confidence. Returns null when no model is loaded. Invoked on
   /// demand from the import preview's "Clean up with AI" button — not
@@ -167,6 +172,38 @@ class ScriptImportService {
       final dialogue =
           result.lines.where((l) => l.lineType == LineType.dialogue).length;
       debugPrint('PDF import: AI structuring → '
+          '${result.characters.length} characters, $dialogue lines');
+      return _scoreConfidence(result);
+    }
+    return null;
+  }
+
+  /// Chunked variant of [structureWithAi] for full-length scripts. On-device
+  /// models can't take a whole script in one prompt, so this splits the text
+  /// into line windows and runs the model once per window. Slow by nature —
+  /// [onProgress] reports (done, total) chunks and [isCancelled] stops it early.
+  Future<ParsedScript?> structureWithAiChunked({
+    required String rawText,
+    required String title,
+    int linesPerChunk = 60,
+    int batchSize = 4,
+    void Function(int done, int total)? onProgress,
+    bool Function()? isCancelled,
+  }) async {
+    if (!_aiStructurer.isAvailable) return null;
+    debugPrint('PDF import: running chunked on-device AI structuring...');
+    final result = await _aiStructurer.structureChunked(
+      rawText: rawText,
+      title: title,
+      linesPerChunk: linesPerChunk,
+      batchSize: batchSize,
+      onProgress: onProgress,
+      isCancelled: isCancelled,
+    );
+    if (result != null) {
+      final dialogue =
+          result.lines.where((l) => l.lineType == LineType.dialogue).length;
+      debugPrint('PDF import: chunked AI structuring → '
           '${result.characters.length} characters, $dialogue lines');
       return _scoreConfidence(result);
     }

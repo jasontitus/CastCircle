@@ -529,6 +529,11 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     dlog.log(LogCategory.general,
         '_submitProduction: starting for "$title"');
 
+    // Capture the router NOW, while the dialog's context is still valid. We
+    // pop the dialog below (invalidating its context), so navigating later with
+    // that context would crash in GoRouter.of. The router itself is stable.
+    final router = GoRouter.of(context);
+
     // Close dialog immediately to prevent any double-trigger.
     controller.clear();
     if (context.mounted) Navigator.pop(context);
@@ -571,9 +576,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
 
     dlog.log(LogCategory.general,
         '_submitProduction: done, navigating to /import');
-    if (mounted) {
-      context.push('/import');
-    }
+    // Use the router captured before the dialog was popped — the dialog's
+    // context is dead by now, so context.push here would throw.
+    router.push('/import');
   }
 
   Future<bool?> _confirmDeleteProduction(

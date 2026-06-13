@@ -110,7 +110,11 @@ class DebugLogService {
     // Load recent entries from disk
     await _loadFromDisk();
 
-    // Start periodic flush
+    // Drain any entries logged before the path was known.
+    await _flushToDisk();
+
+    // Periodic flush remains as a backstop for the rare pre-init queue; normal
+    // logs now persist synchronously per entry (see [_appendSync]).
     _flushTimer = Timer.periodic(_flushInterval, (_) => _flushToDisk());
 
     log(LogCategory.general, 'Debug logging initialized');
@@ -140,7 +144,6 @@ class DebugLogService {
     );
 
     _entries.add(entry);
-    _pendingFlush.add(entry);
 
     // Trim ring buffer
     while (_entries.length > maxEntries) {
@@ -150,9 +153,27 @@ class DebugLogService {
     // Also print to console in debug mode
     debugPrint('[${category.tag}] $message');
 
-    // Flush immediately on errors
-    if (category == LogCategory.error) {
-      _flushToDisk();
+    // Persist this entry to disk synchronously, right now. A buffered/periodic
+    // flush loses the last steps when the app is hard-killed (e.g. an OOM
+    // jetsam SIGKILL during a big model load) — exactly when we most need to
+    // know how far it got. The append is tiny; the synchronous cost is dwarfed
+    // by whatever heavy work is being logged around.
+    _appendSync(entry);
+  }
+
+  /// Append a single entry to the on-disk log immediately. Before [init] sets
+  /// the path, entries queue in [_pendingFlush] and are drained on init.
+  void _appendSync(LogEntry entry) {
+    final path = _logFilePath;
+    if (path == null) {
+      _pendingFlush.add(entry);
+      return;
+    }
+    try {
+      File(path).writeAsStringSync('${entry.toLine()}\n',
+          mode: FileMode.append, flush: true);
+    } catch (e) {
+      debugPrint('Log append failed: $e');
     }
   }
 

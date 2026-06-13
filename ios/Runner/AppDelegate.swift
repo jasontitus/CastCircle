@@ -13,6 +13,10 @@ import UIKit
   private var contactPickerPlugin: ContactPickerPlugin?
   private var onDeviceLlmPlugin: OnDeviceLlmPlugin?
 
+  /// Held until the background URLSession finishes delivering events, so iOS
+  /// can snapshot the UI after a download completes while the app was suspended.
+  var backgroundSessionCompletionHandler: (() -> Void)?
+
   override func application(
     _ application: UIApplication,
     didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?
@@ -26,9 +30,9 @@ import UIKit
     completionHandler: @escaping () -> Void
   ) {
     // URLSession background downloads call this when the download finishes
-    // while the app is suspended. The completion handler must be called
-    // after all delegate methods have been delivered.
-    completionHandler()
+    // while the app is suspended. Hold the handler and fire it from the
+    // session's `urlSessionDidFinishEvents` once all delegate callbacks land.
+    backgroundSessionCompletionHandler = completionHandler
   }
 
   func didInitializeImplicitFlutterEngine(_ engineBridge: FlutterImplicitEngineBridge) {

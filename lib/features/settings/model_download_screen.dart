@@ -25,13 +25,8 @@ class _ModelDownloadScreenState extends ConsumerState<ModelDownloadScreen> {
   bool _kokoroReady = false;
   bool _gemmaReady = false;
 
-  /// Model ids that make up the Gemma script-AI bundle.
-  static const _gemmaIds = [
-    'gemma_model',
-    'gemma_config',
-    'gemma_tokenizer',
-    'gemma_tokenizer_config',
-  ];
+  /// Model ids that make up the Gemma script-AI bundle (now a single GGUF).
+  static const _gemmaIds = ['gemma_model'];
 
   @override
   void initState() {
@@ -299,7 +294,7 @@ class _ModelDownloadScreenState extends ConsumerState<ModelDownloadScreen> {
                     children: [
                       const Text('Script AI (Gemma)'),
                       Text(
-                        'Cleans up messy PDF imports on-device (~0.8 GB)',
+                        'Cleans up messy PDF imports on-device (~3.3 GB)',
                         style: theme.textTheme.bodySmall?.copyWith(
                           color:
                               theme.colorScheme.onSurface.withValues(alpha: 0.6),
@@ -333,9 +328,7 @@ class _ModelDownloadScreenState extends ConsumerState<ModelDownloadScreen> {
             ] else if (_gemmaReady) ...[
               OutlinedButton(
                 onPressed: () async {
-                  for (final id in _gemmaIds) {
-                    await _downloadService.delete(id);
-                  }
+                  await _downloadService.deleteGemma();
                   await _checkStatus();
                 },
                 child: const Text('Remove Script AI Model'),
@@ -344,7 +337,7 @@ class _ModelDownloadScreenState extends ConsumerState<ModelDownloadScreen> {
               FilledButton.icon(
                 onPressed: _downloadGemma,
                 icon: const Icon(Icons.download),
-                label: const Text('Download Script AI (~0.8 GB)'),
+                label: const Text('Download Script AI (~3.3 GB)'),
               ),
             ],
           ],

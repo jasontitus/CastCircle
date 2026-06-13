@@ -7,6 +7,7 @@ import 'package:path_provider/path_provider.dart';
 import '../../data/services/ai_script_structuring_service.dart';
 import '../../data/services/model_download_service.dart';
 import '../../data/services/on_device_llm_channel.dart';
+import '../../data/services/script_ai_cleanup_controller.dart';
 
 /// Diagnostics + tester for the on-device script-AI runtime (Gemma via MLX,
 /// or Apple Foundation Models). Mirrors the Kokoro/Parakeet debug screens.
@@ -29,10 +30,14 @@ class _LlmDebugScreenState extends State<LlmDebugScreen> {
   final List<String> _modelFiles = [];
   String _output = '';
   String _elapsed = '';
+  int _batchSize = ScriptAiCleanupController.defaultBatchSize;
 
   @override
   void initState() {
     super.initState();
+    ScriptAiCleanupController.instance.getBatchSize().then((n) {
+      if (mounted) setState(() => _batchSize = n);
+    });
     _refresh();
   }
 
@@ -193,6 +198,27 @@ MR. BENNET. You want to tell me, and I have no objection to hearing it.
           for (final f in _modelFiles)
             Text('• $f', style: theme.textTheme.bodySmall),
           const SizedBox(height: 20),
+          Text('Cleanup batch size: $_batchSize',
+              style: theme.textTheme.titleSmall),
+          Text(
+            'Chunks decoded in parallel. Higher = faster (on-device decode is '
+            'memory-bandwidth-bound) until it runs out of GPU/memory headroom. '
+            'Watch the footprint in the debug log; back off if it OOMs.',
+            style: theme.textTheme.bodySmall?.copyWith(
+              color: theme.colorScheme.onSurface.withValues(alpha: 0.6),
+            ),
+          ),
+          Slider(
+            value: _batchSize.toDouble(),
+            min: 1,
+            max: ScriptAiCleanupController.maxBatchSize.toDouble(),
+            divisions: ScriptAiCleanupController.maxBatchSize - 1,
+            label: '$_batchSize',
+            onChanged: (v) => setState(() => _batchSize = v.round()),
+            onChangeEnd: (v) =>
+                ScriptAiCleanupController.instance.setBatchSize(v.round()),
+          ),
+          const SizedBox(height: 12),
           Text('Test prompt', style: theme.textTheme.titleSmall),
           const SizedBox(height: 8),
           TextField(
