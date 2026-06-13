@@ -11,6 +11,7 @@ import UIKit
   private var mediaControlPlugin: MediaControlPlugin?
   private var pdfTextPlugin: PdfTextPlugin?
   private var contactPickerPlugin: ContactPickerPlugin?
+  private var onDeviceLlmPlugin: OnDeviceLlmPlugin?
 
   override func application(
     _ application: UIApplication,
@@ -69,6 +70,11 @@ import UIKit
     // Register contact picker
     if let contactRegistrar = engineBridge.pluginRegistry.registrar(forPlugin: "ContactPickerPlugin") {
       contactPickerPlugin = ContactPickerPlugin(messenger: contactRegistrar.messenger())
+    }
+
+    // Register on-device LLM (Gemma script structuring)
+    if let llmRegistrar = engineBridge.pluginRegistry.registrar(forPlugin: "OnDeviceLlmPlugin") {
+      onDeviceLlmPlugin = OnDeviceLlmPlugin(messenger: llmRegistrar.messenger())
     }
   }
 }

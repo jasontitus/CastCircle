@@ -9,6 +9,7 @@ import 'package:path_provider/path_provider.dart';
 
 import '../../data/models/script_models.dart';
 import '../../data/services/analytics_service.dart';
+import '../../data/services/model_download_service.dart';
 import '../../data/services/supabase_service.dart';
 import '../../data/services/voice_config_service.dart';
 import '../../providers/production_providers.dart';
@@ -27,6 +28,49 @@ class _ScriptImportScreenState extends ConsumerState<ScriptImportScreen> {
   String? _error;
   ParsedScript? _preview;
   String? _importedPdfPath; // persisted copy of imported PDF for page viewer
+
+  final _downloadService = ModelDownloadService.instance;
+  bool _gemmaReady = false;
+
+  static const _gemmaIds = [
+    'gemma_model',
+    'gemma_config',
+    'gemma_tokenizer',
+    'gemma_tokenizer_config',
+    'gemma_special_tokens',
+  ];
+
+  @override
+  void initState() {
+    super.initState();
+    _downloadService.addListener(_onDownloadUpdate);
+    _downloadService.isGemmaReady().then((ready) {
+      if (mounted) setState(() => _gemmaReady = ready);
+    });
+  }
+
+  @override
+  void dispose() {
+    _downloadService.removeListener(_onDownloadUpdate);
+    super.dispose();
+  }
+
+  void _onDownloadUpdate() {
+    if (!mounted) return;
+    setState(() {});
+    _downloadService.isGemmaReady().then((ready) {
+      if (mounted && ready != _gemmaReady) setState(() => _gemmaReady = ready);
+    });
+  }
+
+  bool get _gemmaDownloading => _gemmaIds.any(
+      (id) => _downloadService.getState(id).status == ModelStatus.downloading);
+
+  double get _gemmaProgress {
+    final total = _gemmaIds.fold<double>(
+        0, (sum, id) => sum + _downloadService.getState(id).progress);
+    return total / _gemmaIds.length;
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -104,6 +148,8 @@ class _ScriptImportScreenState extends ConsumerState<ScriptImportScreen> {
               icon: const Icon(Icons.picture_as_pdf),
               label: const Text('Import PDF'),
             ),
+            const SizedBox(height: 16),
+            _scriptAiTile(context),
             if (_error != null) ...[
               const SizedBox(height: 24),
               Card(
@@ -131,6 +177,80 @@ class _ScriptImportScreenState extends ConsumerState<ScriptImportScreen> {
                 ),
               ),
             ],
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// Opt-in entry point for the on-device Script AI model, shown here because
+  /// it only matters when importing a (often messy) PDF. Downloading it lets
+  /// the importer fall back to an LLM cleanup pass when the basic parser
+  /// struggles. Until then, import works exactly as before.
+  Widget _scriptAiTile(BuildContext context) {
+    final theme = Theme.of(context);
+    final muted = theme.colorScheme.onSurface.withValues(alpha: 0.6);
+
+    if (_gemmaReady) {
+      return Row(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Icon(Icons.auto_awesome, size: 16, color: theme.colorScheme.primary),
+          const SizedBox(width: 6),
+          Text('Script AI on — messy PDFs are cleaned on-device',
+              style: theme.textTheme.bodySmall?.copyWith(color: muted)),
+        ],
+      );
+    }
+
+    if (_gemmaDownloading) {
+      return Column(
+        children: [
+          Text('Downloading Script AI… ${(_gemmaProgress * 100).toInt()}%',
+              style: theme.textTheme.bodySmall?.copyWith(color: muted)),
+          const SizedBox(height: 6),
+          LinearProgressIndicator(value: _gemmaProgress),
+        ],
+      );
+    }
+
+    return Card(
+      color: theme.colorScheme.surfaceContainerHighest,
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Column(
+          children: [
+            Row(
+              children: [
+                Icon(Icons.auto_awesome, color: theme.colorScheme.primary),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Text(
+                    'Tougher PDF? Enable on-device Script AI to clean up '
+                    'character names, dialogue and scenes automatically.',
+                    style: theme.textTheme.bodySmall,
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            SizedBox(
+              width: double.infinity,
+              child: TextButton.icon(
+                onPressed: () async {
+                  await _downloadService.downloadGemma();
+                  if (mounted) {
+                    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+                      content: Text(
+                          'Downloading Script AI model (~0.8 GB). It will turn '
+                          'on automatically when ready.'),
+                    ));
+                  }
+                },
+                icon: const Icon(Icons.download, size: 18),
+                label: const Text('Enable Script AI (~0.8 GB)'),
+              ),
+            ),
           ],
         ),
       ),

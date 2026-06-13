@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../data/services/model_download_service.dart';
 import '../../data/services/model_manager.dart';
 
 class ModelDownloadScreen extends ConsumerStatefulWidget {
@@ -13,6 +14,7 @@ class ModelDownloadScreen extends ConsumerStatefulWidget {
 
 class _ModelDownloadScreenState extends ConsumerState<ModelDownloadScreen> {
   final _manager = ModelManager.instance;
+  final _downloadService = ModelDownloadService.instance;
 
   bool _downloading = false;
   String? _error;
@@ -21,20 +23,63 @@ class _ModelDownloadScreenState extends ConsumerState<ModelDownloadScreen> {
   final Map<String, double> _modelProgress = {};
 
   bool _kokoroReady = false;
+  bool _gemmaReady = false;
+
+  /// Model ids that make up the Gemma script-AI bundle.
+  static const _gemmaIds = [
+    'gemma_model',
+    'gemma_config',
+    'gemma_tokenizer',
+    'gemma_tokenizer_config',
+    'gemma_special_tokens',
+  ];
 
   @override
   void initState() {
     super.initState();
+    _downloadService.addListener(_onDownloadUpdate);
     _checkStatus();
   }
 
+  @override
+  void dispose() {
+    _downloadService.removeListener(_onDownloadUpdate);
+    super.dispose();
+  }
+
+  void _onDownloadUpdate() {
+    if (!mounted) return;
+    setState(() {});
+    // Re-check readiness when the Gemma bundle finishes.
+    _downloadService.isGemmaReady().then((ready) {
+      if (mounted && ready != _gemmaReady) setState(() => _gemmaReady = ready);
+    });
+  }
+
   Future<void> _checkStatus() async {
-    final ready = await _manager.isKokoroReady();
+    final kokoro = await _manager.isKokoroReady();
+    final gemma = await _downloadService.isGemmaReady();
     if (mounted) {
       setState(() {
-        _kokoroReady = ready;
+        _kokoroReady = kokoro;
+        _gemmaReady = gemma;
       });
     }
+  }
+
+  /// Whether any Gemma file is mid-download.
+  bool get _gemmaDownloading => _gemmaIds.any(
+      (id) => _downloadService.getState(id).status == ModelStatus.downloading);
+
+  /// Average download progress across the Gemma bundle (0.0–1.0).
+  double get _gemmaProgress {
+    final total = _gemmaIds.fold<double>(
+        0, (sum, id) => sum + _downloadService.getState(id).progress);
+    return total / _gemmaIds.length;
+  }
+
+  Future<void> _downloadGemma() async {
+    await _downloadService.downloadGemma();
   }
 
   Future<void> _downloadAll() async {
@@ -104,6 +149,8 @@ class _ModelDownloadScreenState extends ConsumerState<ModelDownloadScreen> {
             ready: _kokoroReady,
             icon: Icons.record_voice_over,
           ),
+          const SizedBox(height: 12),
+          _gemmaSection(context),
           const SizedBox(height: 24),
           if (_downloading) ...[
             Card(
@@ -232,6 +279,81 @@ class _ModelDownloadScreenState extends ConsumerState<ModelDownloadScreen> {
     );
   }
 
+  /// Optional Gemma "script AI" model: its own card + download/progress/delete,
+  /// independent of the required Kokoro TTS bundle above.
+  Widget _gemmaSection(BuildContext context) {
+    final theme = Theme.of(context);
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Icon(Icons.auto_awesome,
+                    color: _gemmaReady ? Colors.green : Colors.grey),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text('Script AI (Gemma)'),
+                      Text(
+                        'Cleans up messy PDF imports on-device (~0.8 GB)',
+                        style: theme.textTheme.bodySmall?.copyWith(
+                          color:
+                              theme.colorScheme.onSurface.withValues(alpha: 0.6),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                if (_gemmaReady)
+                  const Icon(Icons.check_circle, color: Colors.green),
+              ],
+            ),
+            const SizedBox(height: 8),
+            Text(
+              'Optional. When installed, imported scripts that the basic parser '
+              'handles poorly are re-structured by an on-device model.',
+              style: theme.textTheme.bodySmall?.copyWith(
+                color: theme.colorScheme.onSurface.withValues(alpha: 0.5),
+              ),
+            ),
+            const SizedBox(height: 12),
+            if (_gemmaDownloading) ...[
+              Row(
+                children: [
+                  Expanded(child: LinearProgressIndicator(value: _gemmaProgress)),
+                  const SizedBox(width: 8),
+                  Text('${(_gemmaProgress * 100).toInt()}%',
+                      style: theme.textTheme.labelSmall),
+                ],
+              ),
+            ] else if (_gemmaReady) ...[
+              OutlinedButton(
+                onPressed: () async {
+                  for (final id in _gemmaIds) {
+                    await _downloadService.delete(id);
+                  }
+                  await _checkStatus();
+                },
+                child: const Text('Remove Script AI Model'),
+              ),
+            ] else ...[
+              FilledButton.icon(
+                onPressed: _downloadGemma,
+                icon: const Icon(Icons.download),
+                label: const Text('Download Script AI (~0.8 GB)'),
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+
   Widget _modelCard(
     BuildContext context, {
     required String title,
@@ -240,7 +362,6 @@ class _ModelDownloadScreenState extends ConsumerState<ModelDownloadScreen> {
     required bool ready,
     required IconData icon,
   }) {
-    final theme = Theme.of(context);
     return Card(
       margin: const EdgeInsets.only(bottom: 8),
       child: ListTile(

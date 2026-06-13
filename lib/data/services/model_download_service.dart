@@ -5,6 +5,7 @@ import 'package:flutter/services.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 
+import 'on_device_llm_channel.dart';
 import 'tts_service.dart';
 
 /// Represents a downloadable on-device AI model file.
@@ -129,6 +130,68 @@ class ModelDownloadService {
       filename: 'config.json',
       subdir: 'parakeet_stt',
     ),
+
+    // ── Gemma (on-device script structuring) ──────────────────
+    // MLX checkpoint loaded by OnDeviceLlmPlugin.swift via MLXLLM. The repo
+    // below is a small, runtime-supported Gemma 3 build; swap to a Gemma 4 E2B
+    // MLX repo once mlx-swift-lm ships the Gemma 4 architecture (the file set
+    // and subdir stay the same). All five files land in models/gemma_llm/.
+    // NOTE: confirm these exact paths exist on Hugging Face before release.
+    AiModel(
+      id: 'gemma_model',
+      name: 'Gemma (script AI)',
+      description: 'On-device LLM that cleans up imported scripts',
+      sizeLabel: '~0.8 GB',
+      sizeBytes: 806 * 1024 * 1024,
+      downloadUrl:
+          'https://huggingface.co/mlx-community/gemma-3-1b-it-4bit/resolve/main/model.safetensors',
+      filename: 'model.safetensors',
+      subdir: 'gemma_llm',
+    ),
+    AiModel(
+      id: 'gemma_config',
+      name: 'Gemma Config',
+      description: 'Model configuration',
+      sizeLabel: '~2 KB',
+      sizeBytes: 2048,
+      downloadUrl:
+          'https://huggingface.co/mlx-community/gemma-3-1b-it-4bit/resolve/main/config.json',
+      filename: 'config.json',
+      subdir: 'gemma_llm',
+    ),
+    AiModel(
+      id: 'gemma_tokenizer',
+      name: 'Gemma Tokenizer',
+      description: 'Tokenizer vocabulary',
+      sizeLabel: '~17 MB',
+      sizeBytes: 17 * 1024 * 1024,
+      downloadUrl:
+          'https://huggingface.co/mlx-community/gemma-3-1b-it-4bit/resolve/main/tokenizer.json',
+      filename: 'tokenizer.json',
+      subdir: 'gemma_llm',
+    ),
+    AiModel(
+      id: 'gemma_tokenizer_config',
+      name: 'Gemma Tokenizer Config',
+      description: 'Tokenizer configuration',
+      sizeLabel: '~50 KB',
+      sizeBytes: 50 * 1024,
+      downloadUrl:
+          'https://huggingface.co/mlx-community/gemma-3-1b-it-4bit/resolve/main/tokenizer_config.json',
+      filename: 'tokenizer_config.json',
+      subdir: 'gemma_llm',
+    ),
+    AiModel(
+      id: 'gemma_special_tokens',
+      name: 'Gemma Special Tokens',
+      description: 'Special token map',
+      sizeLabel: '~1 KB',
+      sizeBytes: 1024,
+      downloadUrl:
+          'https://huggingface.co/mlx-community/gemma-3-1b-it-4bit/resolve/main/special_tokens_map.json',
+      filename: 'special_tokens_map.json',
+      subdir: 'gemma_llm',
+    ),
   ];
 
   final Map<String, ModelDownloadState> _states = {};
@@ -182,6 +245,10 @@ class ModelDownloadService {
           if (modelId == 'kokoro_model' || modelId == 'kokoro_voices') {
             _tryLoadKokoroIfReady();
           }
+          // Auto-load the Gemma script-AI model once all its files arrive
+          if (modelId.startsWith('gemma')) {
+            _tryLoadGemmaIfReady();
+          }
           break;
 
         case 'onDownloadError':
@@ -219,6 +286,10 @@ class ModelDownloadService {
     // Clean up any leftover .tmp files from failed downloads
     await _cleanupTmpFiles();
     _notify();
+
+    // If the Gemma script-AI model is already on disk, load it now so the
+    // import pipeline can use it without waiting for a download.
+    await _tryLoadGemmaIfReady();
   }
 
   /// Auto-load Kokoro TTS after both model files finish downloading.
@@ -227,6 +298,17 @@ class ModelDownloadService {
       debugPrint('ModelDownload: Both Kokoro files ready, loading TTS engine');
       await TtsService.instance.tryLoadKokoro();
     }
+  }
+
+  /// Load the on-device script-AI model once all Gemma files are present.
+  /// Safe to call at startup or after each Gemma file completes.
+  Future<void> tryLoadGemmaIfReady() => _tryLoadGemmaIfReady();
+
+  Future<void> _tryLoadGemmaIfReady() async {
+    final dir = await getGemmaModelDir();
+    if (dir == null) return;
+    debugPrint('ModelDownload: Gemma files ready, loading script-AI model');
+    await OnDeviceLlmChannel.instance.initialize(dir);
   }
 
   /// Whether all Kokoro files are downloaded.
@@ -256,6 +338,33 @@ class ModelDownloadService {
     if (!await isParakeetReady()) return null;
     final appDir = await getApplicationDocumentsDirectory();
     return p.join(appDir.path, 'models', 'parakeet_stt');
+  }
+
+  /// Whether all Gemma (script-AI) files are downloaded.
+  Future<bool> isGemmaReady() async {
+    for (final model in availableModels) {
+      if (model.subdir == 'gemma_llm') {
+        final path = await _filePath(model);
+        if (!File(path).existsSync()) return false;
+      }
+    }
+    return true;
+  }
+
+  /// Get the path to the Gemma model directory, or null if not downloaded.
+  Future<String?> getGemmaModelDir() async {
+    if (!await isGemmaReady()) return null;
+    final appDir = await getApplicationDocumentsDirectory();
+    return p.join(appDir.path, 'models', 'gemma_llm');
+  }
+
+  /// Download just the Gemma model files (script-AI feature is opt-in).
+  Future<void> downloadGemma() async {
+    for (final m in availableModels) {
+      if (m.subdir == 'gemma_llm' && m.downloadUrl.isNotEmpty) {
+        await download(m);
+      }
+    }
   }
 
   /// Download a model file using native iOS background URLSession.
