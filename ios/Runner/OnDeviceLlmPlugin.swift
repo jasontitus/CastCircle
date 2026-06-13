@@ -150,12 +150,22 @@ class OnDeviceLlmPlugin: NSObject {
                     return
                 }
                 report("gemma: generating…")
+                // Bound generation (was unbounded → could run forever) and
+                // stream so progress is visible token-by-token.
                 let session = ChatSession(
                     container,
-                    generateParameters: GenerateParameters(temperature: 0.0)
+                    generateParameters: GenerateParameters(maxTokens: 800, temperature: 0.0)
                 )
-                let text = try await session.respond(to: prompt)
-                report("gemma: generated \(text.count) chars")
+                var text = ""
+                var tokens = 0
+                for try await chunk in session.streamResponse(to: prompt) {
+                    text += chunk
+                    tokens += 1
+                    if tokens % 8 == 0 {
+                        report("gemma: generating… \(tokens) tokens")
+                    }
+                }
+                report("gemma: done — \(tokens) tokens, \(text.count) chars")
                 result(text)
             } catch {
                 report("gemma: failed — \(error.localizedDescription)")

@@ -54,8 +54,15 @@ class _LlmDebugScreenState extends State<LlmDebugScreen> {
       if (gemmaDir.existsSync()) {
         for (final e in gemmaDir.listSync()) {
           if (e is File) {
-            final mb = e.lengthSync() / 1024 / 1024;
-            _modelFiles.add('${p.basename(e.path)} (${mb.toStringAsFixed(1)} MB)');
+            final b = e.lengthSync();
+            final size = b == 0
+                ? '⚠️ 0 bytes — EMPTY'
+                : b < 1024
+                    ? '$b B'
+                    : b < 1024 * 1024
+                        ? '${(b / 1024).toStringAsFixed(1)} KB'
+                        : '${(b / 1024 / 1024).toStringAsFixed(1)} MB';
+            _modelFiles.add('${p.basename(e.path)} ($size)');
           }
         }
         _modelFiles.sort();
