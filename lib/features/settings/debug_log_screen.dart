@@ -365,6 +365,8 @@ class _DebugLogScreenState extends State<DebugLogScreen> {
         return Colors.amber;
       case LogCategory.general:
         return Colors.grey;
+      case LogCategory.ai:
+        return Colors.purpleAccent;
       case LogCategory.error:
         return Colors.red;
     }

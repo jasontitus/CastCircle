@@ -30,6 +30,10 @@ class OnDeviceLlmChannel implements OnDeviceLlmProvider {
 
   bool _initialized = false;
 
+  /// Diagnostics from the last [initialize], surfaced by the LLM debug screen.
+  String lastRuntime = 'unknown'; // gemma | foundation | none
+  String lastError = '';
+
   @override
   bool get isAvailable => _initialized;
 
@@ -48,6 +52,8 @@ class OnDeviceLlmChannel implements OnDeviceLlmProvider {
       final runtime = (res?['runtime'] as String?) ?? 'unknown';
       final error = (res?['error'] as String?) ?? '';
       _initialized = ready;
+      lastRuntime = runtime;
+      lastError = error;
       if (ready) {
         log.log(LogCategory.ai,
             'ready — runtime=$runtime${error.isNotEmpty ? " (gemma: $error)" : ""}');

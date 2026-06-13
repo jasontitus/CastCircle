@@ -247,6 +247,13 @@ class SettingsScreen extends ConsumerWidget {
             onTap: () => context.push('/parakeet-debug'),
           ),
           ListTile(
+            leading: const Icon(Icons.auto_awesome),
+            title: const Text('Script AI Debug'),
+            subtitle: const Text('Test the on-device LLM and view status'),
+            trailing: const Icon(Icons.chevron_right),
+            onTap: () => context.push('/llm-debug'),
+          ),
+          ListTile(
             leading: const Icon(Icons.terminal),
             title: const Text('Debug Log'),
             subtitle: const Text('View system logs, memory usage, and errors'),
