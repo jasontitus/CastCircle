@@ -10,7 +10,7 @@ void main() {
     // Mock SharedPreferences so Supabase.initialize works in tests
     SharedPreferences.setMockInitialValues({});
     
-    await Supabase.initialize(url: supabaseUrl, anonKey: anonKey);
+    await Supabase.initialize(url: supabaseUrl, publishableKey: anonKey);
     
     // Sign up a test user
     try {

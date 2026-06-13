@@ -210,6 +210,12 @@ class AppleSttPlugin: NSObject {
                         self?.audioFile = nil // stop trying after first failure
                     }
                 }
+                // Mic energy for Dart-side endpointing and level UI.
+                // ~12 events/sec at 4096 frames — cheap enough to send raw.
+                let level = AppleSttPlugin.rmsLevel(buffer: buffer)
+                DispatchQueue.main.async {
+                    self?.channel.invokeMethod("onLevel", arguments: level)
+                }
             }
             tapInstalled = true
         }, catch: { exception in
@@ -432,6 +438,19 @@ class AppleSttPlugin: NSObject {
         if trimmedStart + trimmedEnd < 0.3 { return nil }
 
         return CMTimeRange(start: startTime, end: endTime)
+    }
+
+    /// RMS energy of a PCM buffer (0..1 for float formats).
+    private static func rmsLevel(buffer: AVAudioPCMBuffer) -> Double {
+        guard let channelData = buffer.floatChannelData else { return 0 }
+        let frames = Int(buffer.frameLength)
+        if frames == 0 { return 0 }
+        let samples = channelData[0]
+        var sum: Float = 0
+        for i in 0..<frames {
+            sum += samples[i] * samples[i]
+        }
+        return Double(sqrt(sum / Float(frames)))
     }
 
     private func stopCurrentSession() {

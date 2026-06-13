@@ -100,7 +100,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
             Icon(
               Icons.theater_comedy,
               size: 80,
-              color: Theme.of(context).colorScheme.primary.withOpacity( 0.5),
+              color: Theme.of(context).colorScheme.primary.withValues(alpha: 0.5),
             ),
             const SizedBox(height: 24),
             Text(
@@ -115,7 +115,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                     color: Theme.of(context)
                         .colorScheme
                         .onSurface
-                        .withOpacity( 0.6),
+                        .withValues(alpha: 0.6),
                   ),
             ),
           ],
@@ -145,7 +145,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
           final savedChar = ref.watch(savedCharacterProvider(production.id));
           return _ProductionCard(
             production: production,
-            savedCharacterName: savedChar.valueOrNull,
+            savedCharacterName: savedChar.value,
             onRehearse: () => _openProduction(context, ref, production),
             onSetUp: () => _openProductionForSetup(context, ref, production),
             onMenuAction: (action) =>
@@ -187,7 +187,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
 
         return _ProductionCard(
           production: production,
-          savedCharacterName: savedChar.valueOrNull,
+          savedCharacterName: savedChar.value,
           onRehearse: () => _openProduction(context, ref, production),
           onSetUp: () => _openProductionForSetup(context, ref, production),
           onMenuAction: (action) =>
@@ -661,7 +661,7 @@ class _ProductionCard extends StatelessWidget {
                       Text(
                         'Playing: $savedCharacterName',
                         style: theme.textTheme.bodySmall?.copyWith(
-                          color: theme.colorScheme.onSurface.withOpacity(0.6),
+                          color: theme.colorScheme.onSurface.withValues(alpha: 0.6),
                         ),
                       ),
                     ],
@@ -670,7 +670,7 @@ class _ProductionCard extends StatelessWidget {
               ),
               PopupMenuButton<String>(
                 icon: Icon(Icons.more_vert,
-                    color: theme.colorScheme.onSurface.withOpacity(0.5)),
+                    color: theme.colorScheme.onSurface.withValues(alpha: 0.5)),
                 onSelected: (action) {
                   if (action == 'delete') {
                     onDelete();

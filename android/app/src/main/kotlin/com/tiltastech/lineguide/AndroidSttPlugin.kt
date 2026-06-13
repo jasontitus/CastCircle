@@ -113,7 +113,15 @@ class AndroidSttPlugin : FlutterPlugin, MethodChannel.MethodCallHandler, Activit
         speechRecognizer?.setRecognitionListener(object : RecognitionListener {
             override fun onReadyForSpeech(params: Bundle?) {}
             override fun onBeginningOfSpeech() {}
-            override fun onRmsChanged(rmsdB: Float) {}
+
+            override fun onRmsChanged(rmsdB: Float) {
+                // Map Android's relative dB scale (~-2..10) onto the same
+                // 0..1 pseudo-linear scale iOS reports (speech ≈ 0.05-0.3,
+                // silence ≈ 0) so Dart-side endpointing thresholds match.
+                val level = ((rmsdB - 2f) / 8f).coerceIn(0f, 1f) * 0.3f
+                channel.invokeMethod("onLevel", level.toDouble())
+            }
+
             override fun onBufferReceived(buffer: ByteArray?) {}
             override fun onEndOfSpeech() {}
 
@@ -151,6 +159,9 @@ class AndroidSttPlugin : FlutterPlugin, MethodChannel.MethodCallHandler, Activit
                     channel.invokeMethod("onDone", null)
                 } else {
                     channel.invokeMethod("onError", message)
+                    // Match iOS: always end the session so the Dart side can
+                    // restart continuous listening instead of hanging.
+                    channel.invokeMethod("onDone", null)
                 }
             }
 

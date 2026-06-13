@@ -95,8 +95,73 @@ class SttService {
   bool _continuous = false;
   List<String>? _vocabHints;
 
+  // ── Carried transcript (mcpzim-style) ─────────────────
+  //
+  // Apple's recognizer auto-finalizes after ~0.6s of intra-utterance
+  // silence. Without carrying, each restarted session begins from
+  // scratch and a dramatic pause mid-line wipes the transcript (and
+  // the match score with it). We fold finalized text into a carried
+  // prefix and emit the merged transcript so the line accumulates
+  // seamlessly across pauses.
+  String _carriedTranscript = '';
+  String _lastPartial = '';
+
+  // ── Input level / endpointing ──────────────────────────
+  //
+  // The native tap reports mic energy ~12×/s. We smooth it with a
+  // 1-pole low-pass for UI and track how long the input has been
+  // below the speech threshold for end-of-utterance detection.
+  double _smoothedLevel = 0;
+  DateTime? _silenceStart;
+  bool _hasSpeechInUtterance = false;
+
+  /// Mic input below this (smoothed RMS, 0..1) counts as silence.
+  static const double silenceThreshold = 0.02;
+
+  /// Smoothed mic input level (0..1) for UI animation.
+  double get inputLevel => _smoothedLevel;
+
+  /// Called with the smoothed input level (0..1) on every level event.
+  void Function(double level)? onLevel;
+
+  /// Called with the current silence duration on every level event while
+  /// listening. [Duration.zero] while the actor is speaking. Only fires
+  /// after some speech has been heard in this utterance, so leading
+  /// silence (thinking before the line) never triggers endpointing.
+  void Function(Duration silence)? onSilence;
+
+  void _handleLevel(double level) {
+    // 1-pole low-pass: responsive but non-strobing for UI
+    _smoothedLevel = 0.7 * _smoothedLevel + 0.3 * level;
+    onLevel?.call(_smoothedLevel);
+
+    if (!_isListening) return;
+
+    if (_smoothedLevel >= silenceThreshold) {
+      _hasSpeechInUtterance = true;
+      _silenceStart = null;
+      onSilence?.call(Duration.zero);
+    } else if (_hasSpeechInUtterance) {
+      _silenceStart ??= DateTime.now();
+      onSilence?.call(DateTime.now().difference(_silenceStart!));
+    }
+  }
+
+  /// Merge two transcript fragments with whitespace-aware joining.
+  @visibleForTesting
+  static String mergeTranscripts(String carried, String partial) {
+    final a = carried.trim();
+    final b = partial.trim();
+    if (a.isEmpty) return b;
+    if (b.isEmpty) return a;
+    return '$a $b';
+  }
+
   /// Start listening for speech. Calls [onResult] with recognized words
   /// in real-time as they are spoken.
+  ///
+  /// The text passed to [onResult] is cumulative across the recognizer's
+  /// automatic finalizations — pauses mid-line don't reset it.
   ///
   /// [vocabularyHints] — words/phrases to boost in recognition. Pass
   /// character names, script-specific terms, or the expected line's words
@@ -125,6 +190,11 @@ class SttService {
     _onResult = onResult;
     _onDone = onDone;
     _vocabHints = vocabularyHints;
+    _carriedTranscript = '';
+    _lastPartial = '';
+    _silenceStart = null;
+    _hasSpeechInUtterance = false;
+    _appleChannel.onLevel = _handleLevel;
 
     await _startAppleSession();
   }
@@ -135,10 +205,17 @@ class SttService {
     final ok = await _appleChannel.listen(
       contextualStrings: _vocabHints,
       onResult: (text, isFinal) {
-        _onResult?.call(text);
+        _lastPartial = text;
+        _onResult?.call(mergeTranscripts(_carriedTranscript, text));
       },
       onDone: () {
         if (_continuous && _isListening) {
+          // The recognizer auto-finalized (intra-utterance pause).
+          // Carry the finalized text forward and restart so the
+          // transcript keeps accumulating.
+          _carriedTranscript =
+              mergeTranscripts(_carriedTranscript, _lastPartial);
+          _lastPartial = '';
           // Auto-restart after brief pause
           Future.delayed(const Duration(milliseconds: 200), () {
             if (_isListening) {
@@ -172,6 +249,12 @@ class SttService {
     _onResult = null;
     _onDone = null;
     _vocabHints = null;
+    _carriedTranscript = '';
+    _lastPartial = '';
+    _silenceStart = null;
+    _hasSpeechInUtterance = false;
+    onSilence = null;
+    onLevel = null;
     await _appleChannel.stop();
   }
 

@@ -83,7 +83,7 @@ class RecordingCharacterScreen extends ConsumerWidget {
                         LinearProgressIndicator(
                           value: progress,
                           backgroundColor:
-                              color.withOpacity( 0.1),
+                              color.withValues(alpha: 0.1),
                           color: color,
                         ),
                         const SizedBox(height: 2),

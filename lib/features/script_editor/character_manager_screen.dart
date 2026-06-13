@@ -72,9 +72,9 @@ class _CharacterManagerScreenState
               padding: const EdgeInsets.all(12),
               margin: const EdgeInsets.all(16),
               decoration: BoxDecoration(
-                color: Colors.orange.withOpacity( 0.1),
+                color: Colors.orange.withValues(alpha: 0.1),
                 borderRadius: BorderRadius.circular(8),
-                border: Border.all(color: Colors.orange.withOpacity( 0.3)),
+                border: Border.all(color: Colors.orange.withValues(alpha: 0.3)),
               ),
               child: Row(
                 children: [
@@ -103,7 +103,7 @@ class _CharacterManagerScreenState
                 return Card(
                   margin: const EdgeInsets.only(bottom: 8),
                   color: isSuspect
-                      ? Colors.orange.withOpacity( 0.05)
+                      ? Colors.orange.withValues(alpha: 0.05)
                       : null,
                   child: ListTile(
                     leading: CircleAvatar(

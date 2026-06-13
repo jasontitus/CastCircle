@@ -2,8 +2,10 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart' show ScrollCacheExtent;
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter_riverpod/legacy.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -66,6 +68,9 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen> {
   String _recognizedText = '';
   double _matchScore = 0.0;
   bool _showMatchFeedback = false;
+  double _micLevel = 0.0; // smoothed mic input level (0..1) while listening
+  String _lastRecognizedRaw = ''; // last uncorrected transcript, for learning
+  bool _matchConfirmed = false; // guards double-advance from timer + VAD
   bool _showJumpBackHint = false; // Set in initState based on how many times shown
 
   // Rehearsal audio capture: record the user's lines for later use
@@ -444,8 +449,8 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen> {
               margin: const EdgeInsets.only(right: 4),
               decoration: BoxDecoration(
                 color: ref.watch(fastModeEnabledProvider)
-                    ? Colors.amber.withOpacity( 0.2)
-                    : Colors.white.withOpacity( 0.05),
+                    ? Colors.amber.withValues(alpha: 0.2)
+                    : Colors.white.withValues(alpha: 0.05),
                 borderRadius: BorderRadius.circular(8),
               ),
               child: Row(
@@ -474,7 +479,7 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen> {
               padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
               margin: const EdgeInsets.only(right: 4),
               decoration: BoxDecoration(
-                color: Colors.teal.withOpacity( 0.2),
+                color: Colors.teal.withValues(alpha: 0.2),
                 borderRadius: BorderRadius.circular(8),
               ),
               child: const Text('READ',
@@ -486,7 +491,7 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen> {
               padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
               margin: const EdgeInsets.only(right: 4),
               decoration: BoxDecoration(
-                color: Colors.blue.withOpacity( 0.2),
+                color: Colors.blue.withValues(alpha: 0.2),
                 borderRadius: BorderRadius.circular(8),
               ),
               child: const Text('CUE',
@@ -499,7 +504,7 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen> {
               padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
               margin: const EdgeInsets.only(right: 4),
               decoration: BoxDecoration(
-                color: Colors.purple.withOpacity( 0.2),
+                color: Colors.purple.withValues(alpha: 0.2),
                 borderRadius: BorderRadius.circular(8),
               ),
               child: const Text('BLIND',
@@ -512,7 +517,7 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen> {
               padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
               margin: const EdgeInsets.only(right: 4),
               decoration: BoxDecoration(
-                color: Colors.green.withOpacity( 0.2),
+                color: Colors.green.withValues(alpha: 0.2),
                 borderRadius: BorderRadius.circular(8),
               ),
               child: const Text('AI',
@@ -562,7 +567,7 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen> {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
       decoration: BoxDecoration(
-        color: color.withOpacity( 0.2),
+        color: color.withValues(alpha: 0.2),
         borderRadius: BorderRadius.circular(12),
       ),
       child: Row(
@@ -587,9 +592,9 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen> {
     return ListView.builder(
       controller: _scrollController,
       padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
-      // Large cacheExtent so items are built before they're visible.
+      // Large cache extent so items are built before they're visible.
       // This ensures _currentLineKey is always available for scrolling.
-      cacheExtent: 10000,
+      scrollCacheExtent: const ScrollCacheExtent.pixels(10000),
       itemCount: dialogueLines.length,
       itemBuilder: (context, index) {
         final line = dialogueLines[index];
@@ -632,7 +637,7 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen> {
                       ? Theme.of(context)
                           .colorScheme
                           .primary
-                          .withOpacity( 0.15)
+                          .withValues(alpha: 0.15)
                       : Colors.grey[900])
                   : Colors.transparent,
               borderRadius: BorderRadius.circular(12),
@@ -746,29 +751,34 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen> {
   }
 
   Widget _pulsingMic(BuildContext context) {
-    return TweenAnimationBuilder<double>(
-      tween: Tween(begin: 0.5, end: 1.0),
-      duration: const Duration(milliseconds: 800),
-      builder: (context, value, child) {
-        return Opacity(
-          opacity: value,
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Icon(Icons.mic, size: 16,
-                  color: Colors.orange[400]),
-              const SizedBox(width: 4),
-              Text('LISTENING...',
-                style: TextStyle(
-                  color: Colors.orange[400],
-                  fontSize: 10,
-                  fontWeight: FontWeight.bold,
-                ),
-              ),
-            ],
+    // Mic glow follows the actor's actual voice level (smoothed RMS from
+    // the native tap) instead of a fixed animation — speaking visibly
+    // "lights up" the indicator.
+    final intensity = (_micLevel / 0.15).clamp(0.0, 1.0);
+    return AnimatedContainer(
+      duration: const Duration(milliseconds: 90),
+      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(10),
+        color: Colors.orange.withValues(alpha: 0.10 + 0.25 * intensity),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(Icons.mic,
+              size: 16 + 3 * intensity,
+              color: Color.lerp(
+                  Colors.orange[300], Colors.orange[600], intensity)),
+          const SizedBox(width: 4),
+          Text('LISTENING...',
+            style: TextStyle(
+              color: Colors.orange[400],
+              fontSize: 10,
+              fontWeight: FontWeight.bold,
+            ),
           ),
-        );
-      },
+        ],
+      ),
     );
   }
 
@@ -780,8 +790,8 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen> {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
       color: matched
-          ? Colors.green.withOpacity( 0.2)
-          : Colors.orange.withOpacity( 0.2),
+          ? Colors.green.withValues(alpha: 0.2)
+          : Colors.orange.withValues(alpha: 0.2),
       child: Row(
         children: [
           Icon(
@@ -861,9 +871,9 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen> {
               Container(
                 padding: const EdgeInsets.all(12),
                 decoration: BoxDecoration(
-                  color: Colors.orange.withOpacity( 0.1),
+                  color: Colors.orange.withValues(alpha: 0.1),
                   borderRadius: BorderRadius.circular(12),
-                  border: Border.all(color: Colors.orange.withOpacity( 0.3)),
+                  border: Border.all(color: Colors.orange.withValues(alpha: 0.3)),
                 ),
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
@@ -1106,7 +1116,7 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen> {
                   ? Theme.of(context)
                       .colorScheme
                       .primary
-                      .withOpacity( 0.2)
+                      .withValues(alpha: 0.2)
                   : Colors.grey[850],
               shape: BoxShape.circle,
               border: primary
@@ -1387,6 +1397,9 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen> {
     final threshold = ref.read(matchThresholdProvider) / 100.0;
 
     _currentAttemptCount++;
+    _matchConfirmed = false;
+    _lastRecognizedRaw = '';
+    _micLevel = 0.0;
 
     // Build vocabulary hints: the expected line as a phrase + its individual
     // words. Keep hints focused — flooding with script-wide vocabulary
@@ -1404,6 +1417,30 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen> {
     // Start silence timer — if no new results for a while, auto-advance
     _resetSilenceTimer(line);
 
+    // Live mic level for the listening indicator (smoothed in SttService).
+    _stt.onLevel = (level) {
+      if (!mounted) return;
+      if (ref.read(rehearsalStateProvider) != RehearsalState.listeningForMe) {
+        return;
+      }
+      setState(() => _micLevel = level);
+    };
+
+    // Energy-based endpointing: once the match threshold is crossed,
+    // advance as soon as the actor's audio goes quiet for 800ms instead
+    // of waiting the full 1.2s no-new-results debounce. The debounce
+    // timer below stays as a fallback (e.g. if level events stop).
+    _stt.onSilence = (silence) {
+      if (!mounted) return;
+      if (ref.read(rehearsalStateProvider) != RehearsalState.listeningForMe) {
+        return;
+      }
+      if (_matchScore >= threshold &&
+          silence >= const Duration(milliseconds: 800)) {
+        _confirmLineMatch(line);
+      }
+    };
+
     await _stt.listen(
       continuous: true,
       onResult: (recognized) {
@@ -1413,6 +1450,7 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen> {
 
         // Reset silence timer on each new result
         _resetSilenceTimer(line);
+        _lastRecognizedRaw = recognized;
 
         // Apply vocabulary correction before scoring
         final corrected = production != null
@@ -1437,38 +1475,12 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen> {
         // to stop speaking first. For long multi-sentence lines, the score
         // can cross the threshold while the actor is still reading. We use
         // a confirmation timer: only advance if no new STT results arrive
-        // for 1.2 seconds after the score crosses the threshold.
+        // for 1.2 seconds after the score crosses the threshold. (The
+        // energy-based endpointing above usually fires sooner.)
         if (score >= threshold) {
           _matchConfirmTimer?.cancel();
           _matchConfirmTimer = Timer(const Duration(milliseconds: 1200), () {
-            if (!mounted) return;
-            if (ref.read(rehearsalStateProvider) != RehearsalState.listeningForMe) return;
-
-            _silenceTimer?.cancel();
-            _stopCaptureForLine(line);
-            _stt.stop();
-            HapticFeedback.lightImpact();
-
-            // Learn from this successful attempt
-            if (production != null && myCharacter != null) {
-              _sttVocab.learnFromAttempt(
-                productionId: production.id,
-                actorId: myCharacter,
-                recognized: recognized,
-                expected: line.text,
-              );
-            }
-
-            // Record the attempt
-            _recordAttempt(line, skipped: false);
-
-            // Advance
-            final s = ref.read(currentScriptProvider);
-            final scene = ref.read(selectedSceneProvider);
-            final mc = ref.read(rehearsalCharacterProvider);
-            if (s == null || scene == null) return;
-            final dialogueLines = _getRehearsalLines(s, scene, mc);
-            _advanceLine(dialogueLines.length);
+            _confirmLineMatch(line);
           });
         } else {
           // Score dropped below threshold (e.g., new words recognized that
@@ -1489,6 +1501,47 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen> {
 
     // Start audio capture AFTER listen() — the audio engine must be running
     _startCaptureForLine(line);
+  }
+
+  /// The actor finished their line and the match held — stop listening,
+  /// learn from the attempt, and advance. Called from both the energy
+  /// endpointing (mic silence) and the no-new-results confirm timer;
+  /// [_matchConfirmed] makes the two triggers race-safe.
+  void _confirmLineMatch(ScriptLine line) {
+    if (!mounted || _matchConfirmed) return;
+    if (ref.read(rehearsalStateProvider) != RehearsalState.listeningForMe) {
+      return;
+    }
+    _matchConfirmed = true;
+
+    _matchConfirmTimer?.cancel();
+    _silenceTimer?.cancel();
+    _stopCaptureForLine(line);
+    _stt.stop();
+    HapticFeedback.lightImpact();
+
+    // Learn from this successful attempt
+    final production = ref.read(currentProductionProvider);
+    final myCharacter = ref.read(rehearsalCharacterProvider);
+    if (production != null && myCharacter != null &&
+        _lastRecognizedRaw.isNotEmpty) {
+      _sttVocab.learnFromAttempt(
+        productionId: production.id,
+        actorId: myCharacter,
+        recognized: _lastRecognizedRaw,
+        expected: line.text,
+      );
+    }
+
+    // Record the attempt
+    _recordAttempt(line, skipped: false);
+
+    // Advance
+    final s = ref.read(currentScriptProvider);
+    final scene = ref.read(selectedSceneProvider);
+    if (s == null || scene == null) return;
+    final dialogueLines = _getRehearsalLines(s, scene, myCharacter);
+    _advanceLine(dialogueLines.length);
   }
 
   /// Reset the silence timer. When no new STT results arrive for

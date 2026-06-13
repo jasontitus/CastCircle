@@ -21,6 +21,10 @@ class AppleSttChannel {
   void Function(String text, bool isFinal)? _onResult;
   void Function()? _onDone;
 
+  /// Called with raw mic input level (RMS, 0..1) while listening.
+  /// Survives across listen sessions — set once by the consumer.
+  void Function(double level)? onLevel;
+
   /// Initialize and request speech recognition permission.
   ///
   /// [locale] — BCP-47 locale for the speech recognizer (e.g. "en-US", "en-GB").
@@ -108,6 +112,9 @@ class AppleSttChannel {
       case 'onError':
         final error = call.arguments as String?;
         debugPrint('AppleStt: error: $error');
+      case 'onLevel':
+        final level = (call.arguments as num?)?.toDouble() ?? 0.0;
+        onLevel?.call(level);
     }
   }
 
@@ -145,5 +152,6 @@ class AppleSttChannel {
     await stop();
     _onResult = null;
     _onDone = null;
+    onLevel = null;
   }
 }

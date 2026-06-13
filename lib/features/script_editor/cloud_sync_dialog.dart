@@ -162,7 +162,7 @@ Widget _statChip(
               color: Theme.of(context)
                   .colorScheme
                   .onSurface
-                  .withOpacity( 0.6),
+                  .withValues(alpha: 0.6),
             ),
       ),
     ],
@@ -176,15 +176,15 @@ Widget _buildDiffTile(BuildContext context, LineDiff diff) {
 
   switch (diff.type) {
     case DiffType.added:
-      bgColor = Colors.green.withOpacity( 0.1);
+      bgColor = Colors.green.withValues(alpha: 0.1);
       icon = Icons.add_circle_outline;
       label = 'NEW';
     case DiffType.removed:
-      bgColor = Colors.red.withOpacity( 0.1);
+      bgColor = Colors.red.withValues(alpha: 0.1);
       icon = Icons.remove_circle_outline;
       label = 'DEL';
     case DiffType.changed:
-      bgColor = Colors.orange.withOpacity( 0.1);
+      bgColor = Colors.orange.withValues(alpha: 0.1);
       icon = Icons.edit;
       label = 'MOD';
     case DiffType.unchanged:
@@ -205,13 +205,13 @@ Widget _buildDiffTile(BuildContext context, LineDiff diff) {
     child: Row(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Icon(icon, size: 16, color: bgColor == Colors.green.withOpacity( 0.1) ? Colors.green : bgColor == Colors.red.withOpacity( 0.1) ? Colors.red : Colors.orange),
+        Icon(icon, size: 16, color: bgColor == Colors.green.withValues(alpha: 0.1) ? Colors.green : bgColor == Colors.red.withValues(alpha: 0.1) ? Colors.red : Colors.orange),
         const SizedBox(width: 8),
         Container(
           padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
           decoration: BoxDecoration(
             borderRadius: BorderRadius.circular(3),
-            color: Colors.white.withOpacity( 0.1),
+            color: Colors.white.withValues(alpha: 0.1),
           ),
           child: Text(label,
               style: const TextStyle(fontSize: 10, fontWeight: FontWeight.bold)),

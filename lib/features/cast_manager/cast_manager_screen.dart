@@ -179,7 +179,7 @@ class _CastManagerScreenState extends ConsumerState<CastManagerScreen> {
                                 color: Theme.of(context)
                                     .colorScheme
                                     .onPrimaryContainer
-                                    .withOpacity( 0.7),
+                                    .withValues(alpha: 0.7),
                               ),
                         ),
                         const SizedBox(height: 2),
@@ -248,7 +248,7 @@ class _CastManagerScreenState extends ConsumerState<CastManagerScreen> {
                         color: Theme.of(context)
                             .colorScheme
                             .onTertiaryContainer
-                            .withOpacity( 0.5)),
+                            .withValues(alpha: 0.5)),
                   ],
                 ),
               ),
@@ -280,7 +280,7 @@ class _CastManagerScreenState extends ConsumerState<CastManagerScreen> {
                     backgroundColor: Theme.of(context)
                         .colorScheme
                         .primary
-                        .withOpacity( 0.1),
+                        .withValues(alpha: 0.1),
                   ),
                 ],
               ],
@@ -459,7 +459,7 @@ class _CastManagerScreenState extends ConsumerState<CastManagerScreen> {
               context,
               label: 'Understudy',
               member: understudy,
-              color: color.withOpacity( 0.6),
+              color: color.withValues(alpha: 0.6),
               onAssign: () => _assignRole(char.name, CastRole.understudy),
             ),
             // Recording progress
@@ -470,7 +470,7 @@ class _CastManagerScreenState extends ConsumerState<CastManagerScreen> {
                   Expanded(
                     child: LinearProgressIndicator(
                       value: recordProgress,
-                      backgroundColor: color.withOpacity( 0.1),
+                      backgroundColor: color.withValues(alpha: 0.1),
                       color: color,
                     ),
                   ),
@@ -512,9 +512,9 @@ class _CastManagerScreenState extends ConsumerState<CastManagerScreen> {
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
             decoration: BoxDecoration(
-              color: color.withOpacity( 0.15),
+              color: color.withValues(alpha: 0.15),
               borderRadius: BorderRadius.circular(16),
-              border: Border.all(color: color.withOpacity( 0.3)),
+              border: Border.all(color: color.withValues(alpha: 0.3)),
             ),
             child: Row(
               mainAxisSize: MainAxisSize.min,
@@ -565,7 +565,7 @@ class _CastManagerScreenState extends ConsumerState<CastManagerScreen> {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
       decoration: BoxDecoration(
-        color: (joined ? Colors.green : Colors.orange).withOpacity( 0.2),
+        color: (joined ? Colors.green : Colors.orange).withValues(alpha: 0.2),
         borderRadius: BorderRadius.circular(8),
       ),
       child: Text(
@@ -1210,9 +1210,9 @@ class _InviteCardWidget extends StatelessWidget {
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
             decoration: BoxDecoration(
-              color: Colors.amber.withOpacity( 0.15),
+              color: Colors.amber.withValues(alpha: 0.15),
               borderRadius: BorderRadius.circular(30),
-              border: Border.all(color: Colors.amber.withOpacity( 0.3)),
+              border: Border.all(color: Colors.amber.withValues(alpha: 0.3)),
             ),
             child: Text(
               'as $characterName',
@@ -1237,9 +1237,9 @@ class _InviteCardWidget extends StatelessWidget {
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
             decoration: BoxDecoration(
-              color: Colors.white.withOpacity( 0.1),
+              color: Colors.white.withValues(alpha: 0.1),
               borderRadius: BorderRadius.circular(12),
-              border: Border.all(color: Colors.white.withOpacity( 0.2)),
+              border: Border.all(color: Colors.white.withValues(alpha: 0.2)),
             ),
             child: Text(
               joinCode,
@@ -1258,7 +1258,7 @@ class _InviteCardWidget extends StatelessWidget {
             'Download CastCircle and enter the code above',
             textAlign: TextAlign.center,
             style: TextStyle(
-              color: Colors.white.withOpacity( 0.5),
+              color: Colors.white.withValues(alpha: 0.5),
               fontSize: 12,
             ),
           ),

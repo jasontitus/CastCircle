@@ -92,7 +92,7 @@ class _ModelDownloadScreenState extends ConsumerState<ModelDownloadScreen> {
             'Models are downloaded once and run entirely on your device. '
             'No internet needed for rehearsal.',
             style: theme.textTheme.bodySmall?.copyWith(
-              color: theme.colorScheme.onSurface.withOpacity( 0.6),
+              color: theme.colorScheme.onSurface.withValues(alpha: 0.6),
             ),
           ),
           const SizedBox(height: 24),
@@ -177,7 +177,7 @@ class _ModelDownloadScreenState extends ConsumerState<ModelDownloadScreen> {
               'Total download: ~341 MB. Wi-Fi recommended.',
               textAlign: TextAlign.center,
               style: theme.textTheme.bodySmall?.copyWith(
-                color: theme.colorScheme.onSurface.withOpacity( 0.5),
+                color: theme.colorScheme.onSurface.withValues(alpha: 0.5),
               ),
             ),
           ] else ...[

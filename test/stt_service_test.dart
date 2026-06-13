@@ -22,6 +22,44 @@ void main() {
     });
   });
 
+  group('SttService.mergeTranscripts', () {
+    test('joins carried and partial with a single space', () {
+      expect(SttService.mergeTranscripts('to be or not to be', 'that is'),
+          'to be or not to be that is');
+    });
+
+    test('handles empty sides', () {
+      expect(SttService.mergeTranscripts('', 'hello'), 'hello');
+      expect(SttService.mergeTranscripts('hello', ''), 'hello');
+      expect(SttService.mergeTranscripts('', ''), '');
+    });
+
+    test('trims stray whitespace from both fragments', () {
+      expect(SttService.mergeTranscripts('  hello  ', '  world  '),
+          'hello world');
+    });
+
+    test('accumulates across multiple auto-finalizations', () {
+      // Simulates Apple's recognizer auto-finalizing at each dramatic
+      // pause: each restarted session only hears the next fragment, but
+      // the merged transcript keeps the whole line.
+      const line = 'To be or not to be that is the question';
+      var carried = '';
+      for (final fragment in [
+        'to be or not to be',
+        'that is',
+        'the question',
+      ]) {
+        carried = SttService.mergeTranscripts(carried, fragment);
+      }
+      expect(SttService.matchScore(line, carried), 1.0);
+
+      // Without carrying, the final fragment alone scores poorly —
+      // this is the regression the carried transcript fixes.
+      expect(SttService.matchScore(line, 'the question'), lessThan(0.5));
+    });
+  });
+
   group('SttService.matchScore', () {
     test('perfect match returns 1.0', () {
       expect(

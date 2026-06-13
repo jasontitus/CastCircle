@@ -277,7 +277,7 @@ class _RecordingsBrowserScreenState
                 height: 40,
                 decoration: BoxDecoration(
                   color: isPlaying
-                      ? charColor.withOpacity( 0.2)
+                      ? charColor.withValues(alpha: 0.2)
                       : Colors.grey[900],
                   shape: BoxShape.circle,
                   border: Border.all(
@@ -303,7 +303,7 @@ class _RecordingsBrowserScreenState
                           padding: const EdgeInsets.symmetric(
                               horizontal: 6, vertical: 2),
                           decoration: BoxDecoration(
-                            color: charColor.withOpacity( 0.15),
+                            color: charColor.withValues(alpha: 0.15),
                             borderRadius: BorderRadius.circular(4),
                           ),
                           child: Text(

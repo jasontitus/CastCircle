@@ -94,7 +94,7 @@ class _BulkCastSetupScreenState extends ConsumerState<BulkCastSetupScreen> {
                 children: [
                   Icon(Icons.check_circle_outline,
                       size: 64,
-                      color: Colors.green.withOpacity( 0.5)),
+                      color: Colors.green.withValues(alpha: 0.5)),
                   const SizedBox(height: 16),
                   const Text('All characters have actors assigned!'),
                 ],
@@ -113,7 +113,7 @@ class _BulkCastSetupScreenState extends ConsumerState<BulkCastSetupScreen> {
                             color: Theme.of(context)
                                 .colorScheme
                                 .onSurface
-                                .withOpacity( 0.6),
+                                .withValues(alpha: 0.6),
                           ),
                     ),
                   );

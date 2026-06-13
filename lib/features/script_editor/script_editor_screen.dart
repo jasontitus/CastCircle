@@ -312,7 +312,7 @@ class _ScriptEditorScreenState extends ConsumerState<ScriptEditorScreen> {
                                       color: Theme.of(context)
                                           .colorScheme
                                           .primaryContainer
-                                          .withOpacity(0.3),
+                                          .withValues(alpha: 0.3),
                                       borderRadius: BorderRadius.circular(8),
                                     )
                                   : null,
@@ -340,7 +340,7 @@ class _ScriptEditorScreenState extends ConsumerState<ScriptEditorScreen> {
                                     color: Theme.of(context)
                                         .colorScheme
                                         .onSurface
-                                        .withOpacity(0.4),
+                                        .withValues(alpha: 0.4),
                                   ),
                                 ),
                               ),
@@ -578,7 +578,7 @@ class _ScriptEditorScreenState extends ConsumerState<ScriptEditorScreen> {
             color: Theme.of(context)
                 .colorScheme
                 .surfaceContainerHighest
-                .withOpacity( 0.5),
+                .withValues(alpha: 0.5),
             child: Padding(
               padding: const EdgeInsets.all(12),
               child: Text(
@@ -588,7 +588,7 @@ class _ScriptEditorScreenState extends ConsumerState<ScriptEditorScreen> {
                   color: Theme.of(context)
                       .colorScheme
                       .onSurface
-                      .withOpacity( 0.6),
+                      .withValues(alpha: 0.6),
                 ),
               ),
             ),
@@ -632,7 +632,7 @@ class _ScriptEditorScreenState extends ConsumerState<ScriptEditorScreen> {
                               color: Theme.of(context)
                                   .colorScheme
                                   .onSurface
-                                  .withOpacity( 0.35),
+                                  .withValues(alpha: 0.35),
                               fontSize: 10,
                               fontFeatures: [const FontFeature.tabularFigures()],
                             ),
@@ -687,7 +687,7 @@ class _ScriptEditorScreenState extends ConsumerState<ScriptEditorScreen> {
                                 color: Theme.of(context)
                                     .colorScheme
                                     .onSurface
-                                    .withOpacity( 0.5),
+                                    .withValues(alpha: 0.5),
                               ),
                             ),
                           Text(line.text),
@@ -702,7 +702,7 @@ class _ScriptEditorScreenState extends ConsumerState<ScriptEditorScreen> {
                             color: Theme.of(context)
                                 .colorScheme
                                 .onSurface
-                                .withOpacity( 0.3)),
+                                .withValues(alpha: 0.3)),
                       ),
                   ],
                 ),

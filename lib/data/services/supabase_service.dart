@@ -26,15 +26,16 @@ class SupabaseService {
   bool get isInitialized => _initialized;
 
   /// Initialize Supabase. Call once at app startup.
-  /// Pass url and anonKey from environment config or compile-time constants.
+  /// Pass url and publishableKey from environment config or
+  /// compile-time constants.
   Future<void> init({
     required String url,
-    required String anonKey,
+    required String publishableKey,
   }) async {
     if (_initialized) return;
     try {
       // Timeout prevents hanging on expired tokens or unreachable server
-      await Supabase.initialize(url: url, anonKey: anonKey)
+      await Supabase.initialize(url: url, publishableKey: publishableKey)
           .timeout(const Duration(seconds: 5));
       _initialized = true;
     } on TimeoutException {

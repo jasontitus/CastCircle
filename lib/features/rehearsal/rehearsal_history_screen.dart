@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter_riverpod/legacy.dart';
 import 'package:go_router/go_router.dart';
 
 import '../../data/models/rehearsal_models.dart';
@@ -152,8 +153,8 @@ class RehearsalHistoryScreen extends ConsumerWidget {
                       const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
                   decoration: BoxDecoration(
                     color: session.rehearsalMode == 'cuePractice'
-                        ? Colors.blue.withOpacity( 0.1)
-                        : Colors.teal.withOpacity( 0.1),
+                        ? Colors.blue.withValues(alpha: 0.1)
+                        : Colors.teal.withValues(alpha: 0.1),
                     borderRadius: BorderRadius.circular(4),
                   ),
                   child: Text(

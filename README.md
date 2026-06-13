@@ -91,11 +91,11 @@ For group productions: cast members record their lines one at a time, synced via
 | Layer | Technology |
 |-------|-----------|
 | Framework | Flutter (iOS primary, Android planned) |
-| State Management | Riverpod 2.x with code generation |
+| State Management | Riverpod 3.x |
 | Local DB | Drift (SQLite) with typed queries |
-| Models | Freezed (immutable data classes) |
+| Models | Plain immutable Dart classes |
 | TTS | Kokoro via MLX (on-device neural synthesis, 16 voices) |
-| STT | Apple SFSpeechRecognizer (real-time streaming with vocabulary hints) |
+| STT | Apple SFSpeechRecognizer via custom platform channel (streaming, vocabulary hints, carried transcripts, energy-based endpointing) |
 | OCR | google_mlkit_text_recognition |
 | Audio Playback | just_audio |
 | Audio Recording | record |

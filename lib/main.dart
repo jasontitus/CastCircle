@@ -94,7 +94,7 @@ void main() async {
   try {
     await SupabaseService.instance.init(
       url: supabaseUrl,
-      anonKey: supabaseAnonKey,
+      publishableKey: supabaseAnonKey,
     );
   } catch (e) {
     debugPrint('Supabase init failed: $e');

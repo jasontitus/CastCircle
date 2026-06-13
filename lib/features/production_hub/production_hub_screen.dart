@@ -314,7 +314,7 @@ class _ProductionHubScreenState extends ConsumerState<ProductionHubScreen> {
                       Icons.bolt,
                       color: ref.watch(fastModeEnabledProvider)
                           ? Colors.amber
-                          : theme.colorScheme.onSurface.withOpacity( 0.3),
+                          : theme.colorScheme.onSurface.withValues(alpha: 0.3),
                     ),
                     tooltip: ref.watch(fastModeEnabledProvider)
                         ? 'Fast mode ON'
@@ -429,7 +429,7 @@ class _ProductionHubScreenState extends ConsumerState<ProductionHubScreen> {
                         : Theme.of(context)
                             .colorScheme
                             .outline
-                            .withOpacity( 0.3),
+                            .withValues(alpha: 0.3),
                     width: 4,
                   ),
                 ),
@@ -472,7 +472,7 @@ class _ProductionHubScreenState extends ConsumerState<ProductionHubScreen> {
                             color: Theme.of(context)
                                 .colorScheme
                                 .onSurface
-                                .withOpacity( 0.5)),
+                                .withValues(alpha: 0.5)),
                         const SizedBox(width: 4),
                         Text(
                           scene.location,
@@ -483,7 +483,7 @@ class _ProductionHubScreenState extends ConsumerState<ProductionHubScreen> {
                                 color: Theme.of(context)
                                     .colorScheme
                                     .onSurface
-                                    .withOpacity( 0.6),
+                                    .withValues(alpha: 0.6),
                               ),
                         ),
                       ],
@@ -506,8 +506,8 @@ class _ProductionHubScreenState extends ConsumerState<ProductionHubScreen> {
                             horizontal: 8, vertical: 2),
                         decoration: BoxDecoration(
                           color: isMe
-                              ? color.withOpacity( 0.3)
-                              : color.withOpacity( 0.1),
+                              ? color.withValues(alpha: 0.3)
+                              : color.withValues(alpha: 0.1),
                           borderRadius: BorderRadius.circular(12),
                           border: isMe
                               ? Border.all(color: color, width: 1.5)
@@ -532,7 +532,7 @@ class _ProductionHubScreenState extends ConsumerState<ProductionHubScreen> {
                           color: Theme.of(context)
                               .colorScheme
                               .onSurface
-                              .withOpacity( 0.4),
+                              .withValues(alpha: 0.4),
                         ),
                   ),
                 ],
@@ -577,7 +577,7 @@ class _ProductionHubScreenState extends ConsumerState<ProductionHubScreen> {
                         color: Theme.of(context)
                             .colorScheme
                             .onPrimaryContainer
-                            .withOpacity( 0.7),
+                            .withValues(alpha: 0.7),
                       ),
                 ),
               ],
@@ -708,7 +708,7 @@ class _ProductionHubScreenState extends ConsumerState<ProductionHubScreen> {
               color: Theme.of(context)
                   .colorScheme
                   .primary
-                  .withOpacity( 0.5),
+                  .withValues(alpha: 0.5),
             ),
             const SizedBox(height: 24),
             Text(
@@ -722,7 +722,7 @@ class _ProductionHubScreenState extends ConsumerState<ProductionHubScreen> {
                     color: Theme.of(context)
                         .colorScheme
                         .onSurface
-                        .withOpacity( 0.6),
+                        .withValues(alpha: 0.6),
                   ),
             ),
             const SizedBox(height: 24),
