@@ -1,11 +1,18 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Used by scripts/ship-testflight.sh to export the App Store IPA from the
+     .xcarchive. signingStyle=automatic + the API key passed to xcodebuild
+     (-allowProvisioningUpdates) provisions the distribution cert/profile on the
+     fly, so no "iOS Distribution" cert needs to live in the local keychain.
+     NOTE: no "destination" key — it defaults to "export" (write the IPA to
+     disk); the upload is a separate altool step in the script. Do NOT set
+     destination=upload here, or xcodebuild uploads directly and no IPA file is
+     produced for altool to send. -->
 <plist version="1.0">
 <dict>
     <key>method</key><string>app-store-connect</string>
     <key>teamID</key><string>A6G8H8NGAM</string>
-    <key>uploadSymbols</key><true/>
     <key>signingStyle</key><string>automatic</string>
-    <key>destination</key><string>upload</string>
+    <key>uploadSymbols</key><true/>
 </dict>
 </plist>
