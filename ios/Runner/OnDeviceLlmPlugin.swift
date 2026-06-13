@@ -141,7 +141,13 @@ class OnDeviceLlmPlugin: NSObject {
             do {
                 if container == nil {
                     report("gemma: loading model weights (≈700 MB)…")
-                    let configuration = ModelConfiguration(directory: URL(fileURLWithPath: path))
+                    // Gemma signals end-of-turn with <end_of_turn>, which isn't
+                    // the model's <eos> — without this the generator runs past it
+                    // and rambles. Register it as an extra stop token.
+                    let configuration = ModelConfiguration(
+                        directory: URL(fileURLWithPath: path),
+                        extraEOSTokens: ["<end_of_turn>"]
+                    )
                     container = try await #huggingFaceLoadModelContainer(configuration: configuration)
                     report("gemma: model loaded")
                 }
