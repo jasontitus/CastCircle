@@ -2,7 +2,6 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
-import 'package:flutter/rendering.dart' show ScrollCacheExtent;
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_riverpod/legacy.dart';
@@ -594,7 +593,7 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen> {
       padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
       // Large cache extent so items are built before they're visible.
       // This ensures _currentLineKey is always available for scrolling.
-      scrollCacheExtent: const ScrollCacheExtent.pixels(10000),
+      cacheExtent: 10000,
       itemCount: dialogueLines.length,
       itemBuilder: (context, index) {
         final line = dialogueLines[index];
