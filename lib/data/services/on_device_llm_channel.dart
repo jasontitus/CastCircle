@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 
@@ -23,8 +25,23 @@ import 'debug_log_service.dart';
 /// Until a native side answers the channel, [isAvailable] stays false and the
 /// import pipeline simply keeps using the heuristic parser.
 class OnDeviceLlmChannel implements OnDeviceLlmProvider {
-  OnDeviceLlmChannel._();
+  OnDeviceLlmChannel._() {
+    // The native plugin pushes progress messages (model load/generate steps)
+    // here so a long-running call is visible live — both in the debug log and
+    // (via [progress]) in the Script AI Debug screen.
+    _channel.setMethodCallHandler((call) async {
+      if (call.method == 'onLog') {
+        final msg = (call.arguments as String?) ?? '';
+        DebugLogService.instance.log(LogCategory.ai, msg);
+        progress.value = msg;
+      }
+      return null;
+    });
+  }
   static final OnDeviceLlmChannel instance = OnDeviceLlmChannel._();
+
+  /// Latest native progress message, for live display in the debug screen.
+  final ValueNotifier<String> progress = ValueNotifier<String>('');
 
   static const _channel = MethodChannel('com.lineguide/on_device_llm');
 
@@ -83,9 +100,13 @@ class OnDeviceLlmChannel implements OnDeviceLlmProvider {
       final out = await _channel.invokeMethod<String>('generate', {
         'prompt': prompt,
         'imagePaths': imagePaths,
-      });
+      }).timeout(const Duration(seconds: 120));
       log.log(LogCategory.ai, 'generate returned ${out?.length ?? 0} chars');
       return out;
+    } on TimeoutException {
+      log.logError(LogCategory.ai,
+          'generate timed out (>120s) — model load or inference stuck/too slow');
+      return null;
     } on PlatformException catch (e) {
       log.logError(LogCategory.ai, 'generate failed (${e.code}): ${e.message}', e);
       return null;

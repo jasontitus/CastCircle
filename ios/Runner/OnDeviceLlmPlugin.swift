@@ -54,6 +54,15 @@ class OnDeviceLlmPlugin: NSObject {
         }
     }
 
+    /// Log to both the system log and the Flutter debug log (via the channel),
+    /// so progress through a long model load/generate is visible in-app.
+    private func report(_ message: String) {
+        NSLog("OnDeviceLlm: \(message)")
+        DispatchQueue.main.async { [weak self] in
+            self?.channel.invokeMethod("onLog", arguments: message)
+        }
+    }
+
     // MARK: - Init (cheap — no model load here)
 
     private func initialize(call: FlutterMethodCall, result: @escaping FlutterResult) async {
@@ -131,23 +140,25 @@ class OnDeviceLlmPlugin: NSObject {
         if !useFoundationModels, let path = gemmaModelPath {
             do {
                 if container == nil {
-                    NSLog("OnDeviceLlm: loading Gemma from \(path)…")
+                    report("gemma: loading model weights (≈700 MB)…")
                     let configuration = ModelConfiguration(directory: URL(fileURLWithPath: path))
                     container = try await #huggingFaceLoadModelContainer(configuration: configuration)
-                    NSLog("OnDeviceLlm: Gemma loaded")
+                    report("gemma: model loaded")
                 }
                 guard let container = container else {
                     result(FlutterError(code: "NOT_READY", message: "No model container", details: nil))
                     return
                 }
+                report("gemma: generating…")
                 let session = ChatSession(
                     container,
                     generateParameters: GenerateParameters(temperature: 0.0)
                 )
                 let text = try await session.respond(to: prompt)
+                report("gemma: generated \(text.count) chars")
                 result(text)
             } catch {
-                NSLog("OnDeviceLlm: Gemma generate failed: \(error.localizedDescription)")
+                report("gemma: failed — \(error.localizedDescription)")
                 result(FlutterError(code: "GENERATE_FAILED", message: error.localizedDescription, details: nil))
             }
             return

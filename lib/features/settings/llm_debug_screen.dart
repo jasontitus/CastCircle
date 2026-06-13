@@ -212,7 +212,22 @@ MR. BENNET. You want to tell me, and I have no objection to hearing it.
           ),
           if (_busy) ...[
             const SizedBox(height: 16),
-            const Center(child: CircularProgressIndicator()),
+            Center(
+              child: Column(
+                children: [
+                  const CircularProgressIndicator(),
+                  const SizedBox(height: 12),
+                  ValueListenableBuilder<String>(
+                    valueListenable: _channel.progress,
+                    builder: (_, msg, __) => Text(
+                      msg.isEmpty ? 'working…' : msg,
+                      textAlign: TextAlign.center,
+                      style: theme.textTheme.bodySmall,
+                    ),
+                  ),
+                ],
+              ),
+            ),
           ],
           if (_elapsed.isNotEmpty) ...[
             const SizedBox(height: 16),

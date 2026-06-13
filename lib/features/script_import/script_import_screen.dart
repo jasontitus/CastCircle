@@ -49,10 +49,12 @@ class _ScriptImportScreenState extends ConsumerState<ScriptImportScreen> {
     _downloadService.isGemmaReady().then((ready) {
       if (mounted) setState(() => _gemmaReady = ready);
     });
-    // Detect an on-device runtime. Apple Foundation Models needs no download,
-    // so this can be available even with no Gemma model present.
-    OnDeviceLlmChannel.instance.initialize('').then((ready) {
-      if (mounted) setState(() => _aiAvailable = ready);
+    // Detect an on-device runtime. Pass the Gemma model dir (when present) so
+    // it's preferred; Apple Foundation Models is the no-download fallback.
+    _downloadService.getGemmaModelDir().then((dir) {
+      OnDeviceLlmChannel.instance.initialize(dir ?? '').then((ready) {
+        if (mounted) setState(() => _aiAvailable = ready);
+      });
     });
   }
 
