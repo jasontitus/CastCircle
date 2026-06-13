@@ -293,10 +293,12 @@ class ModelDownloadService {
   Future<void> tryLoadGemmaIfReady() => _tryLoadGemmaIfReady();
 
   Future<void> _tryLoadGemmaIfReady() async {
+    // Initialize the on-device LLM. Apple Foundation Models needs no model
+    // files (an empty path makes the plugin try the built-in model first);
+    // the MLX Gemma path uses the downloaded directory when present.
     final dir = await getGemmaModelDir();
-    if (dir == null) return;
-    debugPrint('ModelDownload: Gemma files ready, loading script-AI model');
-    await OnDeviceLlmChannel.instance.initialize(dir);
+    debugPrint('ModelDownload: initializing on-device LLM (dir=${dir ?? "none"})');
+    await OnDeviceLlmChannel.instance.initialize(dir ?? '');
   }
 
   /// Whether all Kokoro files are downloaded.

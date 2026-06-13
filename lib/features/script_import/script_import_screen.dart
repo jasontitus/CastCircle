@@ -10,6 +10,7 @@ import 'package:path_provider/path_provider.dart';
 import '../../data/models/script_models.dart';
 import '../../data/services/analytics_service.dart';
 import '../../data/services/model_download_service.dart';
+import '../../data/services/on_device_llm_channel.dart';
 import '../../data/services/supabase_service.dart';
 import '../../data/services/voice_config_service.dart';
 import '../../providers/production_providers.dart';
@@ -32,6 +33,7 @@ class _ScriptImportScreenState extends ConsumerState<ScriptImportScreen> {
   final _downloadService = ModelDownloadService.instance;
   bool _gemmaReady = false;
   bool _aiRunning = false;
+  bool _aiAvailable = false; // an on-device LLM is loaded (Foundation Models or Gemma)
 
   static const _gemmaIds = [
     'gemma_model',
@@ -46,6 +48,11 @@ class _ScriptImportScreenState extends ConsumerState<ScriptImportScreen> {
     _downloadService.addListener(_onDownloadUpdate);
     _downloadService.isGemmaReady().then((ready) {
       if (mounted) setState(() => _gemmaReady = ready);
+    });
+    // Detect an on-device runtime. Apple Foundation Models needs no download,
+    // so this can be available even with no Gemma model present.
+    OnDeviceLlmChannel.instance.initialize('').then((ready) {
+      if (mounted) setState(() => _aiAvailable = ready);
     });
   }
 
@@ -334,8 +341,8 @@ class _ScriptImportScreenState extends ConsumerState<ScriptImportScreen> {
             ],
           ),
         ),
-        // Clean up with AI (shown once the on-device model is installed)
-        if (_gemmaReady)
+        // Clean up with AI (shown once an on-device runtime is available)
+        if (_aiAvailable)
           Padding(
             padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
             child: SizedBox(
