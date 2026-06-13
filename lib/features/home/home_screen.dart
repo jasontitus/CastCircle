@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
@@ -241,29 +243,36 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
       return;
     }
 
-    // Try cloud (Supabase)
+    // No local script. Navigate to import immediately so the tap is instant,
+    // then check the cloud in the background — a slow Supabase round-trip must
+    // not block opening the production. If a cloud script exists (e.g. imported
+    // on another device), load it and let the user reopen to rehearse.
+    final messenger = ScaffoldMessenger.of(context);
+    if (context.mounted) context.push('/import');
+    unawaited(_reconcileCloudScript(ref, production, messenger));
+  }
+
+  /// Background: pull a script from the cloud (if any) and persist it locally.
+  /// Runs after navigation so it never blocks opening a production.
+  Future<void> _reconcileCloudScript(
+    WidgetRef ref,
+    Production production,
+    ScaffoldMessengerState messenger,
+  ) async {
     try {
       final cloudLines = await fetchCloudScriptLines(production.id);
-      if (cloudLines != null && cloudLines.isNotEmpty) {
-        final script = buildParsedScript(production.title, cloudLines);
-        await _persistResolvedScript(ref, script);
-        if (context.mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text('Loaded ${cloudLines.length} lines from cloud'),
-              duration: const Duration(seconds: 2),
-            ),
-          );
-          context.push('/production');
-        }
-        return;
-      }
+      if (cloudLines == null || cloudLines.isEmpty) return;
+      final script = buildParsedScript(production.title, cloudLines);
+      await _persistResolvedScript(ref, script);
+      ref.read(currentScriptProvider.notifier).state = script;
+      messenger.showSnackBar(SnackBar(
+        content: Text(
+            'Loaded ${cloudLines.length} lines from cloud — reopen to rehearse'),
+        duration: const Duration(seconds: 4),
+      ));
     } catch (e) {
       debugPrint('Cloud script fetch failed: $e');
     }
-
-    // Nothing found anywhere — go to import
-    if (context.mounted) context.push('/import');
   }
 
   Future<void> _openProductionForSetup(
@@ -525,21 +534,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     if (context.mounted) Navigator.pop(context);
 
     final supa = SupabaseService.instance;
-    String productionId = const Uuid().v4();
-    String organizerId = 'local';
-    String joinCode = SupabaseService.generateJoinCode();
-
-    if (supa.isSignedIn) {
-      try {
-        final row = await supa.createProduction(title: title);
-        productionId = row['id'] as String;
-        organizerId = supa.currentUser!.id;
-        joinCode = row['join_code'] as String? ?? joinCode;
-      } catch (e) {
-        dlog.log(LogCategory.error,
-            '_submitProduction: cloud create failed: $e');
-      }
-    }
+    final productionId = const Uuid().v4();
+    final organizerId = supa.isSignedIn ? supa.currentUser!.id : 'local';
+    final joinCode = SupabaseService.generateJoinCode();
 
     final production = Production(
       id: productionId,
@@ -550,12 +547,28 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
       joinCode: joinCode,
     );
 
+    // Optimistic: persist locally and navigate immediately so the new
+    // production appears instantly. The cloud insert runs in the background
+    // using the same id + join code, so local and cloud stay consistent.
     dlog.log(LogCategory.general,
-        '_submitProduction: adding production id=$productionId');
+        '_submitProduction: adding production id=$productionId (optimistic)');
     await ref.read(productionsProvider.notifier).add(production);
     ref.read(currentProductionProvider.notifier).state = production;
     AnalyticsService.instance.logProductionCreated();
     _submittingProduction = false;
+
+    if (supa.isSignedIn) {
+      // Fire-and-forget — failure is non-fatal (local copy exists; the sync
+      // layer reconciles later), and it must not block the UI.
+      unawaited(supa
+          .createProduction(title: title, id: productionId, joinCode: joinCode)
+          .catchError((Object e) {
+        dlog.log(LogCategory.error,
+            '_submitProduction: background cloud create failed: $e');
+        return <String, dynamic>{};
+      }));
+    }
+
     dlog.log(LogCategory.general,
         '_submitProduction: done, navigating to /import');
     if (mounted) {

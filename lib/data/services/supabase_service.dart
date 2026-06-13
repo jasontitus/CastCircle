@@ -94,17 +94,22 @@ class SupabaseService {
 
   Future<Map<String, dynamic>> createProduction({
     required String title,
+    String? id,
+    String? joinCode,
   }) async {
     final userId = currentUser!.id;
-    final joinCode = generateJoinCode();
+    final insertData = <String, dynamic>{
+      'title': title,
+      'organizer_id': userId,
+      'status': 'draft',
+      'join_code': joinCode ?? generateJoinCode(),
+    };
+    // Use the caller's id when provided so the cloud row matches the local
+    // (optimistically-created) production instead of a server-generated id.
+    if (id != null) insertData['id'] = id;
     final row = await _client
         .from('productions')
-        .insert({
-          'title': title,
-          'organizer_id': userId,
-          'status': 'draft',
-          'join_code': joinCode,
-        })
+        .insert(insertData)
         .select()
         .single();
 
