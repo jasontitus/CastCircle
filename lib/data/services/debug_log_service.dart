@@ -15,6 +15,7 @@ enum LogCategory {
   network('NET', '🌐'),
   firebase('FIR', '🔥'),
   general('GEN', '📋'),
+  ai('AI', '✨'),
   error('ERR', '❌'),
   ;
 

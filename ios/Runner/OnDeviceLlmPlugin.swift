@@ -58,16 +58,22 @@ class OnDeviceLlmPlugin: NSObject {
     // MARK: - Init
 
     private func initialize(call: FlutterMethodCall, result: @escaping FlutterResult) async {
+        // Returns a status map so Dart can log which runtime is active and why
+        // Gemma (if present) didn't load: { ready, runtime, error }.
+        var gemmaError: String?
+
         // 1. Prefer Gemma (MLX) when its model is downloaded and the runtime is
         //    compiled in. Any failure falls through to Apple's built-in model.
         #if GEMMA_RUNTIME
-        if await loadGemmaIfPossible(call: call) {
+        let gemma = await loadGemma(call: call)
+        if gemma.loaded {
             useFoundationModels = false
             isReady = true
             NSLog("OnDeviceLlm: using MLX Gemma")
-            result(true)
+            result(["ready": true, "runtime": "gemma", "error": ""])
             return
         }
+        gemmaError = gemma.error
         #endif
 
         // 2. Apple's built-in on-device model — no download required.
@@ -78,46 +84,52 @@ class OnDeviceLlmPlugin: NSObject {
                 useFoundationModels = true
                 isReady = true
                 NSLog("OnDeviceLlm: using Apple Foundation Models")
-                result(true)
+                result(["ready": true, "runtime": "foundation", "error": gemmaError ?? ""])
                 return
             }
             NSLog("OnDeviceLlm: Foundation Models unavailable (\(availability))")
+            isReady = false
+            result(["ready": false, "runtime": "none",
+                    "error": "gemma: \(gemmaError ?? "n/a"); foundationModels: \(availability)"])
+            return
         }
         #endif
 
         NSLog("OnDeviceLlm: no on-device runtime available")
         isReady = false
-        result(false)
+        result(["ready": false, "runtime": "none", "error": gemmaError ?? "no on-device runtime"])
     }
 
     #if GEMMA_RUNTIME
-    /// Load the downloaded Gemma model. Returns false (so the caller falls back
-    /// to Apple's model) when there's no valid model directory or the load fails.
-    private func loadGemmaIfPossible(call: FlutterMethodCall) async -> Bool {
+    /// Load the downloaded Gemma model. Returns (loaded, error) — error is a
+    /// human-readable reason for the Dart debug log when it can't load.
+    private func loadGemma(call: FlutterMethodCall) async -> (loaded: Bool, error: String?) {
         guard let args = call.arguments as? [String: Any],
               let rawPath = args["modelPath"] as? String, !rawPath.isEmpty else {
-            return false
+            return (false, "no model directory")
         }
         // Confine the model path to Documents/models (symlink-resolved).
         let docsDir = NSSearchPathForDirectoriesInDomains(.documentDirectory, .userDomainMask, true).first ?? ""
         let allowedBase = (((docsDir as NSString)
             .appendingPathComponent("models")) as NSString).resolvingSymlinksInPath
         let path = ((rawPath as NSString).standardizingPath as NSString).resolvingSymlinksInPath
-        guard path == allowedBase || path.hasPrefix(allowedBase + "/") else { return false }
+        guard path == allowedBase || path.hasPrefix(allowedBase + "/") else {
+            return (false, "model path outside models directory")
+        }
         let fm = FileManager.default
         guard fm.fileExists(atPath: (path as NSString).appendingPathComponent("config.json")),
               fm.fileExists(atPath: (path as NSString).appendingPathComponent("model.safetensors")) else {
-            return false
+            return (false, "model files missing")
         }
         modelPath = path
         do {
             NSLog("OnDeviceLlm: loading Gemma from \(path)…")
             let configuration = ModelConfiguration(directory: URL(fileURLWithPath: path))
             container = try await #huggingFaceLoadModelContainer(configuration: configuration)
-            return true
+            return (true, nil)
         } catch {
             NSLog("OnDeviceLlm: Gemma load failed: \(error.localizedDescription)")
-            return false
+            return (false, "load failed: \(error.localizedDescription)")
         }
     }
     #endif

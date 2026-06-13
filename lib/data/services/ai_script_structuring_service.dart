@@ -1,9 +1,9 @@
 import 'dart:convert';
 
-import 'package:flutter/foundation.dart';
 import 'package:uuid/uuid.dart';
 
 import '../models/script_models.dart';
+import 'debug_log_service.dart';
 import 'on_device_llm_channel.dart';
 import 'script_parser.dart';
 
@@ -59,32 +59,49 @@ class AiScriptStructuringService {
     List<String> pageImagePaths = const [],
     required String title,
   }) async {
-    if (!_provider.isAvailable) return null;
+    final log = DebugLogService.instance;
+    if (!_provider.isAvailable) {
+      log.logError(LogCategory.ai, 'structure skipped — no on-device runtime');
+      return null;
+    }
     if ((rawText == null || rawText.trim().isEmpty) && pageImagePaths.isEmpty) {
+      log.logError(LogCategory.ai, 'structure skipped — no input text or images');
       return null;
     }
 
     final prompt = _buildPrompt(rawText: rawText, hasImages: pageImagePaths.isNotEmpty);
+    log.log(LogCategory.ai,
+        'structuring (textChars=${rawText?.length ?? 0}, promptChars=${prompt.length}, images=${pageImagePaths.length})');
 
     final String? response;
     try {
       response = await _provider.generate(prompt: prompt, imagePaths: pageImagePaths);
     } catch (e) {
-      debugPrint('AI structuring: generate failed ($e)');
+      log.logError(LogCategory.ai, 'generate threw', e);
       return null;
     }
-    if (response == null) return null;
+    if (response == null) {
+      log.logError(LogCategory.ai, 'model returned no output');
+      return null;
+    }
 
     final json = _extractJsonObject(response);
     if (json == null) {
-      debugPrint('AI structuring: no JSON object found in model output');
+      final preview = response.length > 180 ? response.substring(0, 180) : response;
+      log.logError(LogCategory.ai,
+          'no JSON object in model output (got ${response.length} chars): $preview');
       return null;
     }
 
     try {
-      return _toParsedScript(json, title: title);
+      final script = _toParsedScript(json, title: title);
+      final dialogue =
+          script.lines.where((l) => l.lineType == LineType.dialogue).length;
+      log.log(LogCategory.ai,
+          'structured → ${script.characters.length} characters, $dialogue lines');
+      return script;
     } catch (e) {
-      debugPrint('AI structuring: failed to convert model JSON ($e)');
+      log.logError(LogCategory.ai, 'failed to convert model JSON', e);
       return null;
     }
   }

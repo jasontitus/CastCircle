@@ -2,6 +2,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 
 import 'ai_script_structuring_service.dart';
+import 'debug_log_service.dart';
 
 /// Platform channel to an on-device multimodal LLM used for script
 /// structuring (recommended model: **Gemma 4 E2B**, Apache 2.0, <2 GB).
@@ -35,19 +36,30 @@ class OnDeviceLlmChannel implements OnDeviceLlmProvider {
   /// Load the model from a local checkpoint path. Returns true on success.
   /// Safe to call on platforms without the plugin (returns false).
   Future<bool> initialize(String modelPath) async {
+    final log = DebugLogService.instance;
     try {
-      final ok = await _channel.invokeMethod<bool>(
+      log.log(LogCategory.ai,
+          'initialize (loading on-device model, may take a moment)…');
+      final res = await _channel.invokeMethod<Map<dynamic, dynamic>>(
         'initialize',
         {'modelPath': modelPath},
       );
-      _initialized = ok ?? false;
-      debugPrint('OnDeviceLlm: initialize($modelPath) = $_initialized');
+      final ready = res?['ready'] == true;
+      final runtime = (res?['runtime'] as String?) ?? 'unknown';
+      final error = (res?['error'] as String?) ?? '';
+      _initialized = ready;
+      if (ready) {
+        log.log(LogCategory.ai,
+            'ready — runtime=$runtime${error.isNotEmpty ? " (gemma: $error)" : ""}');
+      } else {
+        log.logError(LogCategory.ai, 'not ready — runtime=$runtime: $error');
+      }
       return _initialized;
     } on PlatformException catch (e) {
-      debugPrint('OnDeviceLlm: initialize failed: ${e.message}');
+      log.logError(LogCategory.ai, 'initialize failed: ${e.message}', e);
       return false;
     } on MissingPluginException {
-      debugPrint('OnDeviceLlm: plugin not available on this platform');
+      log.log(LogCategory.ai, 'plugin not available on this platform');
       return false;
     }
   }
@@ -58,13 +70,18 @@ class OnDeviceLlmChannel implements OnDeviceLlmProvider {
     List<String> imagePaths = const [],
   }) async {
     if (!_initialized) return null;
+    final log = DebugLogService.instance;
     try {
-      return await _channel.invokeMethod<String>('generate', {
+      log.log(LogCategory.ai,
+          'generate (promptChars=${prompt.length}, images=${imagePaths.length})…');
+      final out = await _channel.invokeMethod<String>('generate', {
         'prompt': prompt,
         'imagePaths': imagePaths,
       });
+      log.log(LogCategory.ai, 'generate returned ${out?.length ?? 0} chars');
+      return out;
     } on PlatformException catch (e) {
-      debugPrint('OnDeviceLlm: generate failed: ${e.message}');
+      log.logError(LogCategory.ai, 'generate failed (${e.code}): ${e.message}', e);
       return null;
     } on MissingPluginException {
       return null;
