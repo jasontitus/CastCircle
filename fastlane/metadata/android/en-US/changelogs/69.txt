@@ -2,5 +2,6 @@ Smoother rehearsal speech recognition:
 - Your lines now hold together through dramatic pauses instead of resetting mid-line
 - Cues advance faster and more naturally as soon as you finish speaking
 - The listening indicator now glows with your live voice level
+- Fixed continuous listening occasionally hanging after a recognition hiccup
 
 Plus reliability improvements to text-to-speech playback and cloud sync.
