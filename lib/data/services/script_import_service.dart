@@ -8,6 +8,7 @@ import 'package:path_provider/path_provider.dart';
 import 'package:pdfrx/pdfrx.dart';
 
 import '../models/script_models.dart';
+import 'ai_script_structuring_service.dart';
 import 'ocr_confidence_service.dart';
 import 'script_parser.dart';
 import 'script_export.dart';
@@ -17,7 +18,14 @@ import 'vision_ocr_channel.dart';
 
 /// Service to import scripts from PDF or text files.
 class ScriptImportService {
+  ScriptImportService({AiScriptStructuringService? aiStructurer})
+      : _aiStructurer = aiStructurer ?? AiScriptStructuringService();
+
   final ScriptParser _parser = ScriptParser();
+
+  /// On-device LLM structuring fallback (Gemma 4). Used only when the heuristic
+  /// parse looks poor and a model is loaded; otherwise a no-op.
+  final AiScriptStructuringService _aiStructurer;
 
   /// Import a script from a text file (already OCR'd or plain text).
   Future<ParsedScript> importFromTextFile(String filePath) async {
@@ -124,7 +132,15 @@ class ScriptImportService {
 
           debugPrint('PDF import: PDFKit parse quality low '
               '(${nativeResult.characters.length} chars, '
-              '${nativeResult.acts.length} acts), trying OCR...');
+              '${nativeResult.acts.length} acts), trying AI/OCR...');
+
+          // Strategy 1b: on-device AI structuring of the extracted text.
+          // Fixes format/structure brittleness the heuristic parser misses,
+          // without paying the OCR render cost. No-op unless a model is loaded.
+          final aiResult = await _tryAiStructure(rawText: cleanedText, title: title);
+          if (aiResult != null && _isGoodParse(aiResult)) {
+            return _scoreConfidence(aiResult);
+          }
         }
       }
     } catch (e) {
@@ -133,7 +149,40 @@ class ScriptImportService {
 
     // Strategy 2: OCR pipeline (image-based PDFs like scanned scripts)
     final ocrResult = await _importFromPdfOcr(pdfPath, title: title);
+
+    // Strategy 2b: if OCR text still parses poorly, let the on-device model
+    // restructure it — OCR output is the prime beneficiary of LLM cleanup.
+    if (!_isGoodParse(ocrResult)) {
+      final aiResult =
+          await _tryAiStructure(rawText: ocrResult.rawText, title: title);
+      if (aiResult != null && _isGoodParse(aiResult)) {
+        return _scoreConfidence(aiResult);
+      }
+    }
     return _scoreConfidence(ocrResult);
+  }
+
+  /// Attempt on-device AI structuring. Returns null when no model is loaded
+  /// (the common case today) so callers fall back to the heuristic result.
+  Future<ParsedScript?> _tryAiStructure({
+    String? rawText,
+    List<String> pageImagePaths = const [],
+    required String title,
+  }) async {
+    if (!_aiStructurer.isAvailable) return null;
+    debugPrint('PDF import: trying on-device AI structuring fallback...');
+    final result = await _aiStructurer.structure(
+      rawText: rawText,
+      pageImagePaths: pageImagePaths,
+      title: title,
+    );
+    if (result != null) {
+      final dialogue =
+          result.lines.where((l) => l.lineType == LineType.dialogue).length;
+      debugPrint('PDF import: AI structuring → '
+          '${result.characters.length} characters, $dialogue lines');
+    }
+    return result;
   }
 
   /// Run dictionary-based spell checking on all lines to score OCR confidence.
