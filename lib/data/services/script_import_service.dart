@@ -131,7 +131,7 @@ class ScriptImportService {
               '(${nativeResult.characters.length} characters, '
               '${nativeResult.lines.where((l) => l.lineType == LineType.dialogue).length} lines)',
             );
-            return _scoreConfidence(
+            return await _scoreConfidence(
               ParsedScript(
                 title: nativeResult.title,
                 lines: taggedLines,
@@ -155,23 +155,28 @@ class ScriptImportService {
 
     // Strategy 2: OCR pipeline (image-based PDFs like scanned scripts)
     final ocrResult = await _importFromPdfOcr(pdfPath, title: title);
-    return _scoreConfidence(ocrResult);
+    return await _scoreConfidence(ocrResult);
   }
 
   /// Run dictionary-based spell checking on all lines to score OCR confidence.
   /// Disposes the dictionary after scoring to free memory.
-  ParsedScript _scoreConfidence(ParsedScript script) {
+  Future<ParsedScript> _scoreConfidence(ParsedScript script) async {
     final scorer = OcrConfidenceService.instance;
     try {
+      await scorer.ensureVocabLoaded();
       final scoredLines = scorer.scoreScript(
         script.lines,
         characters: script.characters,
       );
-      final lowCount = scoredLines
-          .where((l) => l.ocrConfidence != null && l.ocrConfidence! < 0.8)
+      final reviewCount = scoredLines
+          .where((l) => l.reviewStatus == OcrReviewStatus.review)
+          .length;
+      final notScriptCount = scoredLines
+          .where((l) => l.reviewStatus == OcrReviewStatus.likelyNotScript)
           .length;
       debugPrint(
-        'OCR confidence: $lowCount of ${scoredLines.length} lines flagged as low confidence',
+        'OCR confidence: $reviewCount lines to review, '
+        '$notScriptCount likely-not-script (of ${scoredLines.length})',
       );
       return ParsedScript(
         title: script.title,

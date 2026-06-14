@@ -1,18 +1,71 @@
+import 'dart:math' as math;
+
+import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart' show rootBundle;
 import 'package:simple_spell_checker/simple_spell_checker.dart';
 import 'package:simple_spell_checker_en_lan/simple_spell_checker_en_lan.dart';
 
 import '../models/script_models.dart';
 
-/// Scores OCR confidence for script lines using dictionary-based spell checking.
+/// Scores OCR confidence for script lines using dictionary-based spell checking
+/// merged with Paddle's per-line recognition confidence.
 ///
-/// Uses simple_spell_checker with the English dictionary (~320K words).
-/// Loaded on demand and disposed after use to free memory.
+/// Uses simple_spell_checker with the English dictionary (~251K words), a
+/// script-derived whitelist, and a bundled theatrical vocabulary
+/// (`assets/ocr/theatrical_vocab.txt`, ~2,936 words). Loaded on demand and
+/// disposed after use to free memory.
 class OcrConfidenceService {
   OcrConfidenceService._();
   static final instance = OcrConfidenceService._();
 
+  /// Path to the bundled theatrical vocabulary asset.
+  static const theatricalVocabAsset = 'assets/ocr/theatrical_vocab.txt';
+
+  // ── Merged-signal thresholds (Mac-validated against 88 low-OCR + 2,644 good
+  // lines; see /tmp/lowocr/REPORT.md). ──
+  /// Dictionary gate for the "review" bucket.
+  static const dictReviewThreshold = 0.80;
+
+  /// Rec-confidence gate for the "review" bucket.
+  static const recConfReviewThreshold = 0.85;
+
+  /// Low rec-confidence half of the "likely not script" gate.
+  static const recConfJunkThreshold = 0.65;
+
+  /// Low dictionary half of the "likely not script" gate.
+  static const dictJunkThreshold = 0.50;
+
   SimpleSpellChecker? _checker;
   Set<String> _whitelist = {};
+  Set<String> _theatricalVocab = {};
+  bool _vocabLoadAttempted = false;
+
+  // Tokenizer separators. Curly quotes (’ ‘ “ ”), straight quotes, underscores
+  // and asterisks (markdown emphasis) are separators so `“I`→`I`,
+  // `_emphasis_`→`emphasis`. The trailing-apostrophe strip below handles
+  // possessives like `Darcy’s`→`darcy`.
+  static final _split = RegExp(
+    '[\\s.,;:!?()\\[\\]{}"‘’“”\'_*\\/\\-–—→]+',
+  );
+  static final _allDigits = RegExp(r'^\d+$');
+  static final _allCaps = RegExp(r'^[A-Z][A-Z]+$');
+  static final _edgeApostrophes = RegExp("^['‘’]+|['‘’]+\$");
+
+  // Latin diacritic fold — OCR sprinkles spurious accents (speáks → speaks).
+  static const _diacriticMap = {
+    'á': 'a', 'à': 'a', 'â': 'a', 'ä': 'a', 'ã': 'a', 'å': 'a',
+    'é': 'e', 'è': 'e', 'ê': 'e', 'ë': 'e',
+    'í': 'i', 'ì': 'i', 'î': 'i', 'ï': 'i',
+    'ó': 'o', 'ò': 'o', 'ô': 'o', 'ö': 'o', 'õ': 'o',
+    'ú': 'u', 'ù': 'u', 'û': 'u', 'ü': 'u',
+    'ñ': 'n', 'ç': 'c', 'ý': 'y', 'ÿ': 'y',
+    'Á': 'A', 'À': 'A', 'Â': 'A', 'Ä': 'A', 'Ã': 'A', 'Å': 'A',
+    'É': 'E', 'È': 'E', 'Ê': 'E', 'Ë': 'E',
+    'Í': 'I', 'Ì': 'I', 'Î': 'I', 'Ï': 'I',
+    'Ó': 'O', 'Ò': 'O', 'Ô': 'O', 'Ö': 'O', 'Õ': 'O',
+    'Ú': 'U', 'Ù': 'U', 'Û': 'U', 'Ü': 'U',
+    'Ñ': 'N', 'Ç': 'C', 'Ý': 'Y',
+  };
 
   /// Initialize the spell checker (loads dictionary into memory).
   void _ensureLoaded() {
@@ -22,11 +75,40 @@ class OcrConfidenceService {
     _checker = SimpleSpellChecker(language: 'en');
   }
 
+  /// Load the bundled theatrical vocabulary into [_theatricalVocab] (once).
+  ///
+  /// Tolerant of a missing asset (e.g. in unit tests without a bundle) — leaves
+  /// the set empty and proceeds with dict + whitelist only.
+  Future<void> ensureVocabLoaded() async {
+    if (_vocabLoadAttempted) return;
+    _vocabLoadAttempted = true;
+    try {
+      final raw = await rootBundle.loadString(theatricalVocabAsset);
+      _theatricalVocab = raw
+          .split('\n')
+          .map((w) => w.trim().toLowerCase())
+          .where((w) => w.isNotEmpty)
+          .toSet();
+    } catch (e) {
+      debugPrint('OCR confidence: theatrical vocab not loaded ($e)');
+      _theatricalVocab = {};
+    }
+  }
+
+  /// Inject a theatrical vocabulary directly (for tests/unit use).
+  @visibleForTesting
+  void setTheatricalVocab(Set<String> vocab) {
+    _theatricalVocab = vocab.map((w) => w.trim().toLowerCase()).toSet();
+    _vocabLoadAttempted = true;
+  }
+
   /// Dispose the spell checker to free memory.
   void dispose() {
     _checker?.dispose();
     _checker = null;
     _whitelist = {};
+    _theatricalVocab = {};
+    _vocabLoadAttempted = false;
     SimpleSpellCheckerEnRegister.removeLan();
   }
 
@@ -45,7 +127,7 @@ class OcrConfidenceService {
 
     // Character names and their parts
     for (final char in characters) {
-      for (final part in char.name.split(RegExp(r'[\s.]+' ))) {
+      for (final part in char.name.split(RegExp(r'[\s.]+'))) {
         if (part.length >= 2) {
           _whitelist.add(part.toLowerCase());
         }
@@ -56,10 +138,7 @@ class OcrConfidenceService {
     // are likely proper nouns (place names, character references) not OCR errors
     final wordCounts = <String, int>{};
     for (final line in lines) {
-      final words = line.text
-          .split(RegExp(r'[\s.,;:!?()\[\]{}"\/\-–—→]+'))
-          .where((w) => w.length >= 2);
-      for (final word in words) {
+      for (final word in _tokenize(line.text)) {
         final lower = word.toLowerCase();
         wordCounts[lower] = (wordCounts[lower] ?? 0) + 1;
       }
@@ -71,44 +150,78 @@ class OcrConfidenceService {
     }
   }
 
-  bool _isWhitelisted(String word) {
-    return _whitelist.contains(word.toLowerCase());
+  /// Split a line into scorable words. Curly/straight quotes, underscores and
+  /// asterisks act as separators; leading/trailing apostrophes are stripped (so
+  /// `Darcy’s`→`darcy` + `s`, `“I`→`I`). ALL-CAPS, pure-digit and single-char
+  /// tokens are dropped (speaker names, line numbers).
+  List<String> _tokenize(String text) {
+    return text
+        .split(_split)
+        .map((w) => w.replaceAll(_edgeApostrophes, ''))
+        .where((w) => w.length >= 2)
+        .where((w) => !_allDigits.hasMatch(w))
+        .where((w) => !_allCaps.hasMatch(w)) // skip ALL CAPS (speaker names etc.)
+        .toList();
+  }
+
+  /// Fold Latin diacritics: speáks → speaks (OCR adds spurious accents).
+  static String stripDiacritics(String s) {
+    final sb = StringBuffer();
+    for (final ch in s.split('')) {
+      sb.write(_diacriticMap[ch] ?? ch);
+    }
+    return sb.toString();
+  }
+
+  bool _isValidWord(String word) {
+    final stripped = stripDiacritics(word);
+    final low = stripped.toLowerCase();
+    if (_whitelist.contains(low)) return true;
+    if (_theatricalVocab.contains(low)) return true;
+    final results = _checker!.checkBuilder<bool>(
+      stripped,
+      builder: (w, isCorrect) => isCorrect,
+    );
+    return results != null && results.isNotEmpty && results.first;
   }
 
   /// Score a single line of text.
   /// Returns 0.0 (all misspelled) to 1.0 (all correct).
   double scoreLine(String text) {
     _ensureLoaded();
-    final words = text
-        .split(RegExp(r'[\s.,;:!?()\[\]{}"\/\-–—→]+'))
-        .where((w) => w.length >= 2)
-        .where((w) => !RegExp(r'^\d+$').hasMatch(w))
-        .where((w) => !RegExp(r'^[A-Z][A-Z]+$').hasMatch(w)) // skip ALL CAPS
-        .toList();
-
+    final words = _tokenize(text);
     if (words.isEmpty) return 1.0;
 
     int correct = 0;
     for (final word in words) {
-      // Check whitelist first (character names, frequent proper nouns, titles)
-      if (_isWhitelisted(word)) {
-        correct++;
-        continue;
-      }
-
-      final results = _checker!.checkBuilder<bool>(
-        word,
-        builder: (w, isCorrect) => isCorrect,
-      );
-      if (results != null && results.isNotEmpty && results.first) {
-        correct++;
-      }
+      if (_isValidWord(word)) correct++;
     }
-
     return correct / words.length;
   }
 
-  /// Score all lines in a parsed script, updating ocrConfidence.
+  /// Classify a line from its merged signal (Mac-validated thresholds).
+  ///
+  /// - [dictNew]: improved valid-word fraction (0.0–1.0).
+  /// - [recConf]: Paddle per-line rec-confidence (0.0–1.0; 1.0 if unknown).
+  static OcrReviewStatus classify(double dictNew, double recConf) {
+    if (recConf < recConfJunkThreshold && dictNew < dictJunkThreshold) {
+      return OcrReviewStatus.likelyNotScript;
+    }
+    if (dictNew < dictReviewThreshold || recConf < recConfReviewThreshold) {
+      return OcrReviewStatus.review;
+    }
+    return OcrReviewStatus.ok;
+  }
+
+  /// Score all lines in a parsed script, updating ocrConfidence and reviewStatus.
+  ///
+  /// Reads each line's existing [ScriptLine.ocrConfidence] as the Paddle
+  /// rec-confidence BEFORE overwriting it. The new display confidence is the
+  /// min of the dictionary fraction and the rec-confidence, so the existing
+  /// `< 0.8` highlighting still fires for genuinely-bad lines.
+  ///
+  /// Call [ensureVocabLoaded] before this (the import service does so) to get
+  /// the theatrical-vocab boost; it still works without it.
   List<ScriptLine> scoreScript(List<ScriptLine> lines,
       {List<ScriptCharacter> characters = const []}) {
     _ensureLoaded();
@@ -117,8 +230,16 @@ class OcrConfidenceService {
     return lines.map((line) {
       if (line.text.trim().isEmpty) return line;
       if (line.lineType == LineType.header) return line;
-      final score = scoreLine(line.text);
-      return line.copyWith(ocrConfidence: () => score);
+
+      final dictNew = scoreLine(line.text);
+      final recConf = line.ocrConfidence ?? 1.0;
+      final status = classify(dictNew, recConf);
+      final display = math.min(dictNew, recConf);
+
+      return line.copyWith(
+        ocrConfidence: () => display,
+        reviewStatus: status,
+      );
     }).toList();
   }
 }

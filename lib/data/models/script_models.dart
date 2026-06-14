@@ -6,6 +6,23 @@ enum LineType {
   song,
 }
 
+/// OCR review classification for a script line.
+///
+/// Computed at import time from the merged OCR signal (dictionary validity +
+/// Paddle rec-confidence). This is a transient, in-memory field used to drive
+/// the import "Review OCR" surface; it is NOT persisted to the database.
+enum OcrReviewStatus {
+  /// Line looks clean — no review needed.
+  ok,
+
+  /// Genuinely-bad-but-editable line — surface it for inline correction.
+  review,
+
+  /// Low confidence AND low dictionary validity — likely a margin note or
+  /// handwriting annotation rather than dialogue.
+  likelyNotScript,
+}
+
 /// A single line in a parsed script.
 class ScriptLine {
   final String id;
@@ -20,6 +37,11 @@ class ScriptLine {
   final double? ocrConfidence; // OCR confidence 0.0–1.0, null for non-OCR imports
   final int? sourcePage; // 1-based page from original PDF
   final int? sourceLineOnPage; // 1-based line within that page
+
+  /// OCR review classification, computed at import time from the merged signal.
+  /// Transient (NOT persisted to the DB); drives the import "Review OCR" UI.
+  /// Defaults to [OcrReviewStatus.ok].
+  final OcrReviewStatus reviewStatus;
 
   /// Individual characters for multi-character lines (e.g., "JOHN AND MARY"
   /// → ["JOHN", "MARY"]). Empty for single-character lines.
@@ -39,6 +61,7 @@ class ScriptLine {
     this.ocrConfidence,
     this.sourcePage,
     this.sourceLineOnPage,
+    this.reviewStatus = OcrReviewStatus.ok,
   });
 
   /// Whether this line is spoken by (or includes) the given character.
@@ -75,6 +98,7 @@ class ScriptLine {
     double? Function()? ocrConfidence,
     int? Function()? sourcePage,
     int? Function()? sourceLineOnPage,
+    OcrReviewStatus? reviewStatus,
   }) {
     return ScriptLine(
       id: id ?? this.id,
@@ -90,6 +114,7 @@ class ScriptLine {
       ocrConfidence: ocrConfidence != null ? ocrConfidence() : this.ocrConfidence,
       sourcePage: sourcePage != null ? sourcePage() : this.sourcePage,
       sourceLineOnPage: sourceLineOnPage != null ? sourceLineOnPage() : this.sourceLineOnPage,
+      reviewStatus: reviewStatus ?? this.reviewStatus,
     );
   }
 

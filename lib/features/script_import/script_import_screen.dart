@@ -13,6 +13,7 @@ import '../../data/services/paddle_ocr_channel.dart';
 import '../../data/services/supabase_service.dart';
 import '../../data/services/voice_config_service.dart';
 import '../../providers/production_providers.dart';
+import 'ocr_review_screen.dart';
 
 class ScriptImportScreen extends ConsumerStatefulWidget {
   const ScriptImportScreen({super.key});
@@ -191,6 +192,8 @@ class _ScriptImportScreenState extends ConsumerState<ScriptImportScreen> {
         ),
         // Dialect selector
         _buildDialectSelector(context),
+        // OCR review banner (only when low-OCR lines were detected)
+        _buildReviewBanner(context, script),
         // Character list
         Expanded(
           child: ListView(
@@ -345,6 +348,68 @@ class _ScriptImportScreenState extends ConsumerState<ScriptImportScreen> {
         ],
       ),
     );
+  }
+
+  /// Banner surfacing low-OCR lines flagged for review. Hidden when the import
+  /// was clean (no `review` / `likelyNotScript` lines).
+  Widget _buildReviewBanner(BuildContext context, ParsedScript script) {
+    final reviewCount = script.lines
+        .where((l) => l.reviewStatus == OcrReviewStatus.review)
+        .length;
+    final notScriptCount = script.lines
+        .where((l) => l.reviewStatus == OcrReviewStatus.likelyNotScript)
+        .length;
+    if (reviewCount == 0 && notScriptCount == 0) {
+      return const SizedBox.shrink();
+    }
+
+    final theme = Theme.of(context);
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+      color: theme.colorScheme.tertiaryContainer,
+      child: Row(
+        children: [
+          Icon(Icons.spellcheck,
+              size: 20, color: theme.colorScheme.onTertiaryContainer),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Text(
+              '$reviewCount lines to review, '
+              '$notScriptCount likely-not-script',
+              style: theme.textTheme.bodyMedium?.copyWith(
+                color: theme.colorScheme.onTertiaryContainer,
+              ),
+            ),
+          ),
+          const SizedBox(width: 8),
+          FilledButton.tonal(
+            onPressed: () => _openReview(context),
+            child: const Text('Review'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _openReview(BuildContext context) async {
+    final script = _preview;
+    if (script == null) return;
+    final result = await Navigator.of(context).push<OcrReviewResult>(
+      MaterialPageRoute(
+        builder: (_) => OcrReviewScreen(lines: script.lines),
+      ),
+    );
+    if (result == null) return;
+    setState(() {
+      _preview = ParsedScript(
+        title: script.title,
+        lines: result.lines,
+        characters: script.characters,
+        scenes: script.scenes,
+        rawText: script.rawText,
+      );
+    });
   }
 
   Widget _statBadge(BuildContext context, String value, String label) {
