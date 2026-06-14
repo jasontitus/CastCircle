@@ -96,6 +96,14 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen> {
   // to ensure the actor has finished reading a long multi-sentence line.
   Timer? _matchConfirmTimer;
 
+  // matchScore is coverage (fraction of the line's words recognized). At/above
+  // this, the actor has said essentially the whole line, so we advance after
+  // only [_fastConfirmMs] of no-new-results (a snappy "finish line → next line"
+  // loop) instead of the long confirm. The timer only fires once the actor
+  // actually stops, so a high threshold + short wait can't clip them.
+  static const double _fullLineMatchThreshold = 0.9;
+  static const int _fastConfirmMs = 200;
+
   // Session tracking
   late DateTime _sessionStartedAt;
   final List<LineAttempt> _lineAttempts = [];
@@ -1561,15 +1569,19 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen> {
 
         if (score > _currentBestScore) _currentBestScore = score;
 
-        // Auto-advance if match exceeds threshold — but wait for actor
-        // to stop speaking first. For long multi-sentence lines, the score
-        // can cross the threshold while the actor is still reading. We use
-        // a confirmation timer: only advance if no new STT results arrive
-        // for 1.2 seconds after the score crosses the threshold. (The
-        // energy-based endpointing above usually fires sooner.)
+        // Auto-advance once the match exceeds threshold, after the actor stops.
+        // A confirmation timer fires only if no new STT results arrive for a
+        // window after the score crosses the threshold. When coverage is
+        // near-complete the actor has clearly finished the whole line, so use a
+        // short window for a fast response; a partial-but-over-threshold score
+        // (still mid long line) keeps the longer 1.2s window so we don't cut a
+        // multi-sentence line short. (Energy endpointing above also advances on
+        // mic-silence.)
         if (score >= threshold) {
           _matchConfirmTimer?.cancel();
-          _matchConfirmTimer = Timer(const Duration(milliseconds: 1200), () {
+          final confirmMs =
+              score >= _fullLineMatchThreshold ? _fastConfirmMs : 1200;
+          _matchConfirmTimer = Timer(Duration(milliseconds: confirmMs), () {
             _confirmLineMatch(line);
           });
         } else {
