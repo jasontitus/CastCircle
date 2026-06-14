@@ -14,12 +14,13 @@ import 'script_parser.dart';
 import 'script_export.dart';
 import 'pdf_text_channel.dart';
 import 'perf_service.dart';
+import 'paddle_ocr_channel.dart';
 import 'vision_ocr_channel.dart';
 
 /// Service to import scripts from PDF or text files.
 class ScriptImportService {
   ScriptImportService({AiScriptStructuringService? aiStructurer})
-      : _aiStructurer = aiStructurer ?? AiScriptStructuringService();
+    : _aiStructurer = aiStructurer ?? AiScriptStructuringService();
 
   final ScriptParser _parser = ScriptParser();
 
@@ -60,7 +61,10 @@ class ScriptImportService {
     // Remove horizontal rules
     text = text.replaceAll(RegExp(r'^[-*_]{3,}\s*$', multiLine: true), '');
     // Remove link syntax [text](url) -> text
-    text = text.replaceAllMapped(RegExp(r'\[([^\]]+)\]\([^)]+\)'), (m) => m[1]!);
+    text = text.replaceAllMapped(
+      RegExp(r'\[([^\]]+)\]\([^)]+\)'),
+      (m) => m[1]!,
+    );
     // Remove inline code backticks
     text = text.replaceAllMapped(RegExp(r'`([^`]+)`'), (m) => m[1]!);
     return text;
@@ -75,7 +79,10 @@ class ScriptImportService {
   /// 3. If the result looks bad (few characters, too many acts) or the PDF
   ///    has no embedded text (image-only), fall back to OCR pipeline.
   Future<ParsedScript> importFromPdf(String pdfPath) async {
-    return PerfService.instance.measure('pdf_import', () => _importFromPdfInner(pdfPath));
+    return PerfService.instance.measure(
+      'pdf_import',
+      () => _importFromPdfInner(pdfPath),
+    );
   }
 
   Future<ParsedScript> _importFromPdfInner(String pdfPath) async {
@@ -87,7 +94,8 @@ class ScriptImportService {
       if (perPage != null && perPage.isNotEmpty) {
         // Build combined text and track which raw line came from which page
         final buffer = StringBuffer();
-        final linePageMap = <int, int>{}; // raw line index → 1-based page number
+        final linePageMap =
+            <int, int>{}; // raw line index → 1-based page number
         var rawLineIdx = 0;
 
         for (var pageIdx = 0; pageIdx < perPage.length; pageIdx++) {
@@ -102,7 +110,9 @@ class ScriptImportService {
 
         final nativeText = buffer.toString();
         if (nativeText.trim().length > 200) {
-          debugPrint('PDF import: PDFKit extracted ${nativeText.length} chars from ${perPage.length} pages');
+          debugPrint(
+            'PDF import: PDFKit extracted ${nativeText.length} chars from ${perPage.length} pages',
+          );
           final cleanedText = _cleanPdfKitText(nativeText);
           final nativeParser = ScriptParser();
           final nativeResult = nativeParser.parse(cleanedText, title: title);
@@ -111,28 +121,38 @@ class ScriptImportService {
             // Map source page onto parsed lines
             final rawLines = nativeText.split('\n');
             final taggedLines = nativeResult.lines.map((line) {
-              final pageInfo = _findSourcePage(line.text, rawLines, linePageMap);
+              final pageInfo = _findSourcePage(
+                line.text,
+                rawLines,
+                linePageMap,
+              );
               return line.copyWith(
                 sourcePage: () => pageInfo?.page,
                 sourceLineOnPage: () => pageInfo?.lineOnPage,
               );
             }).toList();
 
-            debugPrint('PDF import: Using PDFKit result '
-                '(${nativeResult.characters.length} characters, '
-                '${nativeResult.lines.where((l) => l.lineType == LineType.dialogue).length} lines)');
-            return _scoreConfidence(ParsedScript(
-              title: nativeResult.title,
-              lines: taggedLines,
-              characters: nativeResult.characters,
-              scenes: nativeResult.scenes,
-              rawText: nativeResult.rawText,
-            ));
+            debugPrint(
+              'PDF import: Using PDFKit result '
+              '(${nativeResult.characters.length} characters, '
+              '${nativeResult.lines.where((l) => l.lineType == LineType.dialogue).length} lines)',
+            );
+            return _scoreConfidence(
+              ParsedScript(
+                title: nativeResult.title,
+                lines: taggedLines,
+                characters: nativeResult.characters,
+                scenes: nativeResult.scenes,
+                rawText: nativeResult.rawText,
+              ),
+            );
           }
 
-          debugPrint('PDF import: PDFKit parse quality low '
-              '(${nativeResult.characters.length} chars, '
-              '${nativeResult.acts.length} acts), trying OCR...');
+          debugPrint(
+            'PDF import: PDFKit parse quality low '
+            '(${nativeResult.characters.length} chars, '
+            '${nativeResult.acts.length} acts), trying OCR...',
+          );
         }
       }
     } catch (e) {
@@ -169,10 +189,13 @@ class ScriptImportService {
       title: title,
     );
     if (result != null) {
-      final dialogue =
-          result.lines.where((l) => l.lineType == LineType.dialogue).length;
-      debugPrint('PDF import: AI structuring → '
-          '${result.characters.length} characters, $dialogue lines');
+      final dialogue = result.lines
+          .where((l) => l.lineType == LineType.dialogue)
+          .length;
+      debugPrint(
+        'PDF import: AI structuring → '
+        '${result.characters.length} characters, $dialogue lines',
+      );
       return _scoreConfidence(result);
     }
     return null;
@@ -201,10 +224,13 @@ class ScriptImportService {
       isCancelled: isCancelled,
     );
     if (result != null) {
-      final dialogue =
-          result.lines.where((l) => l.lineType == LineType.dialogue).length;
-      debugPrint('PDF import: chunked AI structuring → '
-          '${result.characters.length} characters, $dialogue lines');
+      final dialogue = result.lines
+          .where((l) => l.lineType == LineType.dialogue)
+          .length;
+      debugPrint(
+        'PDF import: chunked AI structuring → '
+        '${result.characters.length} characters, $dialogue lines',
+      );
       return _scoreConfidence(result);
     }
     return null;
@@ -219,10 +245,12 @@ class ScriptImportService {
         script.lines,
         characters: script.characters,
       );
-      final lowCount = scoredLines.where(
-        (l) => l.ocrConfidence != null && l.ocrConfidence! < 0.8,
-      ).length;
-      debugPrint('OCR confidence: $lowCount of ${scoredLines.length} lines flagged as low confidence');
+      final lowCount = scoredLines
+          .where((l) => l.ocrConfidence != null && l.ocrConfidence! < 0.8)
+          .length;
+      debugPrint(
+        'OCR confidence: $lowCount of ${scoredLines.length} lines flagged as low confidence',
+      );
       return ParsedScript(
         title: script.title,
         lines: scoredLines,
@@ -248,13 +276,12 @@ class ScriptImportService {
     // Remove running headers like "11 Macbeth ACT 1. SC. 2" or
     // "23    Macbeth    ACT 2. SC. 3"
     cleaned = cleaned.replaceAll(
-        RegExp(r'^\d+\s+\w+\s+ACT \d+\.\s*SC\.\s*\d+\s*$',
-            multiLine: true),
-        '');
+      RegExp(r'^\d+\s+\w+\s+ACT \d+\.\s*SC\.\s*\d+\s*$', multiLine: true),
+      '',
+    );
 
     // Remove bare page numbers on their own line
-    cleaned = cleaned.replaceAll(
-        RegExp(r'^\d{1,3}\s*$', multiLine: true), '');
+    cleaned = cleaned.replaceAll(RegExp(r'^\d{1,3}\s*$', multiLine: true), '');
 
     // Collapse 3+ blank lines to 2
     cleaned = cleaned.replaceAll(RegExp(r'\n{3,}'), '\n\n');
@@ -269,8 +296,9 @@ class ScriptImportService {
   /// - Too many "acts" (Folger running headers parsed as act headers)
   /// - Very few dialogue lines relative to total content
   bool _isGoodParse(ParsedScript result) {
-    final dialogueCount =
-        result.lines.where((l) => l.lineType == LineType.dialogue).length;
+    final dialogueCount = result.lines
+        .where((l) => l.lineType == LineType.dialogue)
+        .length;
     final charCount = result.characters.length;
     final actCount = result.acts.length;
 
@@ -287,8 +315,10 @@ class ScriptImportService {
   /// OCR-based PDF import pipeline.
   /// Renders each page to an image, runs text recognition,
   /// and maps per-line OCR confidence back onto parsed ScriptLines.
-  Future<ParsedScript> _importFromPdfOcr(String pdfPath,
-      {required String title}) async {
+  Future<ParsedScript> _importFromPdfOcr(
+    String pdfPath, {
+    required String title,
+  }) async {
     final buffer = StringBuffer();
     final lineConfidences = <int, double>{};
     final linePageMap = <int, int>{}; // raw line index → 1-based page
@@ -314,75 +344,114 @@ class ScriptImportService {
         rawLineIndex++;
       }
 
-      debugPrint('PDF OCR (Vision): ${pdfResult.pageCount} pages, '
-          '${pdfResult.failedPages} failed');
+      debugPrint(
+        'PDF OCR (Vision): ${pdfResult.pageCount} pages, '
+        '${pdfResult.failedPages} failed',
+      );
     } else {
-      // iOS/Android: use pdfrx render + Google ML Kit per page
-      Pdfrx.getCacheDirectory ??= () async {
-        final dir = await getTemporaryDirectory();
-        return dir.path;
-      };
-      final doc = await PdfDocument.openFile(pdfPath);
-      final pageCount = doc.pages.length;
-
-      final textRecognizer = TextRecognizer();
-
+      // iOS/Android: try on-device PaddleOCR (PP-OCRv5 via ONNX Runtime) first;
+      // fall back to Google ML Kit if the native plugin is unavailable or errors.
+      PaddlePdfResult? paddleResult;
       try {
-        for (var i = 1; i <= pageCount; i++) {
-          try {
-            final page = doc.pages[i - 1];
-            final pdfImage = await page.render(
-              fullWidth: page.width * 2,
-              fullHeight: page.height * 2,
-            );
-            if (pdfImage == null) {
-              debugPrint('PDF OCR: Page $i/$pageCount — render returned null, skipping');
-              failedPages++;
-              continue;
-            }
-            final image = await pdfImage.createImage();
-            pdfImage.dispose();
+        paddleResult = await PaddleOcrChannel.ocrPdf(pdfPath);
+      } catch (e) {
+        debugPrint('PDF OCR: PaddleOCR failed ($e) — falling back to ML Kit');
+        paddleResult = null;
+      }
 
-            final byteData =
-                await image.toByteData(format: ui.ImageByteFormat.png);
-            image.dispose();
+      if (paddleResult != null) {
+        failedPages = paddleResult.failedPages;
+        for (final page in paddleResult.pages) {
+          for (final line in page.lines) {
+            buffer.writeln(line.text);
+            lineConfidences[rawLineIndex] = line.confidence; // real confidence
+            linePageMap[rawLineIndex] = page.page;
+            rawLineIndex++;
+          }
+          buffer.writeln();
+          rawLineIndex++;
+        }
+        debugPrint(
+          'PDF OCR (PaddleOCR): ${paddleResult.pageCount} pages, '
+          '${paddleResult.failedPages} failed',
+        );
+      } else {
+        // iOS/Android: use pdfrx render + Google ML Kit per page
+        Pdfrx.getCacheDirectory ??= () async {
+          final dir = await getTemporaryDirectory();
+          return dir.path;
+        };
+        final doc = await PdfDocument.openFile(pdfPath);
+        final pageCount = doc.pages.length;
 
-            if (byteData == null) {
-              debugPrint('PDF OCR: Page $i/$pageCount — render returned null, skipping');
-              failedPages++;
-              continue;
-            }
+        final textRecognizer = TextRecognizer();
 
-            final tempDir = await getTemporaryDirectory();
-            final tempFile = File(p.join(tempDir.path, 'ocr_page_$i.png'));
-            await tempFile.writeAsBytes(byteData.buffer.asUint8List());
+        try {
+          for (var i = 1; i <= pageCount; i++) {
+            try {
+              final page = doc.pages[i - 1];
+              final pdfImage = await page.render(
+                fullWidth: page.width * 2,
+                fullHeight: page.height * 2,
+              );
+              if (pdfImage == null) {
+                debugPrint(
+                  'PDF OCR: Page $i/$pageCount — render returned null, skipping',
+                );
+                failedPages++;
+                continue;
+              }
+              final image = await pdfImage.createImage();
+              pdfImage.dispose();
 
-            final inputImage = InputImage.fromFilePath(tempFile.path);
-            final recognized = await textRecognizer.processImage(inputImage);
+              final byteData = await image.toByteData(
+                format: ui.ImageByteFormat.png,
+              );
+              image.dispose();
 
-            for (final block in recognized.blocks) {
-              for (final line in block.lines) {
-                buffer.writeln(line.text);
-                lineConfidences[rawLineIndex] = _estimateLineConfidence(line.text);
-                linePageMap[rawLineIndex] = i;
+              if (byteData == null) {
+                debugPrint(
+                  'PDF OCR: Page $i/$pageCount — render returned null, skipping',
+                );
+                failedPages++;
+                continue;
+              }
+
+              final tempDir = await getTemporaryDirectory();
+              final tempFile = File(p.join(tempDir.path, 'ocr_page_$i.png'));
+              await tempFile.writeAsBytes(byteData.buffer.asUint8List());
+
+              final inputImage = InputImage.fromFilePath(tempFile.path);
+              final recognized = await textRecognizer.processImage(inputImage);
+
+              for (final block in recognized.blocks) {
+                for (final line in block.lines) {
+                  buffer.writeln(line.text);
+                  lineConfidences[rawLineIndex] = _estimateLineConfidence(
+                    line.text,
+                  );
+                  linePageMap[rawLineIndex] = i;
+                  rawLineIndex++;
+                }
+                buffer.writeln();
                 rawLineIndex++;
               }
-              buffer.writeln();
-              rawLineIndex++;
+
+              await tempFile.delete();
+
+              debugPrint(
+                'PDF OCR: Page $i/$pageCount done '
+                '(${recognized.blocks.length} blocks)',
+              );
+            } catch (e) {
+              debugPrint('PDF OCR: Page $i/$pageCount FAILED: $e — skipping');
+              failedPages++;
             }
-
-            await tempFile.delete();
-
-            debugPrint('PDF OCR: Page $i/$pageCount done '
-                '(${recognized.blocks.length} blocks)');
-          } catch (e) {
-            debugPrint('PDF OCR: Page $i/$pageCount FAILED: $e — skipping');
-            failedPages++;
           }
+        } finally {
+          textRecognizer.close();
+          await doc.dispose();
         }
-      } finally {
-        textRecognizer.close();
-        await doc.dispose();
       }
     }
 
@@ -393,7 +462,8 @@ class ScriptImportService {
     final rawText = buffer.toString();
     if (rawText.trim().isEmpty) {
       throw Exception(
-          'No text found in PDF. The file may be image-only or corrupted.');
+        'No text found in PDF. The file may be image-only or corrupted.',
+      );
     }
 
     final script = _parser.parse(rawText, title: title);
@@ -406,9 +476,16 @@ class ScriptImportService {
     var rawSearchStart = 0;
     final updatedLines = script.lines.map((line) {
       final conf = _findConfidenceForParsedLine(
-          line.text, rawLines, lineConfidences);
+        line.text,
+        rawLines,
+        lineConfidences,
+      );
       final pageInfo = _findSourcePageFrom(
-          line.text, rawLines, linePageMap, rawSearchStart);
+        line.text,
+        rawLines,
+        linePageMap,
+        rawSearchStart,
+      );
       if (pageInfo != null) {
         rawSearchStart = pageInfo.rawLineIndex + 1;
       }
@@ -448,8 +525,7 @@ class ScriptImportService {
       if (rawTrimmed.isEmpty) continue;
       final page = linePageMap[i];
       if (page == null) continue;
-      if (rawTrimmed.contains(searchText) ||
-          searchText.contains(rawTrimmed)) {
+      if (rawTrimmed.contains(searchText) || searchText.contains(rawTrimmed)) {
         return (page: page, lineOnPage: 0, rawLineIndex: i);
       }
     }
@@ -481,8 +557,7 @@ class ScriptImportService {
     for (var i = 0; i < rawLines.length; i++) {
       final rawTrimmed = rawLines[i].trim().toLowerCase();
       if (rawTrimmed.isEmpty) continue;
-      if (rawTrimmed.contains(searchText) ||
-          searchText.contains(rawTrimmed)) {
+      if (rawTrimmed.contains(searchText) || searchText.contains(rawTrimmed)) {
         final conf = lineConfidences[i];
         if (conf != null) confidences.add(conf);
       }
@@ -501,11 +576,17 @@ class ScriptImportService {
     var score = 1.0;
 
     // 1. Ratio of alphanumeric + common punctuation vs junk characters
-    final cleanChars = trimmed.replaceAll(RegExp(r'''[a-zA-Z0-9 .,;:!?'"()\-/]'''), '');
+    final cleanChars = trimmed.replaceAll(
+      RegExp(r'''[a-zA-Z0-9 .,;:!?'"()\-/]'''),
+      '',
+    );
     final junkRatio = cleanChars.length / trimmed.length;
-    if (junkRatio > 0.3) score -= 0.4;
-    else if (junkRatio > 0.15) score -= 0.2;
-    else if (junkRatio > 0.05) score -= 0.05;
+    if (junkRatio > 0.3)
+      score -= 0.4;
+    else if (junkRatio > 0.15)
+      score -= 0.2;
+    else if (junkRatio > 0.05)
+      score -= 0.05;
 
     // 2. Words without vowels (likely garbled)
     final words = trimmed.split(RegExp(r'\s+'));
@@ -519,24 +600,31 @@ class ScriptImportService {
         }
       }
       final noVowelRatio = noVowelCount / words.length;
-      if (noVowelRatio > 0.3) score -= 0.3;
-      else if (noVowelRatio > 0.1) score -= 0.15;
+      if (noVowelRatio > 0.3)
+        score -= 0.3;
+      else if (noVowelRatio > 0.1)
+        score -= 0.15;
     }
 
     // 3. Lone single characters (fragmented words)
-    final loneChars = words.where((w) =>
-        w.length == 1 && !RegExp(r'^[IaO0-9]$').hasMatch(w)).length;
+    final loneChars = words
+        .where((w) => w.length == 1 && !RegExp(r'^[IaO0-9]$').hasMatch(w))
+        .length;
     if (words.length > 2) {
       final loneRatio = loneChars / words.length;
-      if (loneRatio > 0.3) score -= 0.25;
-      else if (loneRatio > 0.15) score -= 0.1;
+      if (loneRatio > 0.3)
+        score -= 0.25;
+      else if (loneRatio > 0.15)
+        score -= 0.1;
     }
 
     // 4. Repeated characters (stutter from misread: "tttthe")
     if (RegExp(r'(.)\1{3,}').hasMatch(trimmed)) {
       score -= 0.3;
     } else if (RegExp(r'(.)\1{2}').hasMatch(trimmed.toLowerCase())) {
-      final triples = RegExp(r'(.)\1{2}').allMatches(trimmed.toLowerCase()).length;
+      final triples = RegExp(
+        r'(.)\1{2}',
+      ).allMatches(trimmed.toLowerCase()).length;
       if (triples > 1) score -= 0.15;
     }
 
@@ -546,7 +634,8 @@ class ScriptImportService {
       if (word.length < 3) continue;
       if (word == word.toUpperCase() || word == word.toLowerCase()) continue;
       if (word[0] == word[0].toUpperCase() &&
-          word.substring(1) == word.substring(1).toLowerCase()) continue;
+          word.substring(1) == word.substring(1).toLowerCase())
+        continue;
       mixedCaseWords++;
     }
     if (words.length > 1 && mixedCaseWords / words.length > 0.3) {
@@ -615,7 +704,10 @@ class ScriptImportService {
     final name = p.basenameWithoutExtension(path);
     // Clean up common suffixes
     return name
-        .replaceAll(RegExp(r'_?(script|ocr|parsed|text)\b', caseSensitive: false), '')
+        .replaceAll(
+          RegExp(r'_?(script|ocr|parsed|text)\b', caseSensitive: false),
+          '',
+        )
         .replaceAll('_', ' ')
         .trim();
   }
