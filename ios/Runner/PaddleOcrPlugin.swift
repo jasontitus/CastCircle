@@ -28,16 +28,19 @@ class PaddleOcrPlugin: NSObject {
   private let detLimitSide = 960
   private let detThresh: Float = 0.3        // binarize the probability map
   private let detMinBoxArea = 16            // drop specks (in det-map pixels)
-  // DBNet "unclip" box expansion. The optimal value is DOCUMENT-DEPENDENT: a
-  // larger ratio recovers clipped glyphs on loose-spaced/high-DPI scans, but on
-  // a tight-spaced low-DPI copier scan it over-expands and MERGES adjacent text
-  // lines into one box, which the recognizer then mangles. 0.8 is the safe
-  // default for real-world copier scans — verified on-Mac through the real
-  // parser on a 150-DPI P&P scan: garbled lines −79%, name accuracy 95.6%→99.1%,
-  // ELIZABETH fragments (ELZA/ELIZABT/LZABTH) collapse back into one character.
-  // A per-document auto-tuner (pick this from measured line spacing) supersedes
-  // this static value.
-  private let detUnclipRatio: Float = 0.8
+  // DBNet "unclip" box expansion. A larger ratio over-expands boxes and MERGES
+  // adjacent text lines (garble); a too-small ratio clips trailing punctuation.
+  // A per-document sweep across a 9-scan corpus (Mac-verified through the real
+  // parser) showed higher values NEVER help and 0.4–0.6 reaches every doc's
+  // low-conf floor — so a low static value is the right default (the line-
+  // spacing→unclip signal is too noisy to tune finely). 0.6 keeps margin above
+  // the ~0.2 punctuation-clipping threshold.
+  private let detUnclipRatio: Float = 0.6
+  // Auto render scale: rasterize so the page long side ≈ this many px — the
+  // recognition sweet spot (detection caps at 960 anyway, so scale only feeds
+  // the rec crops). Adapts per page so small-page / low-DPI PDFs still get
+  // enough resolution. Mac-validated across the corpus.
+  private let targetRenderLongPx: CGFloat = 1800
   private let recHeight = 48
   private let recMaxWidth = 1024
   private let detMean: [Float] = [0.485, 0.456, 0.406]
@@ -132,7 +135,11 @@ class PaddleOcrPlugin: NSObject {
         }
         guard let page = doc.page(at: i) else { failed += 1; continue }
         let b = page.bounds(for: .mediaBox)
-        guard let cg = self.renderPage(page, width: b.width * CGFloat(scale), height: b.height * CGFloat(scale)) else {
+        // Auto-scale per page so the long side ≈ targetRenderLongPx (clamped
+        // 1.0–6.0), instead of a fixed scale — adapts to page size / DPI.
+        let longPt = max(b.width, b.height)
+        let autoScale = min(6.0, max(1.0, self.targetRenderLongPx / longPt))
+        guard let cg = self.renderPage(page, width: b.width * autoScale, height: b.height * autoScale) else {
           failed += 1; continue
         }
         let t0 = Date()
