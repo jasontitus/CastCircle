@@ -59,6 +59,10 @@ class ScriptAiCleanupController extends ChangeNotifier {
   /// belongs to the script it is currently showing.
   String? _jobTitle;
 
+  /// The service backing the running job, kept so [cancel] can clear the
+  /// on-disk checkpoint even if the native decode is wedged (see [cancel]).
+  ScriptImportService? _service;
+
   // ETA tracking: timestamp + chunk index when this session's processing began
   // (after model load / a resume), so the estimate uses the live per-chunk rate.
   DateTime? _sessionStart;
@@ -107,6 +111,7 @@ class ScriptAiCleanupController extends ChangeNotifier {
     _result = null;
     _error = null;
     _jobTitle = title;
+    _service = service;
     _sessionStart = null;
     _sessionFirstChunk = 0;
     notifyListeners();
@@ -208,6 +213,16 @@ class ScriptAiCleanupController extends ChangeNotifier {
     if (_phase == CleanupPhase.running) return false;
     final pending = await service.pendingCleanup();
     if (pending == null) return false;
+    // A checkpoint that has burned its auto-resume budget can never finish —
+    // discard it here, before any heavyweight model load, rather than relaunch
+    // the cleanup every time this screen opens (the loop that made a
+    // cancelled/failed job impossible to stop).
+    if (await service.pendingCleanupExhausted()) {
+      DebugLogService.instance.log(LogCategory.ai,
+          'pending cleanup exhausted its resume budget — discarding checkpoint');
+      await service.clearPendingCleanup();
+      return false;
+    }
     DebugLogService.instance
         .log(LogCategory.ai, 'resuming interrupted cleanup from checkpoint');
     // Fire-and-forget: structureChunked picks up from the checkpoint; listeners
@@ -221,9 +236,17 @@ class ScriptAiCleanupController extends ChangeNotifier {
   }
 
   /// Request cancellation; the job stops cleanly after the current chunk.
+  ///
+  /// Cancel means stop, not pause: also clear the on-disk checkpoint directly.
+  /// Normally `structureChunked` deletes it when the loop unwinds, but if the
+  /// native decode is wedged and never returns, that cleanup never runs — and
+  /// without this the cancelled job would relaunch from its checkpoint on the
+  /// next import-screen visit. Clearing here makes cancel always stick.
   void cancel() {
     if (_phase != CleanupPhase.running) return;
     _cancelRequested = true;
+    final service = _service;
+    if (service != null) unawaited(service.clearPendingCleanup());
     notifyListeners();
   }
 

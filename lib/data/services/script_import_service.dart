@@ -172,6 +172,17 @@ class ScriptImportService {
   Future<({String rawText, String title})?> pendingCleanup() =>
       _aiStructurer.loadCheckpointMeta();
 
+  /// Whether the pending cleanup has burned its auto-resume budget and should be
+  /// discarded instead of relaunched (stops a permanently-failing checkpoint
+  /// from restarting the cleanup on every import-screen visit).
+  Future<bool> pendingCleanupExhausted() async =>
+      await _aiStructurer.checkpointAttempts() >=
+      AiScriptStructuringService.maxResumeAttempts;
+
+  /// Discard any pending AI-cleanup checkpoint — an explicit user stop, or a
+  /// checkpoint that can never finish.
+  Future<void> clearPendingCleanup() => _aiStructurer.clearCheckpoint();
+
   /// Run on-device AI structuring on already-extracted text (or page images)
   /// and re-score confidence. Returns null when no model is loaded. Invoked on
   /// demand from the import preview's "Clean up with AI" button — not

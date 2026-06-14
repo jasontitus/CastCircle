@@ -1,6 +1,22 @@
+import 'dart:io';
+
 import 'package:flutter_test/flutter_test.dart';
+import 'package:path_provider_platform_interface/path_provider_platform_interface.dart';
+import 'package:plugin_platform_interface/plugin_platform_interface.dart';
 import 'package:castcircle/data/models/script_models.dart';
 import 'package:castcircle/data/services/ai_script_structuring_service.dart';
+
+/// Points the app-documents directory at a temp folder so the checkpoint
+/// persistence (normally backed by the path_provider plugin) is exercisable in
+/// a unit test instead of silently no-opping.
+class _FakePathProvider extends PathProviderPlatform
+    with MockPlatformInterfaceMixin {
+  _FakePathProvider(this.docsPath);
+  final String docsPath;
+
+  @override
+  Future<String?> getApplicationDocumentsPath() async => docsPath;
+}
 
 /// A mock on-device LLM that returns a canned completion, so the structuring
 /// pipeline can be tested without loading a real Gemma 4 model.
@@ -247,6 +263,104 @@ void main() {
       expect(bennet.scene, 'Scene 1');
       final lydia = script.lines.firstWhere((l) => l.character == 'LYDIA');
       expect(lydia.act, 'ACT II');
+    });
+  });
+
+  // The cleanup checkpoint persists progress so a killed run can resume — but
+  // it must never trap the user in a relaunch loop. A cancelled or
+  // permanently-failing checkpoint has to clear itself so the import screen's
+  // auto-resume can't restart it forever (the bug these tests pin down).
+  group('checkpoint resume budget', () {
+    late Directory tempDir;
+
+    setUp(() async {
+      TestWidgetsFlutterBinding.ensureInitialized();
+      tempDir = await Directory.systemTemp.createTemp('ai_ckpt_test');
+      PathProviderPlatform.instance = _FakePathProvider(tempDir.path);
+    });
+
+    tearDown(() async {
+      if (tempDir.existsSync()) await tempDir.delete(recursive: true);
+    });
+
+    File ckptFile() => File('${tempDir.path}/ai_cleanup_checkpoint.json');
+
+    const validJson =
+        '{"title":"P","lines":[{"type":"dialogue","character":"DARCY","text":"Indeed."}]}';
+
+    test('a failing checkpoint is discarded after maxResumeAttempts so it '
+        'cannot relaunch the cleanup forever', () async {
+      // First run (fresh): every chunk fails → keep the checkpoint, one attempt
+      // spent (a wedged GPU might recover in a fresh process).
+      final r1 = await AiScriptStructuringService(provider: _QueueLlm([null, null]))
+          .structureChunked(
+              rawText: 'a\nb', title: 't', linesPerChunk: 1, batchSize: 1);
+      expect(r1, isNull);
+      expect(ckptFile().existsSync(), isTrue);
+      expect(await AiScriptStructuringService().checkpointAttempts(), 1);
+
+      // Second run (resume): fails again → budget spent → checkpoint discarded.
+      final r2 = await AiScriptStructuringService(provider: _QueueLlm([null, null]))
+          .structureChunked(
+              rawText: 'a\nb', title: 't', linesPerChunk: 1, batchSize: 1);
+      expect(r2, isNull);
+      expect(ckptFile().existsSync(), isFalse,
+          reason: 'a spent checkpoint must be gone so resume stops relaunching');
+    });
+
+    test('an explicit cancel discards the checkpoint (stop, not pause)',
+        () async {
+      // 4 chunks → 2 groups. Cancel after the first group: its checkpoint must
+      // be cleared, not kept for a resume on the next import-screen visit.
+      var checks = 0;
+      await AiScriptStructuringService(
+              provider: _QueueLlm([validJson, validJson, validJson, validJson]))
+          .structureChunked(
+        rawText: 'a\nb\nc\nd',
+        title: 't',
+        linesPerChunk: 1,
+        batchSize: 1,
+        isCancelled: () => checks++ >= 1, // false at group 1, true at group 2
+      );
+      expect(ckptFile().existsSync(), isFalse,
+          reason: 'cancel must clear the checkpoint');
+    });
+
+    test('a model-less resume discards the checkpoint instead of looping '
+        '(the deleted-model case)', () async {
+      // Seed a checkpoint with one spent attempt while a runtime is present.
+      await AiScriptStructuringService(provider: _QueueLlm([null, null]))
+          .structureChunked(
+              rawText: 'a\nb', title: 't', linesPerChunk: 1, batchSize: 1);
+      expect(await AiScriptStructuringService().checkpointAttempts(), 1);
+
+      // Now the model is gone (user deleted it). The resume can't run — it must
+      // spend the last attempt and discard, not relaunch forever.
+      final r = await AiScriptStructuringService(
+              provider: _MockLlm('', available: false))
+          .structureChunked(
+              rawText: 'a\nb', title: 't', linesPerChunk: 1, batchSize: 1);
+      expect(r, isNull);
+      expect(ckptFile().existsSync(), isFalse,
+          reason: 'a model-less resume must not loop the cleanup forever');
+    });
+
+    test('forward progress resets the failure budget', () async {
+      // Group 1 succeeds, group 2 fails: because real progress was made, the
+      // surviving checkpoint keeps a full retry budget (attempts back to 1, not
+      // accumulating), so a transient wedge late in a long script still recovers.
+      var checks = 0;
+      await AiScriptStructuringService(
+              provider: _QueueLlm([validJson, validJson, null, null]))
+          .structureChunked(
+        rawText: 'a\nb\nc\nd',
+        title: 't',
+        linesPerChunk: 1,
+        batchSize: 1,
+        isCancelled: () => false,
+      );
+      expect(ckptFile().existsSync(), isTrue);
+      expect(await AiScriptStructuringService().checkpointAttempts(), 1);
     });
   });
 }

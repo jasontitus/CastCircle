@@ -78,6 +78,14 @@ class AiScriptStructuringService {
   /// Raw text the model produced on the last [structure] call (for debugging).
   String lastRawOutput = '';
 
+  /// Auto-resume budget: a checkpoint that keeps failing (a GPU/Metal stack that
+  /// won't recover, permanently-garbled OCR, or a model the user has deleted) is
+  /// retried at most this many times before it's discarded — so it can never
+  /// relaunch the cleanup on every import-screen visit forever. Forward progress
+  /// resets the budget, preserving the legitimate "wedged once, fresh process
+  /// recovers" path.
+  static const int maxResumeAttempts = 2;
+
   bool get isAvailable => _provider.isAvailable;
 
   /// Structure a script. Provide [rawText] for the text path and/or
@@ -166,10 +174,6 @@ class AiScriptStructuringService {
     bool Function()? isCancelled,
   }) async {
     final log = DebugLogService.instance;
-    if (!_provider.isAvailable) {
-      log.logError(LogCategory.ai, 'chunked structure skipped — no runtime');
-      return null;
-    }
 
     final srcLines = rawText.split('\n');
     final chunks = <String>[];
@@ -186,12 +190,41 @@ class AiScriptStructuringService {
     final key = _checkpointKey(title, rawText, linesPerChunk, chunks.length);
     final merged = <ScriptLine>[];
     var startChunk = 0;
+    var priorAttempts = 0;
     final ckpt = await _loadCheckpoint(key);
     if (ckpt != null) {
+      // A checkpoint that has already burned its resume budget can never finish
+      // (the model/GPU keeps failing on this exact input) — discard it rather
+      // than relaunch the cleanup yet again.
+      if (ckpt.attempts >= maxResumeAttempts) {
+        log.logError(LogCategory.ai,
+            'discarding cleanup checkpoint after ${ckpt.attempts} failed resume attempts');
+        await _deleteCheckpoint();
+        return null;
+      }
+      priorAttempts = ckpt.attempts;
       merged.addAll(ckpt.lines);
       startChunk = ckpt.nextChunk;
       log.log(LogCategory.ai,
-          'resuming cleanup from checkpoint: chunk ${startChunk + 1}/${chunks.length}, ${merged.length} lines so far');
+          'resuming cleanup from checkpoint: chunk ${startChunk + 1}/${chunks.length}, ${merged.length} lines so far (resume attempt ${priorAttempts + 1}/$maxResumeAttempts)');
+    }
+
+    // No on-device runtime — e.g. the model was deleted and the device has no
+    // fallback. Count this against any pending checkpoint's resume budget (and
+    // discard it once spent) so a model-less resume can't relaunch the cleanup
+    // on every import-screen visit forever.
+    if (!_provider.isAvailable) {
+      log.logError(LogCategory.ai, 'chunked structure skipped — no runtime');
+      if (ckpt != null) {
+        final nextAttempts = priorAttempts + 1;
+        if (nextAttempts >= maxResumeAttempts) {
+          await _deleteCheckpoint();
+        } else {
+          await _saveCheckpoint(key, startChunk, merged, rawText, title,
+              attempts: nextAttempts);
+        }
+      }
+      return null;
     }
     final slots = batchSize < 1 ? 1 : batchSize;
     // Hand the native decoder more chunks than it has slots so it can refill a
@@ -213,13 +246,12 @@ class AiScriptStructuringService {
     var runningAct = merged.isNotEmpty ? merged.last.act : 'ACT I';
     var runningScene = merged.isNotEmpty ? merged.last.scene : '';
 
-    var cancelled = false;
     var failed = false;
     for (var b = startChunk; b < chunks.length; b += groupSize) {
       if (isCancelled?.call() ?? false) {
-        cancelled = true;
+        // Explicit cancel — the checkpoint is cleared below (cancel = stop).
         log.log(LogCategory.ai,
-            'chunked structuring cancelled at ${b + 1}/${chunks.length} — checkpoint kept for resume');
+            'chunked structuring cancelled at ${b + 1}/${chunks.length} — discarding checkpoint');
         break;
       }
       final end = (b + groupSize < chunks.length) ? b + groupSize : chunks.length;
@@ -241,8 +273,21 @@ class AiScriptStructuringService {
       // process pick up from here with clean Metal state.
       if (outputs.every((o) => o == null)) {
         failed = true;
-        log.logError(LogCategory.ai,
-            'batch failed for all ${outputs.length} chunks at ${b + 1}/${chunks.length} — aborting; checkpoint kept for resume');
+        final nextAttempts = priorAttempts + 1;
+        if (nextAttempts >= maxResumeAttempts) {
+          // Budget exhausted — give up on this checkpoint so it stops
+          // relaunching the cleanup on every import-screen visit.
+          await _deleteCheckpoint();
+          log.logError(LogCategory.ai,
+              'batch failed for all ${outputs.length} chunks at ${b + 1}/${chunks.length} — discarding checkpoint after $nextAttempts attempts');
+        } else {
+          // Keep the checkpoint for one capped retry (the GPU may recover in a
+          // fresh process), recording the spent attempt so it can't loop forever.
+          await _saveCheckpoint(key, b, merged, rawText, title,
+              attempts: nextAttempts);
+          log.logError(LogCategory.ai,
+              'batch failed for all ${outputs.length} chunks at ${b + 1}/${chunks.length} — checkpoint kept (attempt $nextAttempts/$maxResumeAttempts)');
+        }
         break;
       }
       for (final out in outputs) {
@@ -258,14 +303,19 @@ class AiScriptStructuringService {
       }
       // Checkpoint after each group so progress survives a kill. The source
       // text + title are stored too, so a resume works even after the app was
-      // killed and the in-memory import preview is gone.
-      await _saveCheckpoint(key, end, merged, rawText, title);
+      // killed and the in-memory import preview is gone. Forward progress resets
+      // the failure budget to 0 — a run that's advancing is healthy.
+      await _saveCheckpoint(key, end, merged, rawText, title, attempts: 0);
+      priorAttempts = 0;
       onProgress?.call(end, chunks.length);
     }
 
-    // Keep the checkpoint on cancel OR failure (both want resume); clear it only
-    // when the run actually completed, so a later, different cleanup starts clean.
-    if (!cancelled && !failed) await _deleteCheckpoint();
+    // Clear the checkpoint when the run completed OR the user cancelled — an
+    // explicit cancel is a stop, not a pause, so it must not relaunch on the
+    // next import-screen visit. A mid-run failure is handled in the loop above
+    // (kept for a capped retry, or discarded once the budget ran out), so leave
+    // it untouched here.
+    if (!failed) await _deleteCheckpoint();
 
     // On a mid-run failure, signal failure (null) so the caller marks the job
     // failed and a resume continues from the checkpoint — rather than presenting
@@ -308,8 +358,8 @@ class AiScriptStructuringService {
     return File('${dir.path}/ai_cleanup_checkpoint.json');
   }
 
-  Future<({int nextChunk, List<ScriptLine> lines})?> _loadCheckpoint(
-      String key) async {
+  Future<({int nextChunk, List<ScriptLine> lines, int attempts})?>
+      _loadCheckpoint(String key) async {
     try {
       final file = await _checkpointFile();
       if (!file.existsSync()) return null;
@@ -318,13 +368,35 @@ class AiScriptStructuringService {
       final lines = (data['lines'] as List)
           .map((j) => ScriptLine.fromJson(j as Map<String, dynamic>))
           .toList();
-      return (nextChunk: data['nextChunk'] as int, lines: lines);
+      return (
+        nextChunk: data['nextChunk'] as int,
+        lines: lines,
+        attempts: (data['attempts'] as int?) ?? 0,
+      );
     } catch (e) {
       DebugLogService.instance
           .logError(LogCategory.ai, 'checkpoint load failed', e);
       return null;
     }
   }
+
+  /// Failed-resume attempts already spent on the pending checkpoint (0 when none
+  /// exists). Lets the caller stop relaunching a checkpoint that has burned its
+  /// [maxResumeAttempts] budget without first loading the model.
+  Future<int> checkpointAttempts() async {
+    try {
+      final file = await _checkpointFile();
+      if (!file.existsSync()) return 0;
+      final data = jsonDecode(await file.readAsString()) as Map<String, dynamic>;
+      return (data['attempts'] as int?) ?? 0;
+    } catch (_) {
+      return 0;
+    }
+  }
+
+  /// Discard any pending cleanup checkpoint — an explicit user stop, or a
+  /// checkpoint that can never complete. Safe to call when none exists.
+  Future<void> clearCheckpoint() => _deleteCheckpoint();
 
   /// Source text + title of an in-progress cleanup, for resuming after a kill.
   /// Null when there's no checkpoint.
@@ -342,12 +414,13 @@ class AiScriptStructuringService {
   }
 
   Future<void> _saveCheckpoint(String key, int nextChunk, List<ScriptLine> lines,
-      String rawText, String title) async {
+      String rawText, String title, {int attempts = 0}) async {
     try {
       final file = await _checkpointFile();
       final payload = jsonEncode({
         'key': key,
         'nextChunk': nextChunk,
+        'attempts': attempts,
         'rawText': rawText,
         'title': title,
         'lines': lines.map((l) => l.toJson()).toList(),
