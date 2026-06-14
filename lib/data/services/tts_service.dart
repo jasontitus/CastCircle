@@ -342,7 +342,12 @@ class TtsService {
   /// Speak text for a character using Kokoro MLX on-device TTS.
   ///
   /// Falls back to system TTS only if Kokoro is not available on this device.
-  Future<void> speak(String text, {String? character}) async {
+  ///
+  /// [precomputedPaths] — optional list of pre-synthesized Kokoro audio file
+  /// paths (one per chunk, from [prepareKokoro]). When provided and the chunk
+  /// count matches, playback skips on-demand synthesis for instant start.
+  Future<void> speak(String text,
+      {String? character, List<String>? precomputedPaths}) async {
     if (!_initialized) await init();
     _currentTrace?.stop();
     _currentTrace = PerfService.instance.startTrace('tts_speak');
@@ -360,7 +365,8 @@ class TtsService {
     if (_kokoroLoaded) {
       final gen = _speakGen;
       dlog.log(LogCategory.tts, 'Kokoro MLX speak: "$preview" (char=$character, gen=$gen)');
-      final spoke = await _speakWithKokoroMlx(text, character: character);
+      final spoke = await _speakWithKokoroMlx(text,
+          character: character, precomputedPaths: precomputedPaths);
       if (spoke) return;
       // If a newer speak() was requested while we were waiting, don't fall back
       if (gen != _speakGen) return;
@@ -458,7 +464,8 @@ class TtsService {
 
   /// Synthesize and play audio using on-device Kokoro MLX.
   /// Returns true if successful. Splits long text into chunks automatically.
-  Future<bool> _speakWithKokoroMlx(String text, {String? character}) async {
+  Future<bool> _speakWithKokoroMlx(String text,
+      {String? character, List<String>? precomputedPaths}) async {
     final gen = _speakGen; // capture for stale-check after async gaps
     final voice = (character != null && _characterVoices.containsKey(character))
         ? _characterVoices[character]!
@@ -475,6 +482,14 @@ class TtsService {
           'Kokoro: splitting into ${chunks.length} chunks (text=${text.length} chars)');
     }
 
+    // Use prefetched audio paths only when they line up with the chunk split.
+    final usePrecomputed =
+        precomputedPaths != null && precomputedPaths.length == chunks.length;
+    if (usePrecomputed) {
+      DebugLogService.instance.log(LogCategory.tts,
+          'Kokoro: using ${chunks.length} prefetched audio path(s)');
+    }
+
     try {
       for (var i = 0; i < chunks.length; i++) {
         // Bail out if a newer speak() was called
@@ -484,11 +499,13 @@ class TtsService {
           return true;
         }
 
-        final audioPath = await _channel.invokeMethod<String>('synthesize', {
-          'text': chunks[i],
-          'voice': voice,
-          'speed': speed,
-        });
+        final audioPath = usePrecomputed
+            ? precomputedPaths[i]
+            : await _channel.invokeMethod<String>('synthesize', {
+                'text': chunks[i],
+                'voice': voice,
+                'speed': speed,
+              });
 
         if (audioPath == null || audioPath.isEmpty) {
           DebugLogService.instance.logError(LogCategory.tts,
@@ -559,6 +576,43 @@ class TtsService {
       DebugLogService.instance.logError(LogCategory.tts, 'Kokoro playback failed', e);
       return false;
     }
+  }
+
+  /// Pre-synthesize Kokoro audio for [text] WITHOUT playing it, so a later
+  /// [speak] call (passed the returned paths via `precomputedPaths`) starts
+  /// instantly. Mirrors [_speakWithKokoroMlx]'s voice/speed/chunking logic but
+  /// does NOT touch _speakGen / _isSpeaking / completion. Best-effort: returns
+  /// null if Kokoro isn't loaded or any chunk fails to synthesize.
+  Future<List<String>?> prepareKokoro(String text, {String? character}) async {
+    if (!_kokoroLoaded) return null;
+
+    final voice = (character != null && _characterVoices.containsKey(character))
+        ? _characterVoices[character]!
+        : 'af_heart';
+    final speed = (character != null && _characterSpeeds.containsKey(character))
+        ? _characterSpeeds[character]!
+        : _currentSpeed;
+
+    final chunks = _splitTextForKokoro(text);
+    final paths = <String>[];
+    try {
+      for (final chunk in chunks) {
+        final audioPath = await _channel.invokeMethod<String>('synthesize', {
+          'text': chunk,
+          'voice': voice,
+          'speed': speed,
+        });
+        if (audioPath == null || audioPath.isEmpty) return null;
+        paths.add(audioPath);
+      }
+    } catch (e) {
+      DebugLogService.instance.logError(
+          LogCategory.tts, 'Kokoro prefetch failed', e);
+      return null;
+    }
+    DebugLogService.instance.log(LogCategory.tts,
+        'Kokoro prefetch ready (${paths.length} chunk(s), voice=$voice)');
+    return paths;
   }
 
   double _currentSpeed = 1.0;

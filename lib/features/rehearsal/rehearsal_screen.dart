@@ -77,6 +77,12 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen> {
   bool _isCapturingAudio = false;
   bool _hasPromptedUpload = false; // only prompt once per session
 
+  // Prefetched Kokoro TTS audio: lineId → synthesized chunk file paths.
+  // Populated in the background while the actor speaks THEIR line so the next
+  // other-character line plays instantly. Pruned on use (.remove) and cleared
+  // on dispose / scene change.
+  final Map<String, List<String>> _ttsPrefetch = {};
+
   // Debounce rapid taps to prevent stack overflow from reentrancy
   bool _jumpBackInProgress = false;
   bool _processingLine = false;
@@ -241,6 +247,7 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen> {
     _dlog.log(LogCategory.rehearsal, 'Rehearsal ended');
     _silenceTimer?.cancel();
     _matchConfirmTimer?.cancel();
+    _ttsPrefetch.clear();
     _scrollController.dispose();
     _player.dispose();
     _tts.stop(reason: 'dispose');
@@ -315,6 +322,12 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen> {
 
   @override
   Widget build(BuildContext context) {
+    // Drop any prefetched TTS audio when the line set changes (different scene)
+    // so we never play stale paths for a line that no longer exists.
+    ref.listen<ScriptScene?>(selectedSceneProvider, (prev, next) {
+      if (prev != next) _ttsPrefetch.clear();
+    });
+
     final script = ref.watch(currentScriptProvider);
     final scene = ref.watch(selectedSceneProvider);
     final myCharacter = ref.watch(rehearsalCharacterProvider);
@@ -1226,9 +1239,76 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen> {
 
     if (isMyLine) {
       _dlog.log(LogCategory.rehearsal, 'MY LINE: ${line.character} → "${line.text.length > 40 ? '${line.text.substring(0, 37)}...' : line.text}"');
+      // While the actor reads their line, synthesize the next other-character
+      // line's Kokoro audio in the background so playback starts instantly.
+      _prefetchLineAudio(
+          _nextOtherLine(dialogueLines, currentIdx, myCharacter, mode));
       _startListeningForMyLine(line);
     } else {
       _playOtherLine(line);
+    }
+  }
+
+  /// Return the next dialogue line after [currentIdx] that is NOT the actor's
+  /// line (the next line we'll play via TTS), or null if there is none.
+  ScriptLine? _nextOtherLine(
+    List<ScriptLine> dialogueLines,
+    int currentIdx,
+    String? myCharacter,
+    RehearsalMode mode,
+  ) {
+    for (var i = currentIdx + 1; i < dialogueLines.length; i++) {
+      final l = dialogueLines[i];
+      final isMine = mode != RehearsalMode.readthrough &&
+          myCharacter != null &&
+          l.isForCharacter(myCharacter);
+      if (!isMine) return l;
+    }
+    return null;
+  }
+
+  /// Best-effort prefetch: synthesize [line]'s Kokoro audio in the background
+  /// so the eventual [_playOtherLine] call can start playback instantly.
+  /// No-op unless the line will actually be voiced by Kokoro TTS (no primary
+  /// or understudy recording) and hasn't already been prefetched.
+  Future<void> _prefetchLineAudio(ScriptLine? line) async {
+    if (!mounted || line == null) return;
+
+    // Skip if this is the actor's line — those aren't played via TTS.
+    final mode = ref.read(rehearsalModeProvider);
+    final myCharacter = ref.read(rehearsalCharacterProvider);
+    final isMine = mode != RehearsalMode.readthrough &&
+        myCharacter != null &&
+        line.isForCharacter(myCharacter);
+    if (isMine) return;
+
+    // Skip if a real recording exists (primary, or understudy fallback).
+    if (ref.read(recordingsProvider)[line.id] != null) return;
+    if (ref.read(understudyFallbackProvider) &&
+        ref.read(understudyRecordingsProvider)[line.id] != null) {
+      return;
+    }
+
+    if (_ttsPrefetch.containsKey(line.id)) return;
+
+    // Same voice resolution as _playOtherLine.
+    final voiceCharacter = line.multiCharacters.isNotEmpty
+        ? line.multiCharacters.first
+        : line.character;
+    // Synthesize at the SAME speed _playOtherLine will use — Kokoro bakes speed
+    // into the audio, so a mismatch would play the prefetched line at the wrong
+    // speed (e.g. the first time a character speaks at a non-default speed).
+    final fastMode = ref.read(fastModeEnabledProvider);
+    final speed = fastMode
+        ? ref.read(fastModeSpeedProvider)
+        : ref.read(playbackSpeedProvider);
+    _tts.setCharacterSpeed(voiceCharacter, speed);
+    try {
+      final paths =
+          await _tts.prepareKokoro(line.text, character: voiceCharacter);
+      if (paths != null) _ttsPrefetch[line.id] = paths;
+    } catch (_) {
+      // Best-effort — swallow and fall back to on-demand synthesis at playback.
     }
   }
 
@@ -1296,7 +1376,15 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen> {
     _tts.setCharacterSpeed(voiceCharacter, speed);
     _dlog.log(LogCategory.tts,
         'Fast mode: ${ref.read(fastModeEnabledProvider)}, speed=$speed for $voiceCharacter');
-    await _tts.speak(line.text, character: voiceCharacter);
+    if (_ttsPrefetch.containsKey(line.id)) {
+      // Audio was synthesized in the background while the actor spoke — play
+      // it immediately instead of synthesizing on demand.
+      await _tts.speak(line.text,
+          character: voiceCharacter,
+          precomputedPaths: _ttsPrefetch.remove(line.id));
+    } else {
+      await _tts.speak(line.text, character: voiceCharacter);
+    }
     // Completion handled by TTS completion handler
   }
 
@@ -1426,16 +1514,19 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen> {
     };
 
     // Energy-based endpointing: once the match threshold is crossed,
-    // advance as soon as the actor's audio goes quiet for 800ms instead
-    // of waiting the full 1.2s no-new-results debounce. The debounce
-    // timer below stays as a fallback (e.g. if level events stop).
+    // advance as soon as the actor's audio goes quiet for the tunable
+    // pause window instead of waiting the full 1.2s no-new-results debounce.
+    // The debounce timer below stays as a fallback (e.g. if level events stop).
     _stt.onSilence = (silence) {
       if (!mounted) return;
       if (ref.read(rehearsalStateProvider) != RehearsalState.listeningForMe) {
         return;
       }
       if (_matchScore >= threshold &&
-          silence >= const Duration(milliseconds: 800)) {
+          silence >=
+              Duration(
+                  milliseconds:
+                      ref.read(rehearsalAdvanceSilenceMsProvider))) {
         _confirmLineMatch(line);
       }
     };

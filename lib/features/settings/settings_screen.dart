@@ -20,6 +20,10 @@ final playbackSpeedProvider = StateProvider<double>(
 final matchThresholdProvider = StateProvider<int>(
     (ref) => AppConstants.defaultMatchThreshold);
 
+/// Silence (ms) the actor must hold after a confirmed match before the
+/// rehearsal auto-advances to the next line.
+final rehearsalAdvanceSilenceMsProvider = StateProvider<int>((ref) => 500);
+
 enum JumpBackTrigger { shake, doubleTap, swipeLeft, keyword }
 
 final jumpBackTriggerProvider = StateProvider<JumpBackTrigger>(
@@ -69,6 +73,7 @@ class SettingsScreen extends ConsumerWidget {
     final fastModeSpeed = ref.watch(fastModeSpeedProvider);
     final lineDelay = ref.watch(lineDelayProvider);
     final fastModeLineDelay = ref.watch(fastModeLineDelayProvider);
+    final advanceSilenceMs = ref.watch(rehearsalAdvanceSilenceMsProvider);
 
     return Scaffold(
       appBar: AppBar(
@@ -196,6 +201,20 @@ class SettingsScreen extends ConsumerWidget {
                       v.round(),
             ),
             trailing: Text('$matchThreshold%'),
+          ),
+          ListTile(
+            title: const Text('Pause before next line'),
+            subtitle: Slider(
+              value: advanceSilenceMs.toDouble(),
+              min: 200,
+              max: 1000,
+              divisions: 16,
+              label: '${advanceSilenceMs}ms',
+              onChanged: (v) =>
+                  ref.read(rehearsalAdvanceSilenceMsProvider.notifier).state =
+                      v.round(),
+            ),
+            trailing: Text('${advanceSilenceMs}ms'),
           ),
           _sectionHeader(context, 'AI & Voice'),
           SwitchListTile(
