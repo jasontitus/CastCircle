@@ -1,22 +1,21 @@
 import 'dart:io';
-import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
-import 'package:flutter/rendering.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:path/path.dart' as p;
-import 'package:pdfrx/pdfrx.dart';
 import 'package:share_plus/share_plus.dart';
 
 import '../../core/responsive.dart';
 import '../../core/theme/app_theme.dart';
+import '../../data/models/production_models.dart';
 import '../../data/models/script_models.dart';
 import '../../data/services/analytics_service.dart';
 import '../../data/services/script_export.dart';
 import '../../data/services/supabase_service.dart';
 import '../../providers/production_providers.dart';
+import '../script_import/pdf_page_view.dart';
 import 'validation_panel.dart';
 
 class ScriptEditorScreen extends ConsumerStatefulWidget {
@@ -32,6 +31,45 @@ class _ScriptEditorScreenState extends ConsumerState<ScriptEditorScreen> {
   bool _reorderMode = false;
   bool _showLowConfidenceOnly = false;
   ScriptLine? _selectedLine; // for tablet master-detail
+
+  /// Deterministic fallback path to the imported PDF, resolved from the current
+  /// app Documents directory. The `scriptPath` stored on the production is an
+  /// absolute path that can go stale across reinstalls (iOS rewrites the
+  /// Documents container UUID), but the file lives at a stable relative
+  /// location: `Documents/scripts/{productionId}.pdf`. We recover it here so the
+  /// page viewer reappears for already-imported scripts. Null until resolved or
+  /// when no file exists there.
+  String? _resolvedPdfPath;
+
+  @override
+  void initState() {
+    super.initState();
+    _resolvePdfPath();
+  }
+
+  Future<void> _resolvePdfPath() async {
+    final production = ref.read(currentProductionProvider);
+    if (production == null) return;
+    try {
+      final docsDir = await getApplicationDocumentsDirectory();
+      final candidate =
+          p.join(docsDir.path, 'scripts', '${production.id}.pdf');
+      if (File(candidate).existsSync() && mounted) {
+        setState(() => _resolvedPdfPath = candidate);
+      }
+    } catch (_) {
+      // Non-fatal — the viewer just stays hidden if we can't resolve a path.
+    }
+  }
+
+  /// Returns a usable PDF path for the current production, preferring the
+  /// persisted `scriptPath` when its file still exists, then falling back to the
+  /// deterministic Documents location resolved in [_resolvePdfPath].
+  String? _effectivePdfPath(Production? production) {
+    final stored = production?.scriptPath;
+    if (stored != null && File(stored).existsSync()) return stored;
+    return _resolvedPdfPath;
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -384,7 +422,7 @@ class _ScriptEditorScreenState extends ConsumerState<ScriptEditorScreen> {
     Map<String, Color> charColors,
   ) {
     final production = ref.read(currentProductionProvider);
-    final pdfPath = production?.scriptPath;
+    final pdfPath = _effectivePdfPath(production);
     final hasPdf = pdfPath != null && line.sourcePage != null && File(pdfPath).existsSync();
     final textController = TextEditingController(text: line.text);
 
@@ -435,7 +473,7 @@ class _ScriptEditorScreenState extends ConsumerState<ScriptEditorScreen> {
                         color: Theme.of(context).colorScheme.outline, width: 0.5),
                     borderRadius: BorderRadius.circular(8),
                   ),
-                  child: _PdfPageView(
+                  child: PdfPageView(
                     pdfPath: pdfPath,
                     pageNumber: line.sourcePage!,
                     lineOnPage: line.sourceLineOnPage,
@@ -723,7 +761,7 @@ class _ScriptEditorScreenState extends ConsumerState<ScriptEditorScreen> {
     var isNewChar = !charNames.contains(selectedChar) && selectedChar.isNotEmpty;
 
     // Check if we have a PDF source page to show
-    final pdfPath = production?.scriptPath;
+    final pdfPath = _effectivePdfPath(production);
     final hasPdfPage = pdfPath != null &&
         line.sourcePage != null &&
         File(pdfPath).existsSync();
@@ -811,7 +849,7 @@ class _ScriptEditorScreenState extends ConsumerState<ScriptEditorScreen> {
                           ),
                           borderRadius: BorderRadius.circular(8),
                         ),
-                        child: _PdfPageView(
+                        child: PdfPageView(
                           pdfPath: pdfPath,
                           pageNumber: line.sourcePage!,
                           lineOnPage: line.sourceLineOnPage,
@@ -1190,174 +1228,5 @@ class _ScriptEditorScreenState extends ConsumerState<ScriptEditorScreen> {
         .replaceAll(RegExp(r'[^\w\s-]'), '')
         .replaceAll(RegExp(r'\s+'), '_')
         .toLowerCase();
-  }
-}
-
-/// Renders a single PDF page as an image with pinch-to-zoom,
-/// initially zoomed to the quadrant where the script line is.
-class _PdfPageView extends StatefulWidget {
-  final String pdfPath;
-  final int pageNumber;
-  final int? lineOnPage;
-
-  const _PdfPageView({
-    required this.pdfPath,
-    required this.pageNumber,
-    this.lineOnPage,
-  });
-
-  @override
-  State<_PdfPageView> createState() => _PdfPageViewState();
-}
-
-class _PdfPageViewState extends State<_PdfPageView> {
-  ui.Image? _pageImage;
-  bool _loading = true;
-  final _txController = TransformationController();
-  bool _zoomApplied = false;
-  late int _currentPage;
-  int _totalPages = 0;
-
-  @override
-  void initState() {
-    super.initState();
-    _currentPage = widget.pageNumber;
-    _renderPage();
-  }
-
-  @override
-  void dispose() {
-    _pageImage?.dispose();
-    _txController.dispose();
-    super.dispose();
-  }
-
-  Future<void> _renderPage() async {
-    setState(() => _loading = true);
-    _pageImage?.dispose();
-    _pageImage = null;
-    _zoomApplied = false;
-    _txController.value = Matrix4.identity();
-
-    try {
-      Pdfrx.getCacheDirectory ??= () async {
-        final dir = await getTemporaryDirectory();
-        return dir.path;
-      };
-
-      final doc = await PdfDocument.openFile(widget.pdfPath);
-      _totalPages = doc.pages.length;
-      final pageIdx = _currentPage - 1;
-      if (pageIdx < 0 || pageIdx >= doc.pages.length) {
-        await doc.dispose();
-        if (mounted) setState(() => _loading = false);
-        return;
-      }
-
-      final page = doc.pages[pageIdx];
-      final pdfImage = await page.render(
-        fullWidth: page.width * 3,
-        fullHeight: page.height * 3,
-      );
-      await doc.dispose();
-
-      if (pdfImage == null || !mounted) return;
-
-      final image = await pdfImage.createImage();
-      pdfImage.dispose();
-
-      if (mounted) {
-        setState(() {
-          _pageImage = image;
-          _loading = false;
-        });
-      }
-    } catch (e) {
-      debugPrint('PDF page render failed: $e');
-      if (mounted) setState(() => _loading = false);
-    }
-  }
-
-  void _goToPage(int page) {
-    if (page < 1 || page > _totalPages) return;
-    _currentPage = page;
-    _renderPage();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return Column(
-      children: [
-        Row(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            IconButton(
-              icon: const Icon(Icons.chevron_left, size: 20),
-              onPressed: _currentPage > 1 ? () => _goToPage(_currentPage - 1) : null,
-              visualDensity: VisualDensity.compact,
-            ),
-            Text(
-              'Page $_currentPage${_totalPages > 0 ? '/$_totalPages' : ''}',
-              style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                    fontWeight: FontWeight.bold,
-                  ),
-            ),
-            IconButton(
-              icon: const Icon(Icons.chevron_right, size: 20),
-              onPressed: _currentPage < _totalPages ? () => _goToPage(_currentPage + 1) : null,
-              visualDensity: VisualDensity.compact,
-            ),
-          ],
-        ),
-        Expanded(
-          child: _loading
-              ? const Center(child: CircularProgressIndicator())
-              : _pageImage != null
-                  ? LayoutBuilder(
-                      builder: (context, constraints) {
-                        final viewW = constraints.maxWidth;
-                        final viewH = constraints.maxHeight;
-                        final imgW = _pageImage!.width.toDouble();
-                        final imgH = _pageImage!.height.toDouble();
-
-                        // How the image fits in the view (BoxFit.contain)
-                        final fitScale = (viewW / imgW).clamp(0.0, viewH / imgH);
-                        final fittedW = imgW * fitScale;
-                        final fittedH = imgH * fitScale;
-                        final imgTop = (viewH - fittedH) / 2;
-
-                        // Apply initial zoom once after first layout
-                        if (!_zoomApplied && widget.lineOnPage != null) {
-                          _zoomApplied = true;
-                          final lineRatio = ((widget.lineOnPage! - 1) / 40.0).clamp(0.0, 0.85);
-                          const zoom = 2.5;
-                          final targetY = imgTop + fittedH * lineRatio;
-                          final tx = -(fittedW * zoom - viewW) / 2;
-                          final ty = -targetY * zoom + viewH * 0.3;
-                          _txController.value = Matrix4.identity()
-                            ..translate(tx, ty)
-                            ..scale(zoom);
-                        }
-
-                        return InteractiveViewer(
-                          transformationController: _txController,
-                          minScale: 0.5,
-                          maxScale: 8.0,
-                          constrained: false,
-                          child: SizedBox(
-                            width: fittedW,
-                            height: fittedH,
-                            child: RawImage(
-                              image: _pageImage,
-                              fit: BoxFit.contain,
-                            ),
-                          ),
-                        );
-                      },
-                    )
-                  : const Center(child: Text('Could not load page')),
-        ),
-      ],
-    );
   }
 }

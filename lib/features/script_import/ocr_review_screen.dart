@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../../data/models/script_models.dart';
+import 'pdf_page_view.dart';
 
 /// Result returned from [OcrReviewScreen]: the (possibly edited) full line list
 /// with any removed lines dropped. The caller swaps this into the preview's
@@ -22,12 +23,17 @@ class OcrReviewResult {
 /// Operates on a copy of the full line list and returns it (with edits applied
 /// and removals dropped) via [Navigator.pop].
 class OcrReviewScreen extends StatefulWidget {
-  const OcrReviewScreen({super.key, required this.lines});
+  const OcrReviewScreen({super.key, required this.lines, this.pdfPath});
 
   /// The full set of parsed lines (all statuses). The screen only surfaces the
   /// `review` / `likelyNotScript` ones but returns the whole list so the caller
   /// can swap it in wholesale.
   final List<ScriptLine> lines;
+
+  /// Local path to the imported source PDF, if any. When present, review rows
+  /// with a known `sourcePage` get a "View page" button that opens the original
+  /// scanned page so the user can read it while correcting the OCR text.
+  final String? pdfPath;
 
   @override
   State<OcrReviewScreen> createState() => _OcrReviewScreenState();
@@ -92,6 +98,56 @@ class _OcrReviewScreenState extends State<OcrReviewScreen> {
 
   void _removeLine(ScriptLine line) {
     setState(() => _removedIds.add(line.id));
+  }
+
+  /// Opens the original scanned source page for [line] in a full-height modal
+  /// bottom sheet so the user can read it while correcting the OCR text. Only
+  /// reachable when both [OcrReviewScreen.pdfPath] and `line.sourcePage` exist.
+  void _viewSourcePage(ScriptLine line) {
+    final pdfPath = widget.pdfPath;
+    final page = line.sourcePage;
+    if (pdfPath == null || page == null) return;
+
+    showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      useSafeArea: true,
+      builder: (sheetContext) {
+        final theme = Theme.of(sheetContext);
+        return FractionallySizedBox(
+          heightFactor: 0.92,
+          child: Column(
+            children: [
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 8, 8, 0),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        'Source page${line.character.isNotEmpty ? ' — ${line.character}' : ''}',
+                        style: theme.textTheme.titleMedium,
+                      ),
+                    ),
+                    IconButton(
+                      icon: const Icon(Icons.close),
+                      tooltip: 'Close',
+                      onPressed: () => Navigator.of(sheetContext).pop(),
+                    ),
+                  ],
+                ),
+              ),
+              Expanded(
+                child: PdfPageView(
+                  pdfPath: pdfPath,
+                  pageNumber: page,
+                  lineOnPage: line.sourceLineOnPage,
+                ),
+              ),
+            ],
+          ),
+        );
+      },
+    );
   }
 
   void _removeAllNotScript() {
@@ -241,8 +297,14 @@ class _OcrReviewScreenState extends State<OcrReviewScreen> {
             ),
             const SizedBox(height: 8),
             Row(
-              mainAxisAlignment: MainAxisAlignment.end,
               children: [
+                if (widget.pdfPath != null && line.sourcePage != null)
+                  TextButton.icon(
+                    onPressed: () => _viewSourcePage(line),
+                    icon: const Icon(Icons.picture_as_pdf, size: 18),
+                    label: const Text('View page'),
+                  ),
+                const Spacer(),
                 TextButton.icon(
                   onPressed: () => _removeLine(line),
                   icon: const Icon(Icons.delete_outline, size: 18),

@@ -397,7 +397,10 @@ class _ScriptImportScreenState extends ConsumerState<ScriptImportScreen> {
     if (script == null) return;
     final result = await Navigator.of(context).push<OcrReviewResult>(
       MaterialPageRoute(
-        builder: (_) => OcrReviewScreen(lines: script.lines),
+        builder: (_) => OcrReviewScreen(
+          lines: script.lines,
+          pdfPath: _importedPdfPath,
+        ),
       ),
     );
     if (result == null) return;
