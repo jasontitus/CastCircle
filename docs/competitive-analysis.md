@@ -62,12 +62,30 @@ All figures below were pulled from App Store / Google Play listings, developer s
 - Does exactly what CastCircle does: **on-device speech recognition detects when you finish your line and auto-triggers the next cue** with "realistic timing variability." Plus teleprompter, 4K self-tape, scene sharing.
 - Pricing: free for scenes **under 8 lines** (covers many co-star auditions), then $10.99/mo, $8.99/mo (3-mo), **$6.99/mo (annual)**. Annual IAP listed as $83.99.
 - Heavily markets **"100% on-device, no account, no cloud, no internet."** This is the positioning CastCircle most directly competes with — and the one most apps cannot match.
+- **Loved (top positive review themes):**
+  - Best-in-class line learning — "the best line learning tool I've ever used"; the hands-free cue-word trigger is the standout that earns the 4.4★/3,700-rating base.
+  - Removes the need for a scene partner — actors repeatedly praise being able to rehearse and self-tape solo, "WHILE recording a video."
+  - Generous free tier — "the best part, coldRead is free" (free for scenes under 8 lines covers many co-star auditions); built-in teleprompter is well liked.
+- **Pain points (top negative review themes):**
+  - Recording/audio glitches — reviewers report the self-tape audio "cuts some portions out" and that recorded lines sound "very edited"/unnatural; noise-cancellation is applied inconsistently to the reader vs. the actor's own voice.
+  - Speech-recognition misses — the cue-word recognition sometimes fails to trigger the next line, forcing repeats (the very feature it's sold on).
+  - Subscription gripes — "a monthly subscription to this app is more than a subscription to most streaming platforms"; one reviewer also flagged the iPad keyboard being unusable in landscape.
+- _Implication for CastCircle:_ coldRead's #1 complaints are audio glitches and intermittent auto-advance — the two things CastCircle must nail flawlessly, since they're exactly what reviewers rave about when they work.
 - Source: App Store id1264354117; coldreadapp.com.
 
 ### Script Rehearser — the Android/cross-platform volume leader
 - Cross-platform (iOS + Android), live since 2014, still updated **March 2026**. **100K+ Google Play installs**, ~1,900–2,070 ratings at **~4.05★** — the strongest *download-proxy* of any cross-platform competitor.
 - Free to download; offers **built-in synthesized voices OR your own recordings**, type/import scripts, and three rehearsal modes (Listen Along / Wait For Me / Repeat for Confirmation). A paid tier (~$10–$30 reported in roundups) unlocks more.
 - The closest "mass market, both stores, free entry" competitor; weaker on modern AI voices and auto-advance polish.
+- **Loved (top positive review themes):**
+  - Genuinely works for memorization — users report being able to "memorize lines overnight"; the rehearsal modes (Listen Along / Wait For Me / Repeat) are the draw.
+  - Computerized voices seen as a feature, not a bug — actors like that the synthesized read "keeps them from expecting the same voice and read" they'll get in the room.
+  - Helpful support and clear payoff — "if you're willing to put in the work to set it up, it's a big help."
+- **Pain points (top negative review themes):**
+  - Buggy/clunky import is the dominant complaint — importing sides is unreliable: lines come in "messed up, absent, or assigned to the wrong person," and it chokes on margin text like "Sides by Breakdown Services" and Start/End marks, requiring manual cleanup.
+  - Slow, fiddly setup — getting a scene ready "can take a long time," a friction point for last-minute auditions.
+  - "Okay but not great" — even fans temper their praise, calling it serviceable rather than polished.
+- _Implication for CastCircle:_ Script Rehearser's biggest weakness is exactly the import step — frictionless on-device OCR with reliable character detection is the clearest place to beat the Android volume leader.
 - Source: scriptrehearser.com; Play store com.rehearser.rehearser3free; Similarweb/AppBrain.
 
 ### Run Lines With Me — cheap subscription, high satisfaction
@@ -75,6 +93,14 @@ All figures below were pulled from App Store / Google Play listings, developer s
 - Record the scene once, mark your lines, playback leaves gaps; speed control, background/Bluetooth.
 - **Aggressively cheap**: free (10 recordings / 150 min), then $1.99/3mo, $3.99/6mo, **$4.99/year**. Reviewers explicitly praise it for being affordable vs. competitors.
 - Lacks AI voices / OCR import / speech-recognition auto-advance — it's the polished *budget recording* app. Sets a low price anchor actors notice.
+- **Loved (top positive review themes):**
+  - The gap-playback workflow just works — "it plays the line before yours and leaves a gap for you to say your line"; working actors call it the best of the apps they've tried.
+  - Price is the headline praise — "subscriptions are actually reasonably priced and NOT $100 a year"; reviewers explicitly contrast it favorably with pricier rivals.
+  - Dead-simple and portable — one-touch recording with no scene/character setup, plus folders/labels; "I could literally be rehearsing wherever I go."
+- **Pain points (top negative review themes):**
+  - Paywall friction — "awesome app, hate that you have to pay" once you exceed the free 10-recording / 150-minute ceiling.
+  - Recording-count bug — multiple users hit a state where deleted recordings still counted against the free limit (dev responds and offers email support).
+  - No AI voices / no script text view — it's recording-only, so visual learners and those wanting auto-advance look elsewhere.
 - Source: App Store id1269241182.
 
 ### Rehearsal Pro — the legacy "professional" premium incumbent
@@ -82,45 +108,97 @@ All figures below were pulled from App Store / Google Play listings, developer s
 - **$19.99 one-time, no IAP** — the high end of one-time pricing and the de-facto ceiling for "buy once."
 - Deep feature set: highlight/blackout, record + teleprompter-scroll playback, beat marks, annotations, Car Mode, PDF/Word + Adobe scan, MP3 export, cross-device sync.
 - But store footprint is modest/soft: **66 ratings at 3.6★** (bugs cited in reviews). Strong brand, aging UX.
-- Source: App Store id1116896197; rehearsal.pro.
+- **Loved (top positive review themes):**
+  - Core line-learning workflow is trusted by pros — "I am totally reliant on the core functionality: highlighting my lines, recording the scenes"; auto-replay is valued for hands-free practice while driving or doing dishes.
+  - Cross-device sync — appreciated for keeping scripts/scenes in progress across devices.
+  - Long-term loyalty — veteran actors credit it with booking success and stick with it for years.
+- **Pain points (top negative review themes):**
+  - Crashes and freezing dominate recent reviews — "freezing, shutting down, same complaints as all the recent reviews"; the app locks up on setup screens, and one user's audition morning during pilot season was disrupted by it. Updates promising fixes reportedly reintroduced bugs (e.g., lost auto-replay).
+  - Import is confusing/unreliable — the camera icon redirects to Adobe Scan, "Import to Rehearsal Pro" appears only "50/50," and users hit "Error writing file."
+  - $20 one-time feels unjustified given the bugs — called "insulting" and "ridiculous for an app"; basic features (rotate, email/print) reported missing or undocumented.
+- _Implication for CastCircle:_ The legacy "professional" incumbent is dragged down to 3.6★ by stability — reliability alone is a beatable bar.
+- Source: App Store id1116896197; rehearsal.pro; AppGrooves (204 reviews).
 
 ### LineLearner — long-running budget cross-platform
 - Developer Peter Allday. iOS **135 ratings / 4.3★**; Android weaker (~**10K+ installs, ~2.8–2.9★, ~304 ratings**).
 - **One-time $3.99 (iOS) / ~$5.49 (Android)**, no subscription, no ads — a deliberate value play.
 - Record scene, gap-out your part, pitch-shift other characters, PDF/Word import, and notably **share recordings with scene partners** (cast collaboration — directly relevant to CastCircle's sharing feature).
 - iOS last updated Jul 2024; Android lagging. Beloved but dated.
-- Source: App Store id368070258; Play com.alldayapps.android.linelearner.
+- **Loved (top positive review themes):**
+  - Trusted value play — called "a must for actors" and "the best of the line learning app options available," with the flat one-time fee and "no subscriptions, no ads" repeatedly cited as the reason to choose it.
+  - Easy record + pitch-shift — actors like how simple it is to record a scene and pitch-shift other characters so they're distinguishable.
+  - Cross-device sync — an edge over the iOS-only field.
+- **Pain points (top negative review themes):**
+  - No script text view / no import — purely audio, so visual learners struggle and everything must be recorded by hand, which "becomes tedious for longer scenes."
+  - Audio bugs, especially on Android — inconsistent volume, audio clipping, and device-specific playback issues (Samsung S8/S9, Pixel 3) that the developer's own help docs walk users through; this maps to the weak ~2.8★ Android rating.
+  - Clunky editing — the correction/editing interface is described as unintuitive.
+- Source: App Store id368070258; Play com.alldayapps.android.linelearner; linelearner.wordpress.com (support docs); actorsjunction.com.
 
 ### ScenePartner: AI Line Reader — the premium-priced AI newcomer
 - Developer Gumball LLC. Very new (v1.2, 2024–25), only **6 ratings (5.0★)** so far; claims 10,000+ actors.
 - Free for **3 scripts**, then the most expensive tiers in the market: **Plus $19.99/mo or $199.99/yr; Pro $44.99/mo or $459.99/yr.**
 - AI voice reads partner lines, speech recognition follows you, import sides, teleprompter (XL text / high contrast), in-app self-tape.
 - Tests whether actors will pay near-prosumer SaaS prices. CastCircle can credibly position as "the same auto-advance experience, on-device, at a fraction of the price."
-- Source: App Store id6737419907.
+- **Loved (top positive review themes):**
+  - AI voice + speech recognition exceed expectations — "pleasantly surprised how good the speech recognition is as well as the AI voice reading back the lines"; readers have "really improved" with updates and feel "very responsive to my natural speech."
+  - Easy onboarding and responsive devs — "getting started was super easy," with the team called "very helpful updating it"; the native app is described as "next level" vs. the web version.
+- **Pain points (top negative review themes):**
+  - Too few reviews to assess negatives — only 6 ratings (all 5★), so there is no recurring complaint signal yet; treat the rating as not-yet-meaningful. The clearest external knock is price: Plus $19.99/mo and Pro $44.99/mo are the steepest in the category (the cloud ElevenLabs voices behind it carry per-use cost).
+- Source: App Store id6737419907; scenepartner.ai; elevenlabs.io/blog/scenepartner.
 
 ### ActingPal: AI Scene Partner — AI features, execution problems
 - Developer Acting Pal Ltd. **7 ratings at 1.9★** — quality/stability complaints (failed playback, unstable self-tape, slow support).
 - Free; Pro **$9.99/mo (promo $8.99)**.
 - Notable that it markets **on-device text extraction** for privacy, AI voices, responsive cueing, scene sharing, letter-reveal memorization. A cautionary tale: AI ambitions undercut by execution — an opening for a polished on-device app.
+- **Loved (top positive review themes):**
+  - The vision and voices land — "like the AI voices that they have and they're simple to use"; reviewers see the potential ("I think it could be useful," "app could be great if it just worked").
+- **Pain points (top negative review themes):**
+  - Stability is the killer — even the sample script fails ("the lines just kept saying 'failed to load'"), and users report it "sometimes works, but only sometimes."
+  - Core features unavailable — self-tape gets disabled as "not stable enough to operate," so trialers can't complete the primary task.
+  - Paywall before it works — "not usable at all unless you pay money for it," and support is unresponsive ("asked a simple question... weeks ago and have gotten no reply") — the drivers of the 1.9★ rating.
+- _Implication for CastCircle:_ ActingPal shows that on-device AI ambition plus poor execution craters the rating to 1.9★ — a polished, reliable on-device app wins this matchup on execution alone.
 - Source: App Store id6736730265.
 
 ### Off Book / Offbook (offbook.co) — the prestige web AI tool
 - Web app (app.offbook.co); mobile availability unclear. Markets "actors from Juilliard, Yale, NYU, LAMDA, RADA, RSC."
 - AI scene partner **powered by ElevenLabs** (cloud TTS), PDF/image import, a "Genie" subtext/motivation assistant, synced self-tape cues. Freemium (pricing page gated).
 - Strong brand/prestige positioning; cloud-dependent (privacy + latency + per-use cost are weaknesses CastCircle can exploit). Distinct from the abandoned **Off Book!** iOS app (id921046788, last updated 2017).
-- Source: offbook.co.
+- **Loved (top positive review themes):**
+  - "Built by actors" credibility — "you can clearly see in the quality of the application that it was built by actors who know what they're doing."
+  - A patient, always-available partner — "Offbook never gets frustrated when I need to repeat sections over and over," and it ends having to "bug friends to read with them."
+- **Pain points (top negative review themes):**
+  - No native App Store / Play presence means no first-party store review corpus — too few public reviews to assess directly; complaints are inferred from its underlying tech.
+  - Cloud TTS (ElevenLabs) inherits ElevenLabs' documented gripes — "inconsistent tone across sessions," weak handling of numbers/abbreviations/accents, and billing/credit-rollover frustration ("bait and switch," "scammy") — i.e., privacy, latency and per-use cost are structural weaknesses.
+- _Implication for CastCircle:_ The prestige web tools lean on cloud voices whose own users complain about tone drift and billing — an on-device pipeline sidesteps all of it.
+- Source: offbook.co; ElevenLabs reviews (Trustpilot, Product Hunt).
 
 ### Slatable — self-tape app that bolted on an AI scene partner
 - iOS, since 2016, **674 reviews**. Primarily a self-tape/audition tool, now with a **ScenePartner AI voice-changer** (record partner lines, revoice them naturally).
 - Clear tiering: Free (1 audition/mo), **Basic $4.99/mo ($50.90/yr)**, **Premium $9.99/mo ($95.90/yr)**; AI voice currently bundled free into Premium (limited time, 2-hr monthly reset).
 - Demonstrates the **$5 / $10 per-month, ~$50 / ~$95 per-year** sweet spot the market is converging on.
+- **Loved (top positive review themes):**
+  - The AI voice-changer convinces — "the voice converter actually sounds like a real person"; it "transforms it into a completely different voice that feels real and engaging."
+  - All-in-one self-tape relief — the teleprompter plus doing "everything in one app is game changing," and it has "alleviated stress around self tapes" (674 reviews back a solid reputation).
+- **Pain points (top negative review themes):**
+  - AI revoicing is slow and not yet a clear win — "the new AI voice takes much longer to record and doesn't seem any better (yet)."
+  - You still record everything yourself first — because it's a voice-changer (not a generator), you must record all the other lines before revoicing, and "that setup time adds up."
+  - Editing data loss — "the scene audio option will delete lines if you try to go back and edit," and "the 'reader' lines are much louder than my lines."
 - Source: App Store id1080031696; slatable.com/priceplans.html.
 
 ### RehearseNow.ai & Linus — cloud AI scene partners, ~$8–15/mo
 - **RehearseNow.ai**: web, cloud AI voices, cross-device sync, self-tape. **$15/mo or $100/yr (~$8.33/mo)**, 7-day trial.
 - **Linus**: iOS/Android/web, AI scene partner with **speech-recognition auto-advance**, self-tape + teleprompter, table read, real (paid) voice actors, unified cross-platform sync. Free; **$9.99/mo unlimited**; 3-day passes from $1.99.
 - Both validate **~$8–$15/mo / ~$100/yr** as the standard AI subscription, and both are **cloud-based** — i.e., directly beatable by an on-device offering on privacy/offline/cost.
-- Sources: rehearsenow.ai; getlinus.app.
+- **Linus — Loved (top positive review themes):**
+  - Natural per-character voices — "different voices for different characters that don't sound robotic is amazing"; the AI "adapts to your performances," and the upload handles non-standard formats (e.g., musicals) without reformatting.
+  - Fast real auditions — "a 4 page audition in just under 30mins," with the integrated self-tape and "super easy/seamless" workflow praised (4.5★ across ~40 ratings).
+- **Linus — Pain points (top negative review themes):**
+  - Crashes and lost progress — the app "crashes when working on scenes with too much data," losing progress; uploading and speech recognition "gets stuck often."
+  - Recording blocked by audio threshold — users "can't record a scene if audio passes a threshold"; recorded audio sometimes comes out "way to quiet" / "scuffed."
+  - Price — described by a reviewer as "insanely expensive."
+- **RehearseNow.ai — Loved:** voices called "appealing" with "excellent" enunciation and "very good" line timing; one actor credits it with booking a network-TV role (ABC's *Will Trent*), calling it "a game changer."
+- **RehearseNow.ai — Pain points:** too few first-party reviews to assess (web tool, no app-store review corpus); the structural knock is its cloud dependence (privacy, latency, $100/yr cost).
+- Sources: rehearsenow.ai; getlinus.app; App Store id6742599484 (Linus); futurepedia.io/tool/rehearsenow.
 
 ---
 
@@ -177,7 +255,7 @@ All figures below were pulled from App Store / Google Play listings, developer s
 - Script Rehearser — site: https://www.scriptrehearser.com/ ; Google Play: https://play.google.com/store/apps/details?id=com.rehearser.rehearser3free ; AppBrain: https://www.appbrain.com/app/script-rehearser/com.rehearser.rehearser3free ; Similarweb: https://www.similarweb.com/app/google-play/com.rehearser.rehearser3free/statistics/
 - Run Lines With Me — App Store: https://apps.apple.com/us/app/run-lines-with-me/id1269241182 ; https://runlineswithme.com/
 - Run Lines: Script Rehearsal — App Store: https://apps.apple.com/us/app/run-lines-script-rehearsal/id6755323192
-- ScenePartner: AI Line Reader — App Store: https://apps.apple.com/us/app/scenepartner-ai-line-reader/id6737419907
+- ScenePartner: AI Line Reader — App Store: https://apps.apple.com/us/app/scenepartner-ai-line-reader/id6737419907 ; site: https://scenepartner.ai/ ; ElevenLabs case study: https://elevenlabs.io/blog/scenepartner
 - ActingPal: AI Scene Partner — App Store: https://apps.apple.com/us/app/actingpal-ai-scene-partner/id6736730265
 - Off Book / Offbook — https://www.offbook.co/
 - Off Book! (legacy iOS) — App Store: https://apps.apple.com/us/app/off-book/id921046788
@@ -185,7 +263,10 @@ All figures below were pulled from App Store / Google Play listings, developer s
 - Rehearser — https://rehearser.co (via Scriptation roundup)
 - Slatable — App Store: https://apps.apple.com/us/app/slatable-audition-app/id1080031696 ; price plans: https://slatable.com/priceplans.html
 - RehearseNow.ai — https://rehearsenow.ai/ ; review: https://www.futurepedia.io/tool/rehearsenow
-- Linus — https://www.getlinus.app/blog/the-best-ai-tools-for-actors-in-2026
+- Rehearsal Pro — review aggregator (204 reviews): https://appgrooves.com/ios/1116896197/rehearsal-pro/sotto-voce-filmworks-inc/negative ; App Store reviews: https://apps.apple.com/us/app/rehearsal-pro/id1116896197?see-all=reviews
+- LineLearner — review/guide: https://actorsjunction.com/resource/linelearner ; Android support/known-issues docs: https://linelearner.wordpress.com/instructions-for-android/ ; https://linelearner.wordpress.com/faq-linelearner-for-android/
+- ElevenLabs (cloud TTS behind Offbook/ScenePartner) reviews — https://www.trustpilot.com/review/elevenlabs.io ; https://www.producthunt.com/products/elevenlabs/reviews
+- Linus — https://www.getlinus.app/blog/the-best-ai-tools-for-actors-in-2026 ; App Store reviews: https://apps.apple.com/us/app/linus-learn-lines-self-tape/id6742599484?see-all=reviews
 - ActOnCue — https://actoncue.com/ ; roundup: https://actoncue.com/blog/best-line-learning-apps
 - Backstage roundup ("7 Line Memorization Apps"): https://www.backstage.com/magazine/article/line-memorization-apps-actors-70280/
 - Scriptation roundup ("16 Best Apps for Actors in 2026"): https://scriptation.com/blog/best-apps-for-actors/
@@ -193,3 +274,5 @@ All figures below were pulled from App Store / Google Play listings, developer s
 - Self-e-Tape (self-tape apps 2026): https://selfetape.com/blog/best-self-tape-apps-for-actors-2026
 
 _Note on confidence: App Store rating counts/averages and Google Play install buckets are from live store listings (June 2026) and are reliable. Tiered subscription prices were read from store IAP listings and developer pricing pages. "Est. downloads," prestige/usage claims (e.g., "10,000+ actors," "1.2M+ scripts"), and a few paid-tier prices for cross-platform apps (Script Rehearser's paid tier) are vendor- or roundup-reported and should be treated as approximate. coldRead's listing landscape is fragmented across multiple bundle IDs/publishers; the ~3,700-rating figure refers to the established id1264354117 listing._
+
+_Note on the "Loved / Pain points" review blocks: themes reflect recurring patterns across multiple App Store / Google Play reviews and third-party roundups read in June 2026. Text in quotation marks is verbatim (or near-verbatim) review/quote wording captured from store reviews and review articles; un-quoted bullets are paraphrased summaries of repeated themes. Where an app has too few reviews to support a complaint signal (ScenePartner — 6 ratings; RehearseNow.ai and Offbook — web tools with no first-party store review corpus), this is stated explicitly rather than inferring negatives. No quotes were fabricated; where a verbatim line could not be confirmed, the theme is given without quotation marks._
