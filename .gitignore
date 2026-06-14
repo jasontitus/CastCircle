@@ -54,3 +54,9 @@ fastlane/report.xml
 fastlane/Preview.html
 fastlane/test_output/
 Gemfile.lock
+
+# Script PDFs — large scans, and some are copyrighted (e.g. the Jon Jory
+# Pride & Prejudice adaptation). Kept on local disk for OCR work, not committed.
+# Public-domain test-set sources to re-download: docs/ocr-test-set.md
+sample-scripts/*.pdf
+sample-scripts/ocr-test-set/
