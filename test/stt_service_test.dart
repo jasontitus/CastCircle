@@ -110,5 +110,22 @@ void main() {
         1.0,
       );
     });
+
+    test('ignores parenthetical/bracketed stage directions in the expected line',
+        () {
+      // The actor says only the dialogue, never the direction — so a perfect
+      // delivery of the dialogue should score 1.0 even though the line text
+      // contains "(crossing)" / "[aside]".
+      expect(SttService.matchScore('Hello (crossing) world', 'hello world'), 1.0);
+      expect(SttService.matchScore('[aside] He is a fool', 'he is a fool'), 1.0);
+      // Unclosed direction (OCR dropped the ')') running to end of line.
+      expect(
+        SttService.matchScore(
+          'Nothing would delight me more. (MRS. GARDINER and ELIZABETH turn to',
+          'nothing would delight me more',
+        ),
+        1.0,
+      );
+    });
   });
 }

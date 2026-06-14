@@ -349,6 +349,9 @@ class TtsService {
   Future<void> speak(String text,
       {String? character, List<String>? precomputedPaths}) async {
     if (!_initialized) await init();
+    // Stage directions in parentheses/brackets are never spoken — strip them so
+    // the TTS reads only the dialogue.
+    text = stripStageDirections(text);
     _currentTrace?.stop();
     _currentTrace = PerfService.instance.startTrace('tts_speak');
     _currentTrace?.putAttribute('engine', _kokoroLoaded ? 'kokoro' : 'system');
@@ -360,6 +363,13 @@ class TtsService {
     _activeGen = _speakGen;
     _isSpeaking = true;
     _usingSystemTts = false; // Reset — only set true if we actually use system TTS
+
+    // The whole line was a stage direction — nothing to speak. Fire completion
+    // so the rehearsal flow still advances.
+    if (text.isEmpty) {
+      _fireCompletion('emptyAfterStripDirections');
+      return;
+    }
 
     // Try Kokoro MLX first (iOS only)
     if (_kokoroLoaded) {
@@ -391,6 +401,21 @@ class TtsService {
         : 1.0;
     await _systemTts.setPitch(pitch);
     await _systemTts.speak(text);
+  }
+
+  /// Remove parenthetical / bracketed stage directions so the TTS speaks only
+  /// the dialogue. In play scripts, "(…)" and "[…]" are delivery/stage
+  /// directions ("(softly)", "(crossing to the window)", "[aside]"), never the
+  /// spoken words — so they should never be read aloud. Collapses the leftover
+  /// whitespace. Exposed for reuse (e.g. line-matching) and testing.
+  static String stripStageDirections(String text) {
+    var t = text.replaceAll(RegExp(r'\([^)]*\)'), ' '); // (closed)
+    t = t.replaceAll(RegExp(r'\[[^\]]*\]'), ' '); // [closed]
+    // Unclosed direction running to end of the line — OCR'd scripts routinely
+    // drop the closing ')' / ']' (the direction wraps to the next line), e.g.
+    // "Nothing would delight me more. (MRS. GARDINER and ELIZABETH turn to…".
+    t = t.replaceAll(RegExp(r'[(\[][^)\]]*$'), ' ');
+    return t.replaceAll(RegExp(r'\s+'), ' ').trim();
   }
 
   /// Split text into chunks at sentence boundaries for Kokoro's 510 token limit.
@@ -585,6 +610,10 @@ class TtsService {
   /// null if Kokoro isn't loaded or any chunk fails to synthesize.
   Future<List<String>?> prepareKokoro(String text, {String? character}) async {
     if (!_kokoroLoaded) return null;
+    // Strip stage directions identically to [speak] so the chunk counts (and
+    // thus the precomputedPaths) line up.
+    text = stripStageDirections(text);
+    if (text.isEmpty) return null;
 
     final voice = (character != null && _characterVoices.containsKey(character))
         ? _characterVoices[character]!

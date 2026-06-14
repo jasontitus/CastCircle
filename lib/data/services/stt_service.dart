@@ -276,7 +276,14 @@ class SttService {
   /// must say the words in roughly the right sequence to score well.
   /// Handles insertions, deletions, and STT adding extra words gracefully.
   static double matchScore(String expected, String spoken) {
-    final normalizedExpected = _normalize(expected);
+    // Stage directions in parentheses/brackets aren't spoken by the actor, so
+    // don't count them as expected words (otherwise "(crossing)" would make
+    // "crossing" a word the actor is penalized for not saying).
+    final dialogueExpected = expected
+        .replaceAll(RegExp(r'\([^)]*\)'), ' ')
+        .replaceAll(RegExp(r'\[[^\]]*\]'), ' ')
+        .replaceAll(RegExp(r'[(\[][^)\]]*$'), ' '); // unclosed (OCR-dropped close)
+    final normalizedExpected = _normalize(dialogueExpected);
     if (normalizedExpected.isEmpty) return 1.0;
 
     final expectedWords = normalizedExpected.split(RegExp(r'\s+'));
