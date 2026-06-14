@@ -53,7 +53,8 @@ class RehearsalScreen extends ConsumerStatefulWidget {
   ConsumerState<RehearsalScreen> createState() => _RehearsalScreenState();
 }
 
-class _RehearsalScreenState extends ConsumerState<RehearsalScreen> {
+class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
+    with WidgetsBindingObserver {
   late ScrollController _scrollController;
   final AudioPlayer _player = AudioPlayer();
   final TtsService _tts = TtsService.instance;
@@ -110,10 +111,18 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen> {
   int _currentAttemptCount = 0;
   double _currentBestScore = 0.0;
 
+  // Progress autosave — persist the current line position per
+  // production+scene+character+mode so a force-quit (or just leaving) doesn't
+  // drop the actor back to the top of the scene next time.
+  Timer? _progressSaveTimer;
+  ProviderSubscription<int>? _progressSub;
+  int? _pendingResumeLine; // surfaced as a snackbar once the screen is built
+
   @override
   void initState() {
     super.initState();
     _scrollController = ScrollController();
+    WidgetsBinding.instance.addObserver(this);
 
     _sessionStartedAt = DateTime.now();
 
@@ -193,29 +202,52 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen> {
       }
     });
 
-    // In Cue Practice mode, jump to a few lines before the actor's first line.
-    // In Scene Readthrough and Readthrough modes, start from the beginning.
+    // Decide the starting line: a saved checkpoint (resume where they left off)
+    // takes precedence; otherwise Cue Practice jumps a few lines before the
+    // actor's first line, and other modes start from the beginning.
     final mode = ref.read(rehearsalModeProvider);
-    if (mode == RehearsalMode.cuePractice &&
+    final scene = ref.read(selectedSceneProvider);
+
+    int? resumeIdx;
+    if (script != null && scene != null) {
+      final dialogueLines = _getRehearsalLines(script, scene, myCharacter);
+      resumeIdx = await _loadProgressCheckpoint(
+          production, scene, myCharacter, dialogueLines.length);
+    }
+
+    if (resumeIdx != null) {
+      ref.read(currentLineIndexProvider.notifier).state = resumeIdx;
+      _scrollToCurrentLine();
+      _pendingResumeLine = resumeIdx;
+    } else if (mode == RehearsalMode.cuePractice &&
         script != null &&
-        myCharacter != null) {
-      final scene = ref.read(selectedSceneProvider);
-      if (scene != null) {
-        final dialogueLines = _getRehearsalLines(script, scene, myCharacter);
-        final firstMyIdx = dialogueLines
-            .indexWhere((l) => l.isForCharacter(myCharacter));
-        if (firstMyIdx > 0) {
-          // Start 3 lines before actor's first line (minimum 0)
-          final startIdx = (firstMyIdx - 3).clamp(0, dialogueLines.length - 1);
-          ref.read(currentLineIndexProvider.notifier).state = startIdx;
-          _scrollToCurrentLine();
-        }
+        myCharacter != null &&
+        scene != null) {
+      final dialogueLines = _getRehearsalLines(script, scene, myCharacter);
+      final firstMyIdx =
+          dialogueLines.indexWhere((l) => l.isForCharacter(myCharacter));
+      if (firstMyIdx > 0) {
+        // Start 3 lines before actor's first line (minimum 0)
+        final startIdx = (firstMyIdx - 3).clamp(0, dialogueLines.length - 1);
+        ref.read(currentLineIndexProvider.notifier).state = startIdx;
+        _scrollToCurrentLine();
       }
     }
+
+    // Begin watching the position so subsequent advances are autosaved. Started
+    // *after* the resume read above so the initial reset-to-0 can't clobber a
+    // saved checkpoint.
+    _startProgressAutosave();
 
     // Auto-start playback immediately — don't wait for STT
     if (_autoPlay) {
       _processCurrentLine();
+    }
+
+    // Let the actor know we picked up where they left off (with an escape hatch).
+    if (_pendingResumeLine != null) {
+      _showResumeSnackBar(_pendingResumeLine!);
+      _pendingResumeLine = null;
     }
 
     // Defer STT init to background — it's only needed when it's the user's
@@ -248,8 +280,113 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen> {
     }
   }
 
+  // ── Progress autosave ─────────────────────────────────
+  //
+  // The live position lives in [currentLineIndexProvider] (in-memory). Without
+  // persistence, a force-quit or even just backgrounding mid-scene drops the
+  // actor back to line 0. We checkpoint the index per
+  // production+scene+character+mode (mode matters because Cue Practice uses a
+  // filtered line list with a different index space) and resume on re-entry.
+
+  String? _progressKey(dynamic production, ScriptScene scene, String? character) {
+    final pid = production?.id;
+    if (pid == null) return null;
+    final mode = ref.read(rehearsalModeProvider).name;
+    return 'rehearsal_pos:$pid:${scene.sceneName}:${character ?? '_all'}:$mode';
+  }
+
+  /// Reads a saved checkpoint for the current scene. Returns the resume index
+  /// only when it's a meaningful mid-scene position; expires stale checkpoints.
+  Future<int?> _loadProgressCheckpoint(
+      dynamic production, ScriptScene scene, String? character, int lineCount) async {
+    final key = _progressKey(production, scene, character);
+    if (key == null) return null;
+    final prefs = await SharedPreferences.getInstance();
+    final raw = prefs.getString(key);
+    if (raw == null) return null;
+
+    final parts = raw.split('|');
+    final idx = int.tryParse(parts.first) ?? 0;
+    if (parts.length > 1) {
+      final millis = int.tryParse(parts[1]);
+      if (millis != null) {
+        final age = DateTime.now().millisecondsSinceEpoch - millis;
+        if (age > const Duration(days: 14).inMilliseconds) {
+          await prefs.remove(key);
+          return null;
+        }
+      }
+    }
+    // Only resume from a real mid-scene position (not the very start or a stale
+    // index past the end of a since-edited script).
+    if (idx <= 0 || idx >= lineCount) return null;
+    return idx;
+  }
+
+  void _startProgressAutosave() {
+    _progressSub = ref.listenManual<int>(currentLineIndexProvider, (prev, next) {
+      // Debounce: advancing fires rapidly during a readthrough.
+      _progressSaveTimer?.cancel();
+      _progressSaveTimer =
+          Timer(const Duration(milliseconds: 600), () => _persistProgress(next));
+    });
+  }
+
+  Future<void> _persistProgress(int idx) async {
+    final production = ref.read(currentProductionProvider);
+    final scene = ref.read(selectedSceneProvider);
+    final character = ref.read(rehearsalCharacterProvider);
+    if (scene == null) return;
+    final key = _progressKey(production, scene, character);
+    if (key == null) return;
+    final prefs = await SharedPreferences.getInstance();
+    if (idx <= 0) {
+      await prefs.remove(key);
+    } else {
+      await prefs.setString(
+          key, '$idx|${DateTime.now().millisecondsSinceEpoch}');
+    }
+  }
+
+  Future<void> _clearProgressCheckpoint() async {
+    final production = ref.read(currentProductionProvider);
+    final scene = ref.read(selectedSceneProvider);
+    final character = ref.read(rehearsalCharacterProvider);
+    if (scene == null) return;
+    final key = _progressKey(production, scene, character);
+    if (key == null) return;
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove(key);
+  }
+
+  void _showResumeSnackBar(int idx) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(SnackBar(
+        content: Text('Resumed where you left off (line ${idx + 1})'),
+        action: SnackBarAction(label: 'Start over', onPressed: _restartScene),
+        duration: const Duration(seconds: 6),
+      ));
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    // Backgrounding is the most likely moment before a force-quit — checkpoint now.
+    if (state == AppLifecycleState.paused ||
+        state == AppLifecycleState.inactive ||
+        state == AppLifecycleState.hidden) {
+      _persistProgress(ref.read(currentLineIndexProvider));
+    }
+  }
+
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    // Capture the final position synchronously before teardown.
+    _progressSaveTimer?.cancel();
+    _persistProgress(ref.read(currentLineIndexProvider));
+    _progressSub?.close();
     WakelockPlus.disable(); // Allow screen to sleep again
     _dlog.stopMemoryMonitoring();
     _dlog.log(LogCategory.rehearsal, 'Rehearsal ended');
@@ -1220,6 +1357,8 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen> {
           RehearsalState.sceneComplete;
       WakelockPlus.disable(); // Allow screen to sleep at scene end
       _saveSession(dialogueLines);
+      _progressSaveTimer?.cancel(); // don't let a late debounce re-checkpoint
+      _clearProgressCheckpoint(); // finished the scene — nothing to resume
       _offerToSaveRehearsalRecordings();
       return;
     }
@@ -1751,6 +1890,7 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen> {
 
     ref.read(currentLineIndexProvider.notifier).state = 0;
     ref.read(rehearsalStateProvider.notifier).state = RehearsalState.ready;
+    _clearProgressCheckpoint(); // starting over — drop any saved position
 
     // Reset session tracking
     _sessionStartedAt = DateTime.now();
