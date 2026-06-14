@@ -383,7 +383,13 @@ class OnDeviceLlmPlugin: NSObject {
         let n = prompts.count
         let nSlots = max(1, min(requestedSlots, n))
         let perSeqCtx: UInt32 = 4096
-        let maxNewTokens = 2048
+        // Structured JSON for a ~60-line chunk is ~600-1000 tokens; cap well
+        // below the old 2048 so a chunk where the model fails to emit
+        // end-of-turn (common on heavily OCR-garbled text — it rambles or loops)
+        // can't burn 2048 tokens × every slot. Runaway generation is what drives
+        // the GPU into the wedged state where llama_decode then fails for the
+        // rest of the job. Truncated JSON is salvaged on the Dart side.
+        let maxNewTokens = 1024
 
         // Reuse one context sized for `nSlots` concurrent sequences across the
         // whole job (recreating a large multi-seq context per call fragments

@@ -46,7 +46,7 @@ class _MockLlm implements OnDeviceLlmProvider {
 /// structuring can be exercised with different output per chunk.
 class _QueueLlm implements OnDeviceLlmProvider {
   _QueueLlm(this._responses);
-  final List<String> _responses;
+  final List<String?> _responses;
   int _i = 0;
 
   @override
@@ -217,6 +217,15 @@ void main() {
       final eliza = script!.lines.firstWhere((l) => l.character == 'ELIZABETH');
       expect(eliza.act, 'ACT II'); // inherited from chunk 1
       expect(eliza.scene, 'Scene 3');
+    });
+
+    test('aborts (returns null) when a whole group fails to decode', () async {
+      // Every chunk returns null = the decoder/GPU wedged; structureChunked must
+      // abort and return null rather than present a partial script as complete.
+      final svc = AiScriptStructuringService(provider: _QueueLlm([null, null]));
+      final script = await svc.structureChunked(
+          rawText: 'line-a\nline-b', title: 't', linesPerChunk: 1, batchSize: 1);
+      expect(script, isNull);
     });
 
     test('canonicalizes garbled act/scene labels', () async {

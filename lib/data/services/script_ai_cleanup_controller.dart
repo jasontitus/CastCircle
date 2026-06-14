@@ -184,9 +184,16 @@ class ScriptAiCleanupController extends ChangeNotifier {
       // Free the multi-GB LLM so Kokoro (and the rest of the app) gets its
       // memory back, then restore Kokoro if we unloaded it.
       await llm.dispose();
-      if (kokoroWasLoaded) {
+      // Skip the Kokoro reload after a FAILED job: that failure is typically the
+      // GPU/Metal stack wedging mid-run, and loading Kokoro's MLX model onto a
+      // wedged Metal device can hard-crash the app. Leave TTS for the next launch
+      // (fresh Metal state) — the cleanup auto-resumes from its checkpoint then.
+      if (kokoroWasLoaded && _phase != CleanupPhase.failed) {
         log.log(LogCategory.ai, 'reloading Kokoro after cleanup');
         await tts.tryLoadKokoro();
+      } else if (kokoroWasLoaded) {
+        log.log(LogCategory.ai,
+            'skipping Kokoro reload after failed cleanup (avoids MLX-on-wedged-Metal crash)');
       }
       await llm.endBackgroundExecution();
       notifyListeners();

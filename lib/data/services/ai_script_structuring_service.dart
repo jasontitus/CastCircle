@@ -214,6 +214,7 @@ class AiScriptStructuringService {
     var runningScene = merged.isNotEmpty ? merged.last.scene : '';
 
     var cancelled = false;
+    var failed = false;
     for (var b = startChunk; b < chunks.length; b += groupSize) {
       if (isCancelled?.call() ?? false) {
         cancelled = true;
@@ -233,6 +234,17 @@ class AiScriptStructuringService {
         totalChunks: chunks.length,
         onChunkDone: (done, total) => onProgress?.call(done, total),
       );
+      // If the whole group failed (every output null), the decoder/GPU is
+      // wedged — once that happens it stays failed, so don't churn through the
+      // remaining groups firing dead decodes (which only damages the GPU state
+      // further). Stop now, keep the checkpoint, and let a resume in a fresh
+      // process pick up from here with clean Metal state.
+      if (outputs.every((o) => o == null)) {
+        failed = true;
+        log.logError(LogCategory.ai,
+            'batch failed for all ${outputs.length} chunks at ${b + 1}/${chunks.length} — aborting; checkpoint kept for resume');
+        break;
+      }
       for (final out in outputs) {
         if (out == null) continue;
         final parsed = _parseResponse(out, title,
@@ -251,9 +263,14 @@ class AiScriptStructuringService {
       onProgress?.call(end, chunks.length);
     }
 
-    // Keep the checkpoint on cancel (for resume); clear it once the run
-    // finishes so a later, different cleanup starts clean.
-    if (!cancelled) await _deleteCheckpoint();
+    // Keep the checkpoint on cancel OR failure (both want resume); clear it only
+    // when the run actually completed, so a later, different cleanup starts clean.
+    if (!cancelled && !failed) await _deleteCheckpoint();
+
+    // On a mid-run failure, signal failure (null) so the caller marks the job
+    // failed and a resume continues from the checkpoint — rather than presenting
+    // a silently-truncated script as if it were complete.
+    if (failed) return null;
 
     if (merged.isEmpty) return null;
 
