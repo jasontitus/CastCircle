@@ -1,4 +1,9 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
+
+/// Live progress of a native PDF OCR run: the page being processed and the
+/// total. Null when no OCR is in flight.
+typedef OcrProgress = ({int page, int total});
 
 /// Dart wrapper for the native on-device PaddleOCR (PP-OCRv5) plugin, run via
 /// ONNX Runtime. Replaces Google ML Kit for PDF/image OCR on iOS (and Android).
@@ -10,6 +15,30 @@ import 'package:flutter/services.dart';
 /// safe to ship before the native side lands.
 class PaddleOcrChannel {
   static const _channel = MethodChannel('com.lineguide/paddle_ocr');
+
+  /// Per-page OCR progress, pushed from native during [ocrPdf] so the import
+  /// screen can show "Reading page X of Y" instead of a frozen spinner. Null
+  /// between runs.
+  static final ValueNotifier<OcrProgress?> progress = ValueNotifier(null);
+
+  static bool _handlerInstalled = false;
+
+  /// Install the native→Dart handler that receives `ocrProgress` events. Lazy
+  /// (first OCR call) so we don't claim the channel handler until it's needed.
+  static void _ensureProgressHandler() {
+    if (_handlerInstalled) return;
+    _handlerInstalled = true;
+    _channel.setMethodCallHandler((call) async {
+      if (call.method == 'ocrProgress' && call.arguments is Map) {
+        final args = Map<String, dynamic>.from(call.arguments as Map);
+        progress.value = (
+          page: args['page'] as int? ?? 0,
+          total: args['pageCount'] as int? ?? 0,
+        );
+      }
+      return null;
+    });
+  }
 
   /// Recognize text in a single image file. Returns null when the native plugin
   /// isn't available on this platform/build (caller should fall back).
@@ -41,6 +70,8 @@ class PaddleOcrChannel {
     String pdfPath, {
     double scale = 2.0,
   }) async {
+    _ensureProgressHandler();
+    progress.value = (page: 0, total: 0); // "starting" until the first page lands
     try {
       final result = await _channel.invokeMethod<Map>('ocrPdf', {
         'path': pdfPath,
@@ -73,6 +104,8 @@ class PaddleOcrChannel {
       );
     } on MissingPluginException {
       return null;
+    } finally {
+      progress.value = null;
     }
   }
 }

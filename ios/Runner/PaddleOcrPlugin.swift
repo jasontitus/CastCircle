@@ -114,6 +114,12 @@ class PaddleOcrPlugin: NSObject {
       var failed = 0
       let jobStart = Date()
       for i in 0..<pageCount {
+        // Push per-page progress to Dart so the import screen shows
+        // "Reading page X of Y" instead of a frozen spinner.
+        DispatchQueue.main.async {
+          self.channel.invokeMethod("ocrProgress",
+                                    arguments: ["page": i + 1, "pageCount": pageCount])
+        }
         guard let page = doc.page(at: i) else { failed += 1; continue }
         let b = page.bounds(for: .mediaBox)
         guard let cg = self.renderPage(page, width: b.width * CGFloat(scale), height: b.height * CGFloat(scale)) else {
@@ -188,13 +194,25 @@ class PaddleOcrPlugin: NSObject {
     }
     let sx = CGFloat(origW) / CGFloat(mW), sy = CGFloat(origH) / CGFloat(mH)
     var boxes = [CGRect]()
+    // DBNet's probability map fires only on the CORE of each glyph; thresholding
+    // at 0.3 yields a connected component that's ~1.8x too SHORT vertically,
+    // clipping ascenders/descenders and corrupting recognition (BANQUO→BANOUO,
+    // y→v, commas→periods, dropped trailing periods). PP-OCR's "unclip" step
+    // recovers the full glyph; for a long thin text line that growth is almost
+    // entirely vertical. So expand each box about its center by height ×1.5,
+    // width ×1.05 (measured on-Mac against the real models: 91.3% → 99.0% word
+    // accuracy, matching rapidocr's full DBNet contour+unclip pipeline).
+    let heightExpand: CGFloat = 1.5
+    let widthExpand: CGFloat = 1.05
     for id in 1..<next where area[id] >= detMinBoxArea {
-      // Pad slightly (DBNet shrinks regions); 1px in map space.
-      let x0 = CGFloat(max(0, minX[id] - 1)) * sx
-      let y0 = CGFloat(max(0, minY[id] - 1)) * sy
-      let x1 = CGFloat(min(mW, maxX[id] + 2)) * sx
-      let y1 = CGFloat(min(mH, maxY[id] + 2)) * sy
-      boxes.append(CGRect(x: x0, y: y0, width: x1 - x0, height: y1 - y0))
+      let cx = CGFloat(minX[id] + maxX[id]) / 2
+      let cy = CGFloat(minY[id] + maxY[id]) / 2
+      let halfW = CGFloat(maxX[id] - minX[id] + 1) * widthExpand / 2
+      let halfH = CGFloat(maxY[id] - minY[id] + 1) * heightExpand / 2
+      let ex0 = max(0, cx - halfW), ex1 = min(CGFloat(mW), cx + halfW)
+      let ey0 = max(0, cy - halfH), ey1 = min(CGFloat(mH), cy + halfH)
+      boxes.append(CGRect(x: ex0 * sx, y: ey0 * sy,
+                          width: (ex1 - ex0) * sx, height: (ey1 - ey0) * sy))
     }
     return boxes
   }

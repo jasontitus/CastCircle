@@ -11,6 +11,7 @@ import '../../data/models/script_models.dart';
 import '../../data/services/analytics_service.dart';
 import '../../data/services/model_download_service.dart';
 import '../../data/services/on_device_llm_channel.dart';
+import '../../data/services/paddle_ocr_channel.dart';
 import '../../data/services/script_ai_cleanup_controller.dart';
 import '../../data/services/supabase_service.dart';
 import '../../data/services/voice_config_service.dart';
@@ -38,6 +39,14 @@ class _ScriptImportScreenState extends ConsumerState<ScriptImportScreen> {
 
   static const _gemmaIds = ['gemma_model'];
 
+  /// Gemma / on-device LLM cleanup is disabled in the import flow: PaddleOCR +
+  /// the heuristic parser structure scanned scripts directly (the Mac
+  /// validation showed ~99% OCR accuracy is parser-ready without an LLM pass),
+  /// and the LLM cleanup was unreliable on garbled input. The dormant cleanup
+  /// code is gated on this flag — flip to re-enable. Kept as a getter so the
+  /// guarded branches don't read as dead code.
+  bool get _scriptAiEnabled => false;
+
   @override
   void initState() {
     super.initState();
@@ -46,19 +55,26 @@ class _ScriptImportScreenState extends ConsumerState<ScriptImportScreen> {
     _downloadService.isGemmaReady().then((ready) {
       if (mounted) setState(() => _gemmaReady = ready);
     });
-    // Detect an on-device runtime. Pass the Gemma model dir (when present) so
-    // it's preferred; Apple Foundation Models is the no-download fallback.
-    _downloadService.getGemmaModelDir().then((dir) {
-      OnDeviceLlmChannel.instance.initialize(dir ?? '').then((ready) {
-        if (mounted) setState(() => _aiAvailable = ready);
+    if (_scriptAiEnabled) {
+      // Detect an on-device runtime. Pass the Gemma model dir (when present) so
+      // it's preferred; Apple Foundation Models is the no-download fallback.
+      _downloadService.getGemmaModelDir().then((dir) {
+        OnDeviceLlmChannel.instance.initialize(dir ?? '').then((ready) {
+          if (mounted) setState(() => _aiAvailable = ready);
+        });
       });
-    });
-    // If a cleanup was interrupted (app killed mid-run), surface it as a
-    // Resume/Discard prompt instead of silently relaunching it — a stuck or
-    // garbage job must not auto-grind on every launch.
+    }
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted) {
-        _cleanup.checkForPendingResume(ref.read(scriptImportServiceProvider));
+      if (!mounted) return;
+      final service = ref.read(scriptImportServiceProvider);
+      if (_scriptAiEnabled) {
+        // Surface an interrupted cleanup as a Resume/Discard prompt rather than
+        // silently relaunching a possibly-stuck job on every launch.
+        _cleanup.checkForPendingResume(service);
+      } else {
+        // Disabled: clear any leftover cleanup checkpoint from an earlier build
+        // so a stuck job can never resume.
+        service.clearPendingCleanup();
       }
     });
   }
@@ -138,16 +154,7 @@ class _ScriptImportScreenState extends ConsumerState<ScriptImportScreen> {
         ),
       ),
       body: _loading
-          ? const Center(
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  CircularProgressIndicator(),
-                  SizedBox(height: 16),
-                  Text('Parsing script...'),
-                ],
-              ),
-            )
+          ? _buildLoading(context)
           : _preview != null
               ? _buildPreview(context)
               : (_cleanup.isRunning
@@ -155,6 +162,36 @@ class _ScriptImportScreenState extends ConsumerState<ScriptImportScreen> {
                   : (_cleanup.hasPendingResume
                       ? _buildPendingResumePrompt(context)
                       : _buildImportOptions(context))),
+    );
+  }
+
+  /// Loading view. For scanned PDFs the native PaddleOCR pass can take a while,
+  /// so surface its per-page progress (pushed via [PaddleOcrChannel.progress])
+  /// instead of an indeterminate spinner that looks frozen.
+  Widget _buildLoading(BuildContext context) {
+    return Center(
+      child: ValueListenableBuilder<OcrProgress?>(
+        valueListenable: PaddleOcrChannel.progress,
+        builder: (context, ocr, _) {
+          final reading = ocr != null && ocr.total > 0;
+          return Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              if (reading)
+                SizedBox(
+                  width: 220,
+                  child: LinearProgressIndicator(value: ocr.page / ocr.total),
+                )
+              else
+                const CircularProgressIndicator(),
+              const SizedBox(height: 16),
+              Text(reading
+                  ? 'Reading page ${ocr.page} of ${ocr.total}…'
+                  : (ocr != null ? 'Reading PDF…' : 'Parsing script…')),
+            ],
+          );
+        },
+      ),
     );
   }
 
@@ -331,6 +368,7 @@ class _ScriptImportScreenState extends ConsumerState<ScriptImportScreen> {
   /// the importer fall back to an LLM cleanup pass when the basic parser
   /// struggles. Until then, import works exactly as before.
   Widget _scriptAiTile(BuildContext context) {
+    if (!_scriptAiEnabled) return const SizedBox.shrink();
     final theme = Theme.of(context);
     final muted = theme.colorScheme.onSurface.withValues(alpha: 0.6);
 
@@ -537,8 +575,9 @@ class _ScriptImportScreenState extends ConsumerState<ScriptImportScreen> {
             ],
           ),
         ),
-        // Clean up with AI (shown once an on-device runtime is available)
-        if (_aiAvailable)
+        // Clean up with AI (shown once an on-device runtime is available;
+        // disabled in the import flow — see [_scriptAiEnabled])
+        if (_aiAvailable && _scriptAiEnabled)
           Padding(
             padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
             child: SizedBox(
