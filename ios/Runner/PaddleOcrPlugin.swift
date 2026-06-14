@@ -30,12 +30,12 @@ class PaddleOcrPlugin: NSObject {
   private let detMinBoxArea = 16            // drop specks (in det-map pixels)
   // DBNet "unclip" box expansion. A larger ratio over-expands boxes and MERGES
   // adjacent text lines (garble); a too-small ratio clips trailing punctuation.
-  // A per-document sweep across a 9-scan corpus (Mac-verified through the real
-  // parser) showed higher values NEVER help and 0.4–0.6 reaches every doc's
-  // low-conf floor — so a low static value is the right default (the line-
-  // spacing→unclip signal is too noisy to tune finely). 0.6 keeps margin above
-  // the ~0.2 punctuation-clipping threshold.
-  private let detUnclipRatio: Float = 0.6
+  // A 9-scan corpus sweep AND a full-document low-OCR debug of the real P&P
+  // copier scan (both Mac-verified) land on the 0.4–0.6 safe band. 0.4 is the
+  // corpus-wide optimum and, on tightly-leaded pages, recovers ~13 more lines
+  // than 0.6 (page 14: 13→2 low-OCR lines) while staying clear of the ~0.2
+  // punctuation-clipping threshold.
+  private let detUnclipRatio: Float = 0.4
   // Auto render scale: rasterize so the page long side ≈ this many px — the
   // recognition sweet spot (detection caps at 960 anyway, so scale only feeds
   // the rec crops). Adapts per page so small-page / low-DPI PDFs still get
