@@ -53,11 +53,12 @@ class _ScriptImportScreenState extends ConsumerState<ScriptImportScreen> {
         if (mounted) setState(() => _aiAvailable = ready);
       });
     });
-    // If a cleanup was interrupted (app killed mid-run while backgrounded),
-    // pick it back up from its checkpoint using the persisted source text.
+    // If a cleanup was interrupted (app killed mid-run), surface it as a
+    // Resume/Discard prompt instead of silently relaunching it — a stuck or
+    // garbage job must not auto-grind on every launch.
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted) {
-        _cleanup.resumeIfPending(ref.read(scriptImportServiceProvider));
+        _cleanup.checkForPendingResume(ref.read(scriptImportServiceProvider));
       }
     });
   }
@@ -151,7 +152,64 @@ class _ScriptImportScreenState extends ConsumerState<ScriptImportScreen> {
               ? _buildPreview(context)
               : (_cleanup.isRunning
                   ? _buildResumingCleanup(context)
-                  : _buildImportOptions(context)),
+                  : (_cleanup.hasPendingResume
+                      ? _buildPendingResumePrompt(context)
+                      : _buildImportOptions(context))),
+    );
+  }
+
+  /// Shown when an interrupted cleanup is available but not running. The user
+  /// chooses Resume (re-enter the multi-minute job, with live progress) or
+  /// Discard (drop the checkpoint) — nothing heavy runs until they decide.
+  Widget _buildPendingResumePrompt(BuildContext context) {
+    final pending = _cleanup.pendingResume;
+    final title = pending?.title ?? 'your script';
+    final done = pending?.done ?? 0;
+    final total = pending?.total ?? 0;
+    final progress = total > 0 ? '$done of $total sections done' : null;
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(24),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(Icons.auto_fix_high,
+                size: 56,
+                color:
+                    Theme.of(context).colorScheme.primary.withValues(alpha: 0.7)),
+            const SizedBox(height: 16),
+            Text('Finish AI cleanup?',
+                style: Theme.of(context).textTheme.titleMedium),
+            const SizedBox(height: 8),
+            Text(
+              'An AI cleanup of "$title" was interrupted'
+              '${progress != null ? " ($progress)" : ""}.\n'
+              'Resume it, or discard and import again.',
+              textAlign: TextAlign.center,
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                    color: Theme.of(context)
+                        .colorScheme
+                        .onSurface
+                        .withValues(alpha: 0.6),
+                  ),
+            ),
+            const SizedBox(height: 24),
+            FilledButton.icon(
+              onPressed: () =>
+                  _cleanup.resumePending(ref.read(scriptImportServiceProvider)),
+              icon: const Icon(Icons.play_arrow),
+              label: const Text('Resume cleanup'),
+            ),
+            const SizedBox(height: 12),
+            OutlinedButton.icon(
+              onPressed: () =>
+                  _cleanup.discardPending(ref.read(scriptImportServiceProvider)),
+              icon: const Icon(Icons.delete_outline),
+              label: const Text('Discard'),
+            ),
+          ],
+        ),
+      ),
     );
   }
 

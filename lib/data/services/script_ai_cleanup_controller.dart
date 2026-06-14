@@ -63,6 +63,12 @@ class ScriptAiCleanupController extends ChangeNotifier {
   /// on-disk checkpoint even if the native decode is wedged (see [cancel]).
   ScriptImportService? _service;
 
+  /// An interrupted cleanup that's available to resume, surfaced by
+  /// [checkForPendingResume]. Non-null means the UI should offer Resume/Discard
+  /// — the job is NOT auto-started (a heavy, occasionally crash-prone resume
+  /// must not fire silently on launch and lock the user out).
+  ({String rawText, String title, int done, int total})? _pendingResume;
+
   // ETA tracking: timestamp + chunk index when this session's processing began
   // (after model load / a resume), so the estimate uses the live per-chunk rate.
   DateTime? _sessionStart;
@@ -76,6 +82,11 @@ class ScriptAiCleanupController extends ChangeNotifier {
   ParsedScript? get result => _result;
   Object? get error => _error;
   String? get jobTitle => _jobTitle;
+
+  /// An interrupted cleanup waiting for the user to Resume or Discard, or null.
+  ({String rawText, String title, int done, int total})? get pendingResume =>
+      _pendingResume;
+  bool get hasPendingResume => _pendingResume != null;
 
   /// Estimated time remaining, from the average per-chunk time this session.
   /// Null until at least one chunk completes after the session start.
@@ -112,6 +123,7 @@ class ScriptAiCleanupController extends ChangeNotifier {
     _error = null;
     _jobTitle = title;
     _service = service;
+    _pendingResume = null;
     _sessionStart = null;
     _sessionFirstChunk = 0;
     notifyListeners();
@@ -206,33 +218,58 @@ class ScriptAiCleanupController extends ChangeNotifier {
     return true;
   }
 
-  /// If an earlier cleanup was interrupted (app killed mid-run), restart it
-  /// from its checkpoint using the persisted source text. Returns true if a
-  /// resume was kicked off. Call when re-entering the app/import screen.
-  Future<bool> resumeIfPending(ScriptImportService service) async {
+  /// Detect an interrupted cleanup (app killed mid-run) and, if it's still
+  /// resumable, surface it via [pendingResume] for the UI to offer Resume or
+  /// Discard. Returns true when a pending cleanup is available.
+  ///
+  /// Deliberately does NOT auto-start. On-device structuring is a multi-minute,
+  /// memory-heavy job that can wedge the GPU on bad input; auto-firing it the
+  /// instant the import screen opened previously relaunched a stuck/garbage job
+  /// on every launch and locked the user out. The user now opts in.
+  Future<bool> checkForPendingResume(ScriptImportService service) async {
     if (_phase == CleanupPhase.running) return false;
     final pending = await service.pendingCleanup();
-    if (pending == null) return false;
-    // A checkpoint that has burned its auto-resume budget can never finish —
-    // discard it here, before any heavyweight model load, rather than relaunch
-    // the cleanup every time this screen opens (the loop that made a
-    // cancelled/failed job impossible to stop).
+    if (pending == null) {
+      _setPendingResume(null);
+      return false;
+    }
+    // A checkpoint that has burned its resume budget can never finish — discard
+    // it instead of offering a resume that will only fail again.
     if (await service.pendingCleanupExhausted()) {
       DebugLogService.instance.log(LogCategory.ai,
           'pending cleanup exhausted its resume budget — discarding checkpoint');
       await service.clearPendingCleanup();
+      _setPendingResume(null);
       return false;
     }
-    DebugLogService.instance
-        .log(LogCategory.ai, 'resuming interrupted cleanup from checkpoint');
-    // Fire-and-forget: structureChunked picks up from the checkpoint; listeners
-    // reflect progress. Don't await — let the caller's UI stay responsive.
-    unawaited(start(
-      rawText: pending.rawText,
-      title: pending.title,
-      service: service,
-    ));
+    DebugLogService.instance.log(LogCategory.ai,
+        'pending cleanup found (chunk ${pending.done}/${pending.total}) — awaiting Resume/Discard');
+    _setPendingResume(pending);
     return true;
+  }
+
+  void _setPendingResume(
+      ({String rawText, String title, int done, int total})? p) {
+    _pendingResume = p;
+    notifyListeners();
+  }
+
+  /// Resume the pending cleanup the user opted into (no-op if none).
+  Future<void> resumePending(ScriptImportService service) async {
+    final p = _pendingResume;
+    if (p == null) return;
+    _pendingResume = null;
+    await start(rawText: p.rawText, title: p.title, service: service);
+  }
+
+  /// Discard the interrupted cleanup entirely, clearing its checkpoint so it
+  /// never resumes. The user's explicit "give up on this one".
+  Future<void> discardPending(ScriptImportService service) async {
+    _pendingResume = null;
+    await service.clearPendingCleanup();
+    DebugLogService.instance
+        .log(LogCategory.ai, 'pending cleanup discarded by user');
+    notifyListeners();
   }
 
   /// Request cancellation; the job stops cleanly after the current chunk.

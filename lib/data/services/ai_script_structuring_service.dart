@@ -400,14 +400,24 @@ class AiScriptStructuringService {
 
   /// Source text + title of an in-progress cleanup, for resuming after a kill.
   /// Null when there's no checkpoint.
-  Future<({String rawText, String title})?> loadCheckpointMeta() async {
+  Future<({String rawText, String title, int done, int total})?>
+      loadCheckpointMeta() async {
     try {
       final file = await _checkpointFile();
       if (!file.existsSync()) return null;
       final data = jsonDecode(await file.readAsString()) as Map<String, dynamic>;
       final raw = data['rawText'] as String?;
       if (raw == null || raw.isEmpty) return null;
-      return (rawText: raw, title: (data['title'] as String?) ?? 'Script');
+      // The chunk count is encoded as the suffix of the checkpoint key
+      // ("<hash>_<chunkCount>"), so the UI can show "X of Y" without re-chunking.
+      final key = (data['key'] as String?) ?? '';
+      final total = int.tryParse(key.split('_').last) ?? 0;
+      return (
+        rawText: raw,
+        title: (data['title'] as String?) ?? 'Script',
+        done: (data['nextChunk'] as int?) ?? 0,
+        total: total,
+      );
     } catch (_) {
       return null;
     }

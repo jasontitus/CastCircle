@@ -167,10 +167,11 @@ class ScriptImportService {
   /// Whether an on-device AI model is loaded and ready to restructure a parse.
   bool get isAiAvailable => _aiStructurer.isAvailable;
 
-  /// Source text + title of an interrupted AI cleanup, if one can be resumed
-  /// (the app was killed mid-run). Null when there's nothing to resume.
-  Future<({String rawText, String title})?> pendingCleanup() =>
-      _aiStructurer.loadCheckpointMeta();
+  /// Source text + title + progress (done/total chunks) of an interrupted AI
+  /// cleanup, if one can be resumed (the app was killed mid-run). Null when
+  /// there's nothing to resume.
+  Future<({String rawText, String title, int done, int total})?>
+      pendingCleanup() => _aiStructurer.loadCheckpointMeta();
 
   /// Whether the pending cleanup has burned its auto-resume budget and should be
   /// discarded instead of relaunched (stops a permanently-failing checkpoint

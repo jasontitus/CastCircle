@@ -345,6 +345,26 @@ void main() {
           reason: 'a model-less resume must not loop the cleanup forever');
     });
 
+    test('checkpoint meta exposes done/total progress for the resume prompt',
+        () async {
+      // Group 1 (chunks 1-2) succeeds, group 2 (chunks 3-4) fails → a checkpoint
+      // survives at chunk 3 of 4. The resume prompt reads done/total from it.
+      await AiScriptStructuringService(
+              provider: _QueueLlm([validJson, validJson, null, null]))
+          .structureChunked(
+        rawText: 'a\nb\nc\nd',
+        title: 'Hamlet',
+        linesPerChunk: 1,
+        batchSize: 1,
+        isCancelled: () => false,
+      );
+      final meta = await AiScriptStructuringService().loadCheckpointMeta();
+      expect(meta, isNotNull);
+      expect(meta!.title, 'Hamlet');
+      expect(meta.done, 2); // two chunks completed before the failure
+      expect(meta.total, 4); // four chunks total
+    });
+
     test('forward progress resets the failure budget', () async {
       // Group 1 succeeds, group 2 fails: because real progress was made, the
       // surviving checkpoint keeps a full retry budget (attempts back to 1, not
