@@ -12,6 +12,7 @@ import UIKit
   private var pdfTextPlugin: PdfTextPlugin?
   private var contactPickerPlugin: ContactPickerPlugin?
   private var onDeviceLlmPlugin: OnDeviceLlmPlugin?
+  private var paddleOcrPlugin: PaddleOcrPlugin?
 
   /// Held until the background URLSession finishes delivering events, so iOS
   /// can snapshot the UI after a download completes while the app was suspended.
@@ -79,6 +80,12 @@ import UIKit
     // Register on-device LLM (Gemma script structuring)
     if let llmRegistrar = engineBridge.pluginRegistry.registrar(forPlugin: "OnDeviceLlmPlugin") {
       onDeviceLlmPlugin = OnDeviceLlmPlugin(messenger: llmRegistrar.messenger())
+    }
+
+    // Register on-device PaddleOCR (PP-OCRv6 via ONNX Runtime). Needs the
+    // registrar to resolve bundled model assets.
+    if let paddleRegistrar = engineBridge.pluginRegistry.registrar(forPlugin: "PaddleOcrPlugin") {
+      paddleOcrPlugin = PaddleOcrPlugin(registrar: paddleRegistrar, messenger: paddleRegistrar.messenger())
     }
   }
 }

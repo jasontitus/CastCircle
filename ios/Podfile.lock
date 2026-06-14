@@ -242,6 +242,11 @@ PODS:
     - nanopb/encode (= 3.30910.0)
   - nanopb/decode (3.30910.0)
   - nanopb/encode (3.30910.0)
+  - onnxruntime-c (1.26.0)
+  - onnxruntime-objc (1.26.0):
+    - onnxruntime-objc/Core (= 1.26.0)
+  - onnxruntime-objc/Core (1.26.0):
+    - onnxruntime-c (= 1.26.0)
   - package_info_plus (0.4.5):
     - Flutter
   - pdfium_flutter (0.1.5):
@@ -306,6 +311,7 @@ DEPENDENCIES:
   - google_mlkit_text_recognition (from `.symlinks/plugins/google_mlkit_text_recognition/ios`)
   - integration_test (from `.symlinks/plugins/integration_test/ios`)
   - just_audio (from `.symlinks/plugins/just_audio/darwin`)
+  - onnxruntime-objc
   - package_info_plus (from `.symlinks/plugins/package_info_plus/ios`)
   - pdfium_flutter (from `.symlinks/plugins/pdfium_flutter/darwin`)
   - record_darwin (from `.symlinks/plugins/record_darwin/ios`)
@@ -345,6 +351,8 @@ SPEC REPOS:
     - MLKitTextRecognitionCommon
     - MLKitVision
     - nanopb
+    - onnxruntime-c
+    - onnxruntime-objc
     - PromisesObjC
     - PromisesSwift
     - SDWebImage
@@ -440,6 +448,8 @@ SPEC CHECKSUMS:
   MLKitTextRecognitionCommon: cd44577a8c506fc6bba065096de03bec0d01a213
   MLKitVision: 45e79d68845a2de77e2dd4d7f07947f0ed157b0e
   nanopb: fad817b59e0457d11a5dfbde799381cd727c1275
+  onnxruntime-c: e6e9272f5996fed3ea3ca3c9bc843478b2ecbc73
+  onnxruntime-objc: 63687acb8d78c35dd0ab097abf755b1f3dc468c7
   package_info_plus: af8e2ca6888548050f16fa2f1938db7b5a5df499
   pdfium_flutter: 512bc19dbbd80b4287d04869aa19ad729289079d
   PromisesObjC: 752c3227f599e3467650e47ea36f433eeb10c273
@@ -454,6 +464,6 @@ SPEC CHECKSUMS:
   url_launcher_ios: 7a95fa5b60cc718a708b8f2966718e93db0cef1b
   wakelock_plus: e29112ab3ef0b318e58cfa5c32326458be66b556
 
-PODFILE CHECKSUM: ba0d7af98d1a0db7cbf744edd0331fd4de934cd6
+PODFILE CHECKSUM: 66faa9c8403290c7d48c2ac649a0984490388a8f
 
 COCOAPODS: 1.16.2

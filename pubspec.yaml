@@ -89,3 +89,4 @@ flutter:
   assets:
     - assets/
     - assets/test_scripts/
+    - assets/paddle_ocr/
