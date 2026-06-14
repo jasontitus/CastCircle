@@ -41,6 +41,22 @@ class _PdfPageViewState extends State<PdfPageView> {
   }
 
   @override
+  void didUpdateWidget(covariant PdfPageView oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    // In the tablet two-pane layout this widget is kept alive and re-targeted as
+    // the user selects different lines. Re-render only when the page (or file)
+    // actually changes; if just the line moved within the same page, re-apply
+    // the zoom target without paying for a fresh render.
+    if (oldWidget.pdfPath != widget.pdfPath ||
+        oldWidget.pageNumber != widget.pageNumber) {
+      _currentPage = widget.pageNumber;
+      _renderPage();
+    } else if (oldWidget.lineOnPage != widget.lineOnPage) {
+      setState(() => _zoomApplied = false);
+    }
+  }
+
+  @override
   void dispose() {
     _pageImage?.dispose();
     _txController.dispose();

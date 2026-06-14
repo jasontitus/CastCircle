@@ -51,6 +51,16 @@ class _OcrReviewScreenState extends State<OcrReviewScreen> {
 
   bool _notScriptExpanded = false;
 
+  /// On wide layouts the screen is a two-pane master/detail: this is the id of
+  /// the line whose source page is pinned in the right pane.
+  String? _selectedLineId;
+
+  /// At or above this width (logical px) the screen becomes a two-pane
+  /// master/detail with the source page pinned beside the list; below it, a
+  /// single column with a modal page viewer. ~720 covers tablets in portrait
+  /// and large phones in landscape.
+  static const double _twoPaneBreakpoint = 720;
+
   @override
   void initState() {
     super.initState();
@@ -58,6 +68,10 @@ class _OcrReviewScreenState extends State<OcrReviewScreen> {
     for (final line in _reviewLines) {
       _controllers[line.id] = TextEditingController(text: line.text);
     }
+    // Default the pinned detail pane to the first reviewable line that has a
+    // known source page.
+    final withPage = _reviewLines.where((l) => l.sourcePage != null);
+    _selectedLineId = withPage.isNotEmpty ? withPage.first.id : null;
   }
 
   @override
@@ -98,6 +112,12 @@ class _OcrReviewScreenState extends State<OcrReviewScreen> {
 
   void _removeLine(ScriptLine line) {
     setState(() => _removedIds.add(line.id));
+  }
+
+  /// Pins [line]'s source page in the right (detail) pane on wide layouts.
+  void _select(ScriptLine line) {
+    if (line.sourcePage == null || _selectedLineId == line.id) return;
+    setState(() => _selectedLineId = line.id);
   }
 
   /// Opens the original scanned source page for [line] in a full-height modal
@@ -169,10 +189,12 @@ class _OcrReviewScreenState extends State<OcrReviewScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
+    final width = MediaQuery.sizeOf(context).width;
     final reviewLines =
         _reviewLines.where((l) => !_removedIds.contains(l.id)).toList();
     final notScriptLines = _notScriptLines;
+    // The two-pane detail view is only useful when we can actually show a page.
+    final twoPane = width >= _twoPaneBreakpoint && widget.pdfPath != null;
 
     return Scaffold(
       appBar: AppBar(
@@ -188,44 +210,161 @@ class _OcrReviewScreenState extends State<OcrReviewScreen> {
           ),
         ],
       ),
-      body: Column(
-        children: [
-          _buildCountsBar(context),
-          Expanded(
-            child: ListView(
-              padding: const EdgeInsets.all(16),
-              children: [
-                if (reviewLines.isEmpty)
-                  Padding(
-                    padding: const EdgeInsets.symmetric(vertical: 24),
-                    child: Text(
-                      'No lines need review.',
-                      textAlign: TextAlign.center,
-                      style: theme.textTheme.bodyMedium?.copyWith(
-                        color: theme.colorScheme.onSurface
-                            .withValues(alpha: 0.6),
-                      ),
-                    ),
-                  )
-                else ...[
-                  Text('Review & edit', style: theme.textTheme.titleMedium),
-                  const SizedBox(height: 4),
-                  Text(
-                    'Fix any misread text, then Done. '
-                    'Editing a line clears its flag.',
-                    style: theme.textTheme.bodySmall?.copyWith(
-                      color:
-                          theme.colorScheme.onSurface.withValues(alpha: 0.6),
-                    ),
+      body: twoPane
+          ? _buildTwoPaneBody(context, reviewLines, notScriptLines)
+          : _buildSinglePaneBody(context, reviewLines, notScriptLines),
+    );
+  }
+
+  /// Phone / narrow layout: a single scrolling column. Source pages open in a
+  /// modal bottom sheet via each card's "View page" button.
+  Widget _buildSinglePaneBody(BuildContext context,
+      List<ScriptLine> reviewLines, List<ScriptLine> notScriptLines) {
+    return Column(
+      children: [
+        _buildCountsBar(context),
+        Expanded(
+          child: ListView(
+            padding: const EdgeInsets.all(16),
+            children: _buildListChildren(
+              context,
+              reviewLines,
+              notScriptLines,
+              twoPane: false,
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  /// Tablet / wide layout: the editable list on the left, the selected line's
+  /// source page pinned on the right so the user can read it while correcting.
+  Widget _buildTwoPaneBody(BuildContext context, List<ScriptLine> reviewLines,
+      List<ScriptLine> notScriptLines) {
+    return Column(
+      children: [
+        _buildCountsBar(context),
+        Expanded(
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Expanded(
+                flex: 5,
+                child: ListView(
+                  padding: const EdgeInsets.all(16),
+                  children: _buildListChildren(
+                    context,
+                    reviewLines,
+                    notScriptLines,
+                    twoPane: true,
                   ),
-                  const SizedBox(height: 12),
-                  ...reviewLines.map(_buildReviewCard),
-                ],
-                if (notScriptLines.isNotEmpty) ...[
-                  const SizedBox(height: 24),
-                  _buildNotScriptSection(context, notScriptLines),
-                ],
+                ),
+              ),
+              const VerticalDivider(width: 1),
+              Expanded(
+                flex: 4,
+                child: _buildSourcePane(context),
+              ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+
+  /// The list content shared by both layouts.
+  List<Widget> _buildListChildren(
+    BuildContext context,
+    List<ScriptLine> reviewLines,
+    List<ScriptLine> notScriptLines, {
+    required bool twoPane,
+  }) {
+    final theme = Theme.of(context);
+    return [
+      if (reviewLines.isEmpty)
+        Padding(
+          padding: const EdgeInsets.symmetric(vertical: 24),
+          child: Text(
+            'No lines need review.',
+            textAlign: TextAlign.center,
+            style: theme.textTheme.bodyMedium?.copyWith(
+              color: theme.colorScheme.onSurface.withValues(alpha: 0.6),
+            ),
+          ),
+        )
+      else ...[
+        Text('Review & edit', style: theme.textTheme.titleMedium),
+        const SizedBox(height: 4),
+        Text(
+          twoPane
+              ? 'Tap a line to see its page on the right. '
+                  'Fix any misread text, then Done.'
+              : 'Fix any misread text, then Done. '
+                  'Editing a line clears its flag.',
+          style: theme.textTheme.bodySmall?.copyWith(
+            color: theme.colorScheme.onSurface.withValues(alpha: 0.6),
+          ),
+        ),
+        const SizedBox(height: 12),
+        ...reviewLines.map((l) => _buildReviewCard(l, twoPane: twoPane)),
+      ],
+      if (notScriptLines.isNotEmpty) ...[
+        const SizedBox(height: 24),
+        _buildNotScriptSection(context, notScriptLines),
+      ],
+    ];
+  }
+
+  /// The pinned right pane on wide layouts: the source page for the selected
+  /// line, or a hint when nothing with a page is selected.
+  Widget _buildSourcePane(BuildContext context) {
+    final theme = Theme.of(context);
+    final pdfPath = widget.pdfPath;
+    final selected = _selectedLineId != null ? _byId[_selectedLineId] : null;
+    final page = selected?.sourcePage;
+
+    if (pdfPath == null || selected == null || page == null) {
+      return Container(
+        color: theme.colorScheme.surfaceContainerLow,
+        alignment: Alignment.center,
+        padding: const EdgeInsets.all(24),
+        child: Text(
+          'Tap a line to see its source page here.',
+          textAlign: TextAlign.center,
+          style: theme.textTheme.bodyMedium?.copyWith(
+            color: theme.colorScheme.onSurface.withValues(alpha: 0.6),
+          ),
+        ),
+      );
+    }
+
+    return Container(
+      color: theme.colorScheme.surfaceContainerLow,
+      child: Column(
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
+            child: Row(
+              children: [
+                Icon(Icons.picture_as_pdf,
+                    size: 18, color: theme.colorScheme.primary),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    'Source page'
+                    '${selected.character.isNotEmpty ? ' — ${selected.character}' : ''}',
+                    style: theme.textTheme.titleSmall,
+                  ),
+                ),
               ],
+            ),
+          ),
+          Expanded(
+            child: PdfPageView(
+              pdfPath: pdfPath,
+              pageNumber: page,
+              lineOnPage: selected.sourceLineOnPage,
             ),
           ),
         ],
@@ -249,75 +388,92 @@ class _OcrReviewScreenState extends State<OcrReviewScreen> {
     );
   }
 
-  Widget _buildReviewCard(ScriptLine line) {
+  Widget _buildReviewCard(ScriptLine line, {required bool twoPane}) {
     final theme = Theme.of(context);
     final controller = _controllers[line.id]!;
     final edited = _byId[line.id]?.reviewStatus == OcrReviewStatus.ok;
+    final isSelected = twoPane && _selectedLineId == line.id;
+    final canSelect = twoPane && line.sourcePage != null;
 
     return Card(
       margin: const EdgeInsets.only(bottom: 12),
-      child: Padding(
-        padding: const EdgeInsets.all(12),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              children: [
-                if (line.character.isNotEmpty) ...[
+      shape: isSelected
+          ? RoundedRectangleBorder(
+              side: BorderSide(color: theme.colorScheme.primary, width: 2),
+              borderRadius: BorderRadius.circular(12),
+            )
+          : null,
+      child: InkWell(
+        onTap: canSelect ? () => _select(line) : null,
+        borderRadius: BorderRadius.circular(12),
+        child: Padding(
+          padding: const EdgeInsets.all(12),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  if (line.character.isNotEmpty) ...[
+                    Text(
+                      line.character,
+                      style: theme.textTheme.labelMedium?.copyWith(
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                  ],
                   Text(
-                    line.character,
-                    style: theme.textTheme.labelMedium?.copyWith(
-                      fontWeight: FontWeight.bold,
+                    line.pageLineRef,
+                    style: theme.textTheme.labelSmall?.copyWith(
+                      color:
+                          theme.colorScheme.onSurface.withValues(alpha: 0.5),
                     ),
                   ),
-                  const SizedBox(width: 8),
+                  const Spacer(),
+                  if (edited)
+                    Icon(Icons.check_circle,
+                        size: 18, color: theme.colorScheme.primary),
                 ],
-                Text(
-                  line.pageLineRef,
-                  style: theme.textTheme.labelSmall?.copyWith(
-                    color:
-                        theme.colorScheme.onSurface.withValues(alpha: 0.5),
-                  ),
-                ),
-                const Spacer(),
-                if (edited)
-                  Icon(Icons.check_circle,
-                      size: 18, color: theme.colorScheme.primary),
-              ],
-            ),
-            const SizedBox(height: 8),
-            TextField(
-              controller: controller,
-              maxLines: null,
-              decoration: const InputDecoration(
-                isDense: true,
-                border: OutlineInputBorder(),
               ),
-              style: theme.textTheme.bodyMedium,
-            ),
-            const SizedBox(height: 8),
-            Row(
-              children: [
-                if (widget.pdfPath != null && line.sourcePage != null)
+              const SizedBox(height: 8),
+              TextField(
+                controller: controller,
+                maxLines: null,
+                onTap: canSelect ? () => _select(line) : null,
+                decoration: const InputDecoration(
+                  isDense: true,
+                  border: OutlineInputBorder(),
+                ),
+                style: theme.textTheme.bodyMedium,
+              ),
+              const SizedBox(height: 8),
+              Row(
+                children: [
+                  // On wide layouts the page is already pinned beside the list,
+                  // so the per-card "View page" button only appears on phones.
+                  if (!twoPane &&
+                      widget.pdfPath != null &&
+                      line.sourcePage != null)
+                    TextButton.icon(
+                      onPressed: () => _viewSourcePage(line),
+                      icon: const Icon(Icons.picture_as_pdf, size: 18),
+                      label: const Text('View page'),
+                    ),
+                  const Spacer(),
                   TextButton.icon(
-                    onPressed: () => _viewSourcePage(line),
-                    icon: const Icon(Icons.picture_as_pdf, size: 18),
-                    label: const Text('View page'),
+                    onPressed: () => _removeLine(line),
+                    icon: const Icon(Icons.delete_outline, size: 18),
+                    label: const Text('Remove'),
                   ),
-                const Spacer(),
-                TextButton.icon(
-                  onPressed: () => _removeLine(line),
-                  icon: const Icon(Icons.delete_outline, size: 18),
-                  label: const Text('Remove'),
-                ),
-                const SizedBox(width: 8),
-                FilledButton(
-                  onPressed: () => _saveEdit(line),
-                  child: const Text('Save'),
-                ),
-              ],
-            ),
-          ],
+                  const SizedBox(width: 8),
+                  FilledButton(
+                    onPressed: () => _saveEdit(line),
+                    child: const Text('Save'),
+                  ),
+                ],
+              ),
+            ],
+          ),
         ),
       ),
     );
