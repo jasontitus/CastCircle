@@ -42,6 +42,44 @@ class _MockLlm implements OnDeviceLlmProvider {
   }
 }
 
+/// A mock that returns queued responses in order — one per chunk — so chunked
+/// structuring can be exercised with different output per chunk.
+class _QueueLlm implements OnDeviceLlmProvider {
+  _QueueLlm(this._responses);
+  final List<String> _responses;
+  int _i = 0;
+
+  @override
+  bool get isAvailable => true;
+
+  @override
+  Future<String?> generate({
+    required String prompt,
+    List<String> imagePaths = const [],
+  }) async {
+    final r = _i < _responses.length ? _responses[_i] : _responses.last;
+    _i++;
+    return r;
+  }
+
+  @override
+  Future<List<String?>> generateBatch(
+    List<String> prompts, {
+    int? slots,
+    void Function(int done, int total)? onChunkDone,
+    int baseDone = 0,
+    int? totalChunks,
+  }) async {
+    final total = totalChunks ?? prompts.length;
+    final out = <String?>[];
+    for (var i = 0; i < prompts.length; i++) {
+      out.add(await generate(prompt: prompts[i]));
+      onChunkDone?.call(baseDone + i + 1, total);
+    }
+    return out;
+  }
+}
+
 // Canned model output exercising the cases the heuristic parser fails on:
 // an honorific name (MRS. ALVING, not "MRS") and a multi-character line.
 const _modelJson = '''
@@ -55,6 +93,25 @@ const _modelJson = '''
     { "type": "dialogue", "character": "OSWALD", "text": "Better, mother." },
     { "type": "dialogue", "character": "MRS. ALVING AND OSWALD",
       "characters": ["MRS. ALVING", "OSWALD"], "text": "Together at last." }
+  ]
+}
+''';
+
+// Garbled act/scene labels as the on-device model actually emits them across
+// independently-structured chunks: "A", "ACTI", "1" (all really ACT I) and
+// "ACT II"/"2" for ACT II. The service should canonicalize these.
+const _garbledActsJson = '''
+{
+  "title": "Pride and Prejudice",
+  "lines": [
+    { "type": "header", "act": "A", "scene": "" },
+    { "type": "dialogue", "act": "ACTI", "scene": "1",
+      "character": "MRS. BENNET", "text": "Netherfield is let at last." },
+    { "type": "dialogue", "act": "1", "scene": "1",
+      "character": "MR. BENNET", "text": "Is it?" },
+    { "type": "header", "act": "ACT II", "scene": "Scene 2" },
+    { "type": "dialogue", "act": "2",
+      "character": "LYDIA", "text": "Officers!" }
   ]
 }
 ''';
@@ -142,6 +199,45 @@ void main() {
           provider: _MockLlm('Sorry, I could not read that script.'));
       final script = await svc.structure(rawText: 'x', title: 't');
       expect(script, isNull);
+    });
+
+    test('carries act/scene across chunks when a later chunk omits the act',
+        () async {
+      // Chunk 1 establishes ACT II; chunk 2 has no act marker and must inherit
+      // it instead of resetting to ACT I.
+      const chunk1 =
+          '{"title":"P","lines":[{"type":"header","act":"ACT II","scene":"Scene 3"},'
+          '{"type":"dialogue","act":"ACT II","character":"DARCY","text":"Indeed."}]}';
+      const chunk2 =
+          '{"title":"P","lines":[{"type":"dialogue","character":"ELIZABETH","text":"Truly."}]}';
+      final svc = AiScriptStructuringService(provider: _QueueLlm([chunk1, chunk2]));
+      final script = await svc.structureChunked(
+          rawText: 'line-a\nline-b', title: 't', linesPerChunk: 1, batchSize: 1);
+
+      final eliza = script!.lines.firstWhere((l) => l.character == 'ELIZABETH');
+      expect(eliza.act, 'ACT II'); // inherited from chunk 1
+      expect(eliza.scene, 'Scene 3');
+    });
+
+    test('canonicalizes garbled act/scene labels', () async {
+      final svc = AiScriptStructuringService(provider: _MockLlm(_garbledActsJson));
+      final script = (await svc.structure(rawText: 'x', title: 't'))!;
+
+      final acts = script.lines.map((l) => l.act).toSet();
+      // "A"/"ACTI"/"1" all collapse to "ACT I"; "ACT II"/"2" to "ACT II".
+      expect(acts, contains('ACT I'));
+      expect(acts, contains('ACT II'));
+      // No raw/garbled forms survive.
+      expect(acts.any((a) => a == 'ACTI' || a == '1' || a == 'A' || a == '2'),
+          isFalse);
+
+      // The "A" header didn't overwrite the default act with noise.
+      final bennet = script.lines.firstWhere((l) => l.character == 'MRS. BENNET');
+      expect(bennet.act, 'ACT I');
+      // A real ordinal scene is canonicalized.
+      expect(bennet.scene, 'Scene 1');
+      final lydia = script.lines.firstWhere((l) => l.character == 'LYDIA');
+      expect(lydia.act, 'ACT II');
     });
   });
 }

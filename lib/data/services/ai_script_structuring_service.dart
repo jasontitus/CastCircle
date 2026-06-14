@@ -119,7 +119,9 @@ class AiScriptStructuringService {
 
   /// Parse a model's raw completion into a [ParsedScript], logging diagnostics.
   /// Shared by the single-shot [structure] and the batched [structureChunked].
-  ParsedScript? _parseResponse(String response, String title) {
+  /// [startAct]/[startScene] seed act/scene continuity from the previous chunk.
+  ParsedScript? _parseResponse(String response, String title,
+      {String startAct = 'ACT I', String startScene = ''}) {
     final log = DebugLogService.instance;
     lastRawOutput = response;
     final outPreview =
@@ -134,7 +136,8 @@ class AiScriptStructuringService {
       return null;
     }
     try {
-      final script = _toParsedScript(json, title: title);
+      final script = _toParsedScript(json,
+          title: title, startAct: startAct, startScene: startScene);
       final dialogue =
           script.lines.where((l) => l.lineType == LineType.dialogue).length;
       log.log(LogCategory.ai,
@@ -204,6 +207,12 @@ class AiScriptStructuringService {
     // per-chunk updates then arrive via onChunkDone from the native decoder.
     onProgress?.call(startChunk, chunks.length);
 
+    // Track the running act/scene so a chunk lacking its own act marker inherits
+    // the prior chunk's — across batches and across a resume (seeded from the
+    // last checkpointed line).
+    var runningAct = merged.isNotEmpty ? merged.last.act : 'ACT I';
+    var runningScene = merged.isNotEmpty ? merged.last.scene : '';
+
     var cancelled = false;
     for (var b = startChunk; b < chunks.length; b += groupSize) {
       if (isCancelled?.call() ?? false) {
@@ -226,8 +235,14 @@ class AiScriptStructuringService {
       );
       for (final out in outputs) {
         if (out == null) continue;
-        final parsed = _parseResponse(out, title);
-        if (parsed != null) merged.addAll(parsed.lines);
+        final parsed = _parseResponse(out, title,
+            startAct: runningAct, startScene: runningScene);
+        if (parsed != null && parsed.lines.isNotEmpty) {
+          merged.addAll(parsed.lines);
+          // Carry this chunk's ending act/scene into the next chunk.
+          runningAct = parsed.lines.last.act;
+          runningScene = parsed.lines.last.scene;
+        }
       }
       // Checkpoint after each group so progress survives a kill. The source
       // text + title are stored too, so a resume works even after the app was
@@ -373,6 +388,8 @@ Rules:
   and add "characters": ["NAME1","NAME2"].
 - Emit a "header" line at each act/scene change. Carry the current "act"/"scene"
   onto every following dialogue line.
+- Label acts as "ACT I", "ACT II" (Roman numerals) and scenes as "Scene 1",
+  "Scene 2". If this excerpt has no clear act/scene marking, leave them "".
 - "stage" lines are stage directions (entrances, exits, action), with no character.
 - Preserve dialogue text verbatim; fix only obvious OCR garbling.''';
 
@@ -549,28 +566,121 @@ Rules:
     return out.toString();
   }
 
+  /// Canonicalize a model act label into "ACT &lt;ROMAN&gt;" ("ACTI", "act 1",
+  /// "1", "Act One" → "ACT I"). Returns null when no act number is recognizable
+  /// (e.g. "A", "", front-matter noise) so the caller keeps the current act.
+  static String? _normalizeAct(String? raw) {
+    final n = _ordinalValue(raw, keyword: 'ACT');
+    return n == null ? null : 'ACT ${_intToRoman(n)}';
+  }
+
+  /// Canonicalize a scene label: a bare number / roman / "Scene N" becomes
+  /// "Scene N"; a descriptive location ("A drawing room") is kept verbatim; an
+  /// empty value returns null so the current scene carries forward.
+  static String? _normalizeScene(String? raw) {
+    if (raw == null) return null;
+    final s = raw.trim();
+    if (s.isEmpty) return null;
+    final n = _ordinalValue(s, keyword: 'SCENE');
+    return n == null ? s : 'Scene $n';
+  }
+
+  /// Pull an ordinal (1-based) out of an act/scene label, but only when the
+  /// label is *essentially just* an optional keyword + an ordinal token (Arabic
+  /// "2", Roman "II", or word "two"). Returns null for descriptive labels
+  /// ("A drawing room") and unrecognizable noise so callers don't mangle them.
+  static int? _ordinalValue(String? raw, {required String keyword}) {
+    if (raw == null) return null;
+    var s = raw.trim().toUpperCase();
+    if (s.isEmpty) return null;
+    // Strip a leading keyword (ACT/SCENE), whether glued ("ACTII") or spaced
+    // ("ACT II"), with any trailing separators.
+    s = s.replaceFirst(RegExp('^${keyword}S?[\\s.:#)-]*'), '').trim();
+    if (s.isEmpty) return null;
+    if (RegExp(r'^\d{1,3}$').hasMatch(s)) return int.tryParse(s);
+    const words = {
+      'ONE': 1, 'TWO': 2, 'THREE': 3, 'FOUR': 4, 'FIVE': 5,
+      'SIX': 6, 'SEVEN': 7, 'EIGHT': 8, 'NINE': 9, 'TEN': 10,
+    };
+    if (words.containsKey(s)) return words[s];
+    return _romanToInt(s);
+  }
+
+  /// Strict Roman-numeral parse, capped at 50 (acts/scenes never exceed that),
+  /// validated by round-trip so malformed forms ("IIII") and incidental
+  /// letter pairs ("DI") are rejected rather than turned into huge numbers.
+  static int? _romanToInt(String s) {
+    if (s.isEmpty) return null;
+    const vals = {'I': 1, 'V': 5, 'X': 10, 'L': 50, 'C': 100, 'D': 500, 'M': 1000};
+    var total = 0;
+    var prev = 0;
+    for (var i = s.length - 1; i >= 0; i--) {
+      final v = vals[s[i]];
+      if (v == null) return null; // contains a non-Roman character
+      if (v < prev) {
+        total -= v;
+      } else {
+        total += v;
+        prev = v;
+      }
+    }
+    if (total < 1 || total > 50) return null;
+    return _intToRoman(total) == s ? total : null;
+  }
+
+  /// Integer → Roman numeral for 1–50 (enough for any act/scene number).
+  static String _intToRoman(int n) {
+    const table = [
+      [50, 'L'], [40, 'XL'], [10, 'X'], [9, 'IX'],
+      [5, 'V'], [4, 'IV'], [1, 'I'],
+    ];
+    var v = n;
+    final sb = StringBuffer();
+    for (final entry in table) {
+      final value = entry[0] as int;
+      final symbol = entry[1] as String;
+      while (v >= value) {
+        sb.write(symbol);
+        v -= value;
+      }
+    }
+    return sb.toString();
+  }
+
   /// Convert the model's JSON into a [ParsedScript], reusing existing gender
   /// inference and building character/scene aggregates the same way the
   /// heuristic parser does so downstream code is unaffected.
-  ParsedScript _toParsedScript(Map<String, dynamic> json, {required String title}) {
+  ParsedScript _toParsedScript(Map<String, dynamic> json,
+      {required String title,
+      String startAct = 'ACT I',
+      String startScene = ''}) {
     final modelTitle = (json['title'] as String?)?.trim();
     final rawBlocks = (json['lines'] as List?) ?? const [];
 
     final lines = <ScriptLine>[];
-    var currentAct = 'ACT I';
-    var currentScene = '';
+    // Seed from the prior chunk's ending act/scene so a chunk that contains no
+    // act marker (common deep inside an act) inherits the right one instead of
+    // defaulting back to ACT I.
+    var currentAct = startAct;
+    var currentScene = startScene;
     var sceneLineNum = 0;
     var orderIndex = 0;
 
     for (final block in rawBlocks) {
       if (block is! Map) continue;
       final type = (block['type'] as String?)?.toLowerCase().trim() ?? 'dialogue';
-      final act = (block['act'] as String?)?.trim();
-      final scene = (block['scene'] as String?)?.trim();
+      // The model labels acts/scenes inconsistently across independently-
+      // structured chunks ("ACTI", "1", "A" for what is all ACT I), which both
+      // looks wrong and fragments scene grouping (scenes break on every act|scene
+      // key change). Canonicalize to "ACT I"/"Scene 1"; an unrecognizable label
+      // (e.g. "A", "") returns null so the current act/scene carries forward
+      // instead of being overwritten with noise.
+      final act = _normalizeAct(block['act'] as String?);
+      final scene = _normalizeScene(block['scene'] as String?);
       final text = (block['text'] as String?)?.trim() ?? '';
 
-      if (act != null && act.isNotEmpty) currentAct = act;
-      if (scene != null && scene.isNotEmpty) currentScene = scene;
+      if (act != null) currentAct = act;
+      if (scene != null) currentScene = scene;
 
       switch (type) {
         case 'header':
