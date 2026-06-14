@@ -1,11 +1,13 @@
 # OCR Test Set — Sources
 
 The scanned PDF scripts used to develop and validate the on-device OCR + parser
-pipeline (and the per-document auto-tuner) are **not committed** to the repo —
-they're large and some are copyrighted. This doc records where each came from so
-the corpus can be recreated.
+pipeline (and the per-document auto-tuner). This doc records where each came from.
 
-PDFs live locally (gitignored) under `sample-scripts/` and `sample-scripts/ocr-test-set/`.
+- The **public-domain corpus** (all pre-1929 editions) is **committed** under
+  `sample-scripts/ocr-test-set/`.
+- **Copyrighted / restricted** scans (the Jon Jory *Pride & Prejudice* adaptation;
+  the Folger *Macbeth*, CC-BY-NC) are **gitignored** at the `sample-scripts/` top
+  level — local-only, not redistributed.
 
 ## Why a scanned corpus
 The auto-tuner has to pick OCR settings (notably the DBNet `unclip` ratio and
