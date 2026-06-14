@@ -120,7 +120,6 @@ class ProductionRepository {
 
   Future<void> saveScriptLines(
       String productionId, List<models.ScriptLine> lines) async {
-    await _db.deleteScriptLinesForProduction(productionId);
     final companions = lines.map((l) => ScriptLinesCompanion(
           id: Value(l.id),
           productionId: Value(productionId),
@@ -136,7 +135,13 @@ class ProductionRepository {
           sourcePage: Value(l.sourcePage),
           sourceLineOnPage: Value(l.sourceLineOnPage),
         )).toList();
-    await _db.insertScriptLines(companions);
+    // Atomic delete + re-insert: a crash/throw between the two would otherwise
+    // leave the production with ALL its script lines deleted and none restored
+    // (permanent data loss). The transaction makes it all-or-nothing.
+    await _db.transaction(() async {
+      await _db.deleteScriptLinesForProduction(productionId);
+      await _db.insertScriptLines(companions);
+    });
   }
 
   models.ScriptLine _scriptLineFromRow(ScriptLine row) {
