@@ -30,14 +30,27 @@ abstract class OnDeviceLlmProvider {
     List<String> imagePaths = const [],
   });
 
-  /// Run [prompts] in parallel and return one output per prompt (in order;
-  /// null on a per-prompt failure). On-device generation is memory-bandwidth-
-  /// bound, so decoding N sequences together is ~N× faster than one at a time.
+  /// Decode [prompts] with up to [slots] sequences in flight at once, returning
+  /// one output per prompt (in order; null on a per-prompt failure). On-device
+  /// generation is memory-bandwidth-bound, so decoding N sequences together is
+  /// ~N× faster than one at a time; a real implementation keeps [slots] slots
+  /// full and refills one the instant its chunk finishes (continuous batching),
+  /// so [prompts] may exceed [slots]. [onChunkDone] reports absolute progress
+  /// (chunks finished so far, total) as it goes — [baseDone] is the chunk offset
+  /// of this group within the whole job and [totalChunks] the job-wide total.
   /// Default is sequential — override for true batched decoding.
-  Future<List<String?>> generateBatch(List<String> prompts) async {
+  Future<List<String?>> generateBatch(
+    List<String> prompts, {
+    int? slots,
+    void Function(int done, int total)? onChunkDone,
+    int baseDone = 0,
+    int? totalChunks,
+  }) async {
+    final total = totalChunks ?? prompts.length;
     final out = <String?>[];
-    for (final p in prompts) {
-      out.add(await generate(prompt: p));
+    for (var i = 0; i < prompts.length; i++) {
+      out.add(await generate(prompt: prompts[i]));
+      onChunkDone?.call(baseDone + i + 1, total);
     }
     return out;
   }
@@ -177,34 +190,50 @@ class AiScriptStructuringService {
       log.log(LogCategory.ai,
           'resuming cleanup from checkpoint: chunk ${startChunk + 1}/${chunks.length}, ${merged.length} lines so far');
     }
-    final n = batchSize < 1 ? 1 : batchSize;
+    final slots = batchSize < 1 ? 1 : batchSize;
+    // Hand the native decoder more chunks than it has slots so it can refill a
+    // slot the instant one finishes (continuous batching), overlapping the next
+    // chunk with the current group's stragglers instead of idling. Kept at 2×
+    // slots so cancellation and checkpointing still happen every ~group, not
+    // only at the very end of the job.
+    final groupSize = slots * 2;
     log.log(LogCategory.ai,
-        'chunked structuring: ${chunks.length} chunks (~$linesPerChunk lines each), batchSize=$n, starting at ${startChunk + 1}');
+        'chunked structuring: ${chunks.length} chunks (~$linesPerChunk lines each), slots=$slots, group=$groupSize, starting at ${startChunk + 1}');
+
+    // Seed the denominator (and current position) before any chunk completes;
+    // per-chunk updates then arrive via onChunkDone from the native decoder.
+    onProgress?.call(startChunk, chunks.length);
 
     var cancelled = false;
-    for (var b = startChunk; b < chunks.length; b += n) {
+    for (var b = startChunk; b < chunks.length; b += groupSize) {
       if (isCancelled?.call() ?? false) {
         cancelled = true;
         log.log(LogCategory.ai,
             'chunked structuring cancelled at ${b + 1}/${chunks.length} — checkpoint kept for resume');
         break;
       }
-      final end = (b + n < chunks.length) ? b + n : chunks.length;
-      // Build all prompts in the batch, decode them in parallel, parse each.
+      final end = (b + groupSize < chunks.length) ? b + groupSize : chunks.length;
+      // Build this group's prompts; the decoder runs `slots` of them at a time.
       final prompts = [
         for (var i = b; i < end; i++) _buildPrompt(rawText: chunks[i], hasImages: false)
       ];
-      onProgress?.call(end, chunks.length);
-      final outputs = await _provider.generateBatch(prompts);
+      final outputs = await _provider.generateBatch(
+        prompts,
+        slots: slots,
+        baseDone: b,
+        totalChunks: chunks.length,
+        onChunkDone: (done, total) => onProgress?.call(done, total),
+      );
       for (final out in outputs) {
         if (out == null) continue;
         final parsed = _parseResponse(out, title);
         if (parsed != null) merged.addAll(parsed.lines);
       }
-      // Checkpoint after each batch so progress survives a kill. The source
+      // Checkpoint after each group so progress survives a kill. The source
       // text + title are stored too, so a resume works even after the app was
       // killed and the in-memory import preview is gone.
       await _saveCheckpoint(key, end, merged, rawText, title);
+      onProgress?.call(end, chunks.length);
     }
 
     // Keep the checkpoint on cancel (for resume); clear it once the run

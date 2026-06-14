@@ -25,10 +25,18 @@ class _MockLlm implements OnDeviceLlmProvider {
   }
 
   @override
-  Future<List<String?>> generateBatch(List<String> prompts) async {
+  Future<List<String?>> generateBatch(
+    List<String> prompts, {
+    int? slots,
+    void Function(int done, int total)? onChunkDone,
+    int baseDone = 0,
+    int? totalChunks,
+  }) async {
+    final total = totalChunks ?? prompts.length;
     final out = <String?>[];
-    for (final p in prompts) {
-      out.add(await generate(prompt: p));
+    for (var i = 0; i < prompts.length; i++) {
+      out.add(await generate(prompt: prompts[i]));
+      onChunkDone?.call(baseDone + i + 1, total);
     }
     return out;
   }

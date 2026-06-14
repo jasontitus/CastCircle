@@ -34,6 +34,13 @@ class OnDeviceLlmChannel implements OnDeviceLlmProvider {
         final msg = (call.arguments as String?) ?? '';
         DebugLogService.instance.log(LogCategory.ai, msg);
         progress.value = msg;
+      } else if (call.method == 'onBatchProgress') {
+        // Per-chunk completion from a batched native call, so the progress bar
+        // advances smoothly even though one call decodes a whole group.
+        final args = (call.arguments as Map?) ?? const {};
+        final done = (args['done'] as int?) ?? 0;
+        final total = (args['total'] as int?) ?? 0;
+        _activeBatchProgress?.call(done, total);
       }
       return null;
     });
@@ -42,6 +49,11 @@ class OnDeviceLlmChannel implements OnDeviceLlmProvider {
 
   /// Latest native progress message, for live display in the debug screen.
   final ValueNotifier<String> progress = ValueNotifier<String>('');
+
+  /// Callback active for the duration of one [generateBatch] call, fed by the
+  /// native `onBatchProgress` reverse-invocations. Calls are serialized, so a
+  /// single slot is sufficient.
+  void Function(int done, int total)? _activeBatchProgress;
 
   static const _channel = MethodChannel('com.lineguide/on_device_llm');
 
@@ -159,14 +171,30 @@ class OnDeviceLlmChannel implements OnDeviceLlmProvider {
   }
 
   @override
-  Future<List<String?>> generateBatch(List<String> prompts) async {
+  Future<List<String?>> generateBatch(
+    List<String> prompts, {
+    int? slots,
+    void Function(int done, int total)? onChunkDone,
+    int baseDone = 0,
+    int? totalChunks,
+  }) async {
     if (!_initialized) return List<String?>.filled(prompts.length, null);
     final log = DebugLogService.instance;
+    // Native decodes `slots` sequences at once and refills a slot the instant
+    // its chunk finishes (continuous batching), so one call can carry more
+    // prompts than slots. A call may run for minutes — scale the timeout with
+    // the group size rather than a flat cap.
+    final timeout = Duration(seconds: 120 + 60 * prompts.length);
+    _activeBatchProgress = onChunkDone;
     try {
-      log.log(LogCategory.ai, 'generateBatch (N=${prompts.length})…');
+      log.log(LogCategory.ai,
+          'generateBatch (N=${prompts.length}, slots=${slots ?? prompts.length})…');
       final out = await _channel.invokeMethod<List<dynamic>>('generateBatch', {
         'prompts': prompts,
-      }).timeout(const Duration(seconds: 600));
+        'slots': ?slots,
+        'baseDone': baseDone,
+        'totalChunks': totalChunks ?? prompts.length,
+      }).timeout(timeout);
       final results = (out ?? const [])
           .map((e) => e as String?)
           .toList(growable: false);
@@ -178,14 +206,16 @@ class OnDeviceLlmChannel implements OnDeviceLlmProvider {
       }
       return results;
     } on TimeoutException {
-      log.logError(LogCategory.ai, 'generateBatch timed out (>600s)');
+      log.logError(LogCategory.ai,
+          'generateBatch timed out (>${timeout.inSeconds}s)');
       return List<String?>.filled(prompts.length, null);
     } on PlatformException catch (e) {
       if (e.code == 'NOT_IMPLEMENTED') {
         // No batched runtime (Foundation Models) → fall back to sequential.
         final out = <String?>[];
-        for (final p in prompts) {
-          out.add(await generate(prompt: p));
+        for (var i = 0; i < prompts.length; i++) {
+          out.add(await generate(prompt: prompts[i]));
+          onChunkDone?.call(baseDone + i + 1, totalChunks ?? prompts.length);
         }
         return out;
       }
@@ -193,6 +223,8 @@ class OnDeviceLlmChannel implements OnDeviceLlmProvider {
       return List<String?>.filled(prompts.length, null);
     } on MissingPluginException {
       return List<String?>.filled(prompts.length, null);
+    } finally {
+      _activeBatchProgress = null;
     }
   }
 

@@ -3,6 +3,7 @@ import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
+import 'package:package_info_plus/package_info_plus.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:path/path.dart' as p;
 
@@ -118,6 +119,16 @@ class DebugLogService {
     _flushTimer = Timer.periodic(_flushInterval, (_) => _flushToDisk());
 
     log(LogCategory.general, 'Debug logging initialized');
+    // Stamp the running build so every log file says which build produced it —
+    // build number alone is ambiguous (a dev build and a TestFlight build can
+    // share it), so we log the full version+build. Best-effort; never blocks.
+    try {
+      final info = await PackageInfo.fromPlatform();
+      log(LogCategory.general,
+          'app build: ${info.version}+${info.buildNumber} (${info.packageName})');
+    } catch (e) {
+      debugPrint('PackageInfo failed: $e');
+    }
     await _logMemory();
   }
 

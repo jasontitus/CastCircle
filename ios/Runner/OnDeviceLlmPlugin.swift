@@ -79,6 +79,15 @@ class OnDeviceLlmPlugin: NSObject {
         }
     }
 
+    /// Push absolute chunk-completion progress to Dart so the import screen's
+    /// progress bar advances per chunk even though one native call now decodes a
+    /// whole group of chunks (continuous batching).
+    private func reportBatchProgress(_ done: Int, _ total: Int) {
+        DispatchQueue.main.async { [weak self] in
+            self?.channel.invokeMethod("onBatchProgress", arguments: ["done": done, "total": total])
+        }
+    }
+
     // MARK: - Init (cheap — the GGUF loads on first generate)
 
     private func initialize(call: FlutterMethodCall, result: @escaping FlutterResult) async {
@@ -316,12 +325,25 @@ class OnDeviceLlmPlugin: NSObject {
             result(FlutterError(code: "NOT_READY", message: "Model not initialized", details: nil))
             return
         }
+        // `slots` = how many sequences to keep in flight at once; the call may
+        // carry more prompts than slots (continuous batching refills a slot the
+        // instant its chunk finishes). Defaults to one slot per prompt.
+        let slots = (args["slots"] as? Int) ?? prompts.count
+        // For live progress: the chunk offset of this group within the whole job
+        // and the total chunk count, so onBatchProgress reports absolute numbers.
+        let baseDone = (args["baseDone"] as? Int) ?? 0
+        let totalChunks = (args["totalChunks"] as? Int) ?? prompts.count
         if let path = ggufPath, !useFoundationModels {
             do {
-                let outs = try runLlamaBatch(prompts: prompts, modelPath: path)
+                let outs = try runLlamaBatch(prompts: prompts, slots: slots,
+                                             baseDone: baseDone, totalChunks: totalChunks,
+                                             modelPath: path)
                 result(outs)
             } catch {
                 report("gemma: batch failed — \(error.localizedDescription)")
+                // The context is suspect after a decode failure — drop it so the
+                // next batch rebuilds a clean one instead of failing forever.
+                freeBatchCtx()
                 result(FlutterError(code: "GENERATE_FAILED", message: error.localizedDescription, details: nil))
             }
             return
@@ -330,7 +352,16 @@ class OnDeviceLlmPlugin: NSObject {
         result(FlutterError(code: "NOT_IMPLEMENTED", message: "No batched runtime.", details: nil))
     }
 
-    private func runLlamaBatch(prompts: [String], modelPath: String) throws -> [String] {
+    /// Continuous batching: keep `slots` sequences decoding at once, and the
+    /// instant one chunk hits EOG, refill its slot with the next pending chunk
+    /// (rather than waiting for the whole batch to finish). This removes the
+    /// tail-latency of fixed batching — where the batch runs at the speed of its
+    /// single longest chunk — so the GPU stays saturated end-to-end. One call
+    /// may carry many more `prompts` than `slots`; outputs are returned in input
+    /// order ("" for a chunk that errors).
+    private func runLlamaBatch(prompts: [String], slots requestedSlots: Int,
+                               baseDone: Int, totalChunks: Int,
+                               modelPath: String) throws -> [String] {
         if !backendReady { llama_backend_init(); backendReady = true }
         if model == nil {
             report("gemma: loading model weights (≈3.3 GB)…")
@@ -350,38 +381,37 @@ class OnDeviceLlmPlugin: NSObject {
         guard let model = model, let vocab = vocab else { throw LlamaError.loadFailed }
 
         let n = prompts.count
+        let nSlots = max(1, min(requestedSlots, n))
         let perSeqCtx: UInt32 = 4096
         let maxNewTokens = 2048
 
-        // Reuse one context across the job's batches (recreating a large
-        // multi-seq context per batch fragments Metal memory). Create it on the
-        // first batch sized for N; later partial batches (≤ N) reuse it. n_ctx
-        // is the TOTAL KV cells across sequences; n_ubatch stays small so the
-        // compute buffer doesn't grow with N.
-        if batchCtx == nil || batchCtxN < n {
+        // Reuse one context sized for `nSlots` concurrent sequences across the
+        // whole job (recreating a large multi-seq context per call fragments
+        // Metal memory). n_ctx is the TOTAL KV cells across sequences; n_ubatch
+        // stays small so the compute buffer doesn't grow with the slot count.
+        if batchCtx == nil || batchCtxN < nSlots {
             if let old = batchCtx { llama_free(old); batchCtx = nil }
             var cparams = llama_context_default_params()
-            cparams.n_ctx = perSeqCtx * UInt32(n)
+            cparams.n_ctx = perSeqCtx * UInt32(nSlots)
             cparams.n_batch = cparams.n_ctx
             cparams.n_ubatch = 512
-            cparams.n_seq_max = UInt32(n)
+            cparams.n_seq_max = UInt32(nSlots)
             guard let c = llama_init_from_model(model, cparams) else {
                 throw LlamaError.contextFailed
             }
             batchCtx = c
-            batchCtxN = n
-            report("gemma: batch ctx created (N=\(n), ctx=\(cparams.n_ctx))")
+            batchCtxN = nSlots
+            report("gemma: batch ctx created (slots=\(nSlots), ctx=\(cparams.n_ctx))")
         }
         guard let ctx = batchCtx else { throw LlamaError.contextFailed }
-        // Clean slate for this batch. Safe because we assign explicit per-token
-        // positions below (no reliance on auto-position tracking that a clear
-        // doesn't reset).
-        llama_memory_clear(llama_get_memory(ctx), true)
-        report("gemma: batch N=\(n), footprint \(footprintMB()) MB")
+        let mem = llama_get_memory(ctx)
+        // Clean slate. Per-token positions are assigned explicitly below, so a
+        // clear that doesn't reset auto-position state is still safe.
+        llama_memory_clear(mem, true)
 
-        // Tokenize each prompt with the Gemma 4 turn template.
+        // Tokenize every prompt up front with the Gemma 4 turn template.
         var tokensPerSeq = [[llama_token]]()
-        var totalPromptTokens = 0
+        var maxChunkTokens = 0
         for p in prompts {
             let formatted = "<|turn>user\n\(p)<turn|>\n<|turn>model\n"
             let nMax = Int32(formatted.utf8.count + 8)
@@ -392,77 +422,135 @@ class OnDeviceLlmPlugin: NSObject {
             guard nt > 0 else { throw LlamaError.decodeFailed }
             toks = Array(toks.prefix(Int(nt)))
             tokensPerSeq.append(toks)
-            totalPromptTokens += toks.count
+            maxChunkTokens = max(maxChunkTokens, toks.count)
         }
 
-        // Greedy sampling is stateless, so one sampler serves all sequences.
+        // Greedy sampling is stateless, so one sampler serves all slots.
         let sampler = llama_sampler_chain_init(llama_sampler_chain_default_params())
         llama_sampler_chain_add(sampler, llama_sampler_init_greedy())
         defer { llama_sampler_free(sampler) }
 
-        var batch = llama_batch_init(Int32(max(totalPromptTokens, n)), 0, Int32(n))
+        // One batch buffer reused for both prefill (≤ maxChunkTokens tokens) and
+        // each generation step (≤ nSlots tokens).
+        var batch = llama_batch_init(Int32(max(nSlots, maxChunkTokens)), 0, Int32(nSlots))
         defer { llama_batch_free(batch) }
 
-        // Combined prefill: every prompt in one decode, logits on each last token.
-        var idx = 0
-        var lastIdx = [Int32](repeating: -1, count: n)
-        for i in 0..<n {
-            let toks = tokensPerSeq[i]
-            for (j, t) in toks.enumerated() {
-                batch.token[idx] = t
-                batch.pos[idx] = Int32(j)
-                batch.n_seq_id[idx] = 1
-                batch.seq_id[idx]![0] = Int32(i)
-                let isLast = (j == toks.count - 1)
-                batch.logits[idx] = isLast ? 1 : 0
-                if isLast { lastIdx[i] = Int32(idx) }
-                idx += 1
-            }
-        }
-        batch.n_tokens = Int32(idx)
-        report("gemma: batch prefill (\(idx) tokens / \(n) seqs)…")
-        if llama_decode(ctx, batch) != 0 { throw LlamaError.decodeFailed }
+        // Per-slot state. A slot maps to exactly one chunk while active.
+        var slotChunk = [Int](repeating: -1, count: nSlots)   // chunk index in this slot
+        var slotPos = [Int32](repeating: 0, count: nSlots)     // KV position (= tokens consumed)
+        var slotPromptLen = [Int](repeating: 0, count: nSlots) // prompt length, for the gen cap
+        var slotNext = [llama_token](repeating: 0, count: nSlots) // token to emit+feed next
+        var slotActive = [Bool](repeating: false, count: nSlots)
 
         var outBytes = [[UInt8]](repeating: [], count: n)
-        var pos = tokensPerSeq.map { Int32($0.count) }
-        var active = [Bool](repeating: true, count: n)
-        var nextTok = [llama_token](repeating: 0, count: n)
-        for i in 0..<n { nextTok[i] = llama_sampler_sample(sampler, ctx, lastIdx[i]) }
-
         var pieceBuf = [CChar](repeating: 0, count: 256)
-        var step = 0
-        while step < maxNewTokens {
-            var b = 0
-            var seqOrder = [Int]()
-            for i in 0..<n where active[i] {
-                let t = nextTok[i]
-                if llama_vocab_is_eog(vocab, t) { active[i] = false; continue }
-                let np = llama_token_to_piece(vocab, t, &pieceBuf, Int32(pieceBuf.count), 0, false)
-                if np > 0 { for k in 0..<Int(np) { outBytes[i].append(UInt8(bitPattern: pieceBuf[k])) } }
-                batch.token[b] = t
-                batch.pos[b] = pos[i]
-                batch.n_seq_id[b] = 1
-                batch.seq_id[b]![0] = Int32(i)
-                batch.logits[b] = 1
-                pos[i] += 1
-                seqOrder.append(i)
-                b += 1
+
+        // Prefill chunk `c` into slot `s`: clear the slot's KV, decode the whole
+        // prompt in one shot, and sample the first generated token. Issues its
+        // own llama_decode, so it must never run mid-construction of the shared
+        // generation batch — refills are deferred to after the gen decode below.
+        func loadSlot(_ s: Int, _ c: Int) throws {
+            llama_memory_seq_rm(mem, Int32(s), -1, -1)
+            let toks = tokensPerSeq[c]
+            for (j, t) in toks.enumerated() {
+                batch.token[j] = t
+                batch.pos[j] = Int32(j)
+                batch.n_seq_id[j] = 1
+                batch.seq_id[j]![0] = Int32(s)
+                batch.logits[j] = (j == toks.count - 1) ? 1 : 0
             }
-            if b == 0 { break }  // all sequences finished
-            batch.n_tokens = Int32(b)
-            if llama_decode(ctx, batch) != 0 { break }
-            for (k, i) in seqOrder.enumerated() {
-                nextTok[i] = llama_sampler_sample(sampler, ctx, Int32(k))
-            }
-            step += 1
-            if step % 16 == 0 {
-                let done = active.filter { !$0 }.count
-                report("gemma: batch generating… step \(step), \(done)/\(n) seqs done")
-            }
+            batch.n_tokens = Int32(toks.count)
+            if llama_decode(ctx, batch) != 0 { throw LlamaError.decodeFailed }
+            slotNext[s] = llama_sampler_sample(sampler, ctx, Int32(toks.count - 1))
+            slotChunk[s] = c
+            slotPromptLen[s] = toks.count
+            slotPos[s] = Int32(toks.count)
+            slotActive[s] = true
         }
 
-        report("gemma: batch done — \(n) seqs, \(step) steps, footprint \(footprintMB()) MB")
+        // Initial fill: assign the first nSlots chunks.
+        var nextChunk = 0
+        var doneCount = 0
+        for s in 0..<nSlots where nextChunk < n {
+            try loadSlot(s, nextChunk)
+            nextChunk += 1
+        }
+        report("gemma: continuous batch — \(n) chunks, \(nSlots) slots, footprint \(footprintMB()) MB")
+
+        var step = 0
+        var ctxBroken = false
+        while doneCount < n {
+            // Phase 1: build the generation batch from active slots; collect the
+            // ones that finish this step (do NOT refill yet — that reuses `batch`).
+            var b = 0
+            var seqOrder = [Int]()
+            var toRefill = [Int]()
+            for s in 0..<nSlots where slotActive[s] {
+                let t = slotNext[s]
+                let overLimit = Int(slotPos[s]) - slotPromptLen[s] >= maxNewTokens
+                if llama_vocab_is_eog(vocab, t) || overLimit {
+                    doneCount += 1
+                    slotActive[s] = false
+                    toRefill.append(s)
+                    reportBatchProgress(baseDone + doneCount, totalChunks)
+                    continue
+                }
+                let np = llama_token_to_piece(vocab, t, &pieceBuf, Int32(pieceBuf.count), 0, false)
+                if np > 0 { for k in 0..<Int(np) { outBytes[slotChunk[s]].append(UInt8(bitPattern: pieceBuf[k])) } }
+                batch.token[b] = t
+                batch.pos[b] = slotPos[s]
+                batch.n_seq_id[b] = 1
+                batch.seq_id[b]![0] = Int32(s)
+                batch.logits[b] = 1
+                slotPos[s] += 1
+                seqOrder.append(s)
+                b += 1
+            }
+
+            // Phase 2: decode the generation step and sample each slot's next token.
+            if b > 0 {
+                batch.n_tokens = Int32(b)
+                if llama_decode(ctx, batch) != 0 { ctxBroken = true; break }
+                for (k, s) in seqOrder.enumerated() {
+                    slotNext[s] = llama_sampler_sample(sampler, ctx, Int32(k))
+                }
+                step += 1
+                if step % 16 == 0 {
+                    report("gemma: continuous batch — step \(step), \(doneCount)/\(n) chunks done")
+                }
+            }
+
+            // Phase 3: now that `batch` is free, refill each freed slot with the
+            // next pending chunk (each loadSlot runs its own prefill decode).
+            for s in toRefill where nextChunk < n {
+                try loadSlot(s, nextChunk)
+                nextChunk += 1
+            }
+
+            // Nothing decoded and nothing active left → finished.
+            if b == 0 && !slotActive.contains(true) { break }
+        }
+
+        // A generation decode failed mid-group: keep the chunks that did finish
+        // (returned below), but drop the now-suspect context so the next group
+        // starts clean rather than cascading instant failures.
+        if ctxBroken { freeBatchCtx() }
+
+        report("gemma: continuous batch done — \(n) chunks, \(step) steps, footprint \(footprintMB()) MB")
         return outBytes.map { String(decoding: $0, as: UTF8.self) }
+    }
+
+    /// Tear down the reusable multi-sequence context. Called on dispose and,
+    /// critically, after any llama_decode failure: a failed decode leaves the
+    /// context in a state where every subsequent decode also fails instantly, so
+    /// the next batch must start from a freshly created context instead of
+    /// cascading the whole job into "llama_decode failed" for every remaining
+    /// chunk. The heavy 3.3 GB model stays loaded, so recreating the (small)
+    /// context is cheap.
+    private func freeBatchCtx() {
+        if let c = batchCtx { llama_free(c) }
+        batchCtx = nil
+        batchCtxN = 0
     }
 
     /// Current resident memory footprint in MB (for tuning batch size).
@@ -478,9 +566,7 @@ class OnDeviceLlmPlugin: NSObject {
     }
 
     private func dispose(result: @escaping FlutterResult) {
-        if let ctx = batchCtx { llama_free(ctx) }
-        batchCtx = nil
-        batchCtxN = 0
+        freeBatchCtx()
         if let model = model { llama_model_free(model) }
         model = nil
         vocab = nil
