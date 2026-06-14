@@ -7,7 +7,6 @@ import 'package:share_plus/share_plus.dart';
 
 import '../../app.dart';
 import '../../core/constants.dart';
-import '../../data/services/model_download_service.dart';
 import '../../data/services/supabase_service.dart';
 import '../../data/services/tts_service.dart';
 import '../../main.dart';
@@ -245,13 +244,6 @@ class SettingsScreen extends ConsumerWidget {
             subtitle: const Text('Test speech recognition with vocabulary hints'),
             trailing: const Icon(Icons.chevron_right),
             onTap: () => context.push('/parakeet-debug'),
-          ),
-          ListTile(
-            leading: const Icon(Icons.auto_awesome),
-            title: const Text('Script AI Debug'),
-            subtitle: const Text('Test the on-device LLM and view status'),
-            trailing: const Icon(Icons.chevron_right),
-            onTap: () => context.push('/llm-debug'),
           ),
           ListTile(
             leading: const Icon(Icons.terminal),

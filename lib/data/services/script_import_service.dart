@@ -8,7 +8,6 @@ import 'package:path_provider/path_provider.dart';
 import 'package:pdfrx/pdfrx.dart';
 
 import '../models/script_models.dart';
-import 'ai_script_structuring_service.dart';
 import 'ocr_confidence_service.dart';
 import 'script_parser.dart';
 import 'script_export.dart';
@@ -19,14 +18,9 @@ import 'vision_ocr_channel.dart';
 
 /// Service to import scripts from PDF or text files.
 class ScriptImportService {
-  ScriptImportService({AiScriptStructuringService? aiStructurer})
-    : _aiStructurer = aiStructurer ?? AiScriptStructuringService();
+  ScriptImportService();
 
   final ScriptParser _parser = ScriptParser();
-
-  /// On-device LLM structurer (Gemma). Invoked on demand via [structureWithAi]
-  /// from the import preview — never automatically.
-  final AiScriptStructuringService _aiStructurer;
 
   /// Import a script from a text file (already OCR'd or plain text).
   Future<ParsedScript> importFromTextFile(String filePath) async {
@@ -162,90 +156,6 @@ class ScriptImportService {
     // Strategy 2: OCR pipeline (image-based PDFs like scanned scripts)
     final ocrResult = await _importFromPdfOcr(pdfPath, title: title);
     return _scoreConfidence(ocrResult);
-  }
-
-  /// Whether an on-device AI model is loaded and ready to restructure a parse.
-  bool get isAiAvailable => _aiStructurer.isAvailable;
-
-  /// Source text + title + progress (done/total chunks) of an interrupted AI
-  /// cleanup, if one can be resumed (the app was killed mid-run). Null when
-  /// there's nothing to resume.
-  Future<({String rawText, String title, int done, int total})?>
-      pendingCleanup() => _aiStructurer.loadCheckpointMeta();
-
-  /// Whether the pending cleanup has burned its auto-resume budget and should be
-  /// discarded instead of relaunched (stops a permanently-failing checkpoint
-  /// from restarting the cleanup on every import-screen visit).
-  Future<bool> pendingCleanupExhausted() async =>
-      await _aiStructurer.checkpointAttempts() >=
-      AiScriptStructuringService.maxResumeAttempts;
-
-  /// Discard any pending AI-cleanup checkpoint — an explicit user stop, or a
-  /// checkpoint that can never finish.
-  Future<void> clearPendingCleanup() => _aiStructurer.clearCheckpoint();
-
-  /// Run on-device AI structuring on already-extracted text (or page images)
-  /// and re-score confidence. Returns null when no model is loaded. Invoked on
-  /// demand from the import preview's "Clean up with AI" button — not
-  /// automatically, since we have no reliable "low-quality parse" signal.
-  Future<ParsedScript?> structureWithAi({
-    String? rawText,
-    List<String> pageImagePaths = const [],
-    required String title,
-  }) async {
-    if (!_aiStructurer.isAvailable) return null;
-    debugPrint('PDF import: running on-device AI structuring...');
-    final result = await _aiStructurer.structure(
-      rawText: rawText,
-      pageImagePaths: pageImagePaths,
-      title: title,
-    );
-    if (result != null) {
-      final dialogue = result.lines
-          .where((l) => l.lineType == LineType.dialogue)
-          .length;
-      debugPrint(
-        'PDF import: AI structuring → '
-        '${result.characters.length} characters, $dialogue lines',
-      );
-      return _scoreConfidence(result);
-    }
-    return null;
-  }
-
-  /// Chunked variant of [structureWithAi] for full-length scripts. On-device
-  /// models can't take a whole script in one prompt, so this splits the text
-  /// into line windows and runs the model once per window. Slow by nature —
-  /// [onProgress] reports (done, total) chunks and [isCancelled] stops it early.
-  Future<ParsedScript?> structureWithAiChunked({
-    required String rawText,
-    required String title,
-    int linesPerChunk = 60,
-    int batchSize = 4,
-    void Function(int done, int total)? onProgress,
-    bool Function()? isCancelled,
-  }) async {
-    if (!_aiStructurer.isAvailable) return null;
-    debugPrint('PDF import: running chunked on-device AI structuring...');
-    final result = await _aiStructurer.structureChunked(
-      rawText: rawText,
-      title: title,
-      linesPerChunk: linesPerChunk,
-      batchSize: batchSize,
-      onProgress: onProgress,
-      isCancelled: isCancelled,
-    );
-    if (result != null) {
-      final dialogue = result.lines
-          .where((l) => l.lineType == LineType.dialogue)
-          .length;
-      debugPrint(
-        'PDF import: chunked AI structuring → '
-        '${result.characters.length} characters, $dialogue lines',
-      );
-      return _scoreConfidence(result);
-    }
-    return null;
   }
 
   /// Run dictionary-based spell checking on all lines to score OCR confidence.

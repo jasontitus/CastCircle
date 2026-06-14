@@ -5,7 +5,6 @@ import 'package:flutter/services.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 
-import 'on_device_llm_channel.dart';
 import 'tts_service.dart';
 
 /// Represents a downloadable on-device AI model file.
@@ -130,23 +129,6 @@ class ModelDownloadService {
       filename: 'config.json',
       subdir: 'parakeet_stt',
     ),
-
-    // ── Gemma 4 E2B (on-device script structuring) ────────────
-    // Official Google QAT q4_0 GGUF, loaded by OnDeviceLlmPlugin.swift through
-    // llama.cpp (prebuilt xcframework, Metal). Single self-contained file —
-    // tokenizer + chat template are embedded in the GGUF, so unlike the MLX
-    // path there's no multi-file bundle. ~3.35 GB.
-    AiModel(
-      id: 'gemma_model',
-      name: 'Gemma 4 (script AI)',
-      description: 'On-device LLM that cleans up imported scripts',
-      sizeLabel: '~3.35 GB',
-      sizeBytes: 3349514112,
-      downloadUrl:
-          'https://huggingface.co/google/gemma-4-E2B-it-qat-q4_0-gguf/resolve/main/gemma-4-E2B_q4_0-it.gguf',
-      filename: 'gemma-4-E2B_q4_0-it.gguf',
-      subdir: 'gemma_llm',
-    ),
   ];
 
   final Map<String, ModelDownloadState> _states = {};
@@ -200,10 +182,6 @@ class ModelDownloadService {
           if (modelId == 'kokoro_model' || modelId == 'kokoro_voices') {
             _tryLoadKokoroIfReady();
           }
-          // Auto-load the Gemma script-AI model once all its files arrive
-          if (modelId.startsWith('gemma')) {
-            _tryLoadGemmaIfReady();
-          }
           break;
 
         case 'onDownloadError':
@@ -241,10 +219,6 @@ class ModelDownloadService {
     // Clean up any leftover .tmp files from failed downloads
     await _cleanupTmpFiles();
     _notify();
-
-    // If the Gemma script-AI model is already on disk, load it now so the
-    // import pipeline can use it without waiting for a download.
-    await _tryLoadGemmaIfReady();
   }
 
   /// Auto-load Kokoro TTS after both model files finish downloading.
@@ -253,19 +227,6 @@ class ModelDownloadService {
       debugPrint('ModelDownload: Both Kokoro files ready, loading TTS engine');
       await TtsService.instance.tryLoadKokoro();
     }
-  }
-
-  /// Load the on-device script-AI model once all Gemma files are present.
-  /// Safe to call at startup or after each Gemma file completes.
-  Future<void> tryLoadGemmaIfReady() => _tryLoadGemmaIfReady();
-
-  Future<void> _tryLoadGemmaIfReady() async {
-    // Initialize the on-device LLM. Apple Foundation Models needs no model
-    // files (an empty path makes the plugin try the built-in model first);
-    // the MLX Gemma path uses the downloaded directory when present.
-    final dir = await getGemmaModelDir();
-    debugPrint('ModelDownload: initializing on-device LLM (dir=${dir ?? "none"})');
-    await OnDeviceLlmChannel.instance.initialize(dir ?? '');
   }
 
   /// Whether all Kokoro files are downloaded.
@@ -295,33 +256,6 @@ class ModelDownloadService {
     if (!await isParakeetReady()) return null;
     final appDir = await getApplicationDocumentsDirectory();
     return p.join(appDir.path, 'models', 'parakeet_stt');
-  }
-
-  /// Whether all Gemma (script-AI) files are downloaded.
-  Future<bool> isGemmaReady() async {
-    for (final model in availableModels) {
-      if (model.subdir == 'gemma_llm') {
-        final path = await _filePath(model);
-        if (!File(path).existsSync()) return false;
-      }
-    }
-    return true;
-  }
-
-  /// Get the path to the Gemma model directory, or null if not downloaded.
-  Future<String?> getGemmaModelDir() async {
-    if (!await isGemmaReady()) return null;
-    final appDir = await getApplicationDocumentsDirectory();
-    return p.join(appDir.path, 'models', 'gemma_llm');
-  }
-
-  /// Download just the Gemma model files (script-AI feature is opt-in).
-  Future<void> downloadGemma() async {
-    for (final m in availableModels) {
-      if (m.subdir == 'gemma_llm' && m.downloadUrl.isNotEmpty) {
-        await download(m);
-      }
-    }
   }
 
   /// Download a model file using native iOS background URLSession.
@@ -404,24 +338,6 @@ class ModelDownloadService {
     }
     for (final model in availableModels) {
       if (model.subdir == 'kokoro_mlx') {
-        _states[model.id] = const ModelDownloadState();
-      }
-    }
-    _notify();
-  }
-
-  /// Delete the entire Gemma model directory. Wipes the GGUF (and any leftover
-  /// files from a previous MLX-format download) and disposes the loaded model
-  /// so its memory is freed before a re-download.
-  Future<void> deleteGemma() async {
-    await OnDeviceLlmChannel.instance.dispose();
-    final appDir = await getApplicationDocumentsDirectory();
-    final dir = Directory(p.join(appDir.path, 'models', 'gemma_llm'));
-    if (dir.existsSync()) {
-      await dir.delete(recursive: true);
-    }
-    for (final model in availableModels) {
-      if (model.subdir == 'gemma_llm') {
         _states[model.id] = const ModelDownloadState();
       }
     }
