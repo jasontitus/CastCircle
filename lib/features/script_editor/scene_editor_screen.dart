@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:uuid/uuid.dart';
 
+import '../../core/responsive.dart';
 import '../../core/theme/app_theme.dart';
 import '../../data/models/script_models.dart';
 import '../../providers/production_providers.dart';
@@ -52,122 +53,135 @@ class _SceneEditorScreenState extends ConsumerState<SceneEditorScreen> {
           ),
         ],
       ),
-      body: ReorderableListView.builder(
-        padding: const EdgeInsets.all(16),
-        itemCount: script.scenes.length,
-        onReorder: (oldIndex, newIndex) {
-          // Reorder not implemented for scenes (order is derived from lines)
-        },
-        itemBuilder: (context, index) {
-          final scene = script.scenes[index];
-          final sceneLines = script.linesInScene(scene);
-          final dialogueCount =
-              sceneLines.where((l) => l.lineType == LineType.dialogue).length;
+      body: ContentConstraint(
+        maxWidth: 720,
+        child: ReorderableListView.builder(
+          padding: const EdgeInsets.all(16),
+          itemCount: script.scenes.length,
+          onReorder: (oldIndex, newIndex) {
+            // Reorder not implemented for scenes (order is derived from lines)
+          },
+          itemBuilder: (context, index) {
+            final scene = script.scenes[index];
+            final sceneLines = script.linesInScene(scene);
+            final dialogueCount = sceneLines
+                .where((l) => l.lineType == LineType.dialogue)
+                .length;
 
-          return Card(
-            key: ValueKey(scene.id),
-            margin: const EdgeInsets.only(bottom: 12),
-            child: ExpansionTile(
-              leading: CircleAvatar(
-                backgroundColor: Theme.of(context).colorScheme.primaryContainer,
-                child: Text(
-                  '${index + 1}',
-                  style: TextStyle(
-                    color: Theme.of(context).colorScheme.onPrimaryContainer,
-                    fontWeight: FontWeight.bold,
+            return Card(
+              key: ValueKey(scene.id),
+              margin: const EdgeInsets.only(bottom: 12),
+              child: ExpansionTile(
+                leading: CircleAvatar(
+                  backgroundColor: Theme.of(
+                    context,
+                  ).colorScheme.primaryContainer,
+                  child: Text(
+                    '${index + 1}',
+                    style: TextStyle(
+                      color: Theme.of(context).colorScheme.onPrimaryContainer,
+                      fontWeight: FontWeight.bold,
+                    ),
                   ),
                 ),
-              ),
-              title: Text(
-                scene.sceneName,
-                style: const TextStyle(fontWeight: FontWeight.bold),
-              ),
-              subtitle: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
+                title: Text(
+                  scene.sceneName,
+                  style: const TextStyle(fontWeight: FontWeight.bold),
+                ),
+                subtitle: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    if (scene.location.isNotEmpty)
+                      Text(
+                        scene.location,
+                        style: TextStyle(color: Colors.grey[500]),
+                      ),
+                    Text(
+                      '$dialogueCount lines \u2022 ${scene.characters.length} characters',
+                      style: Theme.of(context).textTheme.bodySmall,
+                    ),
+                  ],
+                ),
                 children: [
-                  if (scene.location.isNotEmpty)
-                    Text(scene.location,
-                        style: TextStyle(color: Colors.grey[500])),
-                  Text(
-                    '$dialogueCount lines \u2022 ${scene.characters.length} characters',
-                    style: Theme.of(context).textTheme.bodySmall,
+                  // Character chips
+                  Padding(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 16,
+                      vertical: 4,
+                    ),
+                    child: Wrap(
+                      spacing: 4,
+                      runSpacing: 4,
+                      children: scene.characters.map((name) {
+                        final charIdx = script.characters.indexWhere(
+                          (c) => c.name == name,
+                        );
+                        final color = charIdx >= 0
+                            ? AppTheme.colorForCharacter(charIdx)
+                            : Colors.grey;
+                        return Chip(
+                          label: Text(
+                            name,
+                            style: TextStyle(color: color, fontSize: 12),
+                          ),
+                          visualDensity: VisualDensity.compact,
+                        );
+                      }).toList(),
+                    ),
+                  ),
+                  if (scene.description.isNotEmpty)
+                    Padding(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 16,
+                        vertical: 4,
+                      ),
+                      child: Text(
+                        scene.description,
+                        style: TextStyle(
+                          fontStyle: FontStyle.italic,
+                          color: Colors.grey[500],
+                          fontSize: 12,
+                        ),
+                      ),
+                    ),
+                  // Action buttons
+                  Padding(
+                    padding: const EdgeInsets.all(8),
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.end,
+                      children: [
+                        TextButton.icon(
+                          icon: const Icon(Icons.edit, size: 16),
+                          label: const Text('Rename'),
+                          onPressed: () => _renameScene(context, script, index),
+                        ),
+                        TextButton.icon(
+                          icon: const Icon(Icons.call_split, size: 16),
+                          label: const Text('Split'),
+                          onPressed: dialogueCount > 2
+                              ? () => _splitScene(context, script, index)
+                              : null,
+                        ),
+                        if (index < script.scenes.length - 1)
+                          TextButton.icon(
+                            icon: const Icon(Icons.merge, size: 16),
+                            label: const Text('Merge Next'),
+                            onPressed: () =>
+                                _mergeScenes(context, script, index),
+                          ),
+                      ],
+                    ),
                   ),
                 ],
               ),
-              children: [
-                // Character chips
-                Padding(
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
-                  child: Wrap(
-                    spacing: 4,
-                    runSpacing: 4,
-                    children: scene.characters.map((name) {
-                      final charIdx = script.characters
-                          .indexWhere((c) => c.name == name);
-                      final color = charIdx >= 0
-                          ? AppTheme.colorForCharacter(charIdx)
-                          : Colors.grey;
-                      return Chip(
-                        label: Text(name, style: TextStyle(color: color, fontSize: 12)),
-                        visualDensity: VisualDensity.compact,
-                      );
-                    }).toList(),
-                  ),
-                ),
-                if (scene.description.isNotEmpty)
-                  Padding(
-                    padding: const EdgeInsets.symmetric(
-                        horizontal: 16, vertical: 4),
-                    child: Text(
-                      scene.description,
-                      style: TextStyle(
-                        fontStyle: FontStyle.italic,
-                        color: Colors.grey[500],
-                        fontSize: 12,
-                      ),
-                    ),
-                  ),
-                // Action buttons
-                Padding(
-                  padding: const EdgeInsets.all(8),
-                  child: Row(
-                    mainAxisAlignment: MainAxisAlignment.end,
-                    children: [
-                      TextButton.icon(
-                        icon: const Icon(Icons.edit, size: 16),
-                        label: const Text('Rename'),
-                        onPressed: () =>
-                            _renameScene(context, script, index),
-                      ),
-                      TextButton.icon(
-                        icon: const Icon(Icons.call_split, size: 16),
-                        label: const Text('Split'),
-                        onPressed: dialogueCount > 2
-                            ? () =>
-                                _splitScene(context, script, index)
-                            : null,
-                      ),
-                      if (index < script.scenes.length - 1)
-                        TextButton.icon(
-                          icon: const Icon(Icons.merge, size: 16),
-                          label: const Text('Merge Next'),
-                          onPressed: () =>
-                              _mergeScenes(context, script, index),
-                        ),
-                    ],
-                  ),
-                ),
-              ],
-            ),
-          );
-        },
+            );
+          },
+        ),
       ),
     );
   }
 
-  void _renameScene(
-      BuildContext context, ParsedScript script, int sceneIndex) {
+  void _renameScene(BuildContext context, ParsedScript script, int sceneIndex) {
     final scene = script.scenes[sceneIndex];
     final nameController = TextEditingController(text: scene.sceneName);
     final locationController = TextEditingController(text: scene.location);
@@ -218,12 +232,12 @@ class _SceneEditorScreenState extends ConsumerState<SceneEditorScreen> {
     );
   }
 
-  void _splitScene(
-      BuildContext context, ParsedScript script, int sceneIndex) {
+  void _splitScene(BuildContext context, ParsedScript script, int sceneIndex) {
     final scene = script.scenes[sceneIndex];
     final sceneLines = script.linesInScene(scene);
-    final dialogueLines =
-        sceneLines.where((l) => l.lineType == LineType.dialogue).toList();
+    final dialogueLines = sceneLines
+        .where((l) => l.lineType == LineType.dialogue)
+        .toList();
 
     // Default split at the midpoint
     var splitAt = dialogueLines.length ~/ 2;
@@ -245,8 +259,7 @@ class _SceneEditorScreenState extends ConsumerState<SceneEditorScreen> {
                 max: (dialogueLines.length - 1).toDouble(),
                 divisions: dialogueLines.length - 2,
                 label: 'After line $splitAt',
-                onChanged: (v) =>
-                    setDialogState(() => splitAt = v.round()),
+                onChanged: (v) => setDialogState(() => splitAt = v.round()),
               ),
               const SizedBox(height: 8),
               // Show the split point
@@ -287,7 +300,11 @@ class _SceneEditorScreenState extends ConsumerState<SceneEditorScreen> {
             ),
             FilledButton(
               onPressed: () {
-                _performSplit(script, sceneIndex, dialogueLines[splitAt].orderIndex);
+                _performSplit(
+                  script,
+                  sceneIndex,
+                  dialogueLines[splitAt].orderIndex,
+                );
                 Navigator.pop(context);
               },
               child: const Text('Split'),
@@ -298,8 +315,7 @@ class _SceneEditorScreenState extends ConsumerState<SceneEditorScreen> {
     );
   }
 
-  void _mergeScenes(
-      BuildContext context, ParsedScript script, int sceneIndex) {
+  void _mergeScenes(BuildContext context, ParsedScript script, int sceneIndex) {
     final scene = script.scenes[sceneIndex];
     final nextScene = script.scenes[sceneIndex + 1];
 
@@ -349,8 +365,7 @@ class _SceneEditorScreenState extends ConsumerState<SceneEditorScreen> {
     );
   }
 
-  void _updateScene(
-      ParsedScript script, int index, ScriptScene updated) {
+  void _updateScene(ParsedScript script, int index, ScriptScene updated) {
     final scenes = List<ScriptScene>.from(script.scenes);
     scenes[index] = updated;
 
@@ -373,20 +388,28 @@ class _SceneEditorScreenState extends ConsumerState<SceneEditorScreen> {
   }
 
   void _performSplit(
-      ParsedScript script, int sceneIndex, int splitAtOrderIndex) {
+    ParsedScript script,
+    int sceneIndex,
+    int splitAtOrderIndex,
+  ) {
     final scene = script.scenes[sceneIndex];
     final scenes = List<ScriptScene>.from(script.scenes);
 
     // Find the line index in the full lines list
-    final splitLineIdx = script.lines
-        .indexWhere((l) => l.orderIndex == splitAtOrderIndex);
+    final splitLineIdx = script.lines.indexWhere(
+      (l) => l.orderIndex == splitAtOrderIndex,
+    );
     if (splitLineIdx < 0) return;
 
     // Get characters for each half
-    final firstHalfLines =
-        script.lines.sublist(scene.startLineIndex, splitLineIdx);
-    final secondHalfLines =
-        script.lines.sublist(splitLineIdx, scene.endLineIndex + 1);
+    final firstHalfLines = script.lines.sublist(
+      scene.startLineIndex,
+      splitLineIdx,
+    );
+    final secondHalfLines = script.lines.sublist(
+      splitLineIdx,
+      scene.endLineIndex + 1,
+    );
 
     final firstChars = <String>{};
     for (final l in firstHalfLines) {

@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import '../../app.dart';
+import '../../core/responsive.dart';
 import '../../data/models/cast_member_model.dart';
 import '../../data/models/production_models.dart';
 import '../../data/services/analytics_service.dart';
@@ -78,203 +79,215 @@ class _JoinProductionScreenState extends ConsumerState<JoinProductionScreen> {
       ),
       body: SingleChildScrollView(
         padding: const EdgeInsets.all(24),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            if (!isSignedIn) ...[
-              // Auth guard
-              Card(
-                color: Theme.of(context).colorScheme.errorContainer,
-                child: Padding(
-                  padding: const EdgeInsets.all(16),
-                  child: Column(
-                    children: [
-                      Icon(Icons.lock_outline,
+        child: ContentConstraint(
+          maxWidth: 520,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              if (!isSignedIn) ...[
+                // Auth guard
+                Card(
+                  color: Theme.of(context).colorScheme.errorContainer,
+                  child: Padding(
+                    padding: const EdgeInsets.all(16),
+                    child: Column(
+                      children: [
+                        Icon(
+                          Icons.lock_outline,
                           size: 48,
-                          color:
-                              Theme.of(context).colorScheme.onErrorContainer),
-                      const SizedBox(height: 12),
-                      Text(
-                        'Sign in to join a production',
-                        style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                              color: Theme.of(context)
-                                  .colorScheme
-                                  .onErrorContainer,
-                            ),
-                      ),
-                      const SizedBox(height: 8),
-                      Text(
-                        'You need an account to join productions and sync your recordings.',
-                        textAlign: TextAlign.center,
-                        style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                              color: Theme.of(context)
-                                  .colorScheme
-                                  .onErrorContainer
-                                  .withValues(alpha: 0.7),
-                            ),
-                      ),
-                      const SizedBox(height: 16),
-                      FilledButton(
-                        onPressed: () {
-                          // Reset auth gate so router allows auth screen
-                          ref.read(authGatePassedProvider.notifier).state = false;
-                          context.go('/auth');
-                        },
-                        child: const Text('Sign In'),
-                      ),
-                    ],
-                  ),
-                ),
-              ),
-            ] else if (_foundProduction == null) ...[
-              // Step 1: Enter join code
-              Icon(
-                Icons.vpn_key_outlined,
-                size: 64,
-                color: Theme.of(context)
-                    .colorScheme
-                    .primary
-                    .withValues(alpha: 0.5),
-              ),
-              const SizedBox(height: 16),
-              Text(
-                'Enter the 6-character code\nshared by your director',
-                textAlign: TextAlign.center,
-                style: Theme.of(context).textTheme.bodyLarge,
-              ),
-              const SizedBox(height: 24),
-              TextField(
-                controller: _codeController,
-                textAlign: TextAlign.center,
-                textCapitalization: TextCapitalization.characters,
-                maxLength: 6,
-                style: Theme.of(context).textTheme.headlineLarge?.copyWith(
-                      letterSpacing: 8,
-                      fontWeight: FontWeight.bold,
+                          color: Theme.of(context).colorScheme.onErrorContainer,
+                        ),
+                        const SizedBox(height: 12),
+                        Text(
+                          'Sign in to join a production',
+                          style: Theme.of(context).textTheme.titleMedium
+                              ?.copyWith(
+                                color: Theme.of(
+                                  context,
+                                ).colorScheme.onErrorContainer,
+                              ),
+                        ),
+                        const SizedBox(height: 8),
+                        Text(
+                          'You need an account to join productions and sync your recordings.',
+                          textAlign: TextAlign.center,
+                          style: Theme.of(context).textTheme.bodySmall
+                              ?.copyWith(
+                                color: Theme.of(context)
+                                    .colorScheme
+                                    .onErrorContainer
+                                    .withValues(alpha: 0.7),
+                              ),
+                        ),
+                        const SizedBox(height: 16),
+                        FilledButton(
+                          onPressed: () {
+                            // Reset auth gate so router allows auth screen
+                            ref.read(authGatePassedProvider.notifier).state =
+                                false;
+                            context.go('/auth');
+                          },
+                          child: const Text('Sign In'),
+                        ),
+                      ],
                     ),
-                decoration: InputDecoration(
-                  border: const OutlineInputBorder(),
-                  counterText: '',
-                  hintText: 'H4MK7P',
-                  hintStyle: Theme.of(context).textTheme.headlineLarge?.copyWith(
-                        letterSpacing: 8,
-                        color: Theme.of(context)
-                            .colorScheme
-                            .onSurface
-                            .withValues(alpha: 0.2),
-                      ),
-                  errorText: _error,
-                ),
-                onChanged: (_) {
-                  if (_error != null) setState(() => _error = null);
-                },
-                onSubmitted: (_) => _lookupCode(),
-              ),
-              const SizedBox(height: 24),
-              FilledButton.icon(
-                onPressed: _loading ? null : _lookupCode,
-                icon: _loading
-                    ? const SizedBox(
-                        width: 16,
-                        height: 16,
-                        child: CircularProgressIndicator(strokeWidth: 2),
-                      )
-                    : const Icon(Icons.search),
-                label: const Text('Find Production'),
-                style: FilledButton.styleFrom(
-                  minimumSize: const Size.fromHeight(48),
-                ),
-              ),
-            ] else ...[
-              // Step 2: Confirm production and pick character
-              Card(
-                child: Padding(
-                  padding: const EdgeInsets.all(16),
-                  child: Column(
-                    children: [
-                      Icon(Icons.theater_comedy,
-                          size: 48,
-                          color: Theme.of(context).colorScheme.primary),
-                      const SizedBox(height: 12),
-                      Text(
-                        _foundProduction!['title'] as String? ?? 'Untitled',
-                        style: Theme.of(context).textTheme.headlineSmall,
-                      ),
-                      const SizedBox(height: 4),
-                      Text(
-                        'Production found!',
-                        style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                              color: Colors.green,
-                            ),
-                      ),
-                    ],
                   ),
                 ),
-              ),
-              const SizedBox(height: 16),
-              TextField(
-                controller: _nameController,
-                decoration: const InputDecoration(
-                  labelText: 'Your name',
-                  border: OutlineInputBorder(),
-                  hintText: 'How should others see you?',
+              ] else if (_foundProduction == null) ...[
+                // Step 1: Enter join code
+                Icon(
+                  Icons.vpn_key_outlined,
+                  size: 64,
+                  color: Theme.of(
+                    context,
+                  ).colorScheme.primary.withValues(alpha: 0.5),
                 ),
-                onChanged: (_) => setState(() {}),
-              ),
-              const SizedBox(height: 16),
-              // Show available characters (those without a joined primary)
-              if (_castMembers != null) ...[
-                Text('Pick your character:',
-                    style: Theme.of(context).textTheme.titleSmall),
+                const SizedBox(height: 16),
+                Text(
+                  'Enter the 6-character code\nshared by your director',
+                  textAlign: TextAlign.center,
+                  style: Theme.of(context).textTheme.bodyLarge,
+                ),
+                const SizedBox(height: 24),
+                TextField(
+                  controller: _codeController,
+                  textAlign: TextAlign.center,
+                  textCapitalization: TextCapitalization.characters,
+                  maxLength: 6,
+                  style: Theme.of(context).textTheme.headlineLarge?.copyWith(
+                    letterSpacing: 8,
+                    fontWeight: FontWeight.bold,
+                  ),
+                  decoration: InputDecoration(
+                    border: const OutlineInputBorder(),
+                    counterText: '',
+                    hintText: 'H4MK7P',
+                    hintStyle: Theme.of(context).textTheme.headlineLarge
+                        ?.copyWith(
+                          letterSpacing: 8,
+                          color: Theme.of(
+                            context,
+                          ).colorScheme.onSurface.withValues(alpha: 0.2),
+                        ),
+                    errorText: _error,
+                  ),
+                  onChanged: (_) {
+                    if (_error != null) setState(() => _error = null);
+                  },
+                  onSubmitted: (_) => _lookupCode(),
+                ),
+                const SizedBox(height: 24),
+                FilledButton.icon(
+                  onPressed: _loading ? null : _lookupCode,
+                  icon: _loading
+                      ? const SizedBox(
+                          width: 16,
+                          height: 16,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Icon(Icons.search),
+                  label: const Text('Find Production'),
+                  style: FilledButton.styleFrom(
+                    minimumSize: const Size.fromHeight(48),
+                  ),
+                ),
+              ] else ...[
+                // Step 2: Confirm production and pick character
+                Card(
+                  child: Padding(
+                    padding: const EdgeInsets.all(16),
+                    child: Column(
+                      children: [
+                        Icon(
+                          Icons.theater_comedy,
+                          size: 48,
+                          color: Theme.of(context).colorScheme.primary,
+                        ),
+                        const SizedBox(height: 12),
+                        Text(
+                          _foundProduction!['title'] as String? ?? 'Untitled',
+                          style: Theme.of(context).textTheme.headlineSmall,
+                        ),
+                        const SizedBox(height: 4),
+                        Text(
+                          'Production found!',
+                          style: Theme.of(
+                            context,
+                          ).textTheme.bodySmall?.copyWith(color: Colors.green),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 16),
+                TextField(
+                  controller: _nameController,
+                  decoration: const InputDecoration(
+                    labelText: 'Your name',
+                    border: OutlineInputBorder(),
+                    hintText: 'How should others see you?',
+                  ),
+                  onChanged: (_) => setState(() {}),
+                ),
+                const SizedBox(height: 16),
+                // Show available characters (those without a joined primary)
+                if (_castMembers != null) ...[
+                  Text(
+                    'Pick your character:',
+                    style: Theme.of(context).textTheme.titleSmall,
+                  ),
+                  const SizedBox(height: 8),
+                  ..._buildCharacterOptions(),
+                ],
                 const SizedBox(height: 8),
-                ..._buildCharacterOptions(),
-              ],
-              const SizedBox(height: 8),
-              // Option to join without a specific character
-              RadioListTile<String>(
-                value: '__none__',
-                groupValue: _selectedCharacter,
-                title: const Text('Join without a character'),
-                subtitle: const Text('You can be assigned one later'),
-                onChanged: (v) => setState(() => _selectedCharacter = v),
-              ),
-              const SizedBox(height: 24),
-              if (_error != null)
-                Padding(
-                  padding: const EdgeInsets.only(bottom: 16),
-                  child: Text(_error!,
+                // Option to join without a specific character
+                RadioListTile<String>(
+                  value: '__none__',
+                  groupValue: _selectedCharacter,
+                  title: const Text('Join without a character'),
+                  subtitle: const Text('You can be assigned one later'),
+                  onChanged: (v) => setState(() => _selectedCharacter = v),
+                ),
+                const SizedBox(height: 24),
+                if (_error != null)
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 16),
+                    child: Text(
+                      _error!,
                       style: TextStyle(
-                          color: Theme.of(context).colorScheme.error)),
+                        color: Theme.of(context).colorScheme.error,
+                      ),
+                    ),
+                  ),
+                FilledButton.icon(
+                  onPressed: _loading || _nameController.text.trim().isEmpty
+                      ? null
+                      : _joinProduction,
+                  icon: _loading
+                      ? const SizedBox(
+                          width: 16,
+                          height: 16,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Icon(Icons.group_add),
+                  label: const Text('Join Production'),
+                  style: FilledButton.styleFrom(
+                    minimumSize: const Size.fromHeight(48),
+                  ),
                 ),
-              FilledButton.icon(
-                onPressed:
-                    _loading || _nameController.text.trim().isEmpty
-                        ? null
-                        : _joinProduction,
-                icon: _loading
-                    ? const SizedBox(
-                        width: 16,
-                        height: 16,
-                        child: CircularProgressIndicator(strokeWidth: 2),
-                      )
-                    : const Icon(Icons.group_add),
-                label: const Text('Join Production'),
-                style: FilledButton.styleFrom(
-                  minimumSize: const Size.fromHeight(48),
+                const SizedBox(height: 12),
+                TextButton(
+                  onPressed: () => setState(() {
+                    _foundProduction = null;
+                    _castMembers = null;
+                    _selectedCharacter = null;
+                    _error = null;
+                  }),
+                  child: const Text('Try a different code'),
                 ),
-              ),
-              const SizedBox(height: 12),
-              TextButton(
-                onPressed: () => setState(() {
-                  _foundProduction = null;
-                  _castMembers = null;
-                  _selectedCharacter = null;
-                  _error = null;
-                }),
-                child: const Text('Try a different code'),
-              ),
+              ],
             ],
-          ],
+          ),
         ),
       ),
     );
@@ -306,7 +319,8 @@ class _JoinProductionScreenState extends ConsumerState<JoinProductionScreen> {
     // Show unclaimed invitations first
     for (final inv in unclaimedInvitations) {
       final charName = inv['character_name'] as String;
-      final isPreselected = _prefilledCharacter != null &&
+      final isPreselected =
+          _prefilledCharacter != null &&
           charName.toUpperCase() == _prefilledCharacter!.toUpperCase();
       widgets.add(
         RadioListTile<String>(
@@ -356,7 +370,8 @@ class _JoinProductionScreenState extends ConsumerState<JoinProductionScreen> {
 
       if (production == null) {
         setState(() {
-          _error = 'No production found with code "$code". '
+          _error =
+              'No production found with code "$code". '
               'Check the code and try again. '
               '(signed in: ${supa.isSignedIn})';
           _loading = false;
@@ -409,15 +424,15 @@ class _JoinProductionScreenState extends ConsumerState<JoinProductionScreen> {
       final supa = SupabaseService.instance;
       final userId = supa.currentUser!.id;
       final productionId = _foundProduction!['id'] as String;
-      final characterName =
-          _selectedCharacter == '__none__' ? '' : (_selectedCharacter ?? '');
+      final characterName = _selectedCharacter == '__none__'
+          ? ''
+          : (_selectedCharacter ?? '');
 
       // Check if there's an unclaimed invitation for this character
       CastMemberModel? localMember;
       if (_castMembers != null && characterName.isNotEmpty) {
         final invitation = _castMembers!.where((cm) {
-          return cm['user_id'] == null &&
-              cm['character_name'] == characterName;
+          return cm['user_id'] == null && cm['character_name'] == characterName;
         }).toList();
 
         if (invitation.isNotEmpty) {
@@ -433,7 +448,8 @@ class _JoinProductionScreenState extends ConsumerState<JoinProductionScreen> {
             characterName: characterName,
             displayName: name,
             role: CastRole.fromString(
-                invitation.first['role'] as String? ?? 'actor'),
+              invitation.first['role'] as String? ?? 'actor',
+            ),
             joinedAt: DateTime.now(),
           );
         }
@@ -464,8 +480,10 @@ class _JoinProductionScreenState extends ConsumerState<JoinProductionScreen> {
         id: productionId,
         title: _foundProduction!['title'] as String? ?? 'Untitled',
         organizerId: _foundProduction!['organizer_id'] as String? ?? '',
-        createdAt: DateTime.tryParse(
-                _foundProduction!['created_at'] as String? ?? '') ??
+        createdAt:
+            DateTime.tryParse(
+              _foundProduction!['created_at'] as String? ?? '',
+            ) ??
             DateTime.now(),
         status: ProductionStatus.draft,
         joinCode: _foundProduction!['join_code'] as String?,

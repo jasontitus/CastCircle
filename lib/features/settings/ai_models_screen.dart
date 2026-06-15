@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 
+import '../../core/responsive.dart';
 import '../../data/services/analytics_service.dart';
 import '../../data/services/model_download_service.dart';
 import '../../data/services/model_manager.dart';
@@ -109,9 +110,9 @@ class _AiModelsScreenState extends State<AiModelsScreen> {
     // TTS will fall back to system on next init
     if (mounted) {
       setState(() => _onnxReady = false);
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Kokoro model deleted')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('Kokoro model deleted')));
     }
   }
 
@@ -119,53 +120,56 @@ class _AiModelsScreenState extends State<AiModelsScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(title: const Text('AI Models')),
-      body: ListView(
-        children: [
-          Padding(
-            padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
-            child: Text(
-              'Download on-device AI models for offline use. '
-              'Models are stored locally and can be deleted at any time.',
-              style: TextStyle(color: Colors.grey[500], fontSize: 13),
-            ),
-          ),
-          const Divider(),
-
-          // Platform-specific model tiles
-          if (Platform.isAndroid)
-            _buildOnnxKokoroTile(context)
-          else
-            ...ModelDownloadService.availableModels
-                .where((m) => m.subdir != 'parakeet_stt')
-                .map((model) => _buildModelTile(context, model)),
-
-          const Divider(),
-          Padding(
-            padding: const EdgeInsets.fromLTRB(16, 8, 16, 4),
-            child: Text(
-              'Diagnostics',
-              style: TextStyle(
-                color: Theme.of(context).colorScheme.primary,
-                fontSize: 12,
-                fontWeight: FontWeight.bold,
+      body: ContentConstraint(
+        maxWidth: 700,
+        child: ListView(
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
+              child: Text(
+                'Download on-device AI models for offline use. '
+                'Models are stored locally and can be deleted at any time.',
+                style: TextStyle(color: Colors.grey[500], fontSize: 13),
               ),
             ),
-          ),
-          ListTile(
-            leading: const Icon(Icons.bug_report),
-            title: const Text('Kokoro TTS Debug'),
-            subtitle: const Text('Test TTS engine and view diagnostics'),
-            trailing: const Icon(Icons.chevron_right),
-            onTap: () => context.push('/kokoro-debug'),
-          ),
-          ListTile(
-            leading: const Icon(Icons.mic),
-            title: const Text('STT Debug'),
-            subtitle: const Text('Test speech recognition'),
-            trailing: const Icon(Icons.chevron_right),
-            onTap: () => context.push('/parakeet-debug'),
-          ),
-        ],
+            const Divider(),
+
+            // Platform-specific model tiles
+            if (Platform.isAndroid)
+              _buildOnnxKokoroTile(context)
+            else
+              ...ModelDownloadService.availableModels
+                  .where((m) => m.subdir != 'parakeet_stt')
+                  .map((model) => _buildModelTile(context, model)),
+
+            const Divider(),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 8, 16, 4),
+              child: Text(
+                'Diagnostics',
+                style: TextStyle(
+                  color: Theme.of(context).colorScheme.primary,
+                  fontSize: 12,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+            ),
+            ListTile(
+              leading: const Icon(Icons.bug_report),
+              title: const Text('Kokoro TTS Debug'),
+              subtitle: const Text('Test TTS engine and view diagnostics'),
+              trailing: const Icon(Icons.chevron_right),
+              onTap: () => context.push('/kokoro-debug'),
+            ),
+            ListTile(
+              leading: const Icon(Icons.mic),
+              title: const Text('STT Debug'),
+              subtitle: const Text('Test speech recognition'),
+              trailing: const Icon(Icons.chevron_right),
+              onTap: () => context.push('/parakeet-debug'),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -183,9 +187,11 @@ class _AiModelsScreenState extends State<AiModelsScreen> {
       subtitle: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(_onnxReady
-              ? 'Installed — 54 high-quality voices'
-              : 'On-device neural TTS (~600 MB download)'),
+          Text(
+            _onnxReady
+                ? 'Installed — 54 high-quality voices'
+                : 'On-device neural TTS (~600 MB download)',
+          ),
           if (_onnxDownloading)
             Padding(
               padding: const EdgeInsets.only(top: 8),
@@ -194,8 +200,7 @@ class _AiModelsScreenState extends State<AiModelsScreen> {
                 children: [
                   LinearProgressIndicator(value: _onnxProgress),
                   const SizedBox(height: 4),
-                  Text(_onnxStatus,
-                      style: const TextStyle(fontSize: 12)),
+                  Text(_onnxStatus, style: const TextStyle(fontSize: 12)),
                 ],
               ),
             ),
@@ -216,21 +221,20 @@ class _AiModelsScreenState extends State<AiModelsScreen> {
               child: CircularProgressIndicator(strokeWidth: 2),
             )
           : _onnxReady
-              ? PopupMenuButton<String>(
-                  icon: const Icon(Icons.check_circle, color: Colors.green),
-                  onSelected: (value) {
-                    if (value == 'delete') _deleteOnnxKokoro();
-                  },
-                  itemBuilder: (context) => [
-                    const PopupMenuItem(
-                        value: 'delete', child: Text('Delete')),
-                  ],
-                )
-              : IconButton(
-                  icon: const Icon(Icons.download),
-                  tooltip: 'Download',
-                  onPressed: _downloadOnnxKokoro,
-                ),
+          ? PopupMenuButton<String>(
+              icon: const Icon(Icons.check_circle, color: Colors.green),
+              onSelected: (value) {
+                if (value == 'delete') _deleteOnnxKokoro();
+              },
+              itemBuilder: (context) => [
+                const PopupMenuItem(value: 'delete', child: Text('Delete')),
+              ],
+            )
+          : IconButton(
+              icon: const Icon(Icons.download),
+              tooltip: 'Download',
+              onPressed: _downloadOnnxKokoro,
+            ),
     );
   }
 
@@ -269,7 +273,10 @@ class _AiModelsScreenState extends State<AiModelsScreen> {
   }
 
   Widget _buildTrailing(
-      BuildContext context, AiModel model, ModelDownloadState state) {
+    BuildContext context,
+    AiModel model,
+    ModelDownloadState state,
+  ) {
     switch (state.status) {
       case ModelStatus.notDownloaded:
       case ModelStatus.error:
@@ -280,7 +287,8 @@ class _AiModelsScreenState extends State<AiModelsScreen> {
         );
       case ModelStatus.downloading:
         return const SizedBox(
-          width: 24, height: 24,
+          width: 24,
+          height: 24,
           child: CircularProgressIndicator(strokeWidth: 2),
         );
       case ModelStatus.downloaded:
@@ -321,8 +329,8 @@ class _AiModelsScreenState extends State<AiModelsScreen> {
   Future<void> _delete(AiModel model) async {
     await _service.delete(model.id);
     if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('${model.name} deleted')),
-    );
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text('${model.name} deleted')));
   }
 }

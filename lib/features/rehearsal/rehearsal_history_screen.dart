@@ -3,17 +3,18 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_riverpod/legacy.dart';
 import 'package:go_router/go_router.dart';
 
+import '../../core/responsive.dart';
 import '../../data/models/rehearsal_models.dart';
 
 /// Provider storing rehearsal session history.
 final rehearsalHistoryProvider =
-    StateNotifierProvider<RehearsalHistoryNotifier, List<RehearsalSession>>(
-        (ref) {
-  return RehearsalHistoryNotifier();
-});
+    StateNotifierProvider<RehearsalHistoryNotifier, List<RehearsalSession>>((
+      ref,
+    ) {
+      return RehearsalHistoryNotifier();
+    });
 
-class RehearsalHistoryNotifier
-    extends StateNotifier<List<RehearsalSession>> {
+class RehearsalHistoryNotifier extends StateNotifier<List<RehearsalSession>> {
   RehearsalHistoryNotifier() : super([]);
 
   void add(RehearsalSession session) {
@@ -47,11 +48,15 @@ class RehearsalHistoryScreen extends ConsumerWidget {
                 children: [
                   Icon(Icons.history, size: 64, color: Colors.grey),
                   SizedBox(height: 16),
-                  Text('No rehearsal sessions yet',
-                      style: TextStyle(color: Colors.grey)),
+                  Text(
+                    'No rehearsal sessions yet',
+                    style: TextStyle(color: Colors.grey),
+                  ),
                   SizedBox(height: 8),
-                  Text('Complete a scene to see your stats here',
-                      style: TextStyle(color: Colors.grey, fontSize: 12)),
+                  Text(
+                    'Complete a scene to see your stats here',
+                    style: TextStyle(color: Colors.grey, fontSize: 12),
+                  ),
                 ],
               ),
             )
@@ -62,11 +67,14 @@ class RehearsalHistoryScreen extends ConsumerWidget {
                 const Divider(height: 1),
                 // Session list
                 Expanded(
-                  child: ListView.builder(
-                    padding: const EdgeInsets.all(16),
-                    itemCount: sessions.length,
-                    itemBuilder: (context, index) =>
-                        _buildSessionCard(context, sessions[index]),
+                  child: ContentConstraint(
+                    maxWidth: 720,
+                    child: ListView.builder(
+                      padding: const EdgeInsets.all(16),
+                      itemCount: sessions.length,
+                      itemBuilder: (context, index) =>
+                          _buildSessionCard(context, sessions[index]),
+                    ),
                   ),
                 ),
               ],
@@ -74,20 +82,19 @@ class RehearsalHistoryScreen extends ConsumerWidget {
     );
   }
 
-  Widget _buildSummary(
-      BuildContext context, List<RehearsalSession> sessions) {
+  Widget _buildSummary(BuildContext context, List<RehearsalSession> sessions) {
     final totalSessions = sessions.length;
     final totalTime = sessions.fold<Duration>(
-        Duration.zero, (sum, s) => sum + s.duration);
+      Duration.zero,
+      (sum, s) => sum + s.duration,
+    );
     final avgScore = sessions.isEmpty
         ? 0.0
-        : sessions.fold<double>(
-                0.0, (sum, s) => sum + s.averageMatchScore) /
-            sessions.length;
+        : sessions.fold<double>(0.0, (sum, s) => sum + s.averageMatchScore) /
+              sessions.length;
 
     // Unique scenes practiced
-    final uniqueScenes =
-        sessions.map((s) => s.sceneId).toSet().length;
+    final uniqueScenes = sessions.map((s) => s.sceneId).toSet().length;
 
     return Container(
       padding: const EdgeInsets.all(16),
@@ -98,8 +105,7 @@ class RehearsalHistoryScreen extends ConsumerWidget {
           _statColumn(context, '$totalSessions', 'Sessions'),
           _statColumn(context, _formatDuration(totalTime), 'Total Time'),
           _statColumn(context, '$uniqueScenes', 'Scenes'),
-          _statColumn(
-              context, '${(avgScore * 100).toInt()}%', 'Avg Score'),
+          _statColumn(context, '${(avgScore * 100).toInt()}%', 'Avg Score'),
         ],
       ),
     );
@@ -111,15 +117,12 @@ class RehearsalHistoryScreen extends ConsumerWidget {
         Text(
           value,
           style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                fontWeight: FontWeight.bold,
-                color: Theme.of(context).colorScheme.primary,
-              ),
+            fontWeight: FontWeight.bold,
+            color: Theme.of(context).colorScheme.primary,
+          ),
         ),
         const SizedBox(height: 4),
-        Text(
-          label,
-          style: Theme.of(context).textTheme.bodySmall,
-        ),
+        Text(label, style: Theme.of(context).textTheme.bodySmall),
       ],
     );
   }
@@ -128,8 +131,8 @@ class RehearsalHistoryScreen extends ConsumerWidget {
     final scoreColor = session.averageMatchScore >= 0.8
         ? Colors.green
         : session.averageMatchScore >= 0.6
-            ? Colors.orange
-            : Colors.red;
+        ? Colors.orange
+        : Colors.red;
 
     return Card(
       margin: const EdgeInsets.only(bottom: 12),
@@ -144,13 +147,15 @@ class RehearsalHistoryScreen extends ConsumerWidget {
                   child: Text(
                     session.sceneName,
                     style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                          fontWeight: FontWeight.bold,
-                        ),
+                      fontWeight: FontWeight.bold,
+                    ),
                   ),
                 ),
                 Container(
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 6,
+                    vertical: 2,
+                  ),
                   decoration: BoxDecoration(
                     color: session.rehearsalMode == 'cuePractice'
                         ? Colors.blue.withValues(alpha: 0.1)
@@ -203,9 +208,9 @@ class RehearsalHistoryScreen extends ConsumerWidget {
                 // Date
                 Text(
                   _formatDate(session.startedAt),
-                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                        color: Colors.grey[600],
-                      ),
+                  style: Theme.of(
+                    context,
+                  ).textTheme.bodySmall?.copyWith(color: Colors.grey[600]),
                 ),
               ],
             ),
@@ -215,20 +220,24 @@ class RehearsalHistoryScreen extends ConsumerWidget {
               Text(
                 'Needs practice:',
                 style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                      color: Colors.orange,
-                      fontWeight: FontWeight.w600,
-                    ),
+                  color: Colors.orange,
+                  fontWeight: FontWeight.w600,
+                ),
               ),
               const SizedBox(height: 4),
-              ...session.struggledLines.take(3).map((attempt) => Padding(
-                    padding: const EdgeInsets.only(left: 8, bottom: 2),
-                    child: Text(
-                      '- ${attempt.lineText}',
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: TextStyle(fontSize: 12, color: Colors.grey[500]),
+              ...session.struggledLines
+                  .take(3)
+                  .map(
+                    (attempt) => Padding(
+                      padding: const EdgeInsets.only(left: 8, bottom: 2),
+                      child: Text(
+                        '- ${attempt.lineText}',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(fontSize: 12, color: Colors.grey[500]),
+                      ),
                     ),
-                  )),
+                  ),
             ],
           ],
         ),

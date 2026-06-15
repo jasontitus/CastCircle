@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../core/responsive.dart';
 import '../../data/services/model_download_service.dart';
 import '../../data/services/model_manager.dart';
 
@@ -94,154 +95,170 @@ class _ModelDownloadScreenState extends ConsumerState<ModelDownloadScreen> {
 
     return Scaffold(
       appBar: AppBar(title: const Text('AI Models')),
-      body: ListView(
-        padding: const EdgeInsets.all(16),
-        children: [
-          Text(
-            'On-device AI models for natural speech',
-            style: theme.textTheme.bodyLarge,
-          ),
-          const SizedBox(height: 8),
-          Text(
-            'Models are downloaded once and run entirely on your device. '
-            'No internet needed for rehearsal.',
-            style: theme.textTheme.bodySmall?.copyWith(
-              color: theme.colorScheme.onSurface.withValues(alpha: 0.6),
-            ),
-          ),
-          const SizedBox(height: 24),
-          _modelCard(
-            context,
-            title: 'Kokoro TTS',
-            subtitle: 'Neural text-to-speech (54 voices)',
-            size: '~341 MB',
-            ready: _kokoroReady,
-            icon: Icons.record_voice_over,
-          ),
-          const SizedBox(height: 24),
-          if (_downloading) ...[
-            Card(
-              child: Padding(
-                padding: const EdgeInsets.all(16),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text('Downloading models...',
-                        style: theme.textTheme.titleSmall),
-                    const SizedBox(height: 12),
-                    for (final entry in _modelProgress.entries) ...[
-                      Row(
-                        children: [
-                          Expanded(
-                            flex: 2,
-                            child: Text(entry.key,
-                                style: theme.textTheme.bodySmall),
-                          ),
-                          Expanded(
-                            flex: 3,
-                            child: LinearProgressIndicator(
-                                value: entry.value),
-                          ),
-                          const SizedBox(width: 8),
-                          SizedBox(
-                            width: 36,
-                            child: Text(
-                              '${(entry.value * 100).toInt()}%',
-                              style: theme.textTheme.labelSmall,
-                            ),
-                          ),
-                        ],
-                      ),
-                      const SizedBox(height: 8),
-                    ],
-                  ],
-                ),
-              ),
-            ),
-          ] else if (_error != null) ...[
-            Card(
-              color: theme.colorScheme.errorContainer,
-              child: Padding(
-                padding: const EdgeInsets.all(16),
-                child: Column(
-                  children: [
-                    Text('Download failed', style: theme.textTheme.titleSmall),
-                    const SizedBox(height: 4),
-                    Text(_error!, style: theme.textTheme.bodySmall),
-                    const SizedBox(height: 12),
-                    FilledButton(
-                      onPressed: _downloadAll,
-                      child: const Text('Retry'),
-                    ),
-                  ],
-                ),
-              ),
-            ),
-          ] else if (!allReady) ...[
-            FilledButton.icon(
-              onPressed: _downloadAll,
-              icon: const Icon(Icons.download),
-              label: const Text('Download All Models'),
-              style: FilledButton.styleFrom(
-                minimumSize: const Size.fromHeight(56),
-              ),
+      body: ContentConstraint(
+        maxWidth: 700,
+        child: ListView(
+          padding: const EdgeInsets.all(16),
+          children: [
+            Text(
+              'On-device AI models for natural speech',
+              style: theme.textTheme.bodyLarge,
             ),
             const SizedBox(height: 8),
             Text(
-              'Total download: ~341 MB. Wi-Fi recommended.',
-              textAlign: TextAlign.center,
+              'Models are downloaded once and run entirely on your device. '
+              'No internet needed for rehearsal.',
               style: theme.textTheme.bodySmall?.copyWith(
-                color: theme.colorScheme.onSurface.withValues(alpha: 0.5),
+                color: theme.colorScheme.onSurface.withValues(alpha: 0.6),
               ),
             ),
-          ] else ...[
-            Card(
-              color: theme.colorScheme.primaryContainer,
-              child: Padding(
-                padding: const EdgeInsets.all(16),
-                child: Row(
-                  children: [
-                    Icon(Icons.check_circle,
-                        color: theme.colorScheme.primary),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: Text(
-                        'All models ready. Rehearsal uses on-device AI.',
-                        style: theme.textTheme.bodyMedium,
+            const SizedBox(height: 24),
+            _modelCard(
+              context,
+              title: 'Kokoro TTS',
+              subtitle: 'Neural text-to-speech (54 voices)',
+              size: '~341 MB',
+              ready: _kokoroReady,
+              icon: Icons.record_voice_over,
+            ),
+            const SizedBox(height: 24),
+            if (_downloading) ...[
+              Card(
+                child: Padding(
+                  padding: const EdgeInsets.all(16),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        'Downloading models...',
+                        style: theme.textTheme.titleSmall,
                       ),
-                    ),
-                  ],
-                ),
-              ),
-            ),
-            const SizedBox(height: 16),
-            OutlinedButton(
-              onPressed: () async {
-                final confirm = await showDialog<bool>(
-                  context: context,
-                  builder: (c) => AlertDialog(
-                    title: const Text('Clear Models'),
-                    content: const Text(
-                        'Delete all downloaded models? You will need to re-download them.'),
-                    actions: [
-                      TextButton(
-                          onPressed: () => Navigator.pop(c, false),
-                          child: const Text('Cancel')),
-                      FilledButton(
-                          onPressed: () => Navigator.pop(c, true),
-                          child: const Text('Delete')),
+                      const SizedBox(height: 12),
+                      for (final entry in _modelProgress.entries) ...[
+                        Row(
+                          children: [
+                            Expanded(
+                              flex: 2,
+                              child: Text(
+                                entry.key,
+                                style: theme.textTheme.bodySmall,
+                              ),
+                            ),
+                            Expanded(
+                              flex: 3,
+                              child: LinearProgressIndicator(
+                                value: entry.value,
+                              ),
+                            ),
+                            const SizedBox(width: 8),
+                            SizedBox(
+                              width: 36,
+                              child: Text(
+                                '${(entry.value * 100).toInt()}%',
+                                style: theme.textTheme.labelSmall,
+                              ),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 8),
+                      ],
                     ],
                   ),
-                );
-                if (confirm == true) {
-                  await _manager.clearCache();
-                  await _checkStatus();
-                }
-              },
-              child: const Text('Clear Downloaded Models'),
-            ),
+                ),
+              ),
+            ] else if (_error != null) ...[
+              Card(
+                color: theme.colorScheme.errorContainer,
+                child: Padding(
+                  padding: const EdgeInsets.all(16),
+                  child: Column(
+                    children: [
+                      Text(
+                        'Download failed',
+                        style: theme.textTheme.titleSmall,
+                      ),
+                      const SizedBox(height: 4),
+                      Text(_error!, style: theme.textTheme.bodySmall),
+                      const SizedBox(height: 12),
+                      FilledButton(
+                        onPressed: _downloadAll,
+                        child: const Text('Retry'),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ] else if (!allReady) ...[
+              FilledButton.icon(
+                onPressed: _downloadAll,
+                icon: const Icon(Icons.download),
+                label: const Text('Download All Models'),
+                style: FilledButton.styleFrom(
+                  minimumSize: const Size.fromHeight(56),
+                ),
+              ),
+              const SizedBox(height: 8),
+              Text(
+                'Total download: ~341 MB. Wi-Fi recommended.',
+                textAlign: TextAlign.center,
+                style: theme.textTheme.bodySmall?.copyWith(
+                  color: theme.colorScheme.onSurface.withValues(alpha: 0.5),
+                ),
+              ),
+            ] else ...[
+              Card(
+                color: theme.colorScheme.primaryContainer,
+                child: Padding(
+                  padding: const EdgeInsets.all(16),
+                  child: Row(
+                    children: [
+                      Icon(
+                        Icons.check_circle,
+                        color: theme.colorScheme.primary,
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: Text(
+                          'All models ready. Rehearsal uses on-device AI.',
+                          style: theme.textTheme.bodyMedium,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+              const SizedBox(height: 16),
+              OutlinedButton(
+                onPressed: () async {
+                  final confirm = await showDialog<bool>(
+                    context: context,
+                    builder: (c) => AlertDialog(
+                      title: const Text('Clear Models'),
+                      content: const Text(
+                        'Delete all downloaded models? You will need to re-download them.',
+                      ),
+                      actions: [
+                        TextButton(
+                          onPressed: () => Navigator.pop(c, false),
+                          child: const Text('Cancel'),
+                        ),
+                        FilledButton(
+                          onPressed: () => Navigator.pop(c, true),
+                          child: const Text('Delete'),
+                        ),
+                      ],
+                    ),
+                  );
+                  if (confirm == true) {
+                    await _manager.clearCache();
+                    await _checkStatus();
+                  }
+                },
+                child: const Text('Clear Downloaded Models'),
+              ),
+            ],
           ],
-        ],
+        ),
       ),
     );
   }

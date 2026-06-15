@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../core/responsive.dart';
 import '../../data/models/production_models.dart';
 import '../../data/models/script_models.dart';
 import '../../data/models/voice_preset.dart';
@@ -56,47 +57,50 @@ class _VoiceConfigScreenState extends ConsumerState<VoiceConfigScreen> {
     }
 
     return Scaffold(
-      appBar: AppBar(
-        title: const Text('Voice Settings'),
-      ),
+      appBar: AppBar(title: const Text('Voice Settings')),
       body: _loading
           ? const Center(child: CircularProgressIndicator())
-          : ListView(
-              children: [
-                // Dialect selector
-                _sectionHeader(context, 'Script Dialect'),
-                _buildDialectSelector(context, production),
-                const Divider(height: 32),
+          : ContentConstraint(
+              maxWidth: 700,
+              child: ListView(
+                children: [
+                  // Dialect selector
+                  _sectionHeader(context, 'Script Dialect'),
+                  _buildDialectSelector(context, production),
+                  const Divider(height: 32),
 
-                // Production preset section
-                _sectionHeader(context, 'Production Style'),
-                Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 16),
-                  child: Text(
-                    'Sets the default accent and pacing for all characters. '
-                    'You can override individual characters below.',
-                    style: TextStyle(color: Colors.grey[500], fontSize: 13),
+                  // Production preset section
+                  _sectionHeader(context, 'Production Style'),
+                  Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 16),
+                    child: Text(
+                      'Sets the default accent and pacing for all characters. '
+                      'You can override individual characters below.',
+                      style: TextStyle(color: Colors.grey[500], fontSize: 13),
+                    ),
                   ),
-                ),
-                const SizedBox(height: 8),
-                ...VoicePresets.all
-                    .map((preset) => _buildPresetTile(preset, production.id)),
-                const Divider(height: 32),
+                  const SizedBox(height: 8),
+                  ...VoicePresets.all.map(
+                    (preset) => _buildPresetTile(preset, production.id),
+                  ),
+                  const Divider(height: 32),
 
-                // Per-character overrides section
-                _sectionHeader(context, 'Character Voices'),
-                Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 16),
-                  child: Text(
-                    'Tap a character to assign a specific voice and speed.',
-                    style: TextStyle(color: Colors.grey[500], fontSize: 13),
+                  // Per-character overrides section
+                  _sectionHeader(context, 'Character Voices'),
+                  Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 16),
+                    child: Text(
+                      'Tap a character to assign a specific voice and speed.',
+                      style: TextStyle(color: Colors.grey[500], fontSize: 13),
+                    ),
                   ),
-                ),
-                const SizedBox(height: 8),
-                ...script.characters.map(
-                    (char) => _buildCharacterTile(char, production.id, script)),
-                const SizedBox(height: 32),
-              ],
+                  const SizedBox(height: 8),
+                  ...script.characters.map(
+                    (char) => _buildCharacterTile(char, production.id, script),
+                  ),
+                  const SizedBox(height: 32),
+                ],
+              ),
             ),
     );
   }
@@ -109,8 +113,10 @@ class _VoiceConfigScreenState extends ConsumerState<VoiceConfigScreen> {
       title: Text(preset.name),
       subtitle: Text(preset.description),
       secondary: isSelected
-          ? Icon(Icons.check_circle,
-              color: Theme.of(context).colorScheme.primary)
+          ? Icon(
+              Icons.check_circle,
+              color: Theme.of(context).colorScheme.primary,
+            )
           : null,
       onChanged: (value) async {
         if (value == null) return;
@@ -126,7 +132,10 @@ class _VoiceConfigScreenState extends ConsumerState<VoiceConfigScreen> {
   }
 
   Widget _buildCharacterTile(
-      ScriptCharacter char, String productionId, ParsedScript script) {
+    ScriptCharacter char,
+    String productionId,
+    ParsedScript script,
+  ) {
     final override = _overrides[char.name];
     final hasOverride = override != null;
 
@@ -139,15 +148,16 @@ class _VoiceConfigScreenState extends ConsumerState<VoiceConfigScreen> {
     );
     final presetVoice = autoAssignment[char.name] ?? 'af_heart';
     final activeVoice = hasOverride ? override.voiceId : presetVoice;
-    final activeSpeed =
-        hasOverride ? override.speed : _currentPreset.defaultSpeed;
-    final voiceLabel =
-        VoicePresets.voiceLabels[activeVoice] ?? activeVoice;
+    final activeSpeed = hasOverride
+        ? override.speed
+        : _currentPreset.defaultSpeed;
+    final voiceLabel = VoicePresets.voiceLabels[activeVoice] ?? activeVoice;
 
     return ListTile(
       leading: CircleAvatar(
-        backgroundColor:
-            hasOverride ? Theme.of(context).colorScheme.primary : Colors.grey,
+        backgroundColor: hasOverride
+            ? Theme.of(context).colorScheme.primary
+            : Colors.grey,
         radius: 18,
         child: Text(
           char.name[0],
@@ -182,7 +192,10 @@ class _VoiceConfigScreenState extends ConsumerState<VoiceConfigScreen> {
         ],
       ),
       onTap: () => _showCharacterVoiceDialog(
-        char, productionId, activeVoice, activeSpeed,
+        char,
+        productionId,
+        activeVoice,
+        activeSpeed,
       ),
     );
   }
@@ -219,8 +232,10 @@ class _VoiceConfigScreenState extends ConsumerState<VoiceConfigScreen> {
               ),
               // Header
               Padding(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 16,
+                  vertical: 8,
+                ),
                 child: Row(
                   children: [
                     Expanded(
@@ -234,7 +249,10 @@ class _VoiceConfigScreenState extends ConsumerState<VoiceConfigScreen> {
                       icon: const Icon(Icons.play_circle_outline),
                       tooltip: 'Preview voice',
                       onPressed: () => _previewVoice(
-                          selectedVoice, selectedSpeed, char.name),
+                        selectedVoice,
+                        selectedSpeed,
+                        char.name,
+                      ),
                     ),
                     FilledButton(
                       onPressed: () async {
@@ -246,8 +264,9 @@ class _VoiceConfigScreenState extends ConsumerState<VoiceConfigScreen> {
                             speed: selectedSpeed,
                           ),
                         );
-                        final overrides =
-                            await _voiceConfig.getOverrides(productionId);
+                        final overrides = await _voiceConfig.getOverrides(
+                          productionId,
+                        );
                         setState(() => _overrides = overrides);
                         if (ctx.mounted) Navigator.pop(ctx);
                       },
@@ -273,8 +292,10 @@ class _VoiceConfigScreenState extends ConsumerState<VoiceConfigScreen> {
                             setSheetState(() => selectedSpeed = v),
                       ),
                     ),
-                    Text('${selectedSpeed.toStringAsFixed(2)}x',
-                        style: const TextStyle(fontSize: 13)),
+                    Text(
+                      '${selectedSpeed.toStringAsFixed(2)}x',
+                      style: const TextStyle(fontSize: 13),
+                    ),
                   ],
                 ),
               ),
@@ -299,7 +320,10 @@ class _VoiceConfigScreenState extends ConsumerState<VoiceConfigScreen> {
                           ? IconButton(
                               icon: const Icon(Icons.volume_up, size: 18),
                               onPressed: () => _previewVoice(
-                                  entry.key, selectedSpeed, char.name),
+                                entry.key,
+                                selectedSpeed,
+                                char.name,
+                              ),
                             )
                           : null,
                     );
@@ -315,12 +339,15 @@ class _VoiceConfigScreenState extends ConsumerState<VoiceConfigScreen> {
 
   /// Preview a voice by synthesizing a short sample line.
   Future<void> _previewVoice(
-      String voiceId, double speed, String characterName) async {
+    String voiceId,
+    double speed,
+    String characterName,
+  ) async {
     final tts = TtsService.instance;
     if (!tts.isKokoroLoaded) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Kokoro model not loaded')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('Kokoro model not loaded')));
       return;
     }
 
@@ -333,9 +360,9 @@ class _VoiceConfigScreenState extends ConsumerState<VoiceConfigScreen> {
       await tts.speak(sampleText, character: characterName);
     } on PlatformException {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Preview failed')),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('Preview failed')));
       }
     }
   }
@@ -361,8 +388,7 @@ class _VoiceConfigScreenState extends ConsumerState<VoiceConfigScreen> {
             width: double.infinity,
             child: SegmentedButton<String>(
               segments: _localeLabels.entries
-                  .map((e) =>
-                      ButtonSegment(value: e.key, label: Text(e.value)))
+                  .map((e) => ButtonSegment(value: e.key, label: Text(e.value)))
                   .toList(),
               selected: {production.locale},
               onSelectionChanged: (selected) async {
@@ -380,10 +406,11 @@ class _VoiceConfigScreenState extends ConsumerState<VoiceConfigScreen> {
                 // Sync to cloud
                 final supa = SupabaseService.instance;
                 if (supa.isSignedIn) {
-                  supa.saveLocale(
-                      productionId: production.id, locale: locale);
+                  supa.saveLocale(productionId: production.id, locale: locale);
                   supa.saveVoicePreset(
-                      productionId: production.id, presetId: presetId);
+                    productionId: production.id,
+                    presetId: presetId,
+                  );
                 }
               },
             ),
@@ -399,8 +426,8 @@ class _VoiceConfigScreenState extends ConsumerState<VoiceConfigScreen> {
       child: Text(
         title,
         style: Theme.of(context).textTheme.titleSmall?.copyWith(
-              color: Theme.of(context).colorScheme.primary,
-            ),
+          color: Theme.of(context).colorScheme.primary,
+        ),
       ),
     );
   }

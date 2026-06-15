@@ -5,6 +5,7 @@ import 'package:go_router/go_router.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:uuid/uuid.dart';
 
+import '../../core/responsive.dart';
 import '../../core/theme/app_theme.dart';
 import '../../data/models/cast_member_model.dart';
 import '../../data/models/script_models.dart';
@@ -42,17 +43,20 @@ class _BulkCastSetupScreenState extends ConsumerState<BulkCastSetupScreen> {
 
   TextEditingController _nameFor(String charName) {
     return _nameControllers.putIfAbsent(
-        charName, () => TextEditingController());
+      charName,
+      () => TextEditingController(),
+    );
   }
 
   TextEditingController _contactFor(String charName) {
     return _contactControllers.putIfAbsent(
-        charName, () => TextEditingController());
+      charName,
+      () => TextEditingController(),
+    );
   }
 
-  int get _filledCount => _nameControllers.values
-      .where((c) => c.text.trim().isNotEmpty)
-      .length;
+  int get _filledCount =>
+      _nameControllers.values.where((c) => c.text.trim().isNotEmpty).length;
 
   @override
   Widget build(BuildContext context) {
@@ -68,7 +72,8 @@ class _BulkCastSetupScreenState extends ConsumerState<BulkCastSetupScreen> {
     // Show only characters that don't already have a primary actor
     final unassigned = script.characters.where((char) {
       return !castMembers.any(
-          (m) => m.characterName == char.name && m.role == CastRole.primary);
+        (m) => m.characterName == char.name && m.role == CastRole.primary,
+      );
     }).toList();
 
     return Scaffold(
@@ -92,36 +97,40 @@ class _BulkCastSetupScreenState extends ConsumerState<BulkCastSetupScreen> {
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  Icon(Icons.check_circle_outline,
-                      size: 64,
-                      color: Colors.green.withValues(alpha: 0.5)),
+                  Icon(
+                    Icons.check_circle_outline,
+                    size: 64,
+                    color: Colors.green.withValues(alpha: 0.5),
+                  ),
                   const SizedBox(height: 16),
                   const Text('All characters have actors assigned!'),
                 ],
               ),
             )
-          : ListView.builder(
-              padding: const EdgeInsets.fromLTRB(16, 8, 16, 100),
-              itemCount: unassigned.length + 1, // +1 for header
-              itemBuilder: (context, index) {
-                if (index == 0) {
-                  return Padding(
-                    padding: const EdgeInsets.only(bottom: 12),
-                    child: Text(
-                      'Fill in as many as you like, then save.',
-                      style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                            color: Theme.of(context)
-                                .colorScheme
-                                .onSurface
-                                .withValues(alpha: 0.6),
-                          ),
-                    ),
-                  );
-                }
-                final char = unassigned[index - 1];
-                final color = AppTheme.colorForCharacter(char.colorIndex);
-                return _buildCharacterCard(char, color);
-              },
+          : ContentConstraint(
+              maxWidth: 720,
+              child: ListView.builder(
+                padding: const EdgeInsets.fromLTRB(16, 8, 16, 100),
+                itemCount: unassigned.length + 1, // +1 for header
+                itemBuilder: (context, index) {
+                  if (index == 0) {
+                    return Padding(
+                      padding: const EdgeInsets.only(bottom: 12),
+                      child: Text(
+                        'Fill in as many as you like, then save.',
+                        style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                          color: Theme.of(
+                            context,
+                          ).colorScheme.onSurface.withValues(alpha: 0.6),
+                        ),
+                      ),
+                    );
+                  }
+                  final char = unassigned[index - 1];
+                  final color = AppTheme.colorForCharacter(char.colorIndex);
+                  return _buildCharacterCard(char, color);
+                },
+              ),
             ),
       bottomNavigationBar: unassigned.isEmpty
           ? null
@@ -141,8 +150,7 @@ class _BulkCastSetupScreenState extends ConsumerState<BulkCastSetupScreen> {
                           ? const SizedBox(
                               width: 16,
                               height: 16,
-                              child:
-                                  CircularProgressIndicator(strokeWidth: 2),
+                              child: CircularProgressIndicator(strokeWidth: 2),
                             )
                           : const Icon(Icons.save),
                       label: const Text('Save'),
@@ -170,19 +178,19 @@ class _BulkCastSetupScreenState extends ConsumerState<BulkCastSetupScreen> {
                   child: Text(
                     char.name[0],
                     style: const TextStyle(
-                        color: Colors.white,
-                        fontWeight: FontWeight.bold,
-                        fontSize: 12),
+                      color: Colors.white,
+                      fontWeight: FontWeight.bold,
+                      fontSize: 12,
+                    ),
                   ),
                 ),
                 const SizedBox(width: 10),
                 Expanded(
                   child: Text(
                     '${char.name}  (${char.lineCount} lines)',
-                    style: Theme.of(context)
-                        .textTheme
-                        .titleSmall
-                        ?.copyWith(fontWeight: FontWeight.bold),
+                    style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                      fontWeight: FontWeight.bold,
+                    ),
                   ),
                 ),
               ],
@@ -290,14 +298,16 @@ class _BulkCastSetupScreenState extends ConsumerState<BulkCastSetupScreen> {
     final saved = _filledCount;
     if (saved == 0) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('No actors to save (fill in at least one name)')),
+        const SnackBar(
+          content: Text('No actors to save (fill in at least one name)'),
+        ),
       );
       return;
     }
 
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('$saved actor(s) saved')),
-    );
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text('$saved actor(s) saved')));
 
     // Show invite links sheet so director can share individually
     _showInviteLinksSheet();
@@ -343,8 +353,10 @@ class _BulkCastSetupScreenState extends ConsumerState<BulkCastSetupScreen> {
               child: Row(
                 children: [
                   Expanded(
-                    child: Text('Send Invites',
-                        style: Theme.of(context).textTheme.titleLarge),
+                    child: Text(
+                      'Send Invites',
+                      style: Theme.of(context).textTheme.titleLarge,
+                    ),
                   ),
                   TextButton(
                     onPressed: () {
@@ -399,7 +411,8 @@ class _BulkCastSetupScreenState extends ConsumerState<BulkCastSetupScreen> {
                             icon: const Icon(Icons.share, size: 20),
                             tooltip: 'Share invite',
                             onPressed: () {
-                              final box = btnContext.findRenderObject() as RenderBox?;
+                              final box =
+                                  btnContext.findRenderObject() as RenderBox?;
                               final origin = box != null
                                   ? box.localToGlobal(Offset.zero) & box.size
                                   : null;

@@ -10,6 +10,7 @@ import 'package:share_plus/share_plus.dart';
 import 'package:uuid/uuid.dart';
 import 'dart:io';
 
+import '../../core/responsive.dart';
 import '../../core/theme/app_theme.dart';
 import '../../data/models/cast_member_model.dart';
 import '../../data/models/script_models.dart';
@@ -85,9 +86,12 @@ class _CastManagerScreenState extends ConsumerState<CastManagerScreen> {
         if (cloudIds.contains(local.id)) continue; // it's the cloud record
         if (local.role == CastRole.organizer) continue; // keep organizer
         // If there's a cloud record for the same character+role, remove the local duplicate
-        final hasCloudVersion = cloudMembers.any((cm) =>
-            cm['character_name'] == local.characterName &&
-            CastRole.fromString(cm['role'] as String? ?? 'actor') == local.role);
+        final hasCloudVersion = cloudMembers.any(
+          (cm) =>
+              cm['character_name'] == local.characterName &&
+              CastRole.fromString(cm['role'] as String? ?? 'actor') ==
+                  local.role,
+        );
         if (hasCloudVersion) {
           await notifier.remove(local.id);
         }
@@ -123,19 +127,23 @@ class _CastManagerScreenState extends ConsumerState<CastManagerScreen> {
     }
 
     final joinCode = production?.joinCode;
-    final joinedCount =
-        castMembers.where((m) => m.hasJoined && m.role != CastRole.organizer).length;
+    final joinedCount = castMembers
+        .where((m) => m.hasJoined && m.role != CastRole.organizer)
+        .length;
     final totalRecordedLines = recordings.length;
     final totalLines = script.lines
         .where((l) => l.lineType == LineType.dialogue)
         .length;
-    final progressPct =
-        totalLines > 0 ? (totalRecordedLines / totalLines * 100).round() : 0;
+    final progressPct = totalLines > 0
+        ? (totalRecordedLines / totalLines * 100).round()
+        : 0;
 
     // Check if any characters still need actors assigned
     final unassignedCount = script.characters.where((char) {
       return castMembers
-          .where((m) => m.characterName == char.name && m.role == CastRole.primary)
+          .where(
+            (m) => m.characterName == char.name && m.role == CastRole.primary,
+          )
           .isEmpty;
     }).length;
 
@@ -175,7 +183,8 @@ class _CastManagerScreenState extends ConsumerState<CastManagerScreen> {
                       children: [
                         Text(
                           'Join Code',
-                          style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                          style: Theme.of(context).textTheme.labelSmall
+                              ?.copyWith(
                                 color: Theme.of(context)
                                     .colorScheme
                                     .onPrimaryContainer
@@ -185,14 +194,14 @@ class _CastManagerScreenState extends ConsumerState<CastManagerScreen> {
                         const SizedBox(height: 2),
                         SelectableText(
                           joinCode,
-                          style:
-                              Theme.of(context).textTheme.headlineMedium?.copyWith(
-                                    fontWeight: FontWeight.bold,
-                                    letterSpacing: 4,
-                                    color: Theme.of(context)
-                                        .colorScheme
-                                        .onPrimaryContainer,
-                                  ),
+                          style: Theme.of(context).textTheme.headlineMedium
+                              ?.copyWith(
+                                fontWeight: FontWeight.bold,
+                                letterSpacing: 4,
+                                color: Theme.of(
+                                  context,
+                                ).colorScheme.onPrimaryContainer,
+                              ),
                         ),
                       ],
                     ),
@@ -224,31 +233,37 @@ class _CastManagerScreenState extends ConsumerState<CastManagerScreen> {
               onTap: () => context.push('/cast-setup'),
               child: Container(
                 width: double.infinity,
-                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 16,
+                  vertical: 10,
+                ),
                 color: Theme.of(context).colorScheme.tertiaryContainer,
                 child: Row(
                   children: [
-                    Icon(Icons.group_add,
-                        color: Theme.of(context).colorScheme.onTertiaryContainer,
-                        size: 20),
+                    Icon(
+                      Icons.group_add,
+                      color: Theme.of(context).colorScheme.onTertiaryContainer,
+                      size: 20,
+                    ),
                     const SizedBox(width: 12),
                     Expanded(
                       child: Text(
                         '$unassignedCount characters need actors — Set up cast',
                         style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                              color: Theme.of(context)
-                                  .colorScheme
-                                  .onTertiaryContainer,
-                              fontWeight: FontWeight.w500,
-                            ),
+                          color: Theme.of(
+                            context,
+                          ).colorScheme.onTertiaryContainer,
+                          fontWeight: FontWeight.w500,
+                        ),
                       ),
                     ),
-                    Icon(Icons.arrow_forward_ios,
-                        size: 14,
-                        color: Theme.of(context)
-                            .colorScheme
-                            .onTertiaryContainer
-                            .withValues(alpha: 0.5)),
+                    Icon(
+                      Icons.arrow_forward_ios,
+                      size: 14,
+                      color: Theme.of(
+                        context,
+                      ).colorScheme.onTertiaryContainer.withValues(alpha: 0.5),
+                    ),
                   ],
                 ),
               ),
@@ -261,8 +276,10 @@ class _CastManagerScreenState extends ConsumerState<CastManagerScreen> {
               children: [
                 Row(
                   children: [
-                    Icon(Icons.people,
-                        color: Theme.of(context).colorScheme.primary),
+                    Icon(
+                      Icons.people,
+                      color: Theme.of(context).colorScheme.primary,
+                    ),
                     const SizedBox(width: 12),
                     Expanded(
                       child: Text(
@@ -277,10 +294,9 @@ class _CastManagerScreenState extends ConsumerState<CastManagerScreen> {
                   const SizedBox(height: 8),
                   LinearProgressIndicator(
                     value: totalRecordedLines / totalLines,
-                    backgroundColor: Theme.of(context)
-                        .colorScheme
-                        .primary
-                        .withValues(alpha: 0.1),
+                    backgroundColor: Theme.of(
+                      context,
+                    ).colorScheme.primary.withValues(alpha: 0.1),
                   ),
                 ],
               ],
@@ -289,39 +305,42 @@ class _CastManagerScreenState extends ConsumerState<CastManagerScreen> {
           const Divider(height: 1),
           // -- Character list --
           Expanded(
-            child: ListView.builder(
-              padding: const EdgeInsets.all(16),
-              itemCount: script.characters.length,
-              itemBuilder: (context, index) {
-                final char = script.characters[index];
-                final color = AppTheme.colorForCharacter(char.colorIndex);
-                final primary = ref
-                    .read(castMembersProvider.notifier)
-                    .primaryFor(char.name);
-                final understudy = ref
-                    .read(castMembersProvider.notifier)
-                    .understudyFor(char.name);
+            child: ContentConstraint(
+              maxWidth: 720,
+              child: ListView.builder(
+                padding: const EdgeInsets.all(16),
+                itemCount: script.characters.length,
+                itemBuilder: (context, index) {
+                  final char = script.characters[index];
+                  final color = AppTheme.colorForCharacter(char.colorIndex);
+                  final primary = ref
+                      .read(castMembersProvider.notifier)
+                      .primaryFor(char.name);
+                  final understudy = ref
+                      .read(castMembersProvider.notifier)
+                      .understudyFor(char.name);
 
-                // Recording progress for this character
-                final charLines = script.linesForCharacter(char.name);
-                final recordedCount = charLines
-                    .where((l) => recordings.containsKey(l.id))
-                    .length;
-                final recordProgress = charLines.isEmpty
-                    ? 0.0
-                    : recordedCount / charLines.length;
+                  // Recording progress for this character
+                  final charLines = script.linesForCharacter(char.name);
+                  final recordedCount = charLines
+                      .where((l) => recordings.containsKey(l.id))
+                      .length;
+                  final recordProgress = charLines.isEmpty
+                      ? 0.0
+                      : recordedCount / charLines.length;
 
-                return _buildCharacterCard(
-                  context,
-                  char,
-                  primary,
-                  understudy,
-                  color,
-                  recordProgress,
-                  recordedCount,
-                  charLines.length,
-                );
-              },
+                  return _buildCharacterCard(
+                    context,
+                    char,
+                    primary,
+                    understudy,
+                    color,
+                    recordProgress,
+                    recordedCount,
+                    charLines.length,
+                  );
+                },
+              ),
             ),
           ),
         ],
@@ -382,9 +401,8 @@ class _CastManagerScreenState extends ConsumerState<CastManagerScreen> {
                     children: [
                       Text(
                         char.name,
-                        style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                              fontWeight: FontWeight.bold,
-                            ),
+                        style: Theme.of(context).textTheme.titleMedium
+                            ?.copyWith(fontWeight: FontWeight.bold),
                       ),
                       Text(
                         '${char.lineCount} lines',
@@ -419,9 +437,9 @@ class _CastManagerScreenState extends ConsumerState<CastManagerScreen> {
                   width: 80,
                   child: Text(
                     'Voice',
-                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                          color: Colors.grey[600],
-                        ),
+                    style: Theme.of(
+                      context,
+                    ).textTheme.bodySmall?.copyWith(color: Colors.grey[600]),
                   ),
                 ),
                 Expanded(
@@ -503,9 +521,9 @@ class _CastManagerScreenState extends ConsumerState<CastManagerScreen> {
           width: 80,
           child: Text(
             label,
-            style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                  color: Colors.grey[600],
-                ),
+            style: Theme.of(
+              context,
+            ).textTheme.bodySmall?.copyWith(color: Colors.grey[600]),
           ),
         ),
         if (member != null) ...[
@@ -534,8 +552,11 @@ class _CastManagerScreenState extends ConsumerState<CastManagerScreen> {
           // Nudge button if invited but not joined
           if (!member.hasJoined)
             IconButton(
-              icon: Icon(Icons.notifications_active,
-                  size: 16, color: Colors.orange[600]),
+              icon: Icon(
+                Icons.notifications_active,
+                size: 16,
+                color: Colors.orange[600],
+              ),
               tooltip: 'Send reminder',
               onPressed: () => _nudge(member),
               visualDensity: VisualDensity.compact,
@@ -610,10 +631,12 @@ class _CastManagerScreenState extends ConsumerState<CastManagerScreen> {
                     tooltip: 'Pick from contacts',
                     onPressed: () async {
                       try {
-                        final contact = await ContactPickerService.instance.pickContact();
+                        final contact = await ContactPickerService.instance
+                            .pickContact();
                         if (contact == null) return;
                         nameController.text = contact.displayName;
-                        contactController.text = contact.phone ?? contact.email ?? '';
+                        contactController.text =
+                            contact.phone ?? contact.email ?? '';
                         setDialogState(() {});
                       } catch (e) {
                         debugPrint('Contact pick failed: $e');
@@ -714,23 +737,27 @@ class _CastManagerScreenState extends ConsumerState<CastManagerScreen> {
 
     final shareText = joinCode != null
         ? 'You\'re invited to play $characterName in "$productionTitle" '
-            'on CastCircle!\n\n'
-            'Tap to join: $deepLink\n\n'
-            'Or open CastCircle and enter code: $joinCode'
+              'on CastCircle!\n\n'
+              'Tap to join: $deepLink\n\n'
+              'Or open CastCircle and enter code: $joinCode'
         : 'You\'ve been invited to join "$productionTitle" as $characterName '
-            'on CastCircle! Download the app to get started.';
+              'on CastCircle! Download the app to get started.';
 
     // Get position for iPad share popover
     final box = context.findRenderObject() as RenderBox?;
     final origin = box != null
         ? Rect.fromCenter(
             center: box.localToGlobal(box.size.center(Offset.zero)),
-            width: 100, height: 50)
+            width: 100,
+            height: 50,
+          )
         : null;
 
-    Share.share(shareText,
-        subject: 'CastCircle Invitation',
-        sharePositionOrigin: origin);
+    Share.share(
+      shareText,
+      subject: 'CastCircle Invitation',
+      sharePositionOrigin: origin,
+    );
   }
 
   void _showInviteOptions({
@@ -747,15 +774,18 @@ class _CastManagerScreenState extends ConsumerState<CastManagerScreen> {
           children: [
             const SizedBox(height: 8),
             Container(
-              width: 40, height: 4,
+              width: 40,
+              height: 4,
               decoration: BoxDecoration(
                 color: Colors.grey[600],
                 borderRadius: BorderRadius.circular(2),
               ),
             ),
             const SizedBox(height: 16),
-            Text('Invite to $characterName',
-                style: Theme.of(context).textTheme.titleMedium),
+            Text(
+              'Invite to $characterName',
+              style: Theme.of(context).textTheme.titleMedium,
+            ),
             const SizedBox(height: 16),
             ListTile(
               leading: const Icon(Icons.message),
@@ -831,7 +861,9 @@ class _CastManagerScreenState extends ConsumerState<CastManagerScreen> {
     final origin = box != null
         ? Rect.fromCenter(
             center: box.localToGlobal(box.size.center(Offset.zero)),
-            width: 100, height: 50)
+            width: 100,
+            height: 50,
+          )
         : null;
     Share.share(text, subject: subject, sharePositionOrigin: origin);
   }
@@ -879,7 +911,8 @@ class _CastManagerScreenState extends ConsumerState<CastManagerScreen> {
 
       await Share.shareXFiles(
         [XFile(file.path)],
-        text: 'Join "$productionTitle" as $characterName on CastCircle!\n'
+        text:
+            'Join "$productionTitle" as $characterName on CastCircle!\n'
             'Tap to join: $deepLink\n'
             'Or enter code: $joinCode',
         subject: 'CastCircle Invitation',
@@ -905,8 +938,8 @@ class _CastManagerScreenState extends ConsumerState<CastManagerScreen> {
 
     _shareWithOrigin(
       'Join "$title" on CastCircle!\n\n'
-      'Tap to join: $deepLink\n\n'
-      'Or open CastCircle and enter code: $code',
+          'Tap to join: $deepLink\n\n'
+          'Or open CastCircle and enter code: $code',
       'CastCircle Join Code',
     );
   }
@@ -942,21 +975,28 @@ class _CastManagerScreenState extends ConsumerState<CastManagerScreen> {
       buffer.writeln(char.name);
       final primary = members
           .where(
-              (m) => m.characterName == char.name && m.role == CastRole.primary)
+            (m) => m.characterName == char.name && m.role == CastRole.primary,
+          )
           .toList();
       if (primary.isNotEmpty) {
-        buffer.writeln('  Primary: ${primary.first.displayName}'
-            '${primary.first.hasJoined ? " (joined)" : " (invited)"}');
+        buffer.writeln(
+          '  Primary: ${primary.first.displayName}'
+          '${primary.first.hasJoined ? " (joined)" : " (invited)"}',
+        );
       } else {
         buffer.writeln('  Primary: (unassigned)');
       }
       final understudies = members
-          .where((m) =>
-              m.characterName == char.name && m.role == CastRole.understudy)
+          .where(
+            (m) =>
+                m.characterName == char.name && m.role == CastRole.understudy,
+          )
           .toList();
       if (understudies.isNotEmpty) {
-        buffer.writeln('  Understudy: ${understudies.first.displayName}'
-            '${understudies.first.hasJoined ? " (joined)" : " (invited)"}');
+        buffer.writeln(
+          '  Understudy: ${understudies.first.displayName}'
+          '${understudies.first.hasJoined ? " (joined)" : " (invited)"}',
+        );
       }
       buffer.writeln('  Lines: ${char.lineCount}');
       buffer.writeln();
@@ -968,22 +1008,22 @@ class _CastManagerScreenState extends ConsumerState<CastManagerScreen> {
   // -- Gender helpers --
 
   static String _genderLabel(CharacterGender gender) => switch (gender) {
-        CharacterGender.female => 'Female',
-        CharacterGender.male => 'Male',
-        CharacterGender.nonGendered => 'Non-gendered',
-      };
+    CharacterGender.female => 'Female',
+    CharacterGender.male => 'Male',
+    CharacterGender.nonGendered => 'Non-gendered',
+  };
 
   static IconData _genderIcon(CharacterGender gender) => switch (gender) {
-        CharacterGender.female => Icons.female,
-        CharacterGender.male => Icons.male,
-        CharacterGender.nonGendered => Icons.transgender,
-      };
+    CharacterGender.female => Icons.female,
+    CharacterGender.male => Icons.male,
+    CharacterGender.nonGendered => Icons.transgender,
+  };
 
   static Color _genderColor(CharacterGender gender) => switch (gender) {
-        CharacterGender.female => Colors.pink,
-        CharacterGender.male => Colors.blue,
-        CharacterGender.nonGendered => Colors.purple,
-      };
+    CharacterGender.female => Colors.pink,
+    CharacterGender.male => Colors.blue,
+    CharacterGender.nonGendered => Colors.purple,
+  };
 
   void _toggleGender(ScriptCharacter char) {
     final newGender = switch (char.gender) {
@@ -994,8 +1034,11 @@ class _CastManagerScreenState extends ConsumerState<CastManagerScreen> {
 
     final production = ref.read(currentProductionProvider);
     if (production != null) {
-      VoiceConfigService.instance
-          .setGender(production.id, char.name, newGender);
+      VoiceConfigService.instance.setGender(
+        production.id,
+        char.name,
+        newGender,
+      );
     }
 
     final script = ref.read(currentScriptProvider);
@@ -1049,8 +1092,10 @@ class _CastManagerScreenState extends ConsumerState<CastManagerScreen> {
                 ),
               ),
               Padding(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 16,
+                  vertical: 8,
+                ),
                 child: Row(
                   children: [
                     Expanded(
@@ -1063,9 +1108,12 @@ class _CastManagerScreenState extends ConsumerState<CastManagerScreen> {
                       TextButton(
                         onPressed: () async {
                           await _voiceConfig.removeOverride(
-                              production.id, char.name);
-                          final overrides =
-                              await _voiceConfig.getOverrides(production.id);
+                            production.id,
+                            char.name,
+                          );
+                          final overrides = await _voiceConfig.getOverrides(
+                            production.id,
+                          );
                           setState(() => _voiceOverrides = overrides);
                           if (ctx.mounted) Navigator.pop(ctx);
                         },
@@ -1081,8 +1129,9 @@ class _CastManagerScreenState extends ConsumerState<CastManagerScreen> {
                             speed: selectedSpeed,
                           ),
                         );
-                        final overrides =
-                            await _voiceConfig.getOverrides(production.id);
+                        final overrides = await _voiceConfig.getOverrides(
+                          production.id,
+                        );
                         setState(() => _voiceOverrides = overrides);
                         if (ctx.mounted) Navigator.pop(ctx);
                       },
@@ -1107,8 +1156,10 @@ class _CastManagerScreenState extends ConsumerState<CastManagerScreen> {
                             setSheetState(() => selectedSpeed = v),
                       ),
                     ),
-                    Text('${selectedSpeed.toStringAsFixed(1)}x',
-                        style: const TextStyle(fontSize: 13)),
+                    Text(
+                      '${selectedSpeed.toStringAsFixed(1)}x',
+                      style: const TextStyle(fontSize: 13),
+                    ),
                   ],
                 ),
               ),

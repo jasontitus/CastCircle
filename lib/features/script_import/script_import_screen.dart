@@ -7,6 +7,7 @@ import 'package:go_router/go_router.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 
+import '../../core/responsive.dart';
 import '../../data/models/script_models.dart';
 import '../../data/services/analytics_service.dart';
 import '../../data/services/paddle_ocr_channel.dart';
@@ -19,8 +20,7 @@ class ScriptImportScreen extends ConsumerStatefulWidget {
   const ScriptImportScreen({super.key});
 
   @override
-  ConsumerState<ScriptImportScreen> createState() =>
-      _ScriptImportScreenState();
+  ConsumerState<ScriptImportScreen> createState() => _ScriptImportScreenState();
 }
 
 class _ScriptImportScreenState extends ConsumerState<ScriptImportScreen> {
@@ -45,8 +45,8 @@ class _ScriptImportScreenState extends ConsumerState<ScriptImportScreen> {
       body: _loading
           ? _buildLoading(context)
           : _preview != null
-              ? _buildPreview(context)
-              : _buildImportOptions(context),
+          ? _buildPreview(context)
+          : _buildImportOptions(context),
     );
   }
 
@@ -70,9 +70,11 @@ class _ScriptImportScreenState extends ConsumerState<ScriptImportScreen> {
               else
                 const CircularProgressIndicator(),
               const SizedBox(height: 16),
-              Text(reading
-                  ? 'Reading page ${ocr.page} of ${ocr.total}…'
-                  : (ocr != null ? 'Reading PDF…' : 'Parsing script…')),
+              Text(
+                reading
+                    ? 'Reading page ${ocr.page} of ${ocr.total}…'
+                    : (ocr != null ? 'Reading PDF…' : 'Parsing script…'),
+              ),
             ],
           );
         },
@@ -84,77 +86,82 @@ class _ScriptImportScreenState extends ConsumerState<ScriptImportScreen> {
     return Center(
       child: Padding(
         padding: const EdgeInsets.all(32),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(
-              Icons.description_outlined,
-              size: 80,
-              color: Theme.of(context).colorScheme.primary.withValues(alpha: 0.5),
-            ),
-            const SizedBox(height: 24),
-            Text(
-              'Import Your Script',
-              style: Theme.of(context).textTheme.headlineSmall,
-            ),
-            const SizedBox(height: 8),
-            Text(
-              'Upload a script file to get started.\n'
-              'Supported: .txt, .pdf (with OCR)',
-              textAlign: TextAlign.center,
-              style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                    color: Theme.of(context)
-                        .colorScheme
-                        .onSurface
-                        .withValues(alpha: 0.6),
-                  ),
-            ),
-            const SizedBox(height: 32),
-            FilledButton.icon(
-              onPressed: _pickTextFile,
-              icon: const Icon(Icons.upload_file),
-              label: const Text('Import Text File'),
-            ),
-            const SizedBox(height: 12),
-            OutlinedButton.icon(
-              onPressed: _pickMarkdownFile,
-              icon: const Icon(Icons.article),
-              label: const Text('Import Markdown'),
-            ),
-            const SizedBox(height: 12),
-            OutlinedButton.icon(
-              onPressed: _pickPdfFile,
-              icon: const Icon(Icons.picture_as_pdf),
-              label: const Text('Import PDF'),
-            ),
-            if (_error != null) ...[
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 520),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(
+                Icons.description_outlined,
+                size: 80,
+                color: Theme.of(
+                  context,
+                ).colorScheme.primary.withValues(alpha: 0.5),
+              ),
               const SizedBox(height: 24),
-              Card(
-                color: Theme.of(context).colorScheme.errorContainer,
-                child: Padding(
-                  padding: const EdgeInsets.all(16),
-                  child: Row(
-                    children: [
-                      Icon(Icons.error_outline,
-                          color:
-                              Theme.of(context).colorScheme.onErrorContainer),
-                      const SizedBox(width: 12),
-                      Expanded(
-                        child: Text(
-                          _error!,
-                          style: TextStyle(
-                            color: Theme.of(context)
-                                .colorScheme
-                                .onErrorContainer,
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
+              Text(
+                'Import Your Script',
+                style: Theme.of(context).textTheme.headlineSmall,
+              ),
+              const SizedBox(height: 8),
+              Text(
+                'Upload a script file to get started.\n'
+                'Supported: .txt, .pdf (with OCR)',
+                textAlign: TextAlign.center,
+                style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                  color: Theme.of(
+                    context,
+                  ).colorScheme.onSurface.withValues(alpha: 0.6),
                 ),
               ),
+              const SizedBox(height: 32),
+              FilledButton.icon(
+                onPressed: _pickTextFile,
+                icon: const Icon(Icons.upload_file),
+                label: const Text('Import Text File'),
+              ),
+              const SizedBox(height: 12),
+              OutlinedButton.icon(
+                onPressed: _pickMarkdownFile,
+                icon: const Icon(Icons.article),
+                label: const Text('Import Markdown'),
+              ),
+              const SizedBox(height: 12),
+              OutlinedButton.icon(
+                onPressed: _pickPdfFile,
+                icon: const Icon(Icons.picture_as_pdf),
+                label: const Text('Import PDF'),
+              ),
+              if (_error != null) ...[
+                const SizedBox(height: 24),
+                Card(
+                  color: Theme.of(context).colorScheme.errorContainer,
+                  child: Padding(
+                    padding: const EdgeInsets.all(16),
+                    child: Row(
+                      children: [
+                        Icon(
+                          Icons.error_outline,
+                          color: Theme.of(context).colorScheme.onErrorContainer,
+                        ),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: Text(
+                            _error!,
+                            style: TextStyle(
+                              color: Theme.of(
+                                context,
+                              ).colorScheme.onErrorContainer,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ],
             ],
-          ],
+          ),
         ),
       ),
     );
@@ -177,16 +184,8 @@ class _ScriptImportScreenState extends ConsumerState<ScriptImportScreen> {
                 '${script.lines.where((l) => l.lineType == LineType.dialogue).length}',
                 'Lines',
               ),
-              _statBadge(
-                context,
-                '${script.characters.length}',
-                'Characters',
-              ),
-              _statBadge(
-                context,
-                '${script.acts.length}',
-                'Acts',
-              ),
+              _statBadge(context, '${script.characters.length}', 'Characters'),
+              _statBadge(context, '${script.acts.length}', 'Acts'),
             ],
           ),
         ),
@@ -196,15 +195,18 @@ class _ScriptImportScreenState extends ConsumerState<ScriptImportScreen> {
         _buildReviewBanner(context, script),
         // Character list
         Expanded(
-          child: ListView(
-            padding: const EdgeInsets.all(16),
-            children: [
-              Text(
-                'Characters Found',
-                style: Theme.of(context).textTheme.titleMedium,
-              ),
-              const SizedBox(height: 8),
-              ...script.characters.map((char) => ListTile(
+          child: ContentConstraint(
+            maxWidth: 720,
+            child: ListView(
+              padding: const EdgeInsets.all(16),
+              children: [
+                Text(
+                  'Characters Found',
+                  style: Theme.of(context).textTheme.titleMedium,
+                ),
+                const SizedBox(height: 8),
+                ...script.characters.map(
+                  (char) => ListTile(
                     leading: CircleAvatar(
                       backgroundColor: _colorForIndex(char.colorIndex),
                       radius: 16,
@@ -219,24 +221,26 @@ class _ScriptImportScreenState extends ConsumerState<ScriptImportScreen> {
                     ),
                     title: Text(char.name),
                     trailing: Text('${char.lineCount} lines'),
-                  )),
-              const SizedBox(height: 24),
-              Text(
-                'Script Preview',
-                style: Theme.of(context).textTheme.titleMedium,
-              ),
-              const SizedBox(height: 8),
-              ...script.lines.take(30).map((line) => _buildLinePreview(line)),
-              if (script.lines.length > 30)
-                Padding(
-                  padding: const EdgeInsets.symmetric(vertical: 16),
-                  child: Text(
-                    '... and ${script.lines.length - 30} more lines',
-                    style: Theme.of(context).textTheme.bodySmall,
-                    textAlign: TextAlign.center,
                   ),
                 ),
-            ],
+                const SizedBox(height: 24),
+                Text(
+                  'Script Preview',
+                  style: Theme.of(context).textTheme.titleMedium,
+                ),
+                const SizedBox(height: 8),
+                ...script.lines.take(30).map((line) => _buildLinePreview(line)),
+                if (script.lines.length > 30)
+                  Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 16),
+                    child: Text(
+                      '... and ${script.lines.length - 30} more lines',
+                      style: Theme.of(context).textTheme.bodySmall,
+                      textAlign: TextAlign.center,
+                    ),
+                  ),
+              ],
+            ),
           ),
         ),
         // Action buttons
@@ -257,17 +261,20 @@ class _ScriptImportScreenState extends ConsumerState<ScriptImportScreen> {
                 const SizedBox(width: 12),
                 Expanded(
                   child: FilledButton.icon(
-                    onPressed: _saving ? null : () async {
-                      setState(() => _saving = true);
-                      ref.read(currentScriptProvider.notifier).state = script;
-                      AnalyticsService.instance.logScriptImported(
-                        format: _importedPdfPath != null ? 'pdf' : 'text',
-                        lineCount: script.lines.length,
-                        characterCount: script.characters.length,
-                      );
-                      await persistScript(ref);
-                      if (context.mounted) context.push('/production');
-                    },
+                    onPressed: _saving
+                        ? null
+                        : () async {
+                            setState(() => _saving = true);
+                            ref.read(currentScriptProvider.notifier).state =
+                                script;
+                            AnalyticsService.instance.logScriptImported(
+                              format: _importedPdfPath != null ? 'pdf' : 'text',
+                              lineCount: script.lines.length,
+                              characterCount: script.characters.length,
+                            );
+                            await persistScript(ref);
+                            if (context.mounted) context.push('/production');
+                          },
                     icon: _saving
                         ? const SizedBox(
                             width: 18,
@@ -313,8 +320,11 @@ class _ScriptImportScreenState extends ConsumerState<ScriptImportScreen> {
         children: [
           Row(
             children: [
-              Icon(Icons.language, size: 20,
-                  color: Theme.of(context).colorScheme.primary),
+              Icon(
+                Icons.language,
+                size: 20,
+                color: Theme.of(context).colorScheme.primary,
+              ),
               const SizedBox(width: 8),
               const Text('Script dialect'),
             ],
@@ -323,9 +333,9 @@ class _ScriptImportScreenState extends ConsumerState<ScriptImportScreen> {
           SizedBox(
             width: double.infinity,
             child: SegmentedButton<String>(
-              segments: _localeLabels.entries.map((e) =>
-                ButtonSegment(value: e.key, label: Text(e.value)),
-              ).toList(),
+              segments: _localeLabels.entries
+                  .map((e) => ButtonSegment(value: e.key, label: Text(e.value)))
+                  .toList(),
               selected: {production.locale},
               onSelectionChanged: (selected) {
                 final locale = selected.first;
@@ -340,7 +350,10 @@ class _ScriptImportScreenState extends ConsumerState<ScriptImportScreen> {
                 final supa = SupabaseService.instance;
                 if (supa.isSignedIn) {
                   supa.saveLocale(productionId: production.id, locale: locale);
-                  supa.saveVoicePreset(productionId: production.id, presetId: presetId);
+                  supa.saveVoicePreset(
+                    productionId: production.id,
+                    presetId: presetId,
+                  );
                 }
               },
             ),
@@ -370,8 +383,11 @@ class _ScriptImportScreenState extends ConsumerState<ScriptImportScreen> {
       color: theme.colorScheme.tertiaryContainer,
       child: Row(
         children: [
-          Icon(Icons.spellcheck,
-              size: 20, color: theme.colorScheme.onTertiaryContainer),
+          Icon(
+            Icons.spellcheck,
+            size: 20,
+            color: theme.colorScheme.onTertiaryContainer,
+          ),
           const SizedBox(width: 12),
           Expanded(
             child: Text(
@@ -397,10 +413,8 @@ class _ScriptImportScreenState extends ConsumerState<ScriptImportScreen> {
     if (script == null) return;
     final result = await Navigator.of(context).push<OcrReviewResult>(
       MaterialPageRoute(
-        builder: (_) => OcrReviewScreen(
-          lines: script.lines,
-          pdfPath: _importedPdfPath,
-        ),
+        builder: (_) =>
+            OcrReviewScreen(lines: script.lines, pdfPath: _importedPdfPath),
       ),
     );
     if (result == null) return;
@@ -419,10 +433,12 @@ class _ScriptImportScreenState extends ConsumerState<ScriptImportScreen> {
     return Column(
       mainAxisSize: MainAxisSize.min,
       children: [
-        Text(value,
-            style: Theme.of(context).textTheme.headlineMedium?.copyWith(
-                  fontWeight: FontWeight.bold,
-                )),
+        Text(
+          value,
+          style: Theme.of(
+            context,
+          ).textTheme.headlineMedium?.copyWith(fontWeight: FontWeight.bold),
+        ),
         Text(label, style: Theme.of(context).textTheme.bodySmall),
       ],
     );
@@ -435,10 +451,7 @@ class _ScriptImportScreenState extends ConsumerState<ScriptImportScreen> {
           padding: const EdgeInsets.symmetric(vertical: 12),
           child: Text(
             line.text,
-            style: const TextStyle(
-              fontWeight: FontWeight.bold,
-              fontSize: 18,
-            ),
+            style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 18),
           ),
         );
       case LineType.stageDirection:
@@ -477,9 +490,7 @@ class _ScriptImportScreenState extends ConsumerState<ScriptImportScreen> {
                   ),
                 TextSpan(
                   text: line.text,
-                  style: TextStyle(
-                    color: Colors.grey[300],
-                  ),
+                  style: TextStyle(color: Colors.grey[300]),
                 ),
               ],
             ),
@@ -545,7 +556,8 @@ class _ScriptImportScreenState extends ConsumerState<ScriptImportScreen> {
       } on UnimplementedError {
         // ML Kit not available — show helpful message
         setState(() {
-          _error = 'PDF import requires Google ML Kit Text Recognition.\n'
+          _error =
+              'PDF import requires Google ML Kit Text Recognition.\n'
               'Add google_mlkit_text_recognition to pubspec.yaml, '
               'or convert your PDF to a text file first.';
           _loading = false;
