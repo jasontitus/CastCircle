@@ -158,6 +158,42 @@ class _OcrReviewScreenState extends State<OcrReviewScreen> {
     setState(() => _removedIds.add(line.id));
   }
 
+  /// Confirm + remove a nearby (context) line. Unlike the flagged line's own
+  /// "Remove line" button, deleting a neighbour is easy to do by accident while
+  /// cleaning up a region, so it's gated behind a confirmation.
+  Future<void> _removeContextLine(ScriptLine l) async {
+    final text = _contextControllers[l.id]?.text ?? _byId[l.id]?.text ?? l.text;
+    final preview = text.trim().isEmpty
+        ? '(empty)'
+        : (text.length > 90 ? '${text.substring(0, 87)}…' : text);
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Remove this line?'),
+        content: Text(
+          'It will be deleted from your script:\n\n'
+          '${l.character.isNotEmpty ? '${l.character}: ' : ''}"$preview"',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            style: FilledButton.styleFrom(
+              backgroundColor: Theme.of(ctx).colorScheme.error,
+            ),
+            onPressed: () => Navigator.of(ctx).pop(true),
+            child: const Text('Remove'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed == true) {
+      setState(() => _removedIds.add(l.id));
+    }
+  }
+
   /// Pins [line]'s source page in the right (detail) pane on wide layouts.
   void _select(ScriptLine line) {
     if (line.sourcePage == null || _selectedLineId == line.id) return;
@@ -531,7 +567,7 @@ class _OcrReviewScreenState extends State<OcrReviewScreen> {
                   TextButton.icon(
                     onPressed: () => _removeLine(line),
                     icon: const Icon(Icons.delete_outline, size: 18),
-                    label: const Text('Remove'),
+                    label: const Text('Remove line'),
                   ),
                   const SizedBox(width: 8),
                   FilledButton(
@@ -612,6 +648,18 @@ class _OcrReviewScreenState extends State<OcrReviewScreen> {
                               EdgeInsets.symmetric(horizontal: 8, vertical: 8),
                         ),
                       ),
+                    ),
+                    IconButton(
+                      icon: const Icon(Icons.delete_outline, size: 18),
+                      tooltip: 'Remove this line',
+                      visualDensity: VisualDensity.compact,
+                      padding: EdgeInsets.zero,
+                      constraints: const BoxConstraints(
+                        minWidth: 32,
+                        minHeight: 32,
+                      ),
+                      color: theme.colorScheme.onSurface.withValues(alpha: 0.6),
+                      onPressed: () => _removeContextLine(l),
                     ),
                   ],
                 ),
