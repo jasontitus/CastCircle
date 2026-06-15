@@ -14,6 +14,7 @@ import 'package:go_router/go_router.dart';
 import 'package:just_audio/just_audio.dart';
 
 import '../../core/theme/app_theme.dart';
+import '../../core/responsive.dart';
 import '../../data/models/script_models.dart';
 import '../../data/models/rehearsal_models.dart';
 import '../../data/models/voice_preset.dart';
@@ -747,7 +748,7 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
     String? myCharacter,
     RehearsalState rehearsalState,
   ) {
-    return ListView.builder(
+    final list = ListView.builder(
       controller: _scrollController,
       padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
       // Large cache extent so items are built before they're visible.
@@ -906,6 +907,9 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
         );
       },
     );
+    // Cap the reading column on tablets so script lines stay comfortably
+    // readable instead of stretching the full iPad width. Full-width on phones.
+    return ContentConstraint(maxWidth: 760, child: list);
   }
 
   Widget _pulsingMic(BuildContext context) {
