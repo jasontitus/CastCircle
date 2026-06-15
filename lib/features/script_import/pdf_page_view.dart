@@ -29,7 +29,6 @@ class _PdfPageViewState extends State<PdfPageView> {
   ui.Image? _pageImage;
   bool _loading = true;
   final _txController = TransformationController();
-  bool _zoomApplied = false;
   late int _currentPage;
   int _totalPages = 0;
 
@@ -45,14 +44,11 @@ class _PdfPageViewState extends State<PdfPageView> {
     super.didUpdateWidget(oldWidget);
     // In the tablet two-pane layout this widget is kept alive and re-targeted as
     // the user selects different lines. Re-render only when the page (or file)
-    // actually changes; if just the line moved within the same page, re-apply
-    // the zoom target without paying for a fresh render.
+    // actually changes.
     if (oldWidget.pdfPath != widget.pdfPath ||
         oldWidget.pageNumber != widget.pageNumber) {
       _currentPage = widget.pageNumber;
       _renderPage();
-    } else if (oldWidget.lineOnPage != widget.lineOnPage) {
-      setState(() => _zoomApplied = false);
     }
   }
 
@@ -67,7 +63,6 @@ class _PdfPageViewState extends State<PdfPageView> {
     setState(() => _loading = true);
     _pageImage?.dispose();
     _pageImage = null;
-    _zoomApplied = false;
     _txController.value = Matrix4.identity();
 
     try {
@@ -140,6 +135,16 @@ class _PdfPageViewState extends State<PdfPageView> {
             ),
           ],
         ),
+        Text(
+          'Drag to pan · pinch to zoom',
+          style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                color: Theme.of(context)
+                    .colorScheme
+                    .onSurface
+                    .withValues(alpha: 0.45),
+              ),
+        ),
+        const SizedBox(height: 4),
         Expanded(
           child: _loading
               ? const Center(child: CircularProgressIndicator())
@@ -151,36 +156,31 @@ class _PdfPageViewState extends State<PdfPageView> {
                         final imgW = _pageImage!.width.toDouble();
                         final imgH = _pageImage!.height.toDouble();
 
-                        // How the image fits in the view (BoxFit.contain)
-                        final fitScale = (viewW / imgW).clamp(0.0, viewH / imgH);
-                        final fittedW = imgW * fitScale;
-                        final fittedH = imgH * fitScale;
-                        final imgTop = (viewH - fittedH) / 2;
-
-                        // Apply initial zoom once after first layout
-                        if (!_zoomApplied && widget.lineOnPage != null) {
-                          _zoomApplied = true;
-                          final lineRatio = ((widget.lineOnPage! - 1) / 40.0).clamp(0.0, 0.85);
-                          const zoom = 2.5;
-                          final targetY = imgTop + fittedH * lineRatio;
-                          final tx = -(fittedW * zoom - viewW) / 2;
-                          final ty = -targetY * zoom + viewH * 0.3;
-                          _txController.value = Matrix4.identity()
-                            ..translate(tx, ty)
-                            ..scale(zoom);
-                        }
+                        // Fit the page to the viewer WIDTH so the text is
+                        // readable; a taller-than-view page is panned vertically.
+                        // No line-targeted auto-zoom — sourceLineOnPage isn't
+                        // reliable, and a guessed crop hid the line off-screen.
+                        final scale = viewW / imgW;
+                        final pageW = imgW * scale; // == viewW
+                        final pageH = imgH * scale;
 
                         return InteractiveViewer(
                           transformationController: _txController,
+                          constrained: false,
                           minScale: 0.5,
                           maxScale: 8.0,
-                          constrained: false,
+                          // Generous margin so any region can be slid into view,
+                          // even when zoomed right in.
+                          boundaryMargin: EdgeInsets.symmetric(
+                            horizontal: viewW,
+                            vertical: viewH,
+                          ),
                           child: SizedBox(
-                            width: fittedW,
-                            height: fittedH,
+                            width: pageW,
+                            height: pageH,
                             child: RawImage(
                               image: _pageImage,
-                              fit: BoxFit.contain,
+                              fit: BoxFit.fill,
                             ),
                           ),
                         );

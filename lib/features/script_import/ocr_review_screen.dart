@@ -49,6 +49,12 @@ class _OcrReviewScreenState extends State<OcrReviewScreen> {
   /// Per-line text controllers for the editable review rows.
   final Map<String, TextEditingController> _controllers = {};
 
+  /// Review-line ids whose "edit nearby lines" context editor is open.
+  final Set<String> _contextExpanded = {};
+
+  /// Controllers for context (neighbour) lines, created lazily, keyed by line id.
+  final Map<String, TextEditingController> _contextControllers = {};
+
   bool _notScriptExpanded = false;
 
   /// On wide layouts the screen is a two-pane master/detail: this is the id of
@@ -79,7 +85,45 @@ class _OcrReviewScreenState extends State<OcrReviewScreen> {
     for (final c in _controllers.values) {
       c.dispose();
     }
+    for (final c in _contextControllers.values) {
+      c.dispose();
+    }
     super.dispose();
+  }
+
+  /// Lines surrounding [flagged] (by script order) that aren't themselves
+  /// flagged — the context the user wants to clean up, since OCR errors cluster
+  /// and often span more than the one flagged line. Flagged neighbours are
+  /// skipped because they already have their own editable card.
+  List<ScriptLine> _contextLinesFor(ScriptLine flagged, {int span = 3}) {
+    final ordered = widget.lines.toList()
+      ..sort((a, b) => a.orderIndex.compareTo(b.orderIndex));
+    final idx = ordered.indexWhere((l) => l.id == flagged.id);
+    if (idx < 0) return const [];
+    final out = <ScriptLine>[];
+    for (var i = idx - span; i <= idx + span; i++) {
+      if (i < 0 || i >= ordered.length || i == idx) continue;
+      final l = ordered[i];
+      if (l.reviewStatus != OcrReviewStatus.ok) continue; // has its own card
+      if (_removedIds.contains(l.id)) continue;
+      out.add(l);
+    }
+    return out;
+  }
+
+  TextEditingController _contextController(ScriptLine l) =>
+      _contextControllers.putIfAbsent(
+          l.id, () => TextEditingController(text: (_byId[l.id] ?? l).text));
+
+  void _onContextChanged(ScriptLine l, String value) {
+    // Capture live so the edit is included when the user taps Done.
+    _byId[l.id] = (_byId[l.id] ?? l).copyWith(text: value);
+  }
+
+  void _toggleContext(ScriptLine line) {
+    setState(() {
+      if (!_contextExpanded.add(line.id)) _contextExpanded.remove(line.id);
+    });
   }
 
   List<ScriptLine> get _reviewLines => widget.lines
@@ -446,6 +490,30 @@ class _OcrReviewScreenState extends State<OcrReviewScreen> {
                 ),
                 style: theme.textTheme.bodyMedium,
               ),
+              const SizedBox(height: 4),
+              Align(
+                alignment: Alignment.centerLeft,
+                child: TextButton.icon(
+                  onPressed: () => _toggleContext(line),
+                  style: TextButton.styleFrom(
+                    padding: const EdgeInsets.symmetric(horizontal: 8),
+                    minimumSize: const Size(0, 32),
+                    tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                  ),
+                  icon: Icon(
+                    _contextExpanded.contains(line.id)
+                        ? Icons.unfold_less
+                        : Icons.unfold_more,
+                    size: 18,
+                  ),
+                  label: Text(
+                    _contextExpanded.contains(line.id)
+                        ? 'Hide nearby lines'
+                        : 'Edit nearby lines',
+                  ),
+                ),
+              ),
+              if (_contextExpanded.contains(line.id)) _buildContextEditor(line),
               const SizedBox(height: 8),
               Row(
                 children: [
@@ -475,6 +543,80 @@ class _OcrReviewScreenState extends State<OcrReviewScreen> {
             ],
           ),
         ),
+      ),
+    );
+  }
+
+  /// Editable fields for the lines surrounding a flagged line, so the user can
+  /// clean up a whole misread region — OCR errors cluster and often span more
+  /// than the single flagged line.
+  Widget _buildContextEditor(ScriptLine line) {
+    final theme = Theme.of(context);
+    final ctx = _contextLinesFor(line);
+    if (ctx.isEmpty) {
+      return Padding(
+        padding: const EdgeInsets.symmetric(vertical: 4),
+        child: Text(
+          'No nearby lines to edit.',
+          style: theme.textTheme.bodySmall?.copyWith(
+            color: theme.colorScheme.onSurface.withValues(alpha: 0.5),
+          ),
+        ),
+      );
+    }
+    return Container(
+      margin: const EdgeInsets.only(top: 4, bottom: 4),
+      padding: const EdgeInsets.fromLTRB(8, 6, 8, 2),
+      decoration: BoxDecoration(
+        color: theme.colorScheme.surfaceContainerHighest.withValues(alpha: 0.4),
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            'Nearby lines',
+            style: theme.textTheme.labelSmall?.copyWith(
+              color: theme.colorScheme.onSurface.withValues(alpha: 0.6),
+            ),
+          ),
+          const SizedBox(height: 4),
+          ...ctx.map((l) => Padding(
+                padding: const EdgeInsets.only(bottom: 6),
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    if (l.character.isNotEmpty)
+                      SizedBox(
+                        width: 60,
+                        child: Padding(
+                          padding: const EdgeInsets.only(top: 9, right: 6),
+                          child: Text(
+                            l.character,
+                            style: theme.textTheme.labelSmall
+                                ?.copyWith(fontWeight: FontWeight.bold),
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                      ),
+                    Expanded(
+                      child: TextField(
+                        controller: _contextController(l),
+                        maxLines: null,
+                        onChanged: (v) => _onContextChanged(l, v),
+                        style: theme.textTheme.bodySmall,
+                        decoration: const InputDecoration(
+                          isDense: true,
+                          border: OutlineInputBorder(),
+                          contentPadding:
+                              EdgeInsets.symmetric(horizontal: 8, vertical: 8),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              )),
+        ],
       ),
     );
   }
