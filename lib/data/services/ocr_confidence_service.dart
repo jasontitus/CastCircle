@@ -1,5 +1,3 @@
-import 'dart:math' as math;
-
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart' show rootBundle;
 import 'package:simple_spell_checker/simple_spell_checker.dart';
@@ -23,11 +21,8 @@ class OcrConfidenceService {
 
   // ── Merged-signal thresholds (Mac-validated against 88 low-OCR + 2,644 good
   // lines; see /tmp/lowocr/REPORT.md). ──
-  /// Dictionary gate for the "review" bucket.
+  /// Dictionary gate for the "review" bucket — the sole driver of "review".
   static const dictReviewThreshold = 0.80;
-
-  /// Rec-confidence gate for the "review" bucket.
-  static const recConfReviewThreshold = 0.85;
 
   /// Low rec-confidence half of the "likely not script" gate.
   static const recConfJunkThreshold = 0.65;
@@ -199,15 +194,25 @@ class OcrConfidenceService {
     return correct / words.length;
   }
 
-  /// Classify a line from its merged signal (Mac-validated thresholds).
+  /// Classify a line from its merged signal.
   ///
-  /// - [dictNew]: improved valid-word fraction (0.0–1.0).
+  /// - [dictNew]: valid-word fraction (0.0–1.0) — the reliable "is this text
+  ///   actually words?" signal.
   /// - [recConf]: Paddle per-line rec-confidence (0.0–1.0; 1.0 if unknown).
+  ///
+  /// The dictionary fraction drives the "review" decision. We deliberately do
+  /// NOT flag on rec-confidence alone: PaddleOCR's per-line confidence is noisy
+  /// and routinely sits at 0.65–0.85 for perfectly-good dialogue, so a recConf
+  /// gate flags ~90% of a clean script. Verified on the Mac against real Paddle
+  /// output for Jon Jory's *Pride and Prejudice*: of 948 lines the old gate
+  /// flagged, 938 had dictNew=1.0 (clean text) and were flagged only by recConf.
+  /// rec-confidence is kept solely to corroborate the "likely not script"
+  /// (gibberish) bucket, where it must agree with a low dictionary score.
   static OcrReviewStatus classify(double dictNew, double recConf) {
-    if (recConf < recConfJunkThreshold && dictNew < dictJunkThreshold) {
+    if (dictNew < dictJunkThreshold && recConf < recConfJunkThreshold) {
       return OcrReviewStatus.likelyNotScript;
     }
-    if (dictNew < dictReviewThreshold || recConf < recConfReviewThreshold) {
+    if (dictNew < dictReviewThreshold) {
       return OcrReviewStatus.review;
     }
     return OcrReviewStatus.ok;
@@ -234,7 +239,10 @@ class OcrConfidenceService {
       final dictNew = scoreLine(line.text);
       final recConf = line.ocrConfidence ?? 1.0;
       final status = classify(dictNew, recConf);
-      final display = math.min(dictNew, recConf);
+      // Display/highlight confidence tracks the dictionary signal (what drives
+      // the review decision), not the noisy Paddle rec-confidence — otherwise
+      // the editor would highlight clean lines whose recConf merely dipped.
+      final display = dictNew;
 
       return line.copyWith(
         ocrConfidence: () => display,

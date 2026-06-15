@@ -106,12 +106,15 @@ void main() {
       expect(scored.single.reviewStatus, OcrReviewStatus.review);
     });
 
-    test('low rec-conf alone (clean text) -> review', () {
-      // dict = 1.0 but recConf 0.70 < 0.85 -> review (faint typeset).
+    test('low rec-conf alone (clean text) -> ok (NOT flagged)', () {
+      // dict = 1.0 (valid words) with a middling Paddle recConf 0.70 must NOT
+      // flag: PaddleOCR routinely scores good dialogue at 0.65–0.85, so a
+      // recConf gate flags ~90% of a clean script (Mac-verified on Pride &
+      // Prejudice). The dictionary is the reliable signal.
       final scored = service.scoreScript([
         line('she walked to the house', ocrConfidence: 0.70),
       ]);
-      expect(scored.single.reviewStatus, OcrReviewStatus.review);
+      expect(scored.single.reviewStatus, OcrReviewStatus.ok);
     });
 
     test('low rec-conf AND low dict -> likelyNotScript', () {
@@ -122,13 +125,13 @@ void main() {
       expect(scored.single.reviewStatus, OcrReviewStatus.likelyNotScript);
     });
 
-    test('combined display confidence is min(dict, recConf)', () {
-      // dict = 1.0 (clean text), recConf = 0.70 -> display should be 0.70 so
-      // the existing < 0.8 highlighting still fires.
+    test('display confidence tracks the dictionary signal, not recConf', () {
+      // dict = 1.0 (clean text); a dipped recConf (0.70) must NOT drag the
+      // display confidence down, or the editor would highlight clean lines.
       final scored = service.scoreScript([
         line('she walked to the house', ocrConfidence: 0.70),
       ]);
-      expect(scored.single.ocrConfidence, closeTo(0.70, 0.001));
+      expect(scored.single.ocrConfidence, closeTo(1.0, 0.001));
     });
 
     test('null rec-confidence defaults to 1.0 (dict-only gating)', () {
@@ -148,9 +151,9 @@ void main() {
       // review: dict < 0.80 (conf fine)
       expect(OcrConfidenceService.classify(0.70, 0.99),
           OcrReviewStatus.review);
-      // review: recConf < 0.85 (dict fine)
-      expect(OcrConfidenceService.classify(1.0, 0.80),
-          OcrReviewStatus.review);
+      // ok: clean text (dict high) is NOT flagged by a low recConf alone
+      expect(OcrConfidenceService.classify(1.0, 0.80), OcrReviewStatus.ok);
+      expect(OcrConfidenceService.classify(1.0, 0.50), OcrReviewStatus.ok);
       // ok: both above gates
       expect(OcrConfidenceService.classify(0.90, 0.90), OcrReviewStatus.ok);
       // boundary: low conf but dict >= 0.50 stays in review, not junk
