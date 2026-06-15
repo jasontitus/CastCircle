@@ -12,6 +12,7 @@ import UIKit
   private var pdfTextPlugin: PdfTextPlugin?
   private var contactPickerPlugin: ContactPickerPlugin?
   private var paddleOcrPlugin: PaddleOcrPlugin?
+  private var audioAnalysisPlugin: AudioAnalysisPlugin?
 
   /// Held until the background URLSession finishes delivering events, so iOS
   /// can snapshot the UI after a download completes while the app was suspended.
@@ -80,6 +81,11 @@ import UIKit
     // registrar to resolve bundled model assets.
     if let paddleRegistrar = engineBridge.pluginRegistry.registrar(forPlugin: "PaddleOcrPlugin") {
       paddleOcrPlugin = PaddleOcrPlugin(registrar: paddleRegistrar, messenger: paddleRegistrar.messenger())
+    }
+
+    // Register audio loudness analyzer (normalizes recording playback volume)
+    if let audioRegistrar = engineBridge.pluginRegistry.registrar(forPlugin: "AudioAnalysisPlugin") {
+      audioAnalysisPlugin = AudioAnalysisPlugin(messenger: audioRegistrar.messenger())
     }
   }
 }

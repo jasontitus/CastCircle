@@ -26,6 +26,7 @@ import '../../data/services/analytics_service.dart';
 import '../../data/services/media_control_service.dart';
 import '../../data/services/sync_queue.dart';
 import '../../data/services/voice_config_service.dart';
+import '../../data/services/audio_level_service.dart';
 import '../../providers/production_providers.dart';
 import '../../features/settings/settings_screen.dart';
 import 'rehearsal_history_screen.dart';
@@ -1429,10 +1430,15 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
         line.isForCharacter(myCharacter);
     if (isMine) return;
 
-    // Skip if a real recording exists (primary, or understudy fallback).
-    if (ref.read(recordingsProvider)[line.id] != null) return;
-    if (ref.read(understudyFallbackProvider) &&
-        ref.read(understudyRecordingsProvider)[line.id] != null) {
+    // If a real recording exists (primary, or understudy fallback), it's played
+    // directly rather than via TTS — so warm the loudness cache instead so
+    // volume normalization adds no latency when the line plays.
+    final rec = ref.read(recordingsProvider)[line.id] ??
+        (ref.read(understudyFallbackProvider)
+            ? ref.read(understudyRecordingsProvider)[line.id]
+            : null);
+    if (rec != null) {
+      AudioLevelService.instance.prefetch(rec.localPath);
       return;
     }
 
@@ -1490,6 +1496,9 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
       try {
         await _player.setFilePath(recording.localPath);
         await _player.setSpeed(speed);
+        // Normalize loudness so castmates' recordings don't jump in volume.
+        await _player
+            .setVolume(await AudioLevelService.instance.volumeFor(recording.localPath));
         await _player.play();
         return;
       } catch (_) {
@@ -1507,6 +1516,8 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
         try {
           await _player.setFilePath(understudyRecording.localPath);
           await _player.setSpeed(speed);
+          await _player.setVolume(await AudioLevelService.instance
+              .volumeFor(understudyRecording.localPath));
           await _player.play();
           return;
         } catch (_) {

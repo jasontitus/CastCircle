@@ -11,6 +11,7 @@ import 'package:path_provider/path_provider.dart';
 import '../../core/theme/app_theme.dart';
 import '../../data/models/script_models.dart';
 import '../../data/services/debug_log_service.dart';
+import '../../data/services/audio_level_service.dart';
 import '../../providers/production_providers.dart';
 
 /// Browse all recordings for the current production, grouped by character.
@@ -451,6 +452,8 @@ class _RecordingsBrowserScreenState
     try {
       await _player.stop();
       await _player.setFilePath(resolvedPath);
+      await _player
+          .setVolume(await AudioLevelService.instance.volumeFor(resolvedPath));
       setState(() => _playingLineId = lineId);
       await _player.play();
     } catch (e) {

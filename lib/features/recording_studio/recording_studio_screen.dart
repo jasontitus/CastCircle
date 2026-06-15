@@ -15,6 +15,7 @@ import '../../core/theme/app_theme.dart';
 import '../../data/models/script_models.dart';
 import '../../data/services/stt_adaptation_service.dart';
 import '../../data/services/sync_queue.dart';
+import '../../data/services/audio_level_service.dart';
 import '../../providers/production_providers.dart';
 import '../../features/settings/settings_screen.dart';
 
@@ -464,6 +465,8 @@ class _RecordingStudioScreenState extends ConsumerState<RecordingStudioScreen> {
     final path = await _recorder?.stop();
 
     if (path != null && mounted) {
+      // Re-recording reuses the same filename — drop any stale loudness gain.
+      AudioLevelService.instance.invalidate(path);
       final line = _myLines[_currentLineIdx];
       final recording = Recording(
         id: const Uuid().v4(),
@@ -513,6 +516,7 @@ class _RecordingStudioScreenState extends ConsumerState<RecordingStudioScreen> {
       await _player!.setFilePath(path);
       final speed = ref.read(playbackSpeedProvider);
       await _player!.setSpeed(speed);
+      await _player!.setVolume(await AudioLevelService.instance.volumeFor(path));
       setState(() => _status = RecordingStatus.playing);
       await _player!.play();
     } catch (e) {
