@@ -96,7 +96,13 @@ class _OcrReviewScreenState extends State<OcrReviewScreen> {
   /// and often span more than the one flagged line. Flagged neighbours are
   /// skipped because they already have their own editable card.
   List<ScriptLine> _contextLinesFor(ScriptLine flagged, {int span = 3}) {
-    final ordered = widget.lines.toList()
+    // Work over the CURRENT (non-removed) lines so the window follows deletions.
+    // If we used the original list, lines deleted near one flagged item would
+    // still occupy slots in a nearby flagged item's window and hide its real
+    // neighbours — exactly the "didn't show the line" bug.
+    final ordered = widget.lines
+        .where((l) => !_removedIds.contains(l.id))
+        .toList()
       ..sort((a, b) => a.orderIndex.compareTo(b.orderIndex));
     final idx = ordered.indexWhere((l) => l.id == flagged.id);
     if (idx < 0) return const [];
@@ -105,7 +111,6 @@ class _OcrReviewScreenState extends State<OcrReviewScreen> {
       if (i < 0 || i >= ordered.length || i == idx) continue;
       final l = ordered[i];
       if (l.reviewStatus != OcrReviewStatus.ok) continue; // has its own card
-      if (_removedIds.contains(l.id)) continue;
       out.add(l);
     }
     return out;
