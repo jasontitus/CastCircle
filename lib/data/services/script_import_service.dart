@@ -252,11 +252,39 @@ class ScriptImportService {
     var rawLineIndex = 0;
     var failedPages = 0;
 
-    if (Platform.isMacOS) {
-      // macOS: single native call — PDFKit render + Vision OCR, no round-trips
+    // PaddleOCR (PP-OCRv6 via ONNX Runtime) is the primary engine on EVERY
+    // platform — one shared native code path (iOS + macOS use the same plugin)
+    // so OCR behaviour can't diverge. Only if the native plugin is unavailable
+    // or errors do we fall back: macOS → Apple Vision, iOS/Android → ML Kit.
+    PaddlePdfResult? paddleResult;
+    try {
+      paddleResult = await PaddleOcrChannel.ocrPdf(pdfPath);
+    } catch (e) {
+      debugPrint('PDF OCR: PaddleOCR failed ($e) — falling back');
+      paddleResult = null;
+    }
+
+    if (paddleResult != null) {
+      failedPages = paddleResult.failedPages;
+      for (final page in paddleResult.pages) {
+        for (final line in page.lines) {
+          buffer.writeln(line.text);
+          lineConfidences[rawLineIndex] = line.confidence; // real confidence
+          linePageMap[rawLineIndex] = page.page;
+          rawLineIndex++;
+        }
+        buffer.writeln();
+        rawLineIndex++;
+      }
+      debugPrint(
+        'PDF OCR (PaddleOCR): ${paddleResult.pageCount} pages, '
+        '${paddleResult.failedPages} failed',
+      );
+    } else if (Platform.isMacOS) {
+      // macOS fallback: single native call — PDFKit render + Vision OCR.
       final pdfResult = await VisionOcrChannel.ocrPdf(pdfPath);
       if (pdfResult == null) {
-        throw Exception('Vision OCR plugin not available');
+        throw Exception('PaddleOCR and Vision OCR plugins both unavailable');
       }
 
       failedPages = pdfResult.failedPages;
@@ -272,113 +300,85 @@ class ScriptImportService {
       }
 
       debugPrint(
-        'PDF OCR (Vision): ${pdfResult.pageCount} pages, '
+        'PDF OCR (Vision fallback): ${pdfResult.pageCount} pages, '
         '${pdfResult.failedPages} failed',
       );
     } else {
-      // iOS/Android: try on-device PaddleOCR (PP-OCRv5 via ONNX Runtime) first;
-      // fall back to Google ML Kit if the native plugin is unavailable or errors.
-      PaddlePdfResult? paddleResult;
+      // iOS/Android fallback: use pdfrx render + Google ML Kit per page
+      Pdfrx.getCacheDirectory ??= () async {
+        final dir = await getTemporaryDirectory();
+        return dir.path;
+      };
+      final doc = await PdfDocument.openFile(pdfPath);
+      final pageCount = doc.pages.length;
+
+      final textRecognizer = TextRecognizer();
+
       try {
-        paddleResult = await PaddleOcrChannel.ocrPdf(pdfPath);
-      } catch (e) {
-        debugPrint('PDF OCR: PaddleOCR failed ($e) — falling back to ML Kit');
-        paddleResult = null;
-      }
-
-      if (paddleResult != null) {
-        failedPages = paddleResult.failedPages;
-        for (final page in paddleResult.pages) {
-          for (final line in page.lines) {
-            buffer.writeln(line.text);
-            lineConfidences[rawLineIndex] = line.confidence; // real confidence
-            linePageMap[rawLineIndex] = page.page;
-            rawLineIndex++;
-          }
-          buffer.writeln();
-          rawLineIndex++;
-        }
-        debugPrint(
-          'PDF OCR (PaddleOCR): ${paddleResult.pageCount} pages, '
-          '${paddleResult.failedPages} failed',
-        );
-      } else {
-        // iOS/Android: use pdfrx render + Google ML Kit per page
-        Pdfrx.getCacheDirectory ??= () async {
-          final dir = await getTemporaryDirectory();
-          return dir.path;
-        };
-        final doc = await PdfDocument.openFile(pdfPath);
-        final pageCount = doc.pages.length;
-
-        final textRecognizer = TextRecognizer();
-
-        try {
-          for (var i = 1; i <= pageCount; i++) {
-            try {
-              final page = doc.pages[i - 1];
-              final pdfImage = await page.render(
-                fullWidth: page.width * 2,
-                fullHeight: page.height * 2,
+        for (var i = 1; i <= pageCount; i++) {
+          try {
+            final page = doc.pages[i - 1];
+            final pdfImage = await page.render(
+              fullWidth: page.width * 2,
+              fullHeight: page.height * 2,
+            );
+            if (pdfImage == null) {
+              debugPrint(
+                'PDF OCR: Page $i/$pageCount — render returned null, skipping',
               );
-              if (pdfImage == null) {
-                debugPrint(
-                  'PDF OCR: Page $i/$pageCount — render returned null, skipping',
-                );
-                failedPages++;
-                continue;
-              }
-              final image = await pdfImage.createImage();
-              pdfImage.dispose();
+              failedPages++;
+              continue;
+            }
+            final image = await pdfImage.createImage();
+            pdfImage.dispose();
 
-              final byteData = await image.toByteData(
-                format: ui.ImageByteFormat.png,
+            final byteData = await image.toByteData(
+              format: ui.ImageByteFormat.png,
+            );
+            image.dispose();
+
+            if (byteData == null) {
+              debugPrint(
+                'PDF OCR: Page $i/$pageCount — render returned null, skipping',
               );
-              image.dispose();
+              failedPages++;
+              continue;
+            }
 
-              if (byteData == null) {
-                debugPrint(
-                  'PDF OCR: Page $i/$pageCount — render returned null, skipping',
+            final tempDir = await getTemporaryDirectory();
+            final tempFile = File(p.join(tempDir.path, 'ocr_page_$i.png'));
+            await tempFile.writeAsBytes(byteData.buffer.asUint8List());
+
+            final inputImage = InputImage.fromFilePath(tempFile.path);
+            final recognized = await textRecognizer.processImage(inputImage);
+
+            for (final block in recognized.blocks) {
+              for (final line in block.lines) {
+                buffer.writeln(line.text);
+                lineConfidences[rawLineIndex] = _estimateLineConfidence(
+                  line.text,
                 );
-                failedPages++;
-                continue;
-              }
-
-              final tempDir = await getTemporaryDirectory();
-              final tempFile = File(p.join(tempDir.path, 'ocr_page_$i.png'));
-              await tempFile.writeAsBytes(byteData.buffer.asUint8List());
-
-              final inputImage = InputImage.fromFilePath(tempFile.path);
-              final recognized = await textRecognizer.processImage(inputImage);
-
-              for (final block in recognized.blocks) {
-                for (final line in block.lines) {
-                  buffer.writeln(line.text);
-                  lineConfidences[rawLineIndex] = _estimateLineConfidence(
-                    line.text,
-                  );
-                  linePageMap[rawLineIndex] = i;
-                  rawLineIndex++;
-                }
-                buffer.writeln();
+                linePageMap[rawLineIndex] = i;
                 rawLineIndex++;
               }
-
-              await tempFile.delete();
-
-              debugPrint(
-                'PDF OCR: Page $i/$pageCount done '
-                '(${recognized.blocks.length} blocks)',
-              );
-            } catch (e) {
-              debugPrint('PDF OCR: Page $i/$pageCount FAILED: $e — skipping');
-              failedPages++;
+              buffer.writeln();
+              rawLineIndex++;
             }
+
+            await tempFile.delete();
+
+            debugPrint(
+              'PDF OCR: Page $i/$pageCount done '
+              '(${recognized.blocks.length} blocks)',
+            );
+          } catch (e) {
+            debugPrint('PDF OCR: Page $i/$pageCount FAILED: $e — skipping');
+            failedPages++;
           }
-        } finally {
-          textRecognizer.close();
-          await doc.dispose();
         }
+      } finally {
+        textRecognizer.close();
+        await doc.dispose();
       }
     }
 

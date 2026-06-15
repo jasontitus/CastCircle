@@ -1,6 +1,13 @@
+#if canImport(FlutterMacOS)
+import FlutterMacOS
+import AppKit
+#else
 import Flutter
 import UIKit
+#endif
 import PDFKit
+import ImageIO
+import CoreGraphics
 import onnxruntime_objc
 
 /// On-device PaddleOCR (PP-OCRv6 small) via ONNX Runtime.
@@ -57,7 +64,28 @@ class PaddleOcrPlugin: NSObject {
 
   private func assetPath(_ registrar: FlutterPluginRegistrar, _ asset: String) -> String? {
     let key = registrar.lookupKey(forAsset: asset)
-    return Bundle.main.path(forResource: key, ofType: nil)
+    let fm = FileManager.default
+    // iOS: the key is relative to the main bundle's resources.
+    if let p = Bundle.main.path(forResource: key, ofType: nil),
+       fm.fileExists(atPath: p) { return p }
+    // macOS: lookupKey returns a path RELATIVE TO Bundle.main.bundlePath, e.g.
+    // "Contents/Frameworks/App.framework/Resources/flutter_assets/...". The
+    // slashes defeat `pathForResource:`, so just join it onto the bundle path.
+    let joined = (Bundle.main.bundlePath as NSString).appendingPathComponent(key)
+    if fm.fileExists(atPath: joined) { return joined }
+    // Last resort: scan loaded bundles/frameworks for the (possibly relative)
+    // key under each bundle path or resourcePath.
+    var candidates = [Bundle]()
+    if let app = Bundle(identifier: "io.flutter.flutter.app") { candidates.append(app) }
+    candidates += Bundle.allFrameworks + Bundle.allBundles
+    for b in candidates {
+      for base in [b.bundlePath, b.resourcePath].compactMap({ $0 }) {
+        let full = (base as NSString).appendingPathComponent(key)
+        if fm.fileExists(atPath: full) { return full }
+      }
+      if let p = b.path(forResource: key, ofType: nil), fm.fileExists(atPath: p) { return p }
+    }
+    return nil
   }
 
   private func loadModels(registrar: FlutterPluginRegistrar) {
@@ -71,7 +99,21 @@ class PaddleOcrPlugin: NSObject {
       let t0 = Date()
       env = try ORTEnv(loggingLevel: ORTLoggingLevel.warning)
       let opts = try ORTSessionOptions()
-      try opts.setIntraOpNumThreads(0)  // 0 = use all cores
+      // Thread config. Passing 0 through the onnxruntime-objc wrapper silently
+      // yields a SINGLE intra-op thread (~30x slowdown — hit iOS imports too).
+      // Set it explicitly to the PHYSICAL performance cores, capped: this is a
+      // small model, so more threads add sync overhead, and we run two sessions
+      // (det+rec), so all-logical-cores oversubscribes and thrashes. Also
+      // disable intra-op spinning so the idle session's threads don't burn CPU
+      // (which thermally throttled the whole chip and slowed it mid-run).
+      var perfCores = 0
+      var sz = MemoryLayout<Int>.size
+      if sysctlbyname("hw.perflevel0.physicalcpu", &perfCores, &sz, nil, 0) != 0 || perfCores < 1 {
+        perfCores = max(1, ProcessInfo.processInfo.activeProcessorCount / 2)
+      }
+      let threads = Int32(max(2, min(perfCores, 8)))
+      try opts.setIntraOpNumThreads(threads)
+      try opts.addConfigEntry(withKey: "session.intra_op.allow_spinning", value: "0")
       try opts.setGraphOptimizationLevel(.all)
       detSession = try ORTSession(env: env!, modelPath: detPath, sessionOptions: opts)
       recSession = try ORTSession(env: env!, modelPath: recPath, sessionOptions: opts)
@@ -100,7 +142,7 @@ class PaddleOcrPlugin: NSObject {
       }
       DispatchQueue.global(qos: .userInitiated).async {
         var blocks: [[String: Any]] = []
-        if let img = UIImage(contentsOfFile: path)?.cgImage { blocks = self.ocrImage(img) }
+        if let img = self.loadCGImage(path) { blocks = self.ocrImage(img) }
         DispatchQueue.main.async { result(["blocks": blocks]) }
       }
     case "ocrPdf":
@@ -261,13 +303,20 @@ class PaddleOcrPlugin: NSObject {
 
   // MARK: - Helpers
 
+  /// Load a CGImage from a file path via ImageIO — works on both iOS and macOS
+  /// (UIImage/NSImage are platform-specific; ImageIO is shared).
+  private func loadCGImage(_ path: String) -> CGImage? {
+    guard let src = CGImageSourceCreateWithURL(URL(fileURLWithPath: path) as CFURL, nil) else { return nil }
+    return CGImageSourceCreateImageAtIndex(src, 0, nil)
+  }
+
   private func renderPage(_ page: PDFPage, width: CGFloat, height: CGFloat) -> CGImage? {
     let cs = CGColorSpaceCreateDeviceRGB()
     let info = CGImageAlphaInfo.premultipliedLast.rawValue
     guard width > 0, height > 0,
           let ctx = CGContext(data: nil, width: Int(width), height: Int(height),
                               bitsPerComponent: 8, bytesPerRow: 0, space: cs, bitmapInfo: info) else { return nil }
-    ctx.setFillColor(UIColor.white.cgColor)
+    ctx.setFillColor(CGColor(red: 1, green: 1, blue: 1, alpha: 1))
     ctx.fill(CGRect(x: 0, y: 0, width: width, height: height))
     let b = page.bounds(for: .mediaBox)
     ctx.scaleBy(x: width / b.width, y: height / b.height)

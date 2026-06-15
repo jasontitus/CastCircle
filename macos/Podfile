@@ -29,6 +29,10 @@ flutter_macos_podfile_setup
 target 'Runner' do
   use_frameworks!
 
+  # On-device PaddleOCR (PP-OCRv6) via ONNX Runtime — shared with iOS so macOS
+  # runs the same OCR pipeline instead of the divergent Apple-Vision path.
+  pod 'onnxruntime-objc'
+
   flutter_install_all_macos_pods File.dirname(File.realpath(__FILE__))
   target 'RunnerTests' do
     inherit! :search_paths

@@ -33,6 +33,7 @@
 		AC564D99517EAD661891BFC2 /* PdfTextPlugin.swift in Sources */ = {isa = PBXBuildFile; fileRef = F36E7F837976F15195D72005 /* PdfTextPlugin.swift */; };
 		CBC9FDE1E8C63D5DF636556C /* Pods_RunnerTests.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 11FD5DF5446776EE509BA77F /* Pods_RunnerTests.framework */; };
 		CCD071E5BD6C9FE1EC50999D /* VisionOcrPlugin.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6915BDF75C9E8B026D61C668 /* VisionOcrPlugin.swift */; };
+		FEBAA69CB5DF28A969DAD30A /* PaddleOcrPlugin.swift in Sources */ = {isa = PBXBuildFile; fileRef = 53B1AD3BEA450AFFD3FFEAE1 /* PaddleOcrPlugin.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -89,6 +90,7 @@
 		5BA6CD8B96A89CBBBD0BE719 /* Pods_Runner.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = Pods_Runner.framework; sourceTree = BUILT_PRODUCTS_DIR; };
 		69064B4F75B8806B06EAB69C /* BackgroundDownloadPlugin.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = BackgroundDownloadPlugin.swift; sourceTree = "<group>"; };
 		6915BDF75C9E8B026D61C668 /* VisionOcrPlugin.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = VisionOcrPlugin.swift; sourceTree = "<group>"; };
+		53B1AD3BEA450AFFD3FFEAE1 /* PaddleOcrPlugin.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PaddleOcrPlugin.swift; path = ../../ios/Runner/PaddleOcrPlugin.swift; sourceTree = "<group>"; };
 		7AFA3C8E1D35360C0083082E /* Release.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Release.xcconfig; sourceTree = "<group>"; };
 		88A98FF1BC19DEBEDA19C211 /* Pods-Runner.profile.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-Runner.profile.xcconfig"; path = "Target Support Files/Pods-Runner/Pods-Runner.profile.xcconfig"; sourceTree = "<group>"; };
 		9026185EC628DB34B7715665 /* MemoryMonitorPlugin.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = MemoryMonitorPlugin.swift; sourceTree = "<group>"; };
@@ -207,6 +209,7 @@
 				9026185EC628DB34B7715665 /* MemoryMonitorPlugin.swift */,
 				69064B4F75B8806B06EAB69C /* BackgroundDownloadPlugin.swift */,
 				6915BDF75C9E8B026D61C668 /* VisionOcrPlugin.swift */,
+				53B1AD3BEA450AFFD3FFEAE1 /* PaddleOcrPlugin.swift */,
 			);
 			path = Runner;
 			sourceTree = "<group>";
@@ -456,6 +459,7 @@
 				995E113B223C6415308DF197 /* MemoryMonitorPlugin.swift in Sources */,
 				22FD8802E6266CE55AD67C34 /* BackgroundDownloadPlugin.swift in Sources */,
 				CCD071E5BD6C9FE1EC50999D /* VisionOcrPlugin.swift in Sources */,
+				FEBAA69CB5DF28A969DAD30A /* PaddleOcrPlugin.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
