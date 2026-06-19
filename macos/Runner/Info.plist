@@ -30,6 +30,8 @@
 	<string>NSApplication</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>CastCircle records your lines so you can rehearse and share them with your cast.</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>CastCircle listens while you rehearse so it can follow along with your lines and advance the scene.</string>
 	<key>FLTEnableMergedPlatformUIThread</key>
 	<false/>
 </dict>

@@ -8,6 +8,7 @@ class MainFlutterWindow: NSWindow {
   private var downloadPlugin: BackgroundDownloadPlugin?
   private var visionOcrPlugin: VisionOcrPlugin?
   private var paddleOcrPlugin: PaddleOcrPlugin?
+  private var appleSttPlugin: AppleSttPlugin?
 
   override func awakeFromNib() {
     let flutterViewController = FlutterViewController()
@@ -31,6 +32,10 @@ class MainFlutterWindow: NSWindow {
     // Needs a registrar (flutter-asset lookup of the ONNX models) + the messenger.
     let paddleRegistrar = flutterViewController.registrar(forPlugin: "PaddleOcrPlugin")
     paddleOcrPlugin = PaddleOcrPlugin(registrar: paddleRegistrar, messenger: messenger)
+
+    // Apple SFSpeechRecognizer (shared cross-platform plugin) — same engine as
+    // iOS. Drives live line matching + rehearsal-mode recording on the Mac.
+    appleSttPlugin = AppleSttPlugin(messenger: messenger)
 
     super.awakeFromNib()
   }

@@ -1,10 +1,19 @@
+#if canImport(FlutterMacOS)
+import FlutterMacOS
+#else
 import Flutter
 import UIKit
+#endif
 import Speech
 import AVFoundation
 
 /// Native Apple SFSpeechRecognizer plugin with contextualStrings support.
 /// Provides real-time streaming STT with vocabulary hinting.
+///
+/// Cross-platform: compiles for both iOS and macOS. The recognizer
+/// (SFSpeechRecognizer), AVAudioEngine mic tap, and AVAssetExportSession
+/// conversion are all available on macOS; the iOS-only AVAudioSession
+/// configuration and ObjC exception catcher are guarded with `#if os(iOS)`.
 class AppleSttPlugin: NSObject {
     private let channel: FlutterMethodChannel
     private var recognizer: SFSpeechRecognizer?
@@ -61,6 +70,15 @@ class AppleSttPlugin: NSObject {
         recognizer = SFSpeechRecognizer(locale: Locale(identifier: locale))
         NSLog("AppleStt: Initialized with locale: \(locale)")
 
+        #if os(macOS)
+        // macOS gates mic access separately from speech recognition. Trigger the
+        // microphone TCC prompt now (NSMicrophoneUsageDescription) so the
+        // AVAudioEngine input tap isn't fed silence on first listen.
+        AVCaptureDevice.requestAccess(for: .audio) { granted in
+            NSLog("AppleStt: macOS mic access granted=\(granted)")
+        }
+        #endif
+
         SFSpeechRecognizer.requestAuthorization { [weak self] status in
             DispatchQueue.main.async {
                 switch status {
@@ -106,7 +124,9 @@ class AppleSttPlugin: NSObject {
         // Stop any existing session
         stopCurrentSession()
 
-        // Configure audio session
+        // Configure audio session (iOS only — macOS has no AVAudioSession;
+        // AVAudioEngine uses the default input device directly).
+        #if os(iOS)
         let audioSession = AVAudioSession.sharedInstance()
         do {
             try audioSession.setCategory(.record, mode: .default, options: .duckOthers)
@@ -116,6 +136,7 @@ class AppleSttPlugin: NSObject {
             result(FlutterError(code: "AUDIO_ERROR", message: error.localizedDescription, details: nil))
             return
         }
+        #endif
 
         // Create recognition request
         recognitionRequest = SFSpeechAudioBufferRecognitionRequest()
@@ -144,8 +165,8 @@ class AppleSttPlugin: NSObject {
             NSLog("AppleStt: Set \(contextualStrings.count) contextual strings: \(contextualStrings.prefix(5))")
         }
 
-        // Auto-punctuation (iOS 16+)
-        if #available(iOS 16.0, *) {
+        // Auto-punctuation (iOS 16+ / macOS 13+)
+        if #available(iOS 16.0, macOS 13.0, *) {
             request.addsPunctuation = false // Don't add punctuation for line matching
         }
 
@@ -195,32 +216,45 @@ class AppleSttPlugin: NSObject {
         let recordingFormat = inputNode.outputFormat(forBus: 0)
         tapFormat = recordingFormat // cache for startRecording
 
-        // installTap throws an ObjC NSException (not a Swift error) if a tap
-        // is already installed. Wrap in ObjC exception catcher.
-        var tapInstalled = false
-        ObjCExceptionCatcher.try({
-            inputNode.installTap(onBus: 0, bufferSize: 4096, format: recordingFormat) { [weak self] buffer, _ in
-                self?.recognitionRequest?.append(buffer)
-                // Concurrent recording: write same audio buffers to file
-                if let file = self?.audioFile {
-                    do {
-                        try file.write(from: buffer)
-                    } catch {
-                        NSLog("AppleStt: audioFile.write FAILED: \(error)")
-                        self?.audioFile = nil // stop trying after first failure
-                    }
-                }
-                // Mic energy for Dart-side endpointing and level UI.
-                // ~12 events/sec at 4096 frames — cheap enough to send raw.
-                let level = AppleSttPlugin.rmsLevel(buffer: buffer)
-                DispatchQueue.main.async {
-                    self?.channel.invokeMethod("onLevel", arguments: level)
+        // The mic tap: feed the recognizer, mirror buffers to the recording
+        // file, and report mic energy. Defined once so both the iOS
+        // (exception-guarded) and macOS install paths share it.
+        let tapBlock: AVAudioNodeTapBlock = { [weak self] buffer, _ in
+            self?.recognitionRequest?.append(buffer)
+            // Concurrent recording: write same audio buffers to file
+            if let file = self?.audioFile {
+                do {
+                    try file.write(from: buffer)
+                } catch {
+                    NSLog("AppleStt: audioFile.write FAILED: \(error)")
+                    self?.audioFile = nil // stop trying after first failure
                 }
             }
+            // Mic energy for Dart-side endpointing and level UI.
+            // ~12 events/sec at 4096 frames — cheap enough to send raw.
+            let level = AppleSttPlugin.rmsLevel(buffer: buffer)
+            DispatchQueue.main.async {
+                self?.channel.invokeMethod("onLevel", arguments: level)
+            }
+        }
+
+        var tapInstalled = false
+        #if os(iOS)
+        // installTap throws an ObjC NSException (not a Swift error) if a tap
+        // is already installed. Wrap in the ObjC exception catcher (reachable
+        // via the iOS bridging header).
+        ObjCExceptionCatcher.try({
+            inputNode.installTap(onBus: 0, bufferSize: 4096, format: recordingFormat, block: tapBlock)
             tapInstalled = true
         }, catch: { exception in
             NSLog("AppleStt: installTap exception: \(String(describing: exception))")
         })
+        #else
+        // macOS has no Runner bridging header for ObjCExceptionCatcher. We
+        // already stop the engine and removeTap above, so install directly.
+        inputNode.installTap(onBus: 0, bufferSize: 4096, format: recordingFormat, block: tapBlock)
+        tapInstalled = true
+        #endif
 
         guard tapInstalled else {
             NSLog("AppleStt: Failed to install tap, aborting listen")
