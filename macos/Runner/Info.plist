@@ -28,6 +28,8 @@
 	<string>MainMenu</string>
 	<key>NSPrincipalClass</key>
 	<string>NSApplication</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>CastCircle records your lines so you can rehearse and share them with your cast.</string>
 	<key>FLTEnableMergedPlatformUIThread</key>
 	<false/>
 </dict>

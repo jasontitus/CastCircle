@@ -8,5 +8,9 @@
 	<true/>
 	<key>com.apple.security.files.user-selected.read-write</key>
 	<true/>
+	<!-- Record lines on the Mac (recording studio) so the Mac can act as a
+	     second cast member and sync audio with the phone. -->
+	<key>com.apple.security.device.audio-input</key>
+	<true/>
 </dict>
 </plist>
