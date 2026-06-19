@@ -12,7 +12,6 @@ import '../data/models/cast_member_model.dart';
 import '../data/models/production_models.dart';
 import '../data/models/script_models.dart';
 import '../data/repositories/production_repository.dart';
-import '../data/services/debug_log_service.dart';
 import '../data/services/deep_link_service.dart';
 import '../data/services/script_import_service.dart';
 import '../data/services/script_parser.dart';
@@ -20,6 +19,8 @@ import '../data/services/voice_config_service.dart';
 import '../data/services/analytics_service.dart';
 import '../data/services/perf_service.dart';
 import '../data/services/supabase_service.dart';
+import '../data/services/recording_sync_service.dart';
+import '../data/services/sync_queue.dart';
 import '../main.dart';
 
 /// Maximum size (in bytes) for a SharedPreferences script backup.
@@ -293,6 +294,52 @@ Future<void> persistScript(WidgetRef ref) async {
     // Non-fatal — local save succeeded
   }
   trace?.stop();
+}
+
+/// Wire up recording sync for a production: persist remote URLs on upload,
+/// subscribe to realtime so castmates' new recordings download as they arrive,
+/// and run a full background sync (upload local, download others').
+///
+/// Safe to call whenever a production becomes current. It is invoked from the
+/// production hub's init so it covers BOTH entry paths — opening a production
+/// from the home screen AND joining one (the join screen uses `context.go`,
+/// which disposes it, so it can't own the long-lived sync work itself).
+void launchRecordingSync(WidgetRef ref, String productionId) {
+  final userId = SupabaseService.instance.currentUser?.id;
+
+  // Persist remote URLs locally when queued uploads complete so recordings
+  // aren't re-uploaded and sync status stays accurate.
+  SyncQueue.instance.onUploaded = (prodId, lineId, url) {
+    ref.read(recordingsProvider.notifier).markUploaded(prodId, lineId, url);
+  };
+
+  RecordingSyncService.instance
+    ..onRecordingReady = (lineId, path) {
+      final cached = RecordingSyncService.instance.getCachedRecordings();
+      ref.read(understudyRecordingsProvider.notifier).loadFromMap(cached);
+    }
+    ..onLocalUploaded = (lineId, url) {
+      ref.read(recordingsProvider.notifier).markUploaded(productionId, lineId, url);
+    }
+    ..subscribe(productionId: productionId, myUserId: userId);
+
+  // Full sync in the background — don't block.
+  Future(() async {
+    // Wait briefly for recordingsProvider to finish loading from Drift.
+    await Future.delayed(const Duration(milliseconds: 500));
+    final localRecordings = ref.read(recordingsProvider);
+
+    final downloaded = await RecordingSyncService.instance.syncForProduction(
+      productionId: productionId,
+      localRecordings: localRecordings,
+      myUserId: userId,
+    );
+
+    if (downloaded > 0) {
+      final cached = RecordingSyncService.instance.getCachedRecordings();
+      ref.read(understudyRecordingsProvider.notifier).loadFromMap(cached);
+    }
+  });
 }
 
 /// Fetch cloud script lines for a production. Returns null if Supabase

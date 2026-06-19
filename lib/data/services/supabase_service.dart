@@ -188,25 +188,29 @@ class SupabaseService {
   }
 
   /// Create a cast invitation (no user_id yet — they claim it when they join).
+  ///
+  /// Pass [id] to reuse the caller's locally-generated id so the cloud
+  /// invitation and the director's local cast_member row share one id — without
+  /// it the cloud row gets a server-generated id and the two diverge (which can
+  /// surface as a duplicate member if cast is ever synced cloud→local).
   Future<Map<String, dynamic>> createCastInvitation({
     required String productionId,
     required String characterName,
     required String displayName,
     String? contactInfo,
     required String role,
+    String? id,
   }) async {
-    return _client
-        .from('cast_members')
-        .insert({
-          'production_id': productionId,
-          'character_name': characterName,
-          'display_name': displayName,
-          'contact_info': contactInfo,
-          'role': role,
-          'invited_at': DateTime.now().toIso8601String(),
-        })
-        .select()
-        .single();
+    final data = <String, dynamic>{
+      'production_id': productionId,
+      'character_name': characterName,
+      'display_name': displayName,
+      'contact_info': contactInfo,
+      'role': role,
+      'invited_at': DateTime.now().toIso8601String(),
+    };
+    if (id != null) data['id'] = id;
+    return _client.from('cast_members').insert(data).select().single();
   }
 
   /// Claim an existing invitation by setting user_id and joined_at.
@@ -455,23 +459,37 @@ class SupabaseService {
 
   // ── Realtime ──────────────────────────────────────────
 
-  /// Subscribe to new recordings for a production.
+  /// Subscribe to new (and updated) recordings for a production.
+  ///
+  /// Listens to INSERT *and* UPDATE: a first take INSERTs a row, but a
+  /// re-record UPSERTs onto the existing (production_id, line_id, user_id) row
+  /// — i.e. an UPDATE. Without the UPDATE listener, castmates never receive
+  /// re-recorded takes live (only on the next full sync when they reopen).
+  ///
   /// Returns a channel that can be unsubscribed from.
   RealtimeChannel subscribeToRecordings({
     required String productionId,
     required void Function(Map<String, dynamic> payload) onNewRecording,
   }) {
+    final filter = PostgresChangeFilter(
+      type: PostgresChangeFilterType.eq,
+      column: 'production_id',
+      value: productionId,
+    );
     return _client
         .channel('recordings:$productionId')
         .onPostgresChanges(
           event: PostgresChangeEvent.insert,
           schema: 'public',
           table: 'recordings',
-          filter: PostgresChangeFilter(
-            type: PostgresChangeFilterType.eq,
-            column: 'production_id',
-            value: productionId,
-          ),
+          filter: filter,
+          callback: (payload) => onNewRecording(payload.newRecord),
+        )
+        .onPostgresChanges(
+          event: PostgresChangeEvent.update,
+          schema: 'public',
+          table: 'recordings',
+          filter: filter,
           callback: (payload) => onNewRecording(payload.newRecord),
         )
         .subscribe();

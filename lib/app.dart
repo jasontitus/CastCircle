@@ -240,6 +240,18 @@ class _CastCircleAppState extends ConsumerState<CastCircleApp> {
 
   @override
   Widget build(BuildContext context) {
+    // Whenever the current production changes — whether opened from home,
+    // joined via a code/link, or switched — (re)start recording sync from this
+    // app-root ref (stable for the app's lifetime, so the global sync callbacks
+    // never capture a disposed widget ref). Loads this production's local
+    // recordings and clears the previous production's downloaded cache first.
+    ref.listen(currentProductionProvider, (prev, next) {
+      if (next == null || next.id == prev?.id) return;
+      ref.read(recordingsProvider.notifier).loadForProduction(next.id);
+      ref.read(understudyRecordingsProvider.notifier).clear();
+      launchRecordingSync(ref, next.id);
+    });
+
     final router = ref.watch(_routerProvider);
     return MaterialApp.router(
       title: 'CastCircle',

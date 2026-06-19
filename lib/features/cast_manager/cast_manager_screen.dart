@@ -693,6 +693,8 @@ class _CastManagerScreenState extends ConsumerState<CastManagerScreen> {
                       displayName: name,
                       contactInfo: contact.isNotEmpty ? contact : null,
                       role: role.toSupabaseString(),
+                      // Reuse the local id so cloud + local stay in sync.
+                      id: member.id,
                     );
                   } catch (e) {
                     debugPrint('Supabase cast invitation failed: $e');

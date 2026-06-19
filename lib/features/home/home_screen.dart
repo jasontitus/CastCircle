@@ -11,7 +11,6 @@ import '../../core/responsive.dart';
 import '../../data/services/analytics_service.dart';
 import '../../data/services/debug_log_service.dart';
 import '../../data/services/recording_sync_service.dart';
-import '../../data/services/sync_queue.dart';
 import '../../data/models/production_models.dart';
 import '../../data/models/script_models.dart';
 import '../../data/services/supabase_service.dart';
@@ -224,8 +223,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     ref.read(recordingsProvider.notifier).loadForProduction(production.id);
     ref.read(castMembersProvider.notifier).loadForProduction(production.id);
 
-    // Sync recordings in background — upload local, download others'
-    _syncRecordingsInBackground(ref, production.id);
+    // Recording sync (upload local + download others' + realtime) is started by
+    // the production hub's init, so it covers opening AND joining a production.
 
     final savedScript = await loadPersistedScript(ref, production.id);
 
@@ -343,51 +342,6 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     }
   }
 
-  /// Sync recordings in the background when opening a production.
-  /// Uploads local recordings and downloads other cast members' recordings
-  /// so they're ready before rehearsal starts.
-  void _syncRecordingsInBackground(WidgetRef ref, String productionId) {
-    final userId = SupabaseService.instance.currentUser?.id;
-
-    // Persist remote URLs locally when uploads complete so recordings
-    // aren't re-uploaded and sync status is accurate.
-    SyncQueue.instance.onUploaded = (prodId, lineId, url) {
-      ref
-          .read(recordingsProvider.notifier)
-          .markUploaded(prodId, lineId, url);
-    };
-
-    // Subscribe to realtime for new recordings
-    RecordingSyncService.instance
-      ..onRecordingReady = (lineId, path) {
-        final cached = RecordingSyncService.instance.getCachedRecordings();
-        ref.read(understudyRecordingsProvider.notifier).loadFromMap(cached);
-      }
-      ..onLocalUploaded = (lineId, url) {
-        ref
-            .read(recordingsProvider.notifier)
-            .markUploaded(productionId, lineId, url);
-      }
-      ..subscribe(productionId: productionId, myUserId: userId);
-
-    // Run full sync in background — don't await
-    Future(() async {
-      // Wait briefly for recordingsProvider to finish loading from Drift
-      await Future.delayed(const Duration(milliseconds: 500));
-      final localRecordings = ref.read(recordingsProvider);
-
-      final downloaded = await RecordingSyncService.instance.syncForProduction(
-        productionId: productionId,
-        localRecordings: localRecordings,
-        myUserId: userId,
-      );
-
-      if (downloaded > 0) {
-        final cached = RecordingSyncService.instance.getCachedRecordings();
-        ref.read(understudyRecordingsProvider.notifier).loadFromMap(cached);
-      }
-    });
-  }
 
   Future<void> _ensureScriptLoaded(
       WidgetRef ref, Production production) async {

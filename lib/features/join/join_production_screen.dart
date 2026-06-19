@@ -296,19 +296,8 @@ class _JoinProductionScreenState extends ConsumerState<JoinProductionScreen> {
   List<Widget> _buildCharacterOptions() {
     if (_castMembers == null) return [];
 
-    // Find characters that have been assigned but not joined
-    // or characters that have no assignment at all
-    final assignedChars = <String>{};
-    final joinedChars = <String>{};
-    for (final cm in _castMembers!) {
-      final charName = cm['character_name'] as String? ?? '';
-      if (charName.isNotEmpty) {
-        assignedChars.add(charName);
-        if (cm['user_id'] != null) joinedChars.add(charName);
-      }
-    }
-
-    // Find unclaimed invitations that match current user
+    // Find unclaimed invitations (a character assigned by the director with no
+    // user yet) — these are the roles a joiner can claim.
     final unclaimedInvitations = _castMembers!.where((cm) {
       return cm['user_id'] == null &&
           (cm['character_name'] as String? ?? '').isNotEmpty;
