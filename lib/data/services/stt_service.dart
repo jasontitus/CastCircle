@@ -3,7 +3,7 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
-import 'apple_stt_channel.dart';
+import 'stt_channel.dart';
 import 'debug_log_service.dart';
 import 'mlx_stt_channel.dart';
 
@@ -28,7 +28,7 @@ class SttService {
   SttService._();
   static final instance = SttService._();
 
-  final AppleSttChannel _appleChannel = AppleSttChannel.instance;
+  final SttChannel _sttChannel = SttChannel.instance;
   final MlxSttChannel _mlxChannel = MlxSttChannel.instance;
 
   bool _isListening = false;
@@ -39,7 +39,7 @@ class SttService {
   SttEngine get activeEngine => _activeEngine;
   bool get isListening => _isListening;
   bool get isMlxReady => _mlxChannel.isInitialized;
-  bool get isAvailable => _appleChannel.isInitialized;
+  bool get isAvailable => _sttChannel.isInitialized;
   String get locale => _locale;
 
   /// Initialize the STT engine.
@@ -62,15 +62,15 @@ class SttService {
     } catch (_) {}
 
     // Dispose any previously loaded MLX model to free memory —
-    // we use Apple STT now, Parakeet is only for batch file transcription
+    // we use the native OS recognizer now; Parakeet is only for batch transcription
     _mlxChannel.dispose();
 
     // Apple SFSpeechRecognizer — real-time streaming with vocabulary hints
-    final appleOk = await _appleChannel.initialize(locale: locale);
+    final appleOk = await _sttChannel.initialize(locale: locale);
     if (appleOk) {
       _activeEngine = SttEngine.apple;
       DebugLogService.instance.log(LogCategory.stt,
-          'Apple STT ready (locale=$locale, contextualStrings)');
+          'STT ready (locale=$locale, contextualStrings)');
       return true;
     }
 
@@ -177,7 +177,7 @@ class SttService {
     List<String>? vocabularyHints,
   }) async {
     // Auto-init if needed
-    if (!_appleChannel.isInitialized) {
+    if (!_sttChannel.isInitialized) {
       final ok = await init();
       if (!ok) {
         onDone?.call();
@@ -194,7 +194,7 @@ class SttService {
     _lastPartial = '';
     _silenceStart = null;
     _hasSpeechInUtterance = false;
-    _appleChannel.onLevel = _handleLevel;
+    _sttChannel.onLevel = _handleLevel;
 
     await _startAppleSession();
   }
@@ -202,7 +202,7 @@ class SttService {
   Future<void> _startAppleSession() async {
     if (!_isListening) return;
 
-    final ok = await _appleChannel.listen(
+    final ok = await _sttChannel.listen(
       contextualStrings: _vocabHints,
       onResult: (text, isFinal) {
         _lastPartial = text;
@@ -255,7 +255,7 @@ class SttService {
     _hasSpeechInUtterance = false;
     onSilence = null;
     onLevel = null;
-    await _appleChannel.stop();
+    await _sttChannel.stop();
   }
 
   /// Transcribe a pre-recorded audio file (MLX Parakeet only).
@@ -354,7 +354,7 @@ class SttService {
   Future<bool> startRecording(String path) async {
     DebugLogService.instance.log(LogCategory.rehearsal,
         'STT.startRecording: $path');
-    final ok = await _appleChannel.startRecording(path);
+    final ok = await _sttChannel.startRecording(path);
     DebugLogService.instance.log(LogCategory.rehearsal,
         'STT.startRecording → $ok');
     return ok;
@@ -365,7 +365,7 @@ class SttService {
   Future<Map<String, dynamic>?> stopRecording() async {
     DebugLogService.instance.log(LogCategory.rehearsal,
         'STT.stopRecording: calling...');
-    final result = await _appleChannel.stopRecording();
+    final result = await _sttChannel.stopRecording();
     if (result != null) {
       DebugLogService.instance.log(LogCategory.rehearsal,
           'STT.stopRecording → path=${result['path']}, duration=${result['durationMs']}ms');
@@ -379,7 +379,7 @@ class SttService {
   // ── Helpers ───────────────────────────────────────────
 
   void dispose() {
-    _appleChannel.dispose();
+    _sttChannel.dispose();
     _mlxChannel.dispose();
   }
 }

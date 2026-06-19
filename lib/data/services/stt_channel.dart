@@ -1,15 +1,19 @@
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 
-/// Platform channel for Apple SFSpeechRecognizer with contextualStrings.
+/// Platform channel for native real-time speech recognition.
 ///
-/// Provides real-time streaming STT with vocabulary hinting — words from
-/// [contextualStrings] are boosted so the recognizer prefers them over
-/// phonetically similar alternatives.
-class AppleSttChannel {
-  AppleSttChannel._();
-  static final instance = AppleSttChannel._();
+/// Backed by the OS recognizer on each platform — Apple SFSpeechRecognizer on
+/// iOS/macOS (AppleSttPlugin) and Android SpeechRecognizer (AndroidSttPlugin) —
+/// with vocabulary hinting: words from [contextualStrings] are boosted so the
+/// recognizer prefers them over phonetically similar alternatives.
+class SttChannel {
+  SttChannel._();
+  static final instance = SttChannel._();
 
+  // Wire name kept as the historical 'apple_stt' so the existing native plugins
+  // (AppleSttPlugin / AndroidSttPlugin) keep matching — it's an internal
+  // identifier, not user-visible.
   static const _channel = MethodChannel('com.lineguide/apple_stt');
 
   bool _initialized = false;
@@ -37,13 +41,13 @@ class AppleSttChannel {
         'locale': locale,
       });
       _initialized = result ?? false;
-      debugPrint('AppleStt: initialize($locale) = $_initialized');
+      debugPrint('STT: initialize($locale) = $_initialized');
       return _initialized;
     } on PlatformException catch (e) {
-      debugPrint('AppleStt: initialize failed: ${e.message}');
+      debugPrint('STT: initialize failed: ${e.message}');
       return false;
     } on MissingPluginException {
-      debugPrint('AppleStt: Platform channel not available');
+      debugPrint('STT: platform channel not available');
       return false;
     }
   }
@@ -72,7 +76,7 @@ class AppleSttChannel {
       _listening = result ?? false;
       return _listening;
     } on PlatformException catch (e) {
-      debugPrint('AppleStt: listen failed: ${e.message}');
+      debugPrint('STT: listen failed: ${e.message}');
       _listening = false;
       return false;
     } on MissingPluginException {
@@ -86,7 +90,7 @@ class AppleSttChannel {
     try {
       await _channel.invokeMethod<void>('stop');
     } on PlatformException catch (e) {
-      debugPrint('AppleStt: stop failed: ${e.message}');
+      debugPrint('STT: stop failed: ${e.message}');
     } on MissingPluginException {
       // Not available on this platform
     }
@@ -111,7 +115,7 @@ class AppleSttChannel {
         _onDone = null;
       case 'onError':
         final error = call.arguments as String?;
-        debugPrint('AppleStt: error: $error');
+        debugPrint('STT: error: $error');
       case 'onLevel':
         final level = (call.arguments as num?)?.toDouble() ?? 0.0;
         onLevel?.call(level);
@@ -126,7 +130,7 @@ class AppleSttChannel {
         'path': path,
       }) ?? false;
     } on PlatformException catch (e) {
-      debugPrint('AppleStt: startRecording failed: ${e.message}');
+      debugPrint('STT: startRecording failed: ${e.message}');
       return false;
     } on MissingPluginException {
       return false;
@@ -141,7 +145,7 @@ class AppleSttChannel {
       if (result == null) return null;
       return Map<String, dynamic>.from(result);
     } on PlatformException catch (e) {
-      debugPrint('AppleStt: stopRecording failed: ${e.message}');
+      debugPrint('STT: stopRecording failed: ${e.message}');
       return null;
     } on MissingPluginException {
       return null;

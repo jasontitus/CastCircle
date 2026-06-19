@@ -87,7 +87,7 @@ class SttVocabularyService {
     );
   }
 
-  /// Get vocabulary hints for Apple STT contextualStrings.
+  /// Get vocabulary hints for the recognizer's contextualStrings.
   ///
   /// Returns character names and important/unusual words from the script.
   /// These are passed alongside per-line hints to improve recognition
