@@ -238,7 +238,14 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
       );
 
       ref.read(currentScriptProvider.notifier).state = script;
-      if (context.mounted) context.push('/production');
+      if (!context.mounted) return;
+      final messenger = ScaffoldMessenger.of(context);
+      context.push('/production');
+      // We used the cached local script for an instant open, but the organizer
+      // may have edited the script since this castmate joined. Pull the latest
+      // shared version in the background and adopt it if it changed (stable line
+      // IDs keep recordings matched). Never blocks the open.
+      unawaited(_refreshScriptFromCloud(ref, production, messenger));
       return;
     }
 
@@ -272,6 +279,64 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     } catch (e) {
       debugPrint('Cloud script fetch failed: $e');
     }
+  }
+
+  /// Background: pull the latest shared script from the cloud and adopt it
+  /// locally if it differs from the cached copy — so a castmate who already
+  /// joined picks up the organizer's later edits (typo fixes, OCR cleanup,
+  /// added/removed lines). pushScriptToCloud preserves line IDs, so adopting the
+  /// cloud copy keeps existing recordings matched. Saves locally only (does NOT
+  /// push back — the cloud is the source). Skipped for the organizer, whose own
+  /// local copy is authoritative.
+  Future<void> _refreshScriptFromCloud(
+    WidgetRef ref,
+    Production production,
+    ScaffoldMessengerState messenger,
+  ) async {
+    try {
+      final myUserId = SupabaseService.instance.currentUser?.id;
+      if (myUserId != null && production.organizerId == myUserId) return;
+
+      final cloudLines = await fetchCloudScriptLines(production.id);
+      if (cloudLines == null || cloudLines.isEmpty) return;
+
+      final local = ref.read(currentScriptProvider);
+      if (local != null && _sameLines(local.lines, cloudLines)) return; // already current
+
+      final updated = buildParsedScript(production.title, cloudLines);
+      final repo = ref.read(productionRepositoryProvider);
+      await repo.saveScriptLines(production.id, updated.lines);
+      await repo.saveScenes(production.id, updated.scenes);
+
+      // Only swap the in-memory script if we're still on this production.
+      if (ref.read(currentProductionProvider)?.id == production.id) {
+        ref.read(currentScriptProvider.notifier).state = updated;
+      }
+      DebugLogService.instance.log(
+        LogCategory.general,
+        'Script re-synced from cloud: ${cloudLines.length} lines '
+        '(was ${local?.lines.length ?? 0})',
+      );
+      messenger.showSnackBar(SnackBar(
+        content: Text('Script updated from the cast (${cloudLines.length} lines)'),
+        duration: const Duration(seconds: 3),
+      ));
+    } catch (e) {
+      debugPrint('Script cloud refresh failed: $e');
+    }
+  }
+
+  /// Cheap structural equality: same count, and same id/text/character per line.
+  bool _sameLines(List<ScriptLine> a, List<ScriptLine> b) {
+    if (a.length != b.length) return false;
+    for (var i = 0; i < a.length; i++) {
+      if (a[i].id != b[i].id ||
+          a[i].text != b[i].text ||
+          a[i].character != b[i].character) {
+        return false;
+      }
+    }
+    return true;
   }
 
   Future<void> _openProductionForSetup(
