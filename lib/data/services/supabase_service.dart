@@ -22,6 +22,7 @@ class SupabaseService {
   SupabaseClient get _client => Supabase.instance.client;
   /// Public access for debug log upload and other direct operations.
   SupabaseClient get client => _client;
+  DebugLogService get _dlog => DebugLogService.instance;
   bool _initialized = false;
   bool get isInitialized => _initialized;
 
@@ -221,12 +222,23 @@ class SupabaseService {
     try {
       await _client.rpc('claim_cast_invitation',
           params: {'member_id': castMemberId});
+      _dlog.log(LogCategory.network,
+          'Join: claimed invitation $castMemberId via RPC');
     } catch (e) {
-      debugPrint('RPC claim failed, trying direct: $e');
-      await _client.from('cast_members').update({
-        'user_id': userId,
-        'joined_at': DateTime.now().toIso8601String(),
-      }).eq('id', castMemberId);
+      _dlog.logError(LogCategory.network,
+          'Join: claim RPC failed for $castMemberId, trying direct update', e);
+      try {
+        await _client.from('cast_members').update({
+          'user_id': userId,
+          'joined_at': DateTime.now().toIso8601String(),
+        }).eq('id', castMemberId);
+        _dlog.log(LogCategory.network,
+            'Join: claimed invitation $castMemberId via direct update');
+      } catch (e2) {
+        _dlog.logError(LogCategory.network,
+            'Join: claim FAILED for $castMemberId (both RPC and direct)', e2);
+        rethrow;
+      }
     }
   }
 
@@ -246,24 +258,36 @@ class SupabaseService {
         'member_role': role,
       });
       if (result != null && result is Map) {
+        _dlog.log(LogCategory.network,
+            'Join: self-joined "$characterName" via RPC');
         return Map<String, dynamic>.from(result);
       }
     } catch (e) {
-      debugPrint('RPC join_production failed, trying direct: $e');
+      _dlog.logError(LogCategory.network,
+          'Join: join_production RPC failed, trying direct insert', e);
     }
 
-    return _client
-        .from('cast_members')
-        .insert({
-          'production_id': productionId,
-          'user_id': userId,
-          'character_name': characterName,
-          'display_name': displayName,
-          'role': role,
-          'joined_at': DateTime.now().toIso8601String(),
-        })
-        .select()
-        .single();
+    try {
+      final row = await _client
+          .from('cast_members')
+          .insert({
+            'production_id': productionId,
+            'user_id': userId,
+            'character_name': characterName,
+            'display_name': displayName,
+            'role': role,
+            'joined_at': DateTime.now().toIso8601String(),
+          })
+          .select()
+          .single();
+      _dlog.log(LogCategory.network,
+          'Join: self-joined "$characterName" via direct insert');
+      return row;
+    } catch (e) {
+      _dlog.logError(LogCategory.network,
+          'Join: self-join FAILED for "$characterName" (both RPC and direct)', e);
+      rethrow;
+    }
   }
 
   /// Look up a production by its join code.
@@ -350,14 +374,22 @@ class SupabaseService {
     required File audioFile,
   }) async {
     final path = '$productionId/$characterName/$lineId.m4a';
-    await _client.storage.from('recordings').upload(
-          path,
-          audioFile,
-          fileOptions: const FileOptions(
-            contentType: 'audio/mp4',
-            upsert: true,
-          ),
-        );
+    final sizeKb = (audioFile.lengthSync() / 1024).toStringAsFixed(0);
+    _dlog.log(LogCategory.network, 'Storage upload → recordings/$path (${sizeKb}KB)');
+    try {
+      await _client.storage.from('recordings').upload(
+            path,
+            audioFile,
+            fileOptions: const FileOptions(
+              contentType: 'audio/mp4',
+              upsert: true,
+            ),
+          );
+    } catch (e) {
+      _dlog.logError(LogCategory.network,
+          'Storage upload FAILED → recordings/$path', e);
+      rethrow;
+    }
     return _client.storage.from('recordings').getPublicUrl(path);
   }
 
@@ -387,7 +419,18 @@ class SupabaseService {
     required String lineId,
   }) async {
     final path = '$productionId/$characterName/$lineId.m4a';
-    return _client.storage.from('recordings').download(path);
+    try {
+      final bytes = await _client.storage.from('recordings').download(path);
+      _dlog.log(LogCategory.network,
+          'Storage download ← recordings/$path (${(bytes.length / 1024).toStringAsFixed(0)}KB)');
+      return bytes;
+    } catch (e) {
+      _dlog.logError(LogCategory.network,
+          'Storage download FAILED ← recordings/$path '
+          '(character "$characterName" — check the name has no "/" and matches the upload)',
+          e);
+      rethrow;
+    }
   }
 
   /// List available recordings for a production.
@@ -414,17 +457,29 @@ class SupabaseService {
     // The recordings table has UNIQUE (production_id, line_id, user_id);
     // without onConflict the upsert resolves against the primary key only,
     // so re-recording a line would fail with a unique violation.
-    await _client.from('recordings').upsert(
-      {
-        'production_id': productionId,
-        'line_id': lineId,
-        'user_id': userId,
-        'audio_url': audioUrl,
-        'duration_ms': durationMs,
-        'recorded_at': (recordedAt ?? DateTime.now()).toUtc().toIso8601String(),
-      },
-      onConflict: 'production_id,line_id,user_id',
-    );
+    try {
+      await _client.from('recordings').upsert(
+        {
+          'production_id': productionId,
+          'line_id': lineId,
+          'user_id': userId,
+          'audio_url': audioUrl,
+          'duration_ms': durationMs,
+          'recorded_at':
+              (recordedAt ?? DateTime.now()).toUtc().toIso8601String(),
+        },
+        onConflict: 'production_id,line_id,user_id',
+      );
+      _dlog.log(LogCategory.network,
+          'Recording metadata saved: line=$lineId user=$userId');
+    } catch (e) {
+      _dlog.logError(
+          LogCategory.network,
+          'Recording metadata save FAILED: line=$lineId user=$userId '
+          '(castmates won\'t see this recording — check recordings RLS/insert policy)',
+          e);
+      rethrow;
+    }
   }
 
   // ── Script Lines (cloud sync) ────────────────────────
@@ -483,16 +538,35 @@ class SupabaseService {
           schema: 'public',
           table: 'recordings',
           filter: filter,
-          callback: (payload) => onNewRecording(payload.newRecord),
+          callback: (payload) {
+            _dlog.log(LogCategory.network,
+                'Realtime INSERT: line=${payload.newRecord['line_id']}');
+            onNewRecording(payload.newRecord);
+          },
         )
         .onPostgresChanges(
           event: PostgresChangeEvent.update,
           schema: 'public',
           table: 'recordings',
           filter: filter,
-          callback: (payload) => onNewRecording(payload.newRecord),
+          callback: (payload) {
+            _dlog.log(LogCategory.network,
+                'Realtime UPDATE (re-record): line=${payload.newRecord['line_id']}');
+            onNewRecording(payload.newRecord);
+          },
         )
-        .subscribe();
+        // Log the channel lifecycle: if this never reaches "subscribed", live
+        // sharing is down (realtime not enabled on the table, auth/RLS, or
+        // network) — the single most useful signal when takes aren't arriving.
+        .subscribe((status, error) {
+      if (error != null) {
+        _dlog.logError(LogCategory.network,
+            'Realtime channel error for recordings:$productionId ($status)', error);
+      } else {
+        _dlog.log(LogCategory.network,
+            'Realtime channel status for recordings:$productionId → $status');
+      }
+    });
   }
 
   /// Unsubscribe from a channel.

@@ -1,9 +1,10 @@
 import 'dart:async';
 import 'dart:io';
 
-import 'package:flutter/foundation.dart';
 import 'package:connectivity_plus/connectivity_plus.dart';
+import 'package:flutter/foundation.dart';
 
+import 'debug_log_service.dart';
 import 'supabase_service.dart';
 
 /// A pending upload job in the sync queue.
@@ -92,6 +93,7 @@ class SyncQueue {
   static final instance = SyncQueue._();
 
   final RecordingUploader _uploader;
+  final _dlog = DebugLogService.instance;
 
   final List<SyncJob> _pending = [];
   final List<SyncJob> _failed = [];
@@ -145,6 +147,7 @@ class SyncQueue {
   }) {
     bool sameLine(SyncJob j) =>
         j.productionId == productionId && j.lineId == lineId;
+    final replaced = _pending.any(sameLine) || _failed.any(sameLine);
     _pending.removeWhere(sameLine);
     _failed.removeWhere(sameLine);
 
@@ -159,6 +162,12 @@ class SyncQueue {
       recordedAt: recordedAt,
     ));
 
+    _dlog.log(
+        LogCategory.network,
+        'SyncQueue: queued upload line=$lineId char="$characterName" '
+        '${durationMs}ms${replaced ? ' (replaced prior take)' : ''} '
+        '— ${_pending.length} pending, ${_failed.length} failed');
+
     if (!_processing) _processQueue();
   }
 
@@ -172,9 +181,16 @@ class SyncQueue {
     _processing = true;
 
     if (!_uploader.isReady) {
+      _dlog.log(
+          LogCategory.network,
+          'SyncQueue: not uploading — cloud not ready (offline or signed out); '
+          '${_pending.length} pending will retry');
       _processing = false;
       return;
     }
+
+    _dlog.log(LogCategory.network,
+        'SyncQueue: processing ${_pending.length} pending upload(s)');
 
     while (_pending.isNotEmpty) {
       final job = _pending.first;
@@ -183,26 +199,41 @@ class SyncQueue {
         final file = File(job.localPath);
         if (!file.existsSync()) {
           // File deleted locally — drop the job
+          _dlog.log(LogCategory.network,
+              'SyncQueue: dropped line=${job.lineId} — local file gone (${job.localPath})');
           _pending.removeAt(0);
           continue;
         }
 
+        final sizeKb = (file.lengthSync() / 1024).toStringAsFixed(0);
+        _dlog.log(
+            LogCategory.network,
+            'SyncQueue: uploading line=${job.lineId} char="${job.characterName}" '
+            '${sizeKb}KB (attempt ${job.retryCount + 1})');
         final url = await _uploader.upload(job);
         await _uploader.saveMetadata(job, url);
 
         _pending.removeAt(0);
-        debugPrint('SyncQueue: Uploaded ${job.lineId}');
+        _dlog.log(LogCategory.network,
+            'SyncQueue: uploaded line=${job.lineId} → $url');
         onUploaded?.call(job.productionId, job.lineId, url);
       } catch (e) {
-        debugPrint(
-            'SyncQueue: Failed ${job.lineId} (attempt ${job.retryCount + 1}): $e');
         job.retryCount++;
         _pending.removeAt(0);
 
         if (job.retryCount < 5) {
+          _dlog.logError(
+              LogCategory.network,
+              'SyncQueue: upload failed line=${job.lineId} '
+              '(attempt ${job.retryCount}/5, will retry)',
+              e);
           _failed.add(job);
         } else {
-          debugPrint('SyncQueue: Giving up on ${job.lineId} after 5 attempts');
+          _dlog.logError(
+              LogCategory.network,
+              'SyncQueue: GAVE UP on line=${job.lineId} after 5 attempts — '
+              'this recording will not reach castmates until re-recorded',
+              e);
           onGaveUp?.call(job, e);
         }
       }
@@ -214,6 +245,10 @@ class SyncQueue {
     if (_failed.isNotEmpty) {
       final nextRetry = _failed.first;
       final delay = Duration(seconds: 2 << nextRetry.retryCount.clamp(0, 4));
+      _dlog.log(
+          LogCategory.network,
+          'SyncQueue: ${_failed.length} failed upload(s); retrying in '
+          '${delay.inSeconds}s');
       _retryTimer?.cancel();
       _retryTimer = Timer(delay, () {
         _pending.addAll(_failed);

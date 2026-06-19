@@ -6,6 +6,7 @@ import '../../core/responsive.dart';
 import '../../data/models/cast_member_model.dart';
 import '../../data/models/production_models.dart';
 import '../../data/services/analytics_service.dart';
+import '../../data/services/debug_log_service.dart';
 import '../../data/services/deep_link_service.dart';
 import '../../data/services/supabase_service.dart';
 import '../../data/services/voice_config_service.dart';
@@ -409,6 +410,7 @@ class _JoinProductionScreenState extends ConsumerState<JoinProductionScreen> {
       _error = null;
     });
 
+    final dlog = DebugLogService.instance;
     try {
       final supa = SupabaseService.instance;
       final userId = supa.currentUser!.id;
@@ -416,6 +418,10 @@ class _JoinProductionScreenState extends ConsumerState<JoinProductionScreen> {
       final characterName = _selectedCharacter == '__none__'
           ? ''
           : (_selectedCharacter ?? '');
+
+      dlog.log(LogCategory.network,
+          'Join: joining production $productionId as '
+          '"${characterName.isEmpty ? '(no character)' : characterName}" user=$userId');
 
       // Check if there's an unclaimed invitation for this character
       CastMemberModel? localMember;
@@ -486,11 +492,15 @@ class _JoinProductionScreenState extends ConsumerState<JoinProductionScreen> {
       // Sync script from cloud
       final cloudLines = await fetchCloudScriptLines(productionId);
       if (cloudLines != null && cloudLines.isNotEmpty) {
+        dlog.log(LogCategory.network,
+            'Join: pulled ${cloudLines.length} script lines from cloud');
         final script = buildParsedScript(production.title, cloudLines);
         ref.read(currentScriptProvider.notifier).state = script;
         ref.read(currentProductionProvider.notifier).state = production;
         await persistScript(ref);
       } else {
+        dlog.log(LogCategory.network,
+            'Join: no cloud script yet — director may not have imported one');
         ref.read(currentProductionProvider.notifier).state = production;
       }
 
@@ -500,11 +510,15 @@ class _JoinProductionScreenState extends ConsumerState<JoinProductionScreen> {
         await VoiceConfigService.instance.setPreset(productionId, voicePreset);
       }
 
+      dlog.log(LogCategory.network,
+          'Join: success — opening production "${production.title}"');
+
       // Navigate to production hub
       if (mounted) {
         context.go('/production');
       }
-    } catch (e) {
+    } catch (e, stack) {
+      dlog.logError(LogCategory.network, 'Join FAILED', e, stack);
       setState(() {
         _error = 'Failed to join: $e';
         _loading = false;
