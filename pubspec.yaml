@@ -30,6 +30,10 @@ dependencies:
 
   # Audio
   just_audio: ^0.10.0
+  # Direct dep (already transitive via just_audio) so we can force the iOS
+  # AVAudioSession to .playback before playing recordings — rehearsal capture
+  # leaves it in .record, which makes just_audio play silently.
+  audio_session: ^0.2.3
   record: ^5.2.1
 
   # PDF rendering (for OCR pipeline)

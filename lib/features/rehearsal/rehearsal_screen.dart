@@ -28,6 +28,7 @@ import '../../data/services/media_control_service.dart';
 import '../../data/services/sync_queue.dart';
 import '../../data/services/voice_config_service.dart';
 import '../../data/services/audio_level_service.dart';
+import '../../data/services/playback_session.dart';
 import '../../providers/production_providers.dart';
 import '../../features/settings/settings_screen.dart';
 import 'rehearsal_history_screen.dart';
@@ -1498,6 +1499,9 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
 
     if (recording != null) {
       try {
+        // The actor's own line was just captured under the .record category;
+        // force a playback session or the castmate's recording plays silently.
+        await PlaybackSession.ensurePlayback();
         await _player.setFilePath(recording.localPath);
         await _player.setSpeed(speed);
         // Normalize loudness so castmates' recordings don't jump in volume.
@@ -1518,6 +1522,7 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
 
       if (understudyRecording != null) {
         try {
+          await PlaybackSession.ensurePlayback();
           await _player.setFilePath(understudyRecording.localPath);
           await _player.setSpeed(speed);
           await _player.setVolume(await AudioLevelService.instance

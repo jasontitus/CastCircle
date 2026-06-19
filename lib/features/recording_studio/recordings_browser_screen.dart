@@ -13,6 +13,7 @@ import '../../core/theme/app_theme.dart';
 import '../../data/models/script_models.dart';
 import '../../data/services/debug_log_service.dart';
 import '../../data/services/audio_level_service.dart';
+import '../../data/services/playback_session.dart';
 import '../../providers/production_providers.dart';
 
 /// Browse all recordings for the current production, grouped by character.
@@ -516,6 +517,9 @@ class _RecordingsBrowserScreenState
 
     try {
       await _player.stop();
+      // Rehearsal capture leaves iOS in the .record category; without this the
+      // player runs silently. Force a playback session first.
+      await PlaybackSession.ensurePlayback();
       await _player.setFilePath(resolvedPath);
       await _player.setVolume(
         await AudioLevelService.instance.volumeFor(resolvedPath),

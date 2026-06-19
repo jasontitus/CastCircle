@@ -60,8 +60,6 @@ class _DebugLogScreenState extends State<DebugLogScreen> {
               final entries = _log.entriesForCategory(_filter);
               final text = entries.map((e) => e.toLine()).join('\n');
               final label = _filter != null ? _filter!.tag : 'full';
-              final timestamp = DateTime.now().toIso8601String().replaceAll(':', '-');
-              final filename = 'debug_${label}_$timestamp.txt';
               try {
                 final supa = SupabaseService.instance;
                 if (!supa.isInitialized) throw Exception('Supabase not initialized');
@@ -73,11 +71,13 @@ class _DebugLogScreenState extends State<DebugLogScreen> {
                   'content': text,
                   'entry_count': entries.length,
                 });
-                await _log.clear();
+                // Do NOT clear the log here — uploading and wiping in one tap
+                // is surprising and destroys the local copy the user may still
+                // need. Use the explicit "Clear log" (trash) action to clear.
                 if (mounted) {
                   setState(() {});
                   ScaffoldMessenger.of(context).showSnackBar(
-                    SnackBar(content: Text('Sent $label log (${entries.length} entries) — log cleared')),
+                    SnackBar(content: Text('Sent $label log (${entries.length} entries)')),
                   );
                 }
               } catch (e) {

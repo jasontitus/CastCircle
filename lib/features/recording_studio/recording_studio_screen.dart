@@ -16,6 +16,7 @@ import '../../data/models/script_models.dart';
 import '../../data/services/stt_adaptation_service.dart';
 import '../../data/services/sync_queue.dart';
 import '../../data/services/audio_level_service.dart';
+import '../../data/services/playback_session.dart';
 import '../../providers/production_providers.dart';
 import '../../features/settings/settings_screen.dart';
 
@@ -513,6 +514,9 @@ class _RecordingStudioScreenState extends ConsumerState<RecordingStudioScreen> {
     if (path == null) return;
 
     try {
+      // The recorder leaves iOS in the .record category; without this the
+      // player runs silently. Force a playback session first.
+      await PlaybackSession.ensurePlayback();
       await _player!.setFilePath(path);
       final speed = ref.read(playbackSpeedProvider);
       await _player!.setSpeed(speed);
