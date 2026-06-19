@@ -349,6 +349,30 @@ class SttService {
 
   // ── Concurrent Recording ─────────────────────────────
 
+  /// Start a **record-only** capture (no speech recognizer).
+  ///
+  /// Used on Android, where `SpeechRecognizer` and the recorder can't share the
+  /// mic. Wires mic-level events through [_handleLevel] so the caller's
+  /// [onLevel]/[onSilence] fire (mic indicator + silence endpointing) even
+  /// though no recognition is running. Returns false if recording can't start —
+  /// the caller MUST surface that (never silently treat it as recording).
+  Future<bool> startLineCapture(String path) async {
+    _isListening = true;
+    _hasSpeechInUtterance = false;
+    _silenceStart = null;
+    _smoothedLevel = 0;
+    _sttChannel.onLevel = _handleLevel;
+
+    final ok = await startRecording(path);
+    if (!ok) {
+      _isListening = false;
+      _sttChannel.onLevel = null;
+      DebugLogService.instance.logError(
+          LogCategory.stt, 'startLineCapture: recorder refused to start ($path)');
+    }
+    return ok;
+  }
+
   /// Start recording audio alongside STT (same mic tap).
   /// The audio file will be saved to [path] as .m4a.
   Future<bool> startRecording(String path) async {

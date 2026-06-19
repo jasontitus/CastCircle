@@ -1631,6 +1631,15 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
     // Haptic feedback: it's your turn
     HapticFeedback.mediumImpact();
 
+    // Android can't run SpeechRecognizer and the audio recorder on the mic at
+    // the same time. Rehearsal always captures the actor's lines (to share with
+    // castmates), so on Android we record the line and advance on mic-silence
+    // instead of live word-matching.
+    if (Platform.isAndroid) {
+      await _startRecordOnlyCapture(line);
+      return;
+    }
+
     // If STT isn't ready yet (deferred init still running), wait for it
     if (!_stt.isAvailable) {
       _dlog.log(LogCategory.rehearsal, 'Waiting for STT init...');
@@ -2065,6 +2074,68 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
 
   // ── Rehearsal Audio Capture ──────────────────────────
 
+  /// Android record-only path for the actor's line (see [_startListeningForMyLine]).
+  /// Captures audio via MediaRecorder and advances on mic-silence — Android
+  /// can't run SpeechRecognizer and the recorder on the mic simultaneously.
+  Future<void> _startRecordOnlyCapture(ScriptLine line) async {
+    _currentAttemptCount++;
+    _matchConfirmed = false;
+    _matchScore = 0.0;
+    _micLevel = 0.0;
+    _lastRecognizedRaw = ''; // no recognizer on Android — nothing to learn from
+
+    // Mic level for the listening indicator. While the actor is audibly
+    // speaking, push the hard-cap silence timer back so a long line isn't cut
+    // off (nothing else resets it without a recognizer producing results).
+    _stt.onLevel = (level) {
+      if (!mounted) return;
+      if (ref.read(rehearsalStateProvider) != RehearsalState.listeningForMe) {
+        return;
+      }
+      setState(() => _micLevel = level);
+      if (level >= SttService.silenceThreshold) {
+        _resetSilenceTimer(line);
+      }
+    };
+
+    // Endpoint on silence: once the actor has spoken and then gone quiet for the
+    // tunable pause window, advance (no word-matching available on Android).
+    _stt.onSilence = (silence) {
+      if (!mounted) return;
+      if (ref.read(rehearsalStateProvider) != RehearsalState.listeningForMe) {
+        return;
+      }
+      if (silence >=
+          Duration(milliseconds: ref.read(rehearsalAdvanceSilenceMsProvider))) {
+        _confirmLineMatch(line);
+      }
+    };
+
+    final dir = await getTemporaryDirectory();
+    final path = p.join(dir.path, 'rehearsal_${line.id}.m4a');
+    _dlog.log(LogCategory.rehearsal,
+        'Capture(Android): starting for ${line.id.substring(0, 8)}...');
+    final started = await _stt.startLineCapture(path);
+    if (started) {
+      _isCapturingAudio = true;
+      // Hard fallback so a silent/never-ending mic still advances.
+      _resetSilenceTimer(line);
+    } else {
+      // Never silent: tell the user recording didn't happen.
+      _dlog.logError(
+          LogCategory.error, 'Capture(Android): recording failed to start');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text(
+                "Couldn't record your line — check microphone permission in Settings."),
+          ),
+        );
+      }
+      ref.read(rehearsalStateProvider.notifier).state = RehearsalState.ready;
+    }
+  }
+
   Future<void> _startCaptureForLine(ScriptLine line) async {
     try {
       final dir = await getTemporaryDirectory();
@@ -2075,10 +2146,25 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
       if (ok) {
         _isCapturingAudio = true;
       } else {
-        _dlog.log(LogCategory.rehearsal, 'Capture: startRecording FAILED (returned false)');
+        // Never silent: recording didn't start, so the actor isn't being
+        // captured — surface it instead of carrying on as if we are.
+        _dlog.logError(
+            LogCategory.error, 'Capture: startRecording returned false');
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text("Couldn't record your line — check microphone access."),
+            ),
+          );
+        }
       }
     } catch (e) {
       _dlog.logError(LogCategory.error, 'Capture: start exception', e);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Recording error: $e')),
+        );
+      }
     }
   }
 

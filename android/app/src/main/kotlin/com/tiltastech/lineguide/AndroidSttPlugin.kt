@@ -5,7 +5,11 @@ import android.app.Activity
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.media.MediaRecorder
+import android.os.Build
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.speech.RecognitionListener
 import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
@@ -32,6 +36,15 @@ class AndroidSttPlugin : FlutterPlugin, MethodChannel.MethodCallHandler, Activit
     private var isListening = false
     private var locale: String = "en-US"
 
+    // Rehearsal-mode audio capture. Android can't run SpeechRecognizer and a
+    // recorder on the mic at the same time, so capture is mutually exclusive
+    // with listening — startRecording stops any recognizer first.
+    private var mediaRecorder: MediaRecorder? = null
+    private var recordingPath: String? = null
+    private var recordingStartMs: Long = 0
+    private val amplitudeHandler = Handler(Looper.getMainLooper())
+    private var amplitudeRunnable: Runnable? = null
+
     companion object {
         private const val CHANNEL_NAME = "com.lineguide/apple_stt"
         private const val REQUEST_RECORD_AUDIO = 1001
@@ -46,6 +59,7 @@ class AndroidSttPlugin : FlutterPlugin, MethodChannel.MethodCallHandler, Activit
     override fun onDetachedFromEngine(binding: FlutterPlugin.FlutterPluginBinding) {
         channel.setMethodCallHandler(null)
         destroyRecognizer()
+        releaseRecorder()
         context = null
     }
 
@@ -74,6 +88,8 @@ class AndroidSttPlugin : FlutterPlugin, MethodChannel.MethodCallHandler, Activit
             }
             "listen" -> startListening(call, result)
             "stop" -> stopListening(result)
+            "startRecording" -> startRecording(call, result)
+            "stopRecording" -> stopRecording(result)
             "isAvailable" -> {
                 result.success(SpeechRecognizer.isRecognitionAvailable(context!!))
             }
@@ -188,7 +204,130 @@ class AndroidSttPlugin : FlutterPlugin, MethodChannel.MethodCallHandler, Activit
     private fun stopListening(result: MethodChannel.Result) {
         speechRecognizer?.stopListening()
         isListening = false
+        // Safety net: if the screen closes mid-capture, stop() is called without
+        // a matching stopRecording — release the recorder so it doesn't leak the
+        // mic. In the normal flow stopRecording already cleared it, so this is a
+        // no-op then.
+        releaseRecorder()
         result.success(null)
+    }
+
+    // ── Rehearsal audio capture (MediaRecorder → AAC .m4a) ──────────────
+    //
+    // On iOS the same mic tap feeds STT and the recording; Android can't share
+    // the mic, so recording and SpeechRecognizer are mutually exclusive. The
+    // rehearsal screen drives a record-only path on Android and advances on
+    // mic-silence (amplitude reported via onLevel) instead of word-matching.
+
+    private fun startRecording(call: MethodCall, result: MethodChannel.Result) {
+        val ctx = context ?: run {
+            result.error("NO_CONTEXT", "STT plugin not attached", null)
+            return
+        }
+        val path = call.argument<String>("path") ?: run {
+            result.error("NO_PATH", "Missing recording path", null)
+            return
+        }
+
+        if (ContextCompat.checkSelfPermission(ctx, Manifest.permission.RECORD_AUDIO)
+            != PackageManager.PERMISSION_GRANTED) {
+            activity?.let {
+                ActivityCompat.requestPermissions(
+                    it, arrayOf(Manifest.permission.RECORD_AUDIO), REQUEST_RECORD_AUDIO
+                )
+            }
+            // Fail loudly — never return a silent false the caller can't see.
+            result.error("NO_PERMISSION", "Microphone permission not granted", null)
+            return
+        }
+
+        // SpeechRecognizer and MediaRecorder can't share the mic — free it first.
+        destroyRecognizer()
+
+        try {
+            val recorder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                MediaRecorder(ctx)
+            } else {
+                @Suppress("DEPRECATION")
+                MediaRecorder()
+            }
+            recorder.setAudioSource(MediaRecorder.AudioSource.MIC)
+            recorder.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
+            recorder.setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
+            recorder.setAudioSamplingRate(44100)
+            recorder.setAudioEncodingBitRate(128000)
+            recorder.setOutputFile(path)
+            recorder.prepare()
+            recorder.start()
+
+            mediaRecorder = recorder
+            recordingPath = path
+            recordingStartMs = System.currentTimeMillis()
+            startAmplitudePolling()
+            result.success(true)
+        } catch (e: Exception) {
+            try { mediaRecorder?.release() } catch (_: Exception) {}
+            mediaRecorder = null
+            recordingPath = null
+            // Fail loudly — surface the real reason to Dart, don't swallow it.
+            result.error("RECORD_FAILED", "Could not start recording: ${e.message}", null)
+        }
+    }
+
+    private fun stopRecording(result: MethodChannel.Result) {
+        stopAmplitudePolling()
+        val recorder = mediaRecorder
+        val path = recordingPath
+        mediaRecorder = null
+        recordingPath = null
+        if (recorder == null || path == null) {
+            result.success(null)
+            return
+        }
+
+        val durationMs = (System.currentTimeMillis() - recordingStartMs).toInt()
+        try {
+            recorder.stop()
+        } catch (e: Exception) {
+            // stop() throws if the clip is too short / had no frames. Treat as a
+            // discarded (empty) capture rather than crashing.
+            try { recorder.release() } catch (_: Exception) {}
+            result.success(null)
+            return
+        }
+        try { recorder.release() } catch (_: Exception) {}
+        result.success(mapOf("path" to path, "durationMs" to durationMs))
+    }
+
+    private fun startAmplitudePolling() {
+        stopAmplitudePolling()
+        val runnable = object : Runnable {
+            override fun run() {
+                val r = mediaRecorder ?: return
+                try {
+                    // getMaxAmplitude() is 0..32767 (peak since last read). Map
+                    // onto the 0..1 scale the rest of the app expects so the mic
+                    // indicator and silence endpointing work (speech ≈ 0.05+).
+                    val level = (r.maxAmplitude / 32767.0).coerceIn(0.0, 1.0)
+                    channel.invokeMethod("onLevel", level)
+                } catch (_: Exception) {}
+                amplitudeHandler.postDelayed(this, 100)
+            }
+        }
+        amplitudeRunnable = runnable
+        amplitudeHandler.postDelayed(runnable, 100)
+    }
+
+    private fun stopAmplitudePolling() {
+        amplitudeRunnable?.let { amplitudeHandler.removeCallbacks(it) }
+        amplitudeRunnable = null
+    }
+
+    private fun releaseRecorder() {
+        stopAmplitudePolling()
+        try { mediaRecorder?.release() } catch (_: Exception) {}
+        mediaRecorder = null
+        recordingPath = null
     }
 
     private fun destroyRecognizer() {
