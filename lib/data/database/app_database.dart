@@ -203,8 +203,25 @@ class AppDatabase extends _$AppDatabase {
             ..where((r) => r.productionId.equals(productionId)))
           .get();
 
-  Future<int> insertRecording(RecordingsCompanion entry) =>
-      into(recordings).insert(entry, mode: InsertMode.insertOrReplace);
+  /// Insert a recording, replacing any existing one for the same
+  /// (production, line). The primary key is the random `id`, so each re-record
+  /// gets a new id and `insertOrReplace` alone would pile up duplicate rows for
+  /// the same line. The app treats recordings as one-per-line (see
+  /// RecordingsNotifier's `Map<lineId, Recording>`), so we delete the line's
+  /// prior row(s) first — atomically, in a transaction. Castmates' recordings
+  /// live in the in-memory sync cache, not this table, so they're unaffected.
+  Future<int> insertRecording(RecordingsCompanion entry) async {
+    return transaction(() async {
+      if (entry.productionId.present && entry.scriptLineId.present) {
+        await (delete(recordings)
+              ..where((r) =>
+                  r.productionId.equals(entry.productionId.value) &
+                  r.scriptLineId.equals(entry.scriptLineId.value)))
+            .go();
+      }
+      return into(recordings).insert(entry, mode: InsertMode.insertOrReplace);
+    });
+  }
 
   /// Mark a recording as uploaded by setting its remote URL.
   Future<int> markRecordingUploaded(
