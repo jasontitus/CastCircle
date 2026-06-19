@@ -37,11 +37,7 @@ abstract class RecordingCloud {
     DateTime? recordedAt,
   });
 
-  Future<Uint8List> downloadRecording({
-    required String productionId,
-    required String characterName,
-    required String lineId,
-  });
+  Future<Uint8List> downloadRecordingByUrl(String audioUrl);
 }
 
 class _SupabaseRecordingCloud implements RecordingCloud {
@@ -90,16 +86,8 @@ class _SupabaseRecordingCloud implements RecordingCloud {
       );
 
   @override
-  Future<Uint8List> downloadRecording({
-    required String productionId,
-    required String characterName,
-    required String lineId,
-  }) =>
-      _supa.downloadRecording(
-        productionId: productionId,
-        characterName: characterName,
-        lineId: lineId,
-      );
+  Future<Uint8List> downloadRecordingByUrl(String audioUrl) =>
+      _supa.downloadRecordingByUrl(audioUrl);
 }
 
 /// Syncs recordings between local device and Supabase cloud.
@@ -290,19 +278,13 @@ class RecordingSyncService {
         continue;
       }
 
-      // Download the recording
+      // Download the recording by its stored URL (resolves the exact object).
       try {
-        // We need character name for the storage path
-        // Extract from audio_url or query — the URL contains the path
         final audioUrl = cloud['audio_url'] as String? ?? '';
         final characterName =
-            _extractCharacterFromUrl(audioUrl, productionId);
+            _extractCharacterFromUrl(audioUrl, productionId); // for display only
 
-        final bytes = await _cloud.downloadRecording(
-          productionId: productionId,
-          characterName: characterName,
-          lineId: lineId,
-        );
+        final bytes = await _cloud.downloadRecordingByUrl(audioUrl);
 
         final path = await cachePath(productionId, lineId);
         await File(path).writeAsBytes(bytes);
@@ -404,17 +386,14 @@ class RecordingSyncService {
     if (recordUserId == (myUserId ?? _cloud.currentUserId)) return;
 
     final audioUrl = payload['audio_url'] as String? ?? '';
-    final characterName = _extractCharacterFromUrl(audioUrl, productionId);
+    final characterName =
+        _extractCharacterFromUrl(audioUrl, productionId); // for display only
 
     _dlog.log(LogCategory.general,
         'RecordingSync: realtime — new recording for $lineId ($characterName)');
 
     try {
-      final bytes = await _cloud.downloadRecording(
-        productionId: productionId,
-        characterName: characterName,
-        lineId: lineId,
-      );
+      final bytes = await _cloud.downloadRecordingByUrl(audioUrl);
 
       final path = await cachePath(productionId, lineId);
       await File(path).writeAsBytes(bytes);

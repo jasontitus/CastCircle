@@ -74,13 +74,13 @@ class FakeCloud implements RecordingCloud {
   }
 
   @override
-  Future<Uint8List> downloadRecording({
-    required String productionId,
-    required String characterName,
-    required String lineId,
-  }) async {
+  Future<Uint8List> downloadRecordingByUrl(String audioUrl) async {
     downloadCount++;
-    final path = '$productionId/$characterName/$lineId.m4a';
+    const marker = '/recordings/';
+    final i = audioUrl.indexOf(marker);
+    final path = i >= 0
+        ? Uri.decodeFull(audioUrl.substring(i + marker.length))
+        : audioUrl;
     final bytes = storage[path];
     if (bytes == null) {
       throw Exception('Object not found: $path');

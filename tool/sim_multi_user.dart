@@ -262,38 +262,45 @@ Future<void> main(List<String> args) async {
       print('  ⚠ INSERT not received — realtime channel never connected (harness)');
     }
 
-    print('\n[8] Re-record: overwrite (upsert) vs delete-then-insert');
-    var overwriteOk = false;
+    print('\n[8] Re-record: old overwrite is blocked; the client FIX (fresh key)');
+    // (a) The old behaviour: overwrite the same key (upsert) — storage RLS blocks.
     try {
       await a.storage.from('recordings').uploadBinary(path, _fakeAudio(3),
           fileOptions: const FileOptions(contentType: 'audio/mp4', upsert: true));
-      overwriteOk = true;
       ok('overwrite (upsert) works — re-records replace cloud audio fine');
+    } catch (_) {
+      print('  (overwriting the same key is RLS-blocked — that\'s the bug the '
+          'fix avoids)');
+    }
+    // (b) The shipped fix: a NEW unique key per take is always an INSERT, and
+    // the metadata URL is repointed → B downloads the NEW audio.
+    final newKey = '$productionId/$charName/$lineId/${DateTime.now()
+        .millisecondsSinceEpoch}.m4a';
+    final reAudio = _fakeAudio(9);
+    try {
+      await a.storage.from('recordings').uploadBinary(newKey, reAudio,
+          fileOptions: const FileOptions(contentType: 'audio/mp4'));
+      final newUrl = a.storage.from('recordings').getPublicUrl(newKey);
+      await a.from('recordings').upsert({
+        'production_id': productionId,
+        'line_id': lineId,
+        'user_id': aUserId,
+        'audio_url': newUrl,
+        'duration_ms': 1500,
+        'recorded_at': DateTime.now().toUtc().toIso8601String(),
+      }, onConflict: 'production_id,line_id,user_id');
+      // B re-reads metadata and downloads by the stored URL.
+      final bRows =
+          await b.from('recordings').select().eq('production_id', productionId);
+      final row = bRows.firstWhere((r) => r['line_id'] == lineId);
+      final got =
+          await b.storage.from('recordings').download(_keyFromUrl('${row['audio_url']}'));
+      (got.length == reAudio.length && got[5] == reAudio[5])
+          ? ok('FIX VALIDATED: re-record via fresh key → B downloads the NEW take')
+          : bad('B got stale/wrong bytes after re-record');
     } catch (e) {
-      bad('overwrite (upsert) blocked by storage RLS — re-records can\'t replace '
-          'the cloud audio this way ($e)');
+      bad('fresh-key re-record failed: $e');
     }
-    if (!overwriteOk) {
-      // Candidate client-side fix: delete the object then upload fresh (INSERT).
-      try {
-        await a.storage.from('recordings').remove([path]);
-        await a.storage.from('recordings').uploadBinary(path, _fakeAudio(4),
-            fileOptions: const FileOptions(contentType: 'audio/mp4'));
-        ok('FIX VALIDATED: delete-then-insert works → re-records fixable in the '
-            'client (no backend change needed)');
-      } catch (e) {
-        bad('delete-then-insert also blocked — needs a storage UPDATE or DELETE '
-            'policy for the recordings bucket ($e)');
-      }
-    }
-    await a.from('recordings').upsert({
-      'production_id': productionId,
-      'line_id': lineId,
-      'user_id': aUserId,
-      'audio_url': audioUrl,
-      'duration_ms': 1500,
-      'recorded_at': DateTime.now().toUtc().toIso8601String(),
-    }, onConflict: 'production_id,line_id,user_id');
     final gotUpdate = await updateSeen.future
         .timeout(const Duration(seconds: 12), onTimeout: () => false);
     if (gotUpdate) {
@@ -394,6 +401,16 @@ String _uuid() {
   String h(int n) =>
       List.generate(n, (_) => r.nextInt(16).toRadixString(16)).join();
   return '${h(8)}-${h(4)}-4${h(3)}-${(8 + r.nextInt(4)).toRadixString(16)}${h(3)}-${h(12)}';
+}
+
+String _keyFromUrl(String url) {
+  const marker = '/recordings/';
+  final i = url.indexOf(marker);
+  if (i < 0) return url;
+  var p = url.substring(i + marker.length);
+  final q = p.indexOf('?');
+  if (q >= 0) p = p.substring(0, q);
+  return Uri.decodeFull(p);
 }
 
 String _joinCode() {

@@ -373,17 +373,23 @@ class SupabaseService {
     required String lineId,
     required File audioFile,
   }) async {
-    final path = '$productionId/$characterName/$lineId.m4a';
+    // A UNIQUE key per upload. The recordings bucket has no UPDATE/DELETE storage
+    // policy, so re-uploading to the same key is RLS-blocked (overwrite fails) —
+    // which silently breaks re-records. A fresh key each time is always an
+    // INSERT (allowed); download resolves the exact object from the stored URL,
+    // so the key shape doesn't matter to playback. (Old per-take objects orphan
+    // harmlessly — the recordings row keeps only the latest URL.)
+    final safeChar = characterName.replaceAll('/', '-');
+    final unique =
+        '${DateTime.now().millisecondsSinceEpoch}${Random().nextInt(1000)}';
+    final path = '$productionId/$safeChar/$lineId/$unique.m4a';
     final sizeKb = (audioFile.lengthSync() / 1024).toStringAsFixed(0);
     _dlog.log(LogCategory.network, 'Storage upload → recordings/$path (${sizeKb}KB)');
     try {
       await _client.storage.from('recordings').upload(
             path,
             audioFile,
-            fileOptions: const FileOptions(
-              contentType: 'audio/mp4',
-              upsert: true,
-            ),
+            fileOptions: const FileOptions(contentType: 'audio/mp4'),
           );
     } catch (e) {
       _dlog.logError(LogCategory.network,
@@ -393,44 +399,57 @@ class SupabaseService {
     return _client.storage.from('recordings').getPublicUrl(path);
   }
 
-  /// Upload recording from bytes (useful for in-memory buffers).
+  /// Upload recording from bytes (useful for in-memory buffers). Uses a unique
+  /// key per upload for the same reason as [uploadRecording].
   Future<String> uploadRecordingBytes({
     required String productionId,
     required String characterName,
     required String lineId,
     required Uint8List bytes,
   }) async {
-    final path = '$productionId/$characterName/$lineId.m4a';
+    final safeChar = characterName.replaceAll('/', '-');
+    final unique =
+        '${DateTime.now().millisecondsSinceEpoch}${Random().nextInt(1000)}';
+    final path = '$productionId/$safeChar/$lineId/$unique.m4a';
     await _client.storage.from('recordings').uploadBinary(
           path,
           bytes,
-          fileOptions: const FileOptions(
-            contentType: 'audio/mp4',
-            upsert: true,
-          ),
+          fileOptions: const FileOptions(contentType: 'audio/mp4'),
         );
     return _client.storage.from('recordings').getPublicUrl(path);
   }
 
-  /// Download a recording to a local file.
-  Future<Uint8List> downloadRecording({
-    required String productionId,
-    required String characterName,
-    required String lineId,
-  }) async {
-    final path = '$productionId/$characterName/$lineId.m4a';
+  /// Download a recording by its stored public URL. Resolves the exact storage
+  /// object key from the URL, so it works regardless of the key layout — current
+  /// unique-per-take keys and older fixed `{prod}/{char}/{line}.m4a` keys alike —
+  /// and is immune to character names with awkward characters.
+  Future<Uint8List> downloadRecordingByUrl(String audioUrl) async {
+    final objectPath = _objectPathFromUrl(audioUrl);
+    if (objectPath == null) {
+      throw Exception('Could not parse a recordings object path from: $audioUrl');
+    }
     try {
-      final bytes = await _client.storage.from('recordings').download(path);
+      final bytes = await _client.storage.from('recordings').download(objectPath);
       _dlog.log(LogCategory.network,
-          'Storage download ← recordings/$path (${(bytes.length / 1024).toStringAsFixed(0)}KB)');
+          'Storage download ← recordings/$objectPath (${(bytes.length / 1024).toStringAsFixed(0)}KB)');
       return bytes;
     } catch (e) {
       _dlog.logError(LogCategory.network,
-          'Storage download FAILED ← recordings/$path '
-          '(character "$characterName" — check the name has no "/" and matches the upload)',
-          e);
+          'Storage download FAILED ← recordings/$objectPath', e);
       rethrow;
     }
+  }
+
+  /// Extract the storage object key (everything after the `recordings/` bucket
+  /// segment, minus any query string) from a Supabase storage URL.
+  static String? _objectPathFromUrl(String url) {
+    const marker = '/recordings/';
+    final i = url.indexOf(marker);
+    if (i < 0) return null;
+    var path = url.substring(i + marker.length);
+    final q = path.indexOf('?');
+    if (q >= 0) path = path.substring(0, q);
+    return Uri.decodeFull(path);
   }
 
   /// List available recordings for a production.
