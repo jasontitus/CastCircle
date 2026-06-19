@@ -1477,6 +1477,45 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
   ///   2. Real recording by understudy (if understudy fallback enabled)
   ///   3. Voice-cloned audio (if voice cloning enabled)
   ///   4. Kokoro TTS (default fallback — never uses system TTS)
+  bool _orphanWarningChecked = false;
+
+  /// Surface — never silently swallow — the case where shared recordings exist
+  /// but none of their line IDs are in the current script (e.g. the script was
+  /// re-imported or pushed with regenerated IDs, orphaning every recording).
+  /// Without this, rehearsal just plays TTS and the actor never learns their
+  /// castmates' recordings are present-but-mismatched.
+  void _maybeWarnOrphanedRecordings() {
+    if (_orphanWarningChecked) return;
+    final script = ref.read(currentScriptProvider);
+    if (script == null) return;
+    final recIds = <String>{
+      ...ref.read(recordingsProvider).keys,
+      ...ref.read(understudyRecordingsProvider).keys,
+    };
+    if (recIds.isEmpty) return; // nothing synced yet — re-check on the next line
+    _orphanWarningChecked = true;
+
+    final scriptIds = script.lines.map((l) => l.id).toSet();
+    final orphaned = recIds.where((id) => !scriptIds.contains(id)).length;
+    if (orphaned == 0) return;
+
+    _dlog.logError(
+        LogCategory.rehearsal,
+        'Orphaned recordings: $orphaned/${recIds.length} shared recordings have '
+        'line IDs not in this script — they will NOT play (script version mismatch)');
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          duration: const Duration(seconds: 6),
+          content: Text(
+              "$orphaned shared recording(s) don't match this script version — "
+              "you'll hear computer voices for them. Re-sync the script so the "
+              "whole cast shares the same lines."),
+        ),
+      );
+    }
+  }
+
   Future<void> _playOtherLine(ScriptLine line) async {
     ref.read(rehearsalStateProvider.notifier).state =
         RehearsalState.playingOther;
@@ -1484,6 +1523,8 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
       _showMatchFeedback = false;
       _recognizedText = '';
     });
+
+    _maybeWarnOrphanedRecordings();
 
     _dlog.log(LogCategory.rehearsal,
         'Playing: ${line.character} — "${line.text.length > 40 ? '${line.text.substring(0, 37)}...' : line.text}"');

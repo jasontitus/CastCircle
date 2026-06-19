@@ -379,6 +379,11 @@ Future<void> pushScriptToCloud(WidgetRef ref) async {
 
   try {
     final rows = script.lines.asMap().entries.map((e) => {
+      // Preserve the line id so it's STABLE across the cast. Without this the
+      // cloud regenerates ids on every push, and recordings (keyed by line id)
+      // are orphaned for everyone who later pulls the script — they fall back
+      // to TTS because no line matches. See pull side: ScriptLine(id: row['id']).
+      'id': e.value.id,
       'production_id': production.id,
       'order_index': e.key,
       'act': e.value.act,
