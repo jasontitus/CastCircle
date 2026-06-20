@@ -119,6 +119,11 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
   // drop the actor back to the top of the scene next time.
   Timer? _progressSaveTimer;
   ProviderSubscription<int>? _progressSub;
+  // Cached while the screen is mounted so the debounce timer, app-lifecycle
+  // callback, and dispose() can persist progress WITHOUT touching `ref` after
+  // the widget is unmounted (Riverpod throws "Using ref ... is unsafe" then).
+  String? _persistKey;
+  int _lastLineIndex = 0;
   int? _pendingResumeLine; // surfaced as a snackbar once the screen is built
 
   @override
@@ -327,7 +332,14 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
   }
 
   void _startProgressAutosave() {
+    // Seed the cache while we're definitely mounted.
+    _lastLineIndex = ref.read(currentLineIndexProvider);
+    _persistKey = _currentProgressKey();
     _progressSub = ref.listenManual<int>(currentLineIndexProvider, (prev, next) {
+      // Refresh the cache from inside the (mounted) listener so the debounce
+      // timer and dispose() can persist without reading ref after unmount.
+      _lastLineIndex = next;
+      _persistKey = _currentProgressKey() ?? _persistKey;
       // Debounce: advancing fires rapidly during a readthrough.
       _progressSaveTimer?.cancel();
       _progressSaveTimer =
@@ -335,12 +347,21 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
     });
   }
 
-  Future<void> _persistProgress(int idx) async {
+  /// Build the checkpoint key from providers. Uses `ref`, so call ONLY while
+  /// the widget is mounted (autosave setup + the listener).
+  String? _currentProgressKey() {
     final production = ref.read(currentProductionProvider);
     final scene = ref.read(selectedSceneProvider);
     final character = ref.read(rehearsalCharacterProvider);
-    if (scene == null) return;
-    final key = _progressKey(production, scene, character);
+    if (scene == null) return null;
+    return _progressKey(production, scene, character);
+  }
+
+  /// Persist the checkpoint using the cached key — never touches `ref`, so it is
+  /// safe from the debounce timer, the app-lifecycle callback, and dispose(),
+  /// even after the screen has been unmounted.
+  Future<void> _persistProgress(int idx) async {
+    final key = _persistKey;
     if (key == null) return;
     final prefs = await SharedPreferences.getInstance();
     if (idx <= 0) {
@@ -379,17 +400,18 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
     if (state == AppLifecycleState.paused ||
         state == AppLifecycleState.inactive ||
         state == AppLifecycleState.hidden) {
-      _persistProgress(ref.read(currentLineIndexProvider));
+      _persistProgress(_lastLineIndex);
     }
   }
 
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
-    // Capture the final position synchronously before teardown.
-    _progressSaveTimer?.cancel();
-    _persistProgress(ref.read(currentLineIndexProvider));
+    // Stop listening + debouncing first so nothing reads `ref` during teardown,
+    // then persist the final position from the cached key/index (no `ref`).
     _progressSub?.close();
+    _progressSaveTimer?.cancel();
+    _persistProgress(_lastLineIndex);
     WakelockPlus.disable(); // Allow screen to sleep again
     _dlog.stopMemoryMonitoring();
     _dlog.log(LogCategory.rehearsal, 'Rehearsal ended');
