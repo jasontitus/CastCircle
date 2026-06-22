@@ -89,10 +89,15 @@ class ModelDownloadService {
       id: 'kokoro_model',
       name: 'Kokoro TTS Model',
       description: 'Neural TTS model weights for on-device speech synthesis',
-      sizeLabel: '~327 MB',
-      sizeBytes: 327 * 1024 * 1024,
+      // True bf16 (164 MB) — half the old 327 MB fp32. The mlx-community
+      // "Kokoro-82M-bf16" repo is mislabeled (actually ships fp32); this is a
+      // real bf16 cast, verified equivalent (acoustic-model output 0.99999
+      // correlated with fp32). Saved under the same kokoro-v1_0.safetensors
+      // filename the Swift loader expects.
+      sizeLabel: '~164 MB',
+      sizeBytes: 163588519,
       downloadUrl:
-          'https://huggingface.co/mlx-community/Kokoro-82M-bf16/resolve/main/kokoro-v1_0.safetensors',
+          'https://github.com/jasontitus/CastCircle/releases/download/kokoro-82m-bf16-v1/kokoro-v1_0-bf16.safetensors',
       filename: 'kokoro-v1_0.safetensors',
       subdir: 'kokoro_mlx',
     ),
@@ -234,7 +239,19 @@ class ModelDownloadService {
     for (final model in availableModels) {
       if (model.subdir == 'kokoro_mlx') {
         final path = await _filePath(model);
-        if (!File(path).existsSync()) return false;
+        final file = File(path);
+        if (!file.existsSync()) return false;
+        // The model weights have an EXACT expected size, so a mismatch means a
+        // stale build (the old 327 MB fp32) or a partial download. Treat it as
+        // not-ready so it re-downloads the smaller bf16 weights — this migrates
+        // existing installs off fp32 (Documents survives app updates, so they'd
+        // otherwise keep fp32 forever). Voices use an approximate size, so only
+        // size-check the model file.
+        if (model.id == 'kokoro_model' && file.lengthSync() != model.sizeBytes) {
+          debugPrint('ModelDownload: kokoro weights size '
+              '${file.lengthSync()} != ${model.sizeBytes} — re-downloading bf16');
+          return false;
+        }
       }
     }
     return true;
