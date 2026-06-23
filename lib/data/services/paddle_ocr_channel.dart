@@ -92,6 +92,8 @@ class PaddleOcrChannel {
           return PaddleTextBlock(
             text: lm['text'] as String? ?? '',
             confidence: (lm['confidence'] as num?)?.toDouble() ?? 0.0,
+            left: (lm['left'] as num?)?.toDouble() ?? 0.0,
+            width: (lm['width'] as num?)?.toDouble() ?? 1.0,
           );
         }).toList();
         return PaddlePage(page: pageNum, lines: lines);
@@ -114,7 +116,18 @@ class PaddleTextBlock {
   final String text;
   final double confidence;
 
-  PaddleTextBlock({required this.text, required this.confidence});
+  /// Normalized (0–1) left edge and width of the line's bounding box on the
+  /// page. Used to drop left-margin handwritten annotations. Default to a
+  /// full-width body line when the native side doesn't supply them.
+  final double left;
+  final double width;
+
+  PaddleTextBlock({
+    required this.text,
+    required this.confidence,
+    this.left = 0.0,
+    this.width = 1.0,
+  });
 }
 
 class PaddlePage {

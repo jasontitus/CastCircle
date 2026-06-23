@@ -213,10 +213,18 @@ class PaddleOcrPlugin: NSObject {
     let boxes = detectBoxes(prob, mW: mW, mH: mH, origW: origW, origH: origH)
     // 3. Recognize each box, sorted top-to-bottom (reading order).
     var lines: [[String: Any]] = []
+    let fOrigW = Double(max(origW, 1))
     for box in boxes.sorted(by: { $0.minY < $1.minY }) {
       guard let crop = cg.cropping(to: box) else { continue }
       if let (text, conf) = recognize(crop, rec) , !text.isEmpty {
-        lines.append(["text": text, "confidence": conf])
+        // Normalized box left + width let the Dart side drop left-margin
+        // handwritten annotations (a marked-up script's director notes sit in a
+        // distinct left column, well left of the indented dialogue body).
+        lines.append([
+          "text": text, "confidence": conf,
+          "left": Double(box.minX) / fOrigW,
+          "width": Double(box.width) / fOrigW,
+        ])
       }
     }
     return lines

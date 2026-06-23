@@ -278,6 +278,18 @@ class ScriptImportService {
     return furniture;
   }
 
+  /// The page's dialogue-body left edge (normalized 0–1): the median left of the
+  /// "wide" boxes (full text lines). Margin annotations are then measured
+  /// relative to this, so the rule adapts to each script's indentation (a script
+  /// with no margin notes simply has nothing far enough to the left to drop).
+  static double _bodyColumnLeft(List<PaddleTextBlock> lines) {
+    var lefts = lines.where((l) => l.width >= 0.30).map((l) => l.left).toList();
+    if (lefts.isEmpty) lefts = lines.map((l) => l.left).toList();
+    if (lefts.isEmpty) return 0.0;
+    lefts.sort();
+    return lefts[lefts.length ~/ 2];
+  }
+
   /// OCR-based PDF import pipeline.
   /// Renders each page to an image, runs text recognition,
   /// and maps per-line OCR confidence back onto parsed ScriptLines.
@@ -310,8 +322,17 @@ class ScriptImportService {
       // parser's noise patterns only catch the ones that include a page number.
       final furniture = _detectRunningFurniture(paddleResult.pages);
       var strippedFurniture = 0;
+      var strippedMargin = 0;
       for (final page in paddleResult.pages) {
+        final bodyLeft = _bodyColumnLeft(page.lines);
         for (final line in page.lines) {
+          // Left-margin handwritten annotations (a marked-up script's director
+          // notes) sit well left of the indented dialogue body and are narrow —
+          // drop them so they don't interleave line-by-line with the dialogue.
+          if (line.left < bodyLeft - 0.12 && line.width < 0.30) {
+            strippedMargin++;
+            continue;
+          }
           if (furniture.contains(_furnitureKey(line.text))) {
             strippedFurniture++;
             continue; // drop running header/footer
@@ -327,8 +348,8 @@ class ScriptImportService {
       debugPrint(
         'PDF OCR (PaddleOCR): ${paddleResult.pageCount} pages, '
         '${paddleResult.failedPages} failed, '
-        'stripped $strippedFurniture running header/footer lines '
-        '${furniture.isEmpty ? '' : furniture.toList()}',
+        'stripped $strippedMargin margin notes + $strippedFurniture running '
+        'header/footer lines ${furniture.isEmpty ? '' : furniture.toList()}',
       );
     } else if (Platform.isMacOS) {
       // macOS fallback: single native call — PDFKit render + Vision OCR.

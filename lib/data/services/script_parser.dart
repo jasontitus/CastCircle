@@ -50,6 +50,10 @@ class ScriptParser {
     RegExp(r'^\$[A-Za-z\s]+$'), // OCR noise
     RegExp(r'^FTLN \d+'), // Folger Through Line Numbers
     RegExp(r'^ACT \d+\. SC\. \d+$'), // Folger running scene headers
+    // Title-page / front-matter publishing credits — never dialogue.
+    RegExp(r'^adapted by\b', caseSensitive: false),
+    RegExp(r'^from the novel by\b', caseSensitive: false),
+    RegExp(r'\bjon jory\b', caseSensitive: false), // adapter credit, drop anywhere
   ];
 
   /// Patterns that indicate a scene transition in stage directions.
