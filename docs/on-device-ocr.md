@@ -221,3 +221,14 @@ Validated in Python against the real models: pages 8/12/14 lose every margin
 note and the credit, dialogue fully intact. Harness lived in `/tmp/ocr_verify`
 (not committed) — rebuild from `assets/paddle_ocr/*.onnx` + the constants in
 `PaddleOcrPlugin.swift` (det 960 / thresh 0.3 / unclip 0.4, rec h48, CTC blank=0).
+
+### 9.1 Corpus safety verification (2026-06-22)
+
+The auto-detect margin filter (§9) was run through the real PP-OCRv6 models on
+**36 sample pages across all 12 test scripts** (sample-scripts + ocr-test-set:
+Atreus, Chekhov, Congreve, Doll's House, Earnest, Faustus, Ideal Husband, two
+Macbeths, Patience, Pygmalion, P&P). Result: **zero dialogue-like drops anywhere.**
+11 scripts stripped nothing; Macbeth/Folger stripped only its 78 `FTLN` line
+numbers (furniture). Confirms the column auto-detection only fires on a genuine
+narrow far-left furniture column and never removes body text. (Positive case —
+stripping P&P's handwritten margin notes — verified separately on pages 8/12.)
