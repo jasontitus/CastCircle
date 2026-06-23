@@ -197,3 +197,27 @@ null/throw — safe to ship before the native side exists).
 - Run via ONNX Runtime: `RapidOCR(params={"Det.model_path":..., "Rec.model_path":...,
   "Rec.rec_keys_path":"ppocrv6_keys.txt", "Global.use_cls":False})`.
 - Scratch artifacts lived in `/tmp/paddle-onnx` and `/tmp/ocr-bench` (not committed).
+
+## 9. Post-processing: page furniture, margin notes, credits (2026-06-22)
+
+Mac-verified on the real `Pride-Prejudice-SCRIPT.pdf` (82pp copier scan) with the
+shipped ONNX models: **OCR text accuracy is ~99%** — the perceived "type errors"
+were not recognition errors. Two layout problems were leaking non-dialogue text
+into the script, both fixed in `script_import_service` / `script_parser`:
+
+1. **Left-margin handwritten annotations** (a marked-up script's director notes)
+   sit in a distinct left column (left edge ≈ 0.02) well left of the indented
+   dialogue body (≈ 0.26) and got OCR'd + interleaved line-by-line. Fix:
+   `PaddleOcrPlugin` now returns each line's normalized box `left`+`width`;
+   the assembly drops boxes with `left < bodyLeft − 0.12 && width < 0.30`, where
+   `bodyLeft` = median left of the wide (body) boxes — so it adapts per script.
+2. **Running headers/footers + credits**: the running title ("Pride and
+   Prejudice") is dropped by cross-page first/last-slot repetition (≥50% of
+   pages); bare page numbers by the existing `^\d+$` patterns; and the title
+   credit by new noise patterns (`adapted by …`, `from the novel by …`, any
+   `jon jory`).
+
+Validated in Python against the real models: pages 8/12/14 lose every margin
+note and the credit, dialogue fully intact. Harness lived in `/tmp/ocr_verify`
+(not committed) — rebuild from `assets/paddle_ocr/*.onnx` + the constants in
+`PaddleOcrPlugin.swift` (det 960 / thresh 0.3 / unclip 0.4, rec h48, CTC blank=0).
