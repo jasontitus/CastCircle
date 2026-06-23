@@ -278,16 +278,29 @@ class ScriptImportService {
     return furniture;
   }
 
-  /// The page's dialogue-body left edge (normalized 0–1): the median left of the
-  /// "wide" boxes (full text lines). Margin annotations are then measured
-  /// relative to this, so the rule adapts to each script's indentation (a script
-  /// with no margin notes simply has nothing far enough to the left to drop).
-  static double _bodyColumnLeft(List<PaddleTextBlock> lines) {
-    var lefts = lines.where((l) => l.width >= 0.30).map((l) => l.left).toList();
-    if (lefts.isEmpty) lefts = lines.map((l) => l.left).toList();
-    if (lefts.isEmpty) return 0.0;
-    lefts.sort();
-    return lefts[lefts.length ~/ 2];
+  /// If the page has a distinct, tightly-clustered narrow far-left column
+  /// (handwritten margin notes, or line numbers), return the left cutoff below
+  /// which a narrow box is margin furniture; otherwise null → strip nothing.
+  ///
+  /// Auto-detected rather than a fixed threshold, so it never fires on a script
+  /// whose body is simply flush-left or indented. Requires ≥4 narrow boxes
+  /// tightly clustered (left spread ≤ 0.12) and clearly left of the body's left
+  /// boundary (the 15th-percentile left of the wide body boxes). Verified on
+  /// the real PP-OCRv6 models across P&P (drops only the handwritten notes),
+  /// Macbeth/Folger (drops only FTLN line numbers, no dialogue), and Chekhov
+  /// 1912 (drops nothing).
+  static double? _marginCutoff(List<PaddleTextBlock> lines) {
+    var wide = lines.where((l) => l.width >= 0.30).map((l) => l.left).toList();
+    if (wide.isEmpty) wide = lines.map((l) => l.left).toList();
+    if (wide.isEmpty) return null;
+    wide.sort();
+    final cutoff = wide[(wide.length * 0.15).floor()] - 0.10;
+    final cands =
+        lines.where((l) => l.width < 0.30 && l.left < cutoff).map((l) => l.left).toList();
+    if (cands.length < 4) return null; // no consistent margin column
+    cands.sort();
+    if (cands.last - cands.first > 0.12) return null; // not tightly clustered
+    return cutoff;
   }
 
   /// OCR-based PDF import pipeline.
@@ -324,12 +337,16 @@ class ScriptImportService {
       var strippedFurniture = 0;
       var strippedMargin = 0;
       for (final page in paddleResult.pages) {
-        final bodyLeft = _bodyColumnLeft(page.lines);
+        // Only strip a margin column when one is clearly detected on this page,
+        // so scripts without one lose nothing.
+        final marginCutoff = _marginCutoff(page.lines);
         for (final line in page.lines) {
           // Left-margin handwritten annotations (a marked-up script's director
-          // notes) sit well left of the indented dialogue body and are narrow —
-          // drop them so they don't interleave line-by-line with the dialogue.
-          if (line.left < bodyLeft - 0.12 && line.width < 0.30) {
+          // notes) sit in a narrow column well left of the dialogue body — drop
+          // them so they don't interleave line-by-line with the dialogue.
+          if (marginCutoff != null &&
+              line.width < 0.30 &&
+              line.left < marginCutoff) {
             strippedMargin++;
             continue;
           }
