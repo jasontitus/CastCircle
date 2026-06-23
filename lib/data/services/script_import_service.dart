@@ -239,6 +239,45 @@ class ScriptImportService {
     return true;
   }
 
+  /// Normalize an OCR line for running-header/footer matching: lowercase, drop a
+  /// leading or trailing bare page number, collapse whitespace. So "Jon Jory 14"
+  /// and "Jon Jory 15" both key to "jon jory".
+  static String _furnitureKey(String text) {
+    var t = text.trim().toLowerCase();
+    t = t.replaceAll(RegExp(r'^\s*\d+\s+'), ''); // leading page number
+    t = t.replaceAll(RegExp(r'\s+\d+\s*$'), ''); // trailing page number
+    return t.replaceAll(RegExp(r'\s+'), ' ').trim();
+  }
+
+  /// Detect running headers/footers across an OCR'd document: text that
+  /// consistently occupies the FIRST or LAST line slot on at least half the
+  /// pages (e.g. a repeated "Jon Jory" credit or the play title). Character cues
+  /// don't reliably land in the same boundary slot across pages, so they're not
+  /// flagged. Returns the set of furniture keys to strip. No-op for <3 pages.
+  static Set<String> _detectRunningFurniture(List<PaddlePage> pages) {
+    if (pages.length < 3) return {};
+    final firstCounts = <String, int>{};
+    final lastCounts = <String, int>{};
+    for (final page in pages) {
+      final texts =
+          page.lines.map((l) => l.text.trim()).where((t) => t.isNotEmpty).toList();
+      if (texts.isEmpty) continue;
+      final fk = _furnitureKey(texts.first);
+      final lk = _furnitureKey(texts.last);
+      if (fk.length >= 3) firstCounts[fk] = (firstCounts[fk] ?? 0) + 1;
+      if (lk.length >= 3) lastCounts[lk] = (lastCounts[lk] ?? 0) + 1;
+    }
+    final threshold = (pages.length * 0.5).ceil().clamp(3, pages.length);
+    final furniture = <String>{};
+    firstCounts.forEach((k, v) {
+      if (v >= threshold) furniture.add(k);
+    });
+    lastCounts.forEach((k, v) {
+      if (v >= threshold) furniture.add(k);
+    });
+    return furniture;
+  }
+
   /// OCR-based PDF import pipeline.
   /// Renders each page to an image, runs text recognition,
   /// and maps per-line OCR confidence back onto parsed ScriptLines.
@@ -266,8 +305,17 @@ class ScriptImportService {
 
     if (paddleResult != null) {
       failedPages = paddleResult.failedPages;
+      // Running headers/footers (e.g. a "Jon Jory" credit or the title repeated
+      // at the bottom/top of every page) otherwise leak in as bogus lines — the
+      // parser's noise patterns only catch the ones that include a page number.
+      final furniture = _detectRunningFurniture(paddleResult.pages);
+      var strippedFurniture = 0;
       for (final page in paddleResult.pages) {
         for (final line in page.lines) {
+          if (furniture.contains(_furnitureKey(line.text))) {
+            strippedFurniture++;
+            continue; // drop running header/footer
+          }
           buffer.writeln(line.text);
           lineConfidences[rawLineIndex] = line.confidence; // real confidence
           linePageMap[rawLineIndex] = page.page;
@@ -278,7 +326,9 @@ class ScriptImportService {
       }
       debugPrint(
         'PDF OCR (PaddleOCR): ${paddleResult.pageCount} pages, '
-        '${paddleResult.failedPages} failed',
+        '${paddleResult.failedPages} failed, '
+        'stripped $strippedFurniture running header/footer lines '
+        '${furniture.isEmpty ? '' : furniture.toList()}',
       );
     } else if (Platform.isMacOS) {
       // macOS fallback: single native call — PDFKit render + Vision OCR.
