@@ -222,16 +222,63 @@ class SupabaseService {
     try {
       await _client.rpc('claim_cast_invitation',
           params: {'member_id': castMemberId});
+      // The RPC returns void even when it matched 0 rows (role already
+      // claimed) — verify the row is actually ours before reporting success.
+      final row = await _client
+          .from('cast_members')
+          .select('user_id')
+          .eq('id', castMemberId)
+          .maybeSingle();
+      final claimedBy = row?['user_id'] as String?;
+      if (claimedBy != userId) {
+        _dlog.logError(
+            LogCategory.network,
+            'Join: invitation $castMemberId already claimed by another user '
+            '— RPC was a no-op');
+        throw StateError(
+            'This role has already been claimed by another cast member.');
+      }
       _dlog.log(LogCategory.network,
           'Join: claimed invitation $castMemberId via RPC');
+    } on StateError {
+      rethrow;
     } catch (e) {
       _dlog.logError(LogCategory.network,
           'Join: claim RPC failed for $castMemberId, trying direct update', e);
       try {
-        await _client.from('cast_members').update({
-          'user_id': userId,
-          'joined_at': DateTime.now().toIso8601String(),
-        }).eq('id', castMemberId);
+        // Guard on user_id IS NULL: this fallback fires on ANY RPC failure
+        // (including transient network errors) and the cast_members UPDATE
+        // policy is wide open — without the guard, a joiner with a stale
+        // lookup could silently overwrite (steal) an already-claimed role.
+        final updated = await _client
+            .from('cast_members')
+            .update({
+              'user_id': userId,
+              'joined_at': DateTime.now().toIso8601String(),
+            })
+            .eq('id', castMemberId)
+            .isFilter('user_id', null)
+            .select('id');
+        if (updated.isEmpty) {
+          // 0 rows: either someone else holds the role, or an earlier attempt
+          // (e.g. the RPC before its verify flaked) already claimed it for us.
+          final row = await _client
+              .from('cast_members')
+              .select('user_id')
+              .eq('id', castMemberId)
+              .maybeSingle();
+          if ((row?['user_id'] as String?) == userId) {
+            _dlog.log(LogCategory.network,
+                'Join: invitation $castMemberId was already claimed by us');
+            return;
+          }
+          _dlog.logError(
+              LogCategory.network,
+              'Join: invitation $castMemberId is already claimed by someone '
+              'else — refusing to overwrite');
+          throw StateError(
+              'This role has already been claimed by another cast member.');
+        }
         _dlog.log(LogCategory.network,
             'Join: claimed invitation $castMemberId via direct update');
       } catch (e2) {

@@ -184,8 +184,12 @@ class SyncQueue {
       _dlog.log(
           LogCategory.network,
           'SyncQueue: not uploading — cloud not ready (offline or signed out); '
-          '${_pending.length} pending will retry');
+          '${_pending.length} pending will retry in 30s');
       _processing = false;
+      // Signing in on a stable connection fires no connectivity event, so
+      // poll until the uploader becomes ready.
+      _retryTimer?.cancel();
+      _retryTimer = Timer(const Duration(seconds: 30), _processQueue);
       return;
     }
 
@@ -201,7 +205,7 @@ class SyncQueue {
           // File deleted locally — drop the job
           _dlog.log(LogCategory.network,
               'SyncQueue: dropped line=${job.lineId} — local file gone (${job.localPath})');
-          _pending.removeAt(0);
+          _pending.remove(job);
           continue;
         }
 
@@ -213,13 +217,30 @@ class SyncQueue {
         final url = await _uploader.upload(job);
         await _uploader.saveMetadata(job, url);
 
-        _pending.removeAt(0);
-        _dlog.log(LogCategory.network,
-            'SyncQueue: uploaded line=${job.lineId} → $url');
-        onUploaded?.call(job.productionId, job.lineId, url);
+        // enqueue() may have replaced this job with a newer take while the
+        // upload was in flight — remove() then misses, and the newer take's
+        // local recording must NOT be stamped with this stale URL (a non-null
+        // remoteUrl would exclude it from every future sync).
+        final superseded = !_pending.remove(job);
+        _dlog.log(
+            LogCategory.network,
+            'SyncQueue: uploaded line=${job.lineId} → $url'
+            '${superseded ? ' (superseded by a newer take, not marking local)' : ''}');
+        if (!superseded) {
+          onUploaded?.call(job.productionId, job.lineId, url);
+        }
       } catch (e) {
+        final superseded = !_pending.remove(job);
+        if (superseded) {
+          // A newer take for this line is already queued; let it drive the
+          // retry instead of resurrecting this job.
+          _dlog.log(
+              LogCategory.network,
+              'SyncQueue: upload failed line=${job.lineId} but a newer take '
+              'is queued — dropping the old job');
+          continue;
+        }
         job.retryCount++;
-        _pending.removeAt(0);
 
         if (job.retryCount < 5) {
           _dlog.logError(
@@ -240,6 +261,14 @@ class SyncQueue {
     }
 
     _processing = false;
+
+    // An enqueue() that landed between the loop's last emptiness check and
+    // the flag reset above saw _processing == true and skipped its kick —
+    // pick those jobs up now.
+    if (_pending.isNotEmpty) {
+      scheduleMicrotask(_processQueue);
+      return;
+    }
 
     // Schedule retry for failed jobs with exponential backoff
     if (_failed.isNotEmpty) {

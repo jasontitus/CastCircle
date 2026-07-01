@@ -277,7 +277,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
         duration: const Duration(seconds: 4),
       ));
     } catch (e) {
-      debugPrint('Cloud script fetch failed: $e');
+      DebugLogService.instance.logError(
+          LogCategory.network, 'Cloud script fetch failed', e);
     }
   }
 
@@ -303,10 +304,24 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
       final local = ref.read(currentScriptProvider);
       if (local != null && _sameLines(local.lines, cloudLines)) return; // already current
 
+      // The cloud push is a non-atomic delete+insert; a push that died halfway
+      // leaves a truncated cloud script. Adopting it here would propagate that
+      // truncation to this castmate (and everyone else). Refuse suspiciously
+      // large shrinkage — the organizer's next successful push heals the cloud.
+      if (local != null &&
+          local.lines.length >= 20 &&
+          cloudLines.length < local.lines.length ~/ 2) {
+        DebugLogService.instance.logError(
+          LogCategory.network,
+          'Cloud script for ${production.id} has ${cloudLines.length} lines '
+          'but local has ${local.lines.length} — looks like a truncated push; '
+          'keeping the local copy',
+        );
+        return;
+      }
+
       final updated = buildParsedScript(production.title, cloudLines);
-      final repo = ref.read(productionRepositoryProvider);
-      await repo.saveScriptLines(production.id, updated.lines);
-      await repo.saveScenes(production.id, updated.scenes);
+      await persistScriptLocally(ref, production.id, updated);
 
       // Only swap the in-memory script if we're still on this production.
       if (ref.read(currentProductionProvider)?.id == production.id) {
@@ -322,7 +337,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
         duration: const Duration(seconds: 3),
       ));
     } catch (e) {
-      debugPrint('Script cloud refresh failed: $e');
+      DebugLogService.instance.logError(
+          LogCategory.network, 'Script cloud refresh failed', e);
     }
   }
 
@@ -437,7 +453,12 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     ParsedScript script,
   ) async {
     ref.read(currentScriptProvider.notifier).state = script;
-    await persistScript(ref);
+    // Local-only: this script just came FROM the cloud — pushing it back would
+    // be a pointless (and for cast members RLS-rejected) delete+reinsert.
+    final production = ref.read(currentProductionProvider);
+    if (production != null) {
+      await persistScriptLocally(ref, production.id, script);
+    }
   }
 
   bool _scriptsDiffer(ParsedScript localScript, ParsedScript cloudScript) {

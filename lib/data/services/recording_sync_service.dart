@@ -181,8 +181,14 @@ class RecordingSyncService {
     _dlog.log(LogCategory.general,
         'RecordingSync: ${cloudRecordings.length} recordings in cloud');
 
-    // Build lookup: lineId → cloud metadata
+    final userId = myUserId ?? _cloud.currentUserId;
+
+    // Build lookups: newest cloud row per line from ANY user (drives
+    // downloads), and newest per line from ME (drives the upload decision —
+    // cloud rows are keyed (production, line, user), so a castmate's newer
+    // take for the same line must not suppress uploading mine).
     final cloudByLine = <String, Map<String, dynamic>>{};
+    final myCloudByLine = <String, Map<String, dynamic>>{};
     for (final row in cloudRecordings) {
       final lineId = row['line_id'] as String?;
       if (lineId == null) continue;
@@ -193,13 +199,19 @@ class RecordingSyncService {
               _parseTimestamp(existing['recorded_at'])) {
         cloudByLine[lineId] = row;
       }
+      if (userId != null && row['user_id'] == userId) {
+        final mine = myCloudByLine[lineId];
+        if (mine == null ||
+            _parseTimestamp(row['recorded_at']) >
+                _parseTimestamp(mine['recorded_at'])) {
+          myCloudByLine[lineId] = row;
+        }
+      }
     }
 
     // ── Upload local recordings that are missing or newer in cloud ──
-    final userId = myUserId ?? _cloud.currentUserId;
-    int uploaded = 0;
+    final toUpload = <MapEntry<String, Recording>>[];
     for (final entry in localRecordings.entries) {
-      final lineId = entry.key;
       final recording = entry.value;
 
       // Skip if already uploaded (has remoteUrl)
@@ -207,10 +219,11 @@ class RecordingSyncService {
         continue;
       }
 
-      // Skip if the cloud already has this line and it's at least as new
-      // as our local take. (A strictly newer local take — a re-record —
-      // must still be uploaded.)
-      final cloud = cloudByLine[lineId];
+      // Skip if the cloud already has MY take for this line and it's at least
+      // as new as the local one. (A strictly newer local take — a re-record —
+      // must still be uploaded. Another user's newer take doesn't count: my
+      // row coexists with theirs.)
+      final cloud = myCloudByLine[entry.key];
       if (cloud != null &&
           _parseTimestamp(cloud['recorded_at']) >=
               recording.recordedAt.millisecondsSinceEpoch) {
@@ -220,6 +233,13 @@ class RecordingSyncService {
       // Skip if file doesn't exist
       if (!File(recording.localPath).existsSync()) continue;
 
+      toUpload.add(entry);
+    }
+
+    int uploaded = 0;
+    await _runPooled(toUpload, (entry) async {
+      final lineId = entry.key;
+      final recording = entry.value;
       try {
         final url = await _cloud.uploadRecording(
           productionId: productionId,
@@ -245,7 +265,7 @@ class RecordingSyncService {
         _dlog.logError(
             LogCategory.error, 'RecordingSync: upload failed for $lineId', e);
       }
-    }
+    });
 
     if (uploaded > 0) {
       _dlog.log(LogCategory.general,
@@ -253,11 +273,10 @@ class RecordingSyncService {
     }
 
     // ── Download cloud recordings not cached locally ──
-    int downloaded = 0;
+    final toDownload = <MapEntry<String, Map<String, dynamic>>>[];
     for (final entry in cloudByLine.entries) {
       final lineId = entry.key;
       final cloud = entry.value;
-      final cloudUserId = cloud['user_id'] as String?;
 
       // Skip if we already have a local recording for this line
       // (regardless of who recorded it — handles multi-device for same user)
@@ -277,6 +296,16 @@ class RecordingSyncService {
           File(cached.localPath).existsSync()) {
         continue;
       }
+
+      toDownload.add(entry);
+    }
+
+    int downloaded = 0;
+    await _runPooled(toDownload, (entry) async {
+      final lineId = entry.key;
+      final cloud = entry.value;
+      final cloudUserId = cloud['user_id'] as String?;
+      final cloudTimestamp = _parseTimestamp(cloud['recorded_at']);
 
       // Download the recording by its stored URL (resolves the exact object).
       try {
@@ -307,7 +336,7 @@ class RecordingSyncService {
         _dlog.logError(
             LogCategory.error, 'RecordingSync: download failed for $lineId', e);
       }
-    }
+    });
 
     _dlog.log(LogCategory.general,
         'RecordingSync: done — $uploaded uploaded, $downloaded downloaded');
@@ -315,7 +344,47 @@ class RecordingSyncService {
     return downloaded;
   }
 
+  /// Run [task] over [items] with a few concurrent workers instead of one at
+  /// a time. A full first sync of a production is hundreds of small transfers;
+  /// serially that's minutes of round-trip latency, pooled it's ~4-6× faster.
+  /// Errors are handled inside [task] (each transfer logs its own failure).
+  static Future<void> _runPooled<T>(
+    List<T> items,
+    Future<void> Function(T item) task, {
+    int concurrency = 4,
+  }) async {
+    if (items.isEmpty) return;
+    var next = 0;
+    final workers = List.generate(concurrency.clamp(1, items.length), (_) async {
+      while (true) {
+        final i = next++; // safe: single isolate, no await between read+bump
+        if (i >= items.length) break;
+        await task(items[i]);
+      }
+    });
+    await Future.wait(workers);
+  }
+
   // ── Build Recording Map from Cache ──────────────────────
+
+  /// Get a single cached recording as a [Recording], or null if not cached.
+  /// Much cheaper than [getCachedRecordings] when one file just arrived —
+  /// during a big sync the full-map version stats every cache entry per
+  /// downloaded file.
+  Recording? getCachedRecording(String lineId) {
+    final cached = _cache[lineId];
+    if (cached == null) return null;
+    return Recording(
+      id: 'cache_$lineId',
+      scriptLineId: lineId,
+      character: cached.character,
+      localPath: cached.localPath,
+      remoteUrl: null,
+      durationMs: cached.durationMs,
+      recordedAt: DateTime.fromMillisecondsSinceEpoch(
+          cached.recordedAt.clamp(0, 1 << 52)),
+    );
+  }
 
   /// Get all cached recordings as a Map<lineId, Recording> for use
   /// with the recordingsProvider or understudyRecordingsProvider.

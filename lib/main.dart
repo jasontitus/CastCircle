@@ -36,6 +36,10 @@ final sharedPreferencesProvider = Provider<SharedPreferences>((ref) {
 /// Whether Firebase was successfully initialized (false on Android until configured).
 bool firebaseAvailable = false;
 
+/// Root ScaffoldMessenger so background services (sync queue, cloud sync)
+/// can surface failures as SnackBars without a widget context.
+final rootScaffoldMessengerKey = GlobalKey<ScaffoldMessengerState>();
+
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
 

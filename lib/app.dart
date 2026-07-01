@@ -2,11 +2,12 @@ import 'dart:async';
 
 import 'package:firebase_analytics/firebase_analytics.dart';
 import 'package:flutter/material.dart';
-import 'main.dart' show firebaseAvailable;
+import 'main.dart' show firebaseAvailable, rootScaffoldMessengerKey;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_riverpod/legacy.dart';
 import 'package:go_router/go_router.dart';
 import 'core/theme/app_theme.dart';
+import 'data/services/debug_log_service.dart';
 import 'data/services/deep_link_service.dart';
 import 'data/services/supabase_service.dart';
 import 'features/auth/auth_screen.dart';
@@ -247,13 +248,26 @@ class _CastCircleAppState extends ConsumerState<CastCircleApp> {
     // recordings and clears the previous production's downloaded cache first.
     ref.listen(currentProductionProvider, (prev, next) {
       if (next == null || next.id == prev?.id) return;
-      ref.read(recordingsProvider.notifier).loadForProduction(next.id);
       ref.read(understudyRecordingsProvider.notifier).clear();
-      launchRecordingSync(ref, next.id);
+      // Load this production's local recordings BEFORE the cloud sync runs, or
+      // the sync mistakes not-yet-loaded recordings for missing ones (re-
+      // downloading them and skipping their uploads).
+      unawaited(() async {
+        try {
+          await ref
+              .read(recordingsProvider.notifier)
+              .loadForProduction(next.id);
+        } catch (e) {
+          DebugLogService.instance.logError(LogCategory.error,
+              'Loading local recordings for ${next.id} failed', e);
+        }
+        launchRecordingSync(ref, next.id);
+      }());
     });
 
     final router = ref.watch(_routerProvider);
     return MaterialApp.router(
+      scaffoldMessengerKey: rootScaffoldMessengerKey,
       title: 'CastCircle',
       theme: AppTheme.lightTheme,
       darkTheme: AppTheme.darkTheme,

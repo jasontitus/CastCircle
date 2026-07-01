@@ -9,6 +9,10 @@ class FakeUploader implements RecordingUploader {
   bool failUpload = false;
   bool failMetadata = false;
 
+  /// Called at the start of each upload, before it resolves — lets tests
+  /// enqueue a replacement take while an upload is in flight.
+  void Function(SyncJob job)? onUploadStarted;
+
   final List<SyncJob> uploads = [];
   final List<String> savedUrls = [];
   final List<SyncJob> savedMetadataJobs = [];
@@ -18,6 +22,10 @@ class FakeUploader implements RecordingUploader {
 
   @override
   Future<String> upload(SyncJob job) async {
+    onUploadStarted?.call(job);
+    // Yield so work scheduled by onUploadStarted (e.g. an enqueue) lands
+    // mid-flight like a real slow network upload.
+    await Future<void>.delayed(Duration.zero);
     if (failUpload) throw Exception('upload failed');
     uploads.add(job);
     return 'https://cloud.example/recordings/'
@@ -270,6 +278,59 @@ void main() {
       expect(abandoned, isNotNull);
       expect(abandoned!.lineId, 'line-1');
       expect(abandoned!.retryCount, 5);
+    });
+
+    test(
+        're-recording while the old take is uploading keeps the new job '
+        'and does not mark it uploaded with the stale URL', () async {
+      final oldPath = await makeAudioFile('take-1');
+      final newPath = await makeAudioFile('take-2');
+
+      final uploadedUrls = <String>[];
+      queue.onUploaded = (prodId, lineId, url) => uploadedUrls.add(url);
+
+      uploader.ready = false;
+      queue.enqueue(
+        productionId: 'prod-1',
+        characterName: 'HAMLET',
+        lineId: 'line-1',
+        localPath: oldPath,
+        durationMs: 1000,
+      );
+
+      // While take-1 is in flight, the actor re-records the line.
+      var replacedMidFlight = false;
+      uploader.onUploadStarted = (job) {
+        if (!replacedMidFlight && job.localPath == oldPath) {
+          replacedMidFlight = true;
+          queue.enqueue(
+            productionId: 'prod-1',
+            characterName: 'HAMLET',
+            lineId: 'line-1',
+            localPath: newPath,
+            durationMs: 2000,
+          );
+        }
+      };
+
+      uploader.ready = true;
+      await queue.processQueue();
+      // Drain the microtask-scheduled follow-up pass for the new job.
+      await Future<void>.delayed(Duration.zero);
+      await queue.processQueue();
+
+      // The NEW take must survive and upload; the stale take-1 URL must not
+      // be reported as the upload result for the re-recorded line.
+      expect(queue.pending, isEmpty);
+      expect(queue.failed, isEmpty);
+      expect(uploader.uploads.map((j) => j.localPath), contains(newPath));
+      expect(uploadedUrls, isNotEmpty);
+      // Exactly one onUploaded for the final state of the line, from take-2's
+      // job (both takes share the same remote path, but the old in-flight job
+      // must not have claimed it).
+      expect(uploadedUrls, hasLength(1));
+      expect(uploader.uploads.last.durationMs, 2000);
+      expect(uploader.savedMetadataJobs.last.durationMs, 2000);
     });
 
     test('re-recording a permanently failed line re-queues it fresh',

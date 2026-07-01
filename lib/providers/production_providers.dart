@@ -1,6 +1,7 @@
 import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
+import 'package:flutter/material.dart' show SnackBar, Text;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_riverpod/legacy.dart';
 
@@ -253,9 +254,53 @@ Future<void> persistScript(WidgetRef ref) async {
   final production = ref.read(currentProductionProvider);
   if (script == null || production == null) { trace?.stop(); return; }
 
+  await persistScriptLocally(ref, production.id, script);
+
+  // Also push to cloud so other cast members can download it. Only the
+  // organizer may write script_lines (RLS) — a cast member's push would fail
+  // every time, so don't attempt it (their edits stay local by design; the
+  // cloud copy is the organizer's).
+  final myUserId = SupabaseService.instance.currentUser?.id;
+  if (myUserId == null || production.organizerId != myUserId) {
+    DebugLogService.instance.log(
+      LogCategory.network,
+      'Script cloud push skipped — not the organizer '
+      '(edits stay on this device)',
+    );
+    trace?.stop();
+    return;
+  }
+  try {
+    await pushScriptToCloud(ref);
+    AnalyticsService.instance.logCloudSynced(direction: 'push');
+  } catch (e) {
+    // Local save succeeded, but the cast will keep rehearsing a stale script
+    // until a push succeeds — that must be loud, not a debugPrint.
+    DebugLogService.instance.logError(
+      LogCategory.network,
+      'Script cloud push failed — castmates will not see these edits '
+      'until the next successful save',
+      e,
+    );
+    rootScaffoldMessengerKey.currentState?.showSnackBar(const SnackBar(
+      content: Text("Couldn't sync script changes to the cast — check your "
+          'connection. Your edits are saved on this device and will push on '
+          'the next save.'),
+      duration: Duration(seconds: 6),
+    ));
+  }
+  trace?.stop();
+}
+
+/// Save [script] to Drift and the SharedPreferences backup WITHOUT pushing to
+/// the cloud. Use for scripts that just came FROM the cloud (join, refresh) —
+/// pushing those back is at best redundant and at worst a destructive
+/// delete+reinsert racing the organizer.
+Future<void> persistScriptLocally(
+    WidgetRef ref, String productionId, ParsedScript script) async {
   final repo = ref.read(productionRepositoryProvider);
-  await repo.saveScriptLines(production.id, script.lines);
-  await repo.saveScenes(production.id, script.scenes);
+  await repo.saveScriptLines(productionId, script.lines);
+  await repo.saveScenes(productionId, script.scenes);
 
   // Save a JSON backup to SharedPreferences as a second local copy
   try {
@@ -263,10 +308,10 @@ Future<void> persistScript(WidgetRef ref) async {
     final jsonString = jsonEncode(jsonList);
     if (jsonString.length <= _maxBackupBytes) {
       final prefs = await SharedPreferences.getInstance();
-      await prefs.setString('script_backup_${production.id}', jsonString);
+      await prefs.setString('script_backup_$productionId', jsonString);
       DebugLogService.instance.log(
         LogCategory.general,
-        'Script backup saved to SharedPreferences for ${production.id} '
+        'Script backup saved to SharedPreferences for $productionId '
         '(${script.lines.length} lines, ${jsonString.length} bytes)',
       );
     } else {
@@ -284,16 +329,6 @@ Future<void> persistScript(WidgetRef ref) async {
     );
     // Non-fatal — Drift save already succeeded
   }
-
-  // Also push to cloud so other cast members can download it
-  try {
-    await pushScriptToCloud(ref);
-    AnalyticsService.instance.logCloudSynced(direction: 'push');
-  } catch (e) {
-    debugPrint('Cloud sync after persist failed: $e');
-    // Non-fatal — local save succeeded
-  }
-  trace?.stop();
 }
 
 /// Wire up recording sync for a production: persist remote URLs on upload,
@@ -313,20 +348,40 @@ void launchRecordingSync(WidgetRef ref, String productionId) {
     ref.read(recordingsProvider.notifier).markUploaded(prodId, lineId, url);
   };
 
+  // A recording the queue abandons after all retries never reaches castmates —
+  // that must be loud, not just a debug-log line.
+  SyncQueue.instance.onGaveUp = (job, error) {
+    rootScaffoldMessengerKey.currentState?.showSnackBar(SnackBar(
+      content: Text(
+          'Upload failed for a "${job.characterName}" recording — castmates '
+          "won't hear it. Check your connection and re-record the line."),
+      duration: const Duration(seconds: 8),
+    ));
+  };
+
   RecordingSyncService.instance
     ..onRecordingReady = (lineId, path) {
-      final cached = RecordingSyncService.instance.getCachedRecordings();
-      ref.read(understudyRecordingsProvider.notifier).loadFromMap(cached);
+      // Add just the recording that arrived — rebuilding the full cache map
+      // stats every cached file per download, which during a big first sync
+      // is O(n²) file stats plus n map copies.
+      final rec = RecordingSyncService.instance.getCachedRecording(lineId);
+      if (rec != null) {
+        ref
+            .read(understudyRecordingsProvider.notifier)
+            .loadFromMap({lineId: rec});
+      }
     }
     ..onLocalUploaded = (lineId, url) {
       ref.read(recordingsProvider.notifier).markUploaded(productionId, lineId, url);
     }
     ..subscribe(productionId: productionId, myUserId: userId);
 
-  // Full sync in the background — don't block.
+  // Full sync in the background — don't block. The caller (app.dart's
+  // currentProductionProvider listener) awaits the Drift load before invoking
+  // this, so recordingsProvider already holds this production's recordings —
+  // no arbitrary sleep needed (a slow load used to make sync see an empty map
+  // and re-download/skip-upload recordings it already had).
   Future(() async {
-    // Wait briefly for recordingsProvider to finish loading from Drift.
-    await Future.delayed(const Duration(milliseconds: 500));
     final localRecordings = ref.read(recordingsProvider);
 
     final downloaded = await RecordingSyncService.instance.syncForProduction(
@@ -364,7 +419,8 @@ Future<List<ScriptLine>?> fetchCloudScriptLines(String productionId) async {
       stageDirection: row['stage_direction'] as String? ?? '',
     )).toList();
   } catch (e) {
-    debugPrint('Cloud sync fetch failed: $e');
+    DebugLogService.instance.logError(
+        LogCategory.network, 'Cloud script fetch failed for $productionId', e);
     return null;
   }
 }
@@ -400,7 +456,8 @@ Future<void> pushScriptToCloud(WidgetRef ref) async {
       lines: rows,
     );
   } catch (e) {
-    debugPrint('Cloud sync push failed: $e');
+    DebugLogService.instance.logError(
+        LogCategory.network, 'Cloud script push failed for ${production.id}', e);
     rethrow;
   }
 }

@@ -497,7 +497,10 @@ class _JoinProductionScreenState extends ConsumerState<JoinProductionScreen> {
         final script = buildParsedScript(production.title, cloudLines);
         ref.read(currentScriptProvider.notifier).state = script;
         ref.read(currentProductionProvider.notifier).state = production;
-        await persistScript(ref);
+        // Local-only save: this script just came FROM the cloud. persistScript
+        // would push it straight back (a delete+reinsert the joiner isn't even
+        // allowed to do, racing the organizer if RLS ever permits it).
+        await persistScriptLocally(ref, productionId, script);
       } else {
         dlog.log(LogCategory.network,
             'Join: no cloud script yet — director may not have imported one');
