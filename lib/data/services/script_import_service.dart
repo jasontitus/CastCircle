@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'dart:isolate';
 import 'dart:ui' as ui;
 
 import 'package:flutter/foundation.dart';
@@ -120,14 +121,21 @@ class ScriptImportService {
           final nativeResult = nativeParser.parse(cleanedText, title: title);
 
           if (_isGoodParse(nativeResult)) {
-            // Map source page onto parsed lines
+            // Map source page onto parsed lines. Forward cursor: parsed lines
+            // are in document order, so restarting the raw-line scan from 0
+            // for every line (the old behavior) was O(N·M).
             final rawLines = nativeText.split('\n');
+            var rawSearchStart = 0;
             final taggedLines = nativeResult.lines.map((line) {
-              final pageInfo = _findSourcePage(
+              final pageInfo = _findSourcePageFrom(
                 line.text,
                 rawLines,
                 linePageMap,
+                rawSearchStart,
               );
+              if (pageInfo != null) {
+                rawSearchStart = pageInfo.rawLineIndex + 1;
+              }
               return line.copyWith(
                 sourcePage: () => pageInfo?.page,
                 sourceLineOnPage: () => pageInfo?.lineOnPage,
@@ -492,33 +500,73 @@ class ScriptImportService {
       );
     }
 
-    final script = _parser.parse(rawText, title: title);
+    // Parse + confidence/page mapping run in a worker isolate: for a big
+    // scanned play this is seconds of pure-Dart string work, and doing it on
+    // the UI isolate froze the import spinner right after the native OCR
+    // finished. Everything captured/returned is plain data.
+    return Isolate.run(
+        () => parseAndMapOcr(rawText, title, lineConfidences, linePageMap));
+  }
 
-    // Map OCR confidence and source page onto parsed ScriptLines.
-    // Use a single forward pass through raw lines so each raw line is
-    // consumed at most once — prevents all parsed lines from matching
-    // the same early occurrence of common text.
-    final rawLines = rawText.split('\n');
-    var rawSearchStart = 0;
+  /// Parse OCR'd [rawText] and map per-raw-line OCR confidence + source page
+  /// onto the parsed lines. Pure function (safe for [Isolate.run]).
+  ///
+  /// Mapping uses a single forward cursor over the raw lines: parsed lines
+  /// come out in document order, and each parsed line's contributing raw
+  /// lines are consecutive. The old implementation rescanned ALL raw lines
+  /// per parsed line (O(N·M) `contains` calls — tens of millions for a long
+  /// play) and let repeated short text anywhere in the document pollute a
+  /// line's confidence average.
+  @visibleForTesting
+  static ParsedScript parseAndMapOcr(
+    String rawText,
+    String title,
+    Map<int, double> lineConfidences,
+    Map<int, int> linePageMap,
+  ) {
+    final script = ScriptParser().parse(rawText, title: title);
+
+    final rawLines =
+        rawText.split('\n').map((l) => l.trim().toLowerCase()).toList();
+
+    bool matches(String raw, String search) =>
+        raw.contains(search) || search.contains(raw);
+
+    var cursor = 0;
     final updatedLines = script.lines.map((line) {
-      final conf = _findConfidenceForParsedLine(
-        line.text,
-        rawLines,
-        lineConfidences,
-      );
-      final pageInfo = _findSourcePageFrom(
-        line.text,
-        rawLines,
-        linePageMap,
-        rawSearchStart,
-      );
-      if (pageInfo != null) {
-        rawSearchStart = pageInfo.rawLineIndex + 1;
+      final searchText = line.text.trim().toLowerCase();
+      if (searchText.isEmpty) return line;
+
+      // Find the first contributing raw line at/after the cursor.
+      int? matchStart;
+      for (var i = cursor; i < rawLines.length; i++) {
+        if (rawLines[i].isEmpty) continue;
+        if (matches(rawLines[i], searchText)) {
+          matchStart = i;
+          break;
+        }
       }
+      if (matchStart == null) return line;
+
+      // Average confidence across the consecutive raw lines this parsed line
+      // was assembled from.
+      final confidences = <double>[];
+      for (var i = matchStart; i < rawLines.length; i++) {
+        if (rawLines[i].isEmpty) break;
+        if (i > matchStart && !matches(rawLines[i], searchText)) break;
+        final conf = lineConfidences[i];
+        if (conf != null) confidences.add(conf);
+      }
+      cursor = matchStart + 1;
+
+      final page = linePageMap[matchStart];
+      final avgConf = confidences.isEmpty
+          ? null
+          : confidences.reduce((a, b) => a + b) / confidences.length;
       return line.copyWith(
-        ocrConfidence: conf != null ? () => conf : null,
-        sourcePage: pageInfo != null ? () => pageInfo.page : null,
-        sourceLineOnPage: pageInfo != null ? () => pageInfo.lineOnPage : null,
+        ocrConfidence: avgConf != null ? () => avgConf : null,
+        sourcePage: page != null ? () => page : null,
+        sourceLineOnPage: page != null ? () => 0 : null,
       );
     }).toList();
 
@@ -556,41 +604,6 @@ class ScriptImportService {
       }
     }
     return null;
-  }
-
-  /// Find the source page for a parsed line (legacy — searches from start).
-  ({int page, int lineOnPage})? _findSourcePage(
-    String parsedText,
-    List<String> rawLines,
-    Map<int, int> linePageMap,
-  ) {
-    final result = _findSourcePageFrom(parsedText, rawLines, linePageMap, 0);
-    if (result == null) return null;
-    return (page: result.page, lineOnPage: result.lineOnPage);
-  }
-
-  /// Find the OCR confidence for a parsed line by locating which raw text
-  /// lines contributed to it.
-  double? _findConfidenceForParsedLine(
-    String parsedText,
-    List<String> rawLines,
-    Map<int, double> lineConfidences,
-  ) {
-    final confidences = <double>[];
-    final searchText = parsedText.trim().toLowerCase();
-    if (searchText.isEmpty) return null;
-
-    for (var i = 0; i < rawLines.length; i++) {
-      final rawTrimmed = rawLines[i].trim().toLowerCase();
-      if (rawTrimmed.isEmpty) continue;
-      if (rawTrimmed.contains(searchText) || searchText.contains(rawTrimmed)) {
-        final conf = lineConfidences[i];
-        if (conf != null) confidences.add(conf);
-      }
-    }
-
-    if (confidences.isEmpty) return null;
-    return confidences.reduce((a, b) => a + b) / confidences.length;
   }
 
   /// Estimate OCR confidence for a line based on text heuristics.

@@ -24,6 +24,7 @@ class Productions extends Table {
   Set<Column> get primaryKey => {id};
 }
 
+@TableIndex(name: 'idx_script_lines_production_order', columns: {#productionId, #orderIndex})
 class ScriptLines extends Table {
   TextColumn get id => text()();
   TextColumn get productionId => text().references(Productions, #id)();
@@ -43,6 +44,7 @@ class ScriptLines extends Table {
   Set<Column> get primaryKey => {id};
 }
 
+@TableIndex(name: 'idx_scenes_production', columns: {#productionId})
 class Scenes extends Table {
   TextColumn get id => text()();
   TextColumn get productionId => text().references(Productions, #id)();
@@ -60,6 +62,8 @@ class Scenes extends Table {
   Set<Column> get primaryKey => {id};
 }
 
+@TableIndex(
+    name: 'idx_recordings_production_line', columns: {#productionId, #scriptLineId})
 class Recordings extends Table {
   TextColumn get id => text()();
   TextColumn get productionId => text().references(Productions, #id)();
@@ -75,6 +79,7 @@ class Recordings extends Table {
   Set<Column> get primaryKey => {id};
 }
 
+@TableIndex(name: 'idx_cast_members_production', columns: {#productionId})
 class CastMembers extends Table {
   TextColumn get id => text()();
   TextColumn get productionId => text().references(Productions, #id)();
@@ -106,7 +111,7 @@ class AppDatabase extends _$AppDatabase {
   AppDatabase.forTesting(super.e);
 
   @override
-  int get schemaVersion => 5;
+  int get schemaVersion => 6;
 
   @override
   MigrationStrategy get migration => MigrationStrategy(
@@ -135,6 +140,20 @@ class AppDatabase extends _$AppDatabase {
             try {
               await migrator.addColumn(scriptLines, scriptLines.sourceLineOnPage);
             } catch (_) {}
+          }
+          if (from < 6) {
+            // Every query filters by productionId; without these, loads are
+            // full-table scans that grow with each production imported.
+            for (final index in [
+              idxScriptLinesProductionOrder,
+              idxScenesProduction,
+              idxRecordingsProductionLine,
+              idxCastMembersProduction,
+            ]) {
+              try {
+                await migrator.createIndex(index);
+              } catch (_) {}
+            }
           }
         },
       );

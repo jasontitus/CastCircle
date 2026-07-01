@@ -2972,6 +2972,22 @@ abstract class _$AppDatabase extends GeneratedDatabase {
   late final $ScenesTable scenes = $ScenesTable(this);
   late final $RecordingsTable recordings = $RecordingsTable(this);
   late final $CastMembersTable castMembers = $CastMembersTable(this);
+  late final Index idxScriptLinesProductionOrder = Index(
+    'idx_script_lines_production_order',
+    'CREATE INDEX idx_script_lines_production_order ON script_lines (production_id, order_index)',
+  );
+  late final Index idxScenesProduction = Index(
+    'idx_scenes_production',
+    'CREATE INDEX idx_scenes_production ON scenes (production_id)',
+  );
+  late final Index idxRecordingsProductionLine = Index(
+    'idx_recordings_production_line',
+    'CREATE INDEX idx_recordings_production_line ON recordings (production_id, script_line_id)',
+  );
+  late final Index idxCastMembersProduction = Index(
+    'idx_cast_members_production',
+    'CREATE INDEX idx_cast_members_production ON cast_members (production_id)',
+  );
   @override
   Iterable<TableInfo<Table, Object?>> get allTables =>
       allSchemaEntities.whereType<TableInfo<Table, Object?>>();
@@ -2982,6 +2998,10 @@ abstract class _$AppDatabase extends GeneratedDatabase {
     scenes,
     recordings,
     castMembers,
+    idxScriptLinesProductionOrder,
+    idxScenesProduction,
+    idxRecordingsProductionLine,
+    idxCastMembersProduction,
   ];
 }
 
@@ -3017,10 +3037,7 @@ final class $$ProductionsTableReferences
   static MultiTypedResultKey<$ScriptLinesTable, List<ScriptLine>>
   _scriptLinesRefsTable(_$AppDatabase db) => MultiTypedResultKey.fromTable(
     db.scriptLines,
-    aliasName: $_aliasNameGenerator(
-      db.productions.id,
-      db.scriptLines.productionId,
-    ),
+    aliasName: 'productions__id__script_lines__production_id',
   );
 
   $$ScriptLinesTableProcessedTableManager get scriptLinesRefs {
@@ -3039,7 +3056,7 @@ final class $$ProductionsTableReferences
     _$AppDatabase db,
   ) => MultiTypedResultKey.fromTable(
     db.scenes,
-    aliasName: $_aliasNameGenerator(db.productions.id, db.scenes.productionId),
+    aliasName: 'productions__id__scenes__production_id',
   );
 
   $$ScenesTableProcessedTableManager get scenesRefs {
@@ -3057,10 +3074,7 @@ final class $$ProductionsTableReferences
   static MultiTypedResultKey<$RecordingsTable, List<Recording>>
   _recordingsRefsTable(_$AppDatabase db) => MultiTypedResultKey.fromTable(
     db.recordings,
-    aliasName: $_aliasNameGenerator(
-      db.productions.id,
-      db.recordings.productionId,
-    ),
+    aliasName: 'productions__id__recordings__production_id',
   );
 
   $$RecordingsTableProcessedTableManager get recordingsRefs {
@@ -3078,10 +3092,7 @@ final class $$ProductionsTableReferences
   static MultiTypedResultKey<$CastMembersTable, List<CastMember>>
   _castMembersRefsTable(_$AppDatabase db) => MultiTypedResultKey.fromTable(
     db.castMembers,
-    aliasName: $_aliasNameGenerator(
-      db.productions.id,
-      db.castMembers.productionId,
-    ),
+    aliasName: 'productions__id__cast_members__production_id',
   );
 
   $$CastMembersTableProcessedTableManager get castMembersRefs {
@@ -3686,10 +3697,9 @@ final class $$ScriptLinesTableReferences
     extends BaseReferences<_$AppDatabase, $ScriptLinesTable, ScriptLine> {
   $$ScriptLinesTableReferences(super.$_db, super.$_table, super.$_typedResult);
 
-  static $ProductionsTable _productionIdTable(_$AppDatabase db) =>
-      db.productions.createAlias(
-        $_aliasNameGenerator(db.scriptLines.productionId, db.productions.id),
-      );
+  static $ProductionsTable _productionIdTable(_$AppDatabase db) => db
+      .productions
+      .createAlias('script_lines__production_id__productions__id');
 
   $$ProductionsTableProcessedTableManager get productionId {
     final $_column = $_itemColumn<String>('production_id')!;
@@ -3708,10 +3718,7 @@ final class $$ScriptLinesTableReferences
   static MultiTypedResultKey<$RecordingsTable, List<Recording>>
   _recordingsRefsTable(_$AppDatabase db) => MultiTypedResultKey.fromTable(
     db.recordings,
-    aliasName: $_aliasNameGenerator(
-      db.scriptLines.id,
-      db.recordings.scriptLineId,
-    ),
+    aliasName: 'script_lines__id__recordings__script_line_id',
   );
 
   $$RecordingsTableProcessedTableManager get recordingsRefs {
@@ -4260,9 +4267,7 @@ final class $$ScenesTableReferences
   $$ScenesTableReferences(super.$_db, super.$_table, super.$_typedResult);
 
   static $ProductionsTable _productionIdTable(_$AppDatabase db) =>
-      db.productions.createAlias(
-        $_aliasNameGenerator(db.scenes.productionId, db.productions.id),
-      );
+      db.productions.createAlias('scenes__production_id__productions__id');
 
   $$ProductionsTableProcessedTableManager get productionId {
     final $_column = $_itemColumn<String>('production_id')!;
@@ -4676,9 +4681,7 @@ final class $$RecordingsTableReferences
   $$RecordingsTableReferences(super.$_db, super.$_table, super.$_typedResult);
 
   static $ProductionsTable _productionIdTable(_$AppDatabase db) =>
-      db.productions.createAlias(
-        $_aliasNameGenerator(db.recordings.productionId, db.productions.id),
-      );
+      db.productions.createAlias('recordings__production_id__productions__id');
 
   $$ProductionsTableProcessedTableManager get productionId {
     final $_column = $_itemColumn<String>('production_id')!;
@@ -4694,10 +4697,9 @@ final class $$RecordingsTableReferences
     );
   }
 
-  static $ScriptLinesTable _scriptLineIdTable(_$AppDatabase db) =>
-      db.scriptLines.createAlias(
-        $_aliasNameGenerator(db.recordings.scriptLineId, db.scriptLines.id),
-      );
+  static $ScriptLinesTable _scriptLineIdTable(_$AppDatabase db) => db
+      .scriptLines
+      .createAlias('recordings__script_line_id__script_lines__id');
 
   $$ScriptLinesTableProcessedTableManager get scriptLineId {
     final $_column = $_itemColumn<String>('script_line_id')!;
@@ -5146,10 +5148,9 @@ final class $$CastMembersTableReferences
     extends BaseReferences<_$AppDatabase, $CastMembersTable, CastMember> {
   $$CastMembersTableReferences(super.$_db, super.$_table, super.$_typedResult);
 
-  static $ProductionsTable _productionIdTable(_$AppDatabase db) =>
-      db.productions.createAlias(
-        $_aliasNameGenerator(db.castMembers.productionId, db.productions.id),
-      );
+  static $ProductionsTable _productionIdTable(_$AppDatabase db) => db
+      .productions
+      .createAlias('cast_members__production_id__productions__id');
 
   $$ProductionsTableProcessedTableManager get productionId {
     final $_column = $_itemColumn<String>('production_id')!;

@@ -72,7 +72,12 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
   String _recognizedText = '';
   double _matchScore = 0.0;
   bool _showMatchFeedback = false;
-  double _micLevel = 0.0; // smoothed mic input level (0..1) while listening
+  // Smoothed mic input level (0..1) while listening. A ValueNotifier consumed
+  // by only the mic indicator: the native tap reports ~12 events/sec, and
+  // routing that through setState rebuilt the ENTIRE screen (including ~70
+  // offscreen list items force-built by cacheExtent: 10000) twelve times a
+  // second for the whole time the actor speaks.
+  final ValueNotifier<double> _micLevel = ValueNotifier(0.0);
   String _lastRecognizedRaw = ''; // last uncorrected transcript, for learning
   bool _matchConfirmed = false; // guards double-advance from timer + VAD
   bool _showJumpBackHint = false; // Set in initState based on how many times shown
@@ -475,6 +480,7 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
     _silenceTimer?.cancel();
     _matchConfirmTimer?.cancel();
     _ttsPrefetch.clear();
+    _micLevel.dispose();
     _scrollController.dispose();
     _player.dispose();
     // Clear the completion handler so the singleton TtsService doesn't retain
@@ -998,32 +1004,38 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
   Widget _pulsingMic(BuildContext context) {
     // Mic glow follows the actor's actual voice level (smoothed RMS from
     // the native tap) instead of a fixed animation — speaking visibly
-    // "lights up" the indicator.
-    final intensity = (_micLevel / 0.15).clamp(0.0, 1.0);
-    return AnimatedContainer(
-      duration: const Duration(milliseconds: 90),
-      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-      decoration: BoxDecoration(
-        borderRadius: BorderRadius.circular(10),
-        color: Colors.orange.withValues(alpha: 0.10 + 0.25 * intensity),
-      ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Icon(Icons.mic,
-              size: 16 + 3 * intensity,
-              color: Color.lerp(
-                  Colors.orange[300], Colors.orange[600], intensity)),
-          const SizedBox(width: 4),
-          Text('LISTENING...',
-            style: TextStyle(
-              color: Colors.orange[400],
-              fontSize: 10,
-              fontWeight: FontWeight.bold,
-            ),
+    // "lights up" the indicator. Only this widget listens to the ~12Hz level
+    // stream, so the rest of the screen doesn't rebuild with it.
+    return ValueListenableBuilder<double>(
+      valueListenable: _micLevel,
+      builder: (context, level, _) {
+        final intensity = (level / 0.15).clamp(0.0, 1.0);
+        return AnimatedContainer(
+          duration: const Duration(milliseconds: 90),
+          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(10),
+            color: Colors.orange.withValues(alpha: 0.10 + 0.25 * intensity),
           ),
-        ],
-      ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(Icons.mic,
+                  size: 16 + 3 * intensity,
+                  color: Color.lerp(
+                      Colors.orange[300], Colors.orange[600], intensity)),
+              const SizedBox(width: 4),
+              Text('LISTENING...',
+                style: TextStyle(
+                  color: Colors.orange[400],
+                  fontSize: 10,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+            ],
+          ),
+        );
+      },
     );
   }
 
@@ -1380,31 +1392,52 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
 
   // ── Cue-to-Cue Filtering ─────────────────────────────
 
+  // Memo for _getRehearsalLines: it's called from build() (and per line
+  // advance), and the underlying script/scene/character/mode change rarely —
+  // recomputing the filtered list per rebuild is pure waste.
+  List<ScriptLine>? _rehearsalLinesCache;
+  Object? _rehearsalLinesKey;
+
   /// Returns the dialogue lines to rehearse, filtered for cue-to-cue mode
   /// if enabled. In cue-to-cue mode, only the actor's lines plus one cue
   /// line before each are included.
   List<ScriptLine> _getRehearsalLines(
       ParsedScript script, ScriptScene scene, String? myCharacter) {
+    final mode = ref.read(rehearsalModeProvider);
+    final key = (identityHashCode(script), scene.id, myCharacter, mode);
+    if (_rehearsalLinesCache != null && _rehearsalLinesKey == key) {
+      return _rehearsalLinesCache!;
+    }
+
     final sceneLines = script.linesInScene(scene);
     final allDialogue =
         sceneLines.where((l) => l.lineType == LineType.dialogue).toList();
 
-    final mode = ref.read(rehearsalModeProvider);
-    if (mode != RehearsalMode.cuePractice || myCharacter == null) return allDialogue;
-
-    // Build a filtered list: for each of the actor's lines, include
-    // the immediately preceding line (the cue) plus the actor's line.
-    final filtered = <ScriptLine>[];
-    for (var i = 0; i < allDialogue.length; i++) {
-      if (allDialogue[i].isForCharacter(myCharacter)) {
-        // Add cue line (the one before) if not already added
-        if (i > 0 && !filtered.contains(allDialogue[i - 1])) {
-          filtered.add(allDialogue[i - 1]);
+    List<ScriptLine> result;
+    if (mode != RehearsalMode.cuePractice || myCharacter == null) {
+      result = allDialogue;
+    } else {
+      // Build a filtered list: for each of the actor's lines, include
+      // the immediately preceding line (the cue) plus the actor's line.
+      final filtered = <ScriptLine>[];
+      final included = <String>{};
+      for (var i = 0; i < allDialogue.length; i++) {
+        if (allDialogue[i].isForCharacter(myCharacter)) {
+          // Add cue line (the one before) if not already added
+          if (i > 0 && included.add(allDialogue[i - 1].id)) {
+            filtered.add(allDialogue[i - 1]);
+          }
+          if (included.add(allDialogue[i].id)) {
+            filtered.add(allDialogue[i]);
+          }
         }
-        filtered.add(allDialogue[i]);
       }
+      result = filtered;
     }
-    return filtered;
+
+    _rehearsalLinesCache = result;
+    _rehearsalLinesKey = key;
+    return result;
   }
 
   // ── Engine Logic ──────────────────────────────────────
@@ -1817,7 +1850,7 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
     _currentAttemptCount++;
     _matchConfirmed = false;
     _lastRecognizedRaw = '';
-    _micLevel = 0.0;
+    _micLevel.value = 0.0;
 
     // Build vocabulary hints: the expected line as a phrase + its individual
     // words. Keep hints focused — flooding with script-wide vocabulary
@@ -1836,12 +1869,13 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
     _resetSilenceTimer(line);
 
     // Live mic level for the listening indicator (smoothed in SttService).
+    // ValueNotifier, not setState: only the mic chip repaints per event.
     _stt.onLevel = (level) {
       if (!mounted) return;
       if (ref.read(rehearsalStateProvider) != RehearsalState.listeningForMe) {
         return;
       }
-      setState(() => _micLevel = level);
+      _micLevel.value = level;
     };
 
     // Energy-based endpointing: once the match threshold is crossed,
@@ -2244,7 +2278,7 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
     _currentAttemptCount++;
     _matchConfirmed = false;
     _matchScore = 0.0;
-    _micLevel = 0.0;
+    _micLevel.value = 0.0;
     _lastRecognizedRaw = ''; // no recognizer on Android — nothing to learn from
 
     // Mic level for the listening indicator. While the actor is audibly
@@ -2255,7 +2289,7 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
       if (ref.read(rehearsalStateProvider) != RehearsalState.listeningForMe) {
         return;
       }
-      setState(() => _micLevel = level);
+      _micLevel.value = level;
       if (level >= SttService.silenceThreshold) {
         _resetSilenceTimer(line);
       }
