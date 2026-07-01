@@ -174,6 +174,11 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
 
     // Show AirPods/Action Button hint for the first 5 sessions
     final prefs = await SharedPreferences.getInstance();
+    // Guard after every await: backing out of the screen during init would
+    // otherwise use ref/setState after unmount (crash) and re-activate media
+    // controls AFTER dispose() deactivated them, leaving lock-screen controls
+    // hijacked app-wide. Same bug class as the fixed _persistProgress crash.
+    if (!mounted) return;
     final hintCount = prefs.getInt('jumpback_hint_shown') ?? 0;
     if (hintCount < 5) {
       setState(() => _showJumpBackHint = true);
@@ -187,6 +192,7 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
       onPlayPause: _handleRemotePlayPause,
     );
     await _tts.init();
+    if (!mounted) return;
 
     final production = ref.read(currentProductionProvider);
     final myCharacter = ref.read(rehearsalCharacterProvider);
@@ -203,6 +209,7 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
     // Set system TTS locale and assign voices
     await _tts.setLocale(locale);
     await _assignVoices(production, script, locale);
+    if (!mounted) return;
 
     _tts.setCompletionHandler(() {
       if (_autoPlay && mounted) {
@@ -221,6 +228,7 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
       final dialogueLines = _getRehearsalLines(script, scene, myCharacter);
       resumeIdx = await _loadProgressCheckpoint(
           production, scene, myCharacter, dialogueLines.length);
+      if (!mounted) return;
     }
 
     if (resumeIdx != null) {
@@ -273,6 +281,7 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
     String locale,
   ) async {
     await _stt.init(locale: locale);
+    if (!mounted) return;
 
     // Build STT vocabulary from script for correction
     if (script != null && production != null) {
@@ -420,6 +429,9 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
     _ttsPrefetch.clear();
     _scrollController.dispose();
     _player.dispose();
+    // Clear the completion handler so the singleton TtsService doesn't retain
+    // this disposed State (and its ref) until the next rehearsal.
+    _tts.setCompletionHandler(() {});
     _tts.stop(reason: 'dispose');
     _stt.stop();
     _mediaControl.deactivate();
@@ -1352,6 +1364,13 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
   /// Process the current line: play audio/TTS for others, or start listening for me.
   void _processCurrentLine() {
     if (_processingLine) return;
+    // Delayed callbacks (inter-line pacing, advance, jump-back) land here after
+    // the user may have tapped Pause — honor it instead of resuming playback.
+    if (ref.read(rehearsalStateProvider) == RehearsalState.paused) {
+      _dlog.log(LogCategory.rehearsal,
+          'processCurrentLine: paused — not starting the next line');
+      return;
+    }
     _processingLine = true;
     Future.delayed(const Duration(milliseconds: 50), () {
       _processingLine = false;
@@ -1381,13 +1400,7 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
         'currentIdx=$currentIdx char=$myCharacter');
 
     if (currentIdx >= dialogueLines.length) {
-      ref.read(rehearsalStateProvider.notifier).state =
-          RehearsalState.sceneComplete;
-      WakelockPlus.disable(); // Allow screen to sleep at scene end
-      _saveSession(dialogueLines);
-      _progressSaveTimer?.cancel(); // don't let a late debounce re-checkpoint
-      _clearProgressCheckpoint(); // finished the scene — nothing to resume
-      _offerToSaveRehearsalRecordings();
+      _completeScene(dialogueLines);
       return;
     }
 
@@ -1422,6 +1435,20 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
     } else {
       _playOtherLine(line);
     }
+  }
+
+  /// Everything that must happen exactly once when the scene finishes,
+  /// whichever path got us here (auto-advance, actor's last line, playback
+  /// completion): stop keeping the screen awake, record the session in
+  /// history, drop the resume checkpoint, and offer to save recordings.
+  void _completeScene(List<ScriptLine> dialogueLines) {
+    ref.read(rehearsalStateProvider.notifier).state =
+        RehearsalState.sceneComplete;
+    WakelockPlus.disable(); // Allow screen to sleep at scene end
+    if (dialogueLines.isNotEmpty) _saveSession(dialogueLines);
+    _progressSaveTimer?.cancel(); // don't let a late debounce re-checkpoint
+    _clearProgressCheckpoint(); // finished the scene — nothing to resume
+    _offerToSaveRehearsalRecordings();
   }
 
   /// Return the next dialogue line after [currentIdx] that is NOT the actor's
@@ -1642,10 +1669,7 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
 
     if (currentIdx + 1 >= dialogueLines.length) {
       ref.read(currentLineIndexProvider.notifier).state = currentIdx + 1;
-      ref.read(rehearsalStateProvider.notifier).state =
-          RehearsalState.sceneComplete;
-      _saveSession(dialogueLines);
-      _offerToSaveRehearsalRecordings();
+      _completeScene(dialogueLines);
       _scrollToCurrentLine();
       return;
     }
@@ -1919,9 +1943,14 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
     final current = ref.read(currentLineIndexProvider);
     if (current + 1 >= totalLines) {
       ref.read(currentLineIndexProvider.notifier).state = current + 1;
-      ref.read(rehearsalStateProvider.notifier).state =
-          RehearsalState.sceneComplete;
-      _offerToSaveRehearsalRecordings();
+      // The scene's last line being the actor's lands here — it must record
+      // the session in history exactly like the other completion paths.
+      final script = ref.read(currentScriptProvider);
+      final scene = ref.read(selectedSceneProvider);
+      final myCharacter = ref.read(rehearsalCharacterProvider);
+      _completeScene(script != null && scene != null
+          ? _getRehearsalLines(script, scene, myCharacter)
+          : const []);
       _scrollToCurrentLine();
       return;
     }
@@ -1983,6 +2012,9 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
     ref.read(currentLineIndexProvider.notifier).state = 0;
     ref.read(rehearsalStateProvider.notifier).state = RehearsalState.ready;
     _clearProgressCheckpoint(); // starting over — drop any saved position
+    // Scene completion released the wakelock — "Run Again" needs it back or
+    // the screen sleeps (and iOS suspends the mic) mid-rehearsal.
+    WakelockPlus.enable();
 
     // Reset session tracking
     _sessionStartedAt = DateTime.now();

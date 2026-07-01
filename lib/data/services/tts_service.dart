@@ -9,6 +9,7 @@ import 'package:just_audio/just_audio.dart';
 import 'debug_log_service.dart';
 import 'model_manager.dart';
 import 'perf_service.dart';
+import 'playback_session.dart';
 
 /// TTS engine type.
 enum TtsEngine {
@@ -389,6 +390,13 @@ class TtsService {
     // and no completion callback, which stalls rehearsal.
     await _audioPlayer.stop();
     _usingSystemTts = true;
+    // Same .record-session hazard as the Kokoro path: make sure the shared
+    // session is playback-capable before speaking. iOS only — on Android,
+    // activating the session grabs audio focus, which is exactly what makes
+    // flutter_tts fail silently (hence the player stop() above).
+    if (Platform.isIOS) {
+      await PlaybackSession.ensurePlayback();
+    }
     dlog.log(LogCategory.tts, 'System TTS: "$preview"');
     if (character != null &&
         _characterSystemVoices.containsKey(character)) {
@@ -548,6 +556,11 @@ class TtsService {
         await _audioPlayer.stop();
         await _audioPlayer.setFilePath(audioPath);
         if (i == 0) {
+          // STT leaves the shared iOS session in .record, in which just_audio
+          // plays silently. Native synthesis no longer flips the session (it
+          // used to, which broke live STT when rehearsal prefetched the next
+          // line) — so the flip to .playback must happen here, at play time.
+          await PlaybackSession.ensurePlayback();
           DebugLogService.instance.log(LogCategory.tts,
               'Kokoro playing audio (voice=$voice, chunks=${chunks.length})');
         }

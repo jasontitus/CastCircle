@@ -70,10 +70,10 @@ class KokoroMLXService {
             throw KokoroError.voicesNotDownloaded
         }
 
-        // Configure audio session for iOS
-        let audioSession = AVAudioSession.sharedInstance()
-        try audioSession.setCategory(.playback, mode: .default)
-        try audioSession.setActive(true)
+        // NOTE: deliberately no AVAudioSession configuration here. The shared
+        // session is owned by whoever is actively capturing/playing; the Dart
+        // side (PlaybackSession.ensurePlayback) sets .playback right before
+        // audio is played. Flipping it here breaks a live STT session.
     }
 
     /// Unload the model from memory without deleting files.
@@ -158,11 +158,12 @@ class KokoroMLXService {
                     // Free MLX intermediate computation buffers
                     Memory.clearCache()
 
-                    // Reconfigure audio session for playback before returning.
-                    // STT sets it to .record — without this, just_audio can't produce sound.
-                    let audioSession = AVAudioSession.sharedInstance()
-                    try audioSession.setCategory(.playback, mode: .default)
-                    try audioSession.setActive(true)
+                    // Deliberately do NOT touch the AVAudioSession here.
+                    // Rehearsal PREFETCHES the next line's audio while the
+                    // actor is speaking — flipping the session to .playback at
+                    // synthesis-complete killed the live STT mic tap mid-line.
+                    // Dart's PlaybackSession.ensurePlayback() sets .playback
+                    // at actual play time instead.
 
                     continuation.resume(returning: outputPath.path)
                 } catch {
