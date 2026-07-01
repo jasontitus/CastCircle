@@ -210,7 +210,9 @@ class _CastCircleAppState extends ConsumerState<CastCircleApp> {
     try {
       await deepLinks.init();
     } catch (e) {
-      debugPrint('Deep link init failed: $e');
+      // Invite links silently doing nothing is undiagnosable without this.
+      DebugLogService.instance
+          .logError(LogCategory.error, 'Deep link init failed', e);
     }
 
     // Handle initial link (cold start)

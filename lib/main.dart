@@ -101,7 +101,10 @@ void main() async {
       publishableKey: supabaseAnonKey,
     );
   } catch (e) {
-    debugPrint('Supabase init failed: $e');
+    // All cloud features are dead for this session — the ring buffer works
+    // pre-init(), so this reaches the on-device debug log.
+    DebugLogService.instance
+        .logError(LogCategory.error, 'Supabase init failed', e);
   }
 
   // Initialize debug logging first so other services can use it

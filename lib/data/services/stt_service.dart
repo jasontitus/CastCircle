@@ -34,6 +34,10 @@ class SttService {
   bool _isListening = false;
   SttEngine _activeEngine = SttEngine.apple;
 
+  /// Bumped on every listen()/stop() so delayed continuous-mode restarts can
+  /// tell whether they belong to the current session.
+  int _sessionGen = 0;
+
   String _locale = 'en-US';
 
   SttEngine get activeEngine => _activeEngine;
@@ -176,15 +180,17 @@ class SttService {
     Duration listenFor = const Duration(seconds: 30),
     List<String>? vocabularyHints,
   }) async {
-    // Auto-init if needed
+    // Auto-init if needed (with the locale the caller configured, not the
+    // en-US default — a deferred-init race must not downgrade en-GB).
     if (!_sttChannel.isInitialized) {
-      final ok = await init();
+      final ok = await init(locale: _locale);
       if (!ok) {
         onDone?.call();
         return;
       }
     }
 
+    _sessionGen++;
     _isListening = true;
     _continuous = continuous;
     _onResult = onResult;
@@ -201,6 +207,7 @@ class SttService {
 
   Future<void> _startAppleSession() async {
     if (!_isListening) return;
+    final gen = _sessionGen;
 
     final ok = await _sttChannel.listen(
       contextualStrings: _vocabHints,
@@ -216,9 +223,12 @@ class SttService {
           _carriedTranscript =
               mergeTranscripts(_carriedTranscript, _lastPartial);
           _lastPartial = '';
-          // Auto-restart after brief pause
+          // Auto-restart after brief pause. Guard on the session generation:
+          // if a NEW listen() started during the 200ms (next actor line),
+          // this stale restart would tear down and recreate its native
+          // session, eating the first words the actor speaks.
           Future.delayed(const Duration(milliseconds: 200), () {
-            if (_isListening) {
+            if (_isListening && gen == _sessionGen) {
               _startAppleSession();
             }
           });
@@ -244,6 +254,7 @@ class SttService {
   /// [discard] parameter kept for API compatibility but not needed
   /// for Apple engine (no pending transcription to discard).
   Future<void> stop({bool discard = false}) async {
+    _sessionGen++;
     _isListening = false;
     _continuous = false;
     _onResult = null;

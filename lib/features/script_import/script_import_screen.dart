@@ -553,6 +553,17 @@ class _ScriptImportScreenState extends ConsumerState<ScriptImportScreen> {
           _preview = script;
           _loading = false;
         });
+
+        // A scan with unreadable pages produces a clean-LOOKING preview that
+        // is silently missing scenes — warn now, not at rehearsal.
+        final failed = service.lastImportFailedPages;
+        if (failed > 0 && mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+            content: Text('$failed page(s) couldn\'t be read — parts of the '
+                'script may be missing. Check the preview against the PDF.'),
+            duration: const Duration(seconds: 8),
+          ));
+        }
       } on UnimplementedError {
         // ML Kit not available — show helpful message
         setState(() {

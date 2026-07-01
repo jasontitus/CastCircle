@@ -13,6 +13,7 @@ import 'package:uuid/uuid.dart';
 import '../../core/constants.dart';
 import '../../core/theme/app_theme.dart';
 import '../../data/models/script_models.dart';
+import '../../data/services/debug_log_service.dart';
 import '../../data/services/stt_adaptation_service.dart';
 import '../../data/services/sync_queue.dart';
 import '../../data/services/audio_level_service.dart';
@@ -439,14 +440,25 @@ class _RecordingStudioScreenState extends ConsumerState<RecordingStudioScreen> {
     final filePath = p.join(recordingsDir.path,
         '${line.id}${AppConstants.audioExtension}');
 
-    await _recorder!.start(
-      const RecordConfig(
-        encoder: AudioEncoder.aacLc,
-        sampleRate: AppConstants.sampleRate,
-        bitRate: 128000,
-      ),
-      path: filePath,
-    );
+    try {
+      await _recorder!.start(
+        const RecordConfig(
+          encoder: AudioEncoder.aacLc,
+          sampleRate: AppConstants.sampleRate,
+          bitRate: 128000,
+        ),
+        path: filePath,
+      );
+    } catch (e) {
+      DebugLogService.instance
+          .logError(LogCategory.error, 'Studio: recorder.start failed', e);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text("Couldn't start recording: $e")),
+        );
+      }
+      return;
+    }
 
     _currentRecordingPath = filePath;
     _recordingDuration = Duration.zero;
@@ -463,9 +475,28 @@ class _RecordingStudioScreenState extends ConsumerState<RecordingStudioScreen> {
 
   Future<void> _stopRecording() async {
     _durationTimer?.cancel();
-    final path = await _recorder?.stop();
+    String? path;
+    try {
+      path = await _recorder?.stop();
+    } catch (e) {
+      DebugLogService.instance
+          .logError(LogCategory.error, 'Studio: recorder.stop failed', e);
+    }
 
-    if (path != null && mounted) {
+    if (path == null) {
+      // Nothing was saved — say so instead of staying stuck on "recording".
+      DebugLogService.instance.logError(
+          LogCategory.error, 'Studio: recorder.stop returned no file');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content: Text('Recording failed — nothing was saved. Try again.'),
+        ));
+        setState(() => _status = RecordingStatus.idle);
+      }
+      return;
+    }
+
+    if (mounted) {
       // Re-recording reuses the same filename — drop any stale loudness gain.
       AudioLevelService.instance.invalidate(path);
       final line = _myLines[_currentLineIdx];

@@ -8,6 +8,7 @@ import 'package:path_provider/path_provider.dart';
 import 'package:pdfrx/pdfrx.dart';
 
 import '../models/script_models.dart';
+import 'debug_log_service.dart';
 import 'ocr_confidence_service.dart';
 import 'script_parser.dart';
 import 'script_export.dart';
@@ -21,6 +22,12 @@ class ScriptImportService {
   ScriptImportService();
 
   final ScriptParser _parser = ScriptParser();
+
+  /// Pages that could not be OCR'd during the most recent [importFromPdf]
+  /// call. The import UI reads this to warn the user — a scan that silently
+  /// lost 5 of 60 pages looks perfectly clean in the preview and the actor
+  /// only finds out at rehearsal.
+  int lastImportFailedPages = 0;
 
   /// Import a script from a text file (already OCR'd or plain text).
   Future<ParsedScript> importFromTextFile(String filePath) async {
@@ -81,6 +88,7 @@ class ScriptImportService {
 
   Future<ParsedScript> _importFromPdfInner(String pdfPath) async {
     final title = _titleFromPath(pdfPath);
+    lastImportFailedPages = 0; // set by the OCR path when pages fail
 
     // Strategy 1: Try native PDFKit text extraction (text-based PDFs)
     try {
@@ -470,8 +478,11 @@ class ScriptImportService {
       }
     }
 
+    lastImportFailedPages = failedPages;
     if (failedPages > 0) {
-      debugPrint('PDF OCR: $failedPages pages failed');
+      DebugLogService.instance.logError(LogCategory.error,
+          'PDF OCR: $failedPages page(s) failed — imported script is missing '
+          'their content');
     }
 
     final rawText = buffer.toString();

@@ -288,8 +288,13 @@ class AppleSttPlugin: NSObject {
         recordingPath = path
         recordingStartTime = Date()
 
-        guard let format = tapFormat else {
-            NSLog("AppleStt: startRecording FAILED — no tap format (engine not running?)")
+        // tapFormat is cached from any PREVIOUS session, so it being non-nil
+        // doesn't mean audio is flowing — require the engine to actually be
+        // running or we'd report success while capturing nothing.
+        guard audioEngine.isRunning, let format = tapFormat else {
+            NSLog("AppleStt: startRecording FAILED — engine not running or no tap format")
+            recordingPath = nil
+            recordingStartTime = nil
             result(false)
             return
         }
@@ -335,9 +340,12 @@ class AppleSttPlugin: NSObject {
         NSLog("AppleStt: PCM captured → \(cafPath) (\(durationMs)ms, \(cafSize / 1024)KB)")
 
         if cafSize < 100 {
+            // Return nil, NOT a success-shaped map: destPath may still hold a
+            // PREVIOUS session's capture (paths are deterministic per line),
+            // and a success result would save that stale audio as this take.
             NSLog("AppleStt: PCM file too small, discarding")
             try? FileManager.default.removeItem(atPath: cafPath)
-            result(["path": destPath, "durationMs": durationMs])
+            result(nil)
             return
         }
 
@@ -372,16 +380,31 @@ class AppleSttPlugin: NSObject {
             }
 
             exportSession.exportAsynchronously {
-                try? FileManager.default.removeItem(at: cafUrl)
-
-                let m4aSize = (try? FileManager.default.attributesOfItem(atPath: destPath)[.size] as? Int) ?? 0
-                DispatchQueue.main.async {
-                    if exportSession.status == .completed {
+                if exportSession.status == .completed {
+                    try? FileManager.default.removeItem(at: cafUrl)
+                    let m4aSize = (try? FileManager.default.attributesOfItem(atPath: destPath)[.size] as? Int) ?? 0
+                    DispatchQueue.main.async {
                         NSLog("AppleStt: Converted → \(destPath) (\(m4aSize / 1024)KB M4A)")
-                    } else {
-                        NSLog("AppleStt: Export failed: \(exportSession.error?.localizedDescription ?? "unknown")")
+                        result(["path": destPath, "durationMs": durationMs])
                     }
-                    result(["path": destPath, "durationMs": durationMs])
+                } else {
+                    // Export failed — the old code deleted the CAF FIRST and
+                    // still reported success, destroying the actor's take and
+                    // pointing Dart at a nonexistent (or stale) file. Keep the
+                    // capture by shipping the raw CAF instead (same fallback as
+                    // the no-export-session branch above).
+                    NSLog("AppleStt: Export failed: \(exportSession.error?.localizedDescription ?? "unknown") — keeping raw CAF")
+                    try? FileManager.default.removeItem(at: destUrl)
+                    do {
+                        try FileManager.default.moveItem(at: cafUrl, to: destUrl)
+                        DispatchQueue.main.async {
+                            result(["path": destPath, "durationMs": durationMs])
+                        }
+                    } catch {
+                        NSLog("AppleStt: CAF fallback move also failed: \(error)")
+                        try? FileManager.default.removeItem(at: cafUrl)
+                        DispatchQueue.main.async { result(nil) }
+                    }
                 }
             }
         }

@@ -16,6 +16,7 @@ import '../../data/models/cast_member_model.dart';
 import '../../data/models/script_models.dart';
 import '../../data/models/voice_preset.dart';
 import '../../data/services/contact_picker_service.dart';
+import '../../data/services/debug_log_service.dart';
 import '../../data/services/deep_link_service.dart';
 import '../../data/services/supabase_service.dart';
 import '../../data/services/voice_config_service.dart';
@@ -97,7 +98,8 @@ class _CastManagerScreenState extends ConsumerState<CastManagerScreen> {
         }
       }
     } catch (e) {
-      debugPrint('Cast cloud sync failed: $e');
+      DebugLogService.instance.logError(
+          LogCategory.network, 'Cast cloud sync failed', e);
     }
   }
 
@@ -683,7 +685,10 @@ class _CastManagerScreenState extends ConsumerState<CastManagerScreen> {
 
                 await ref.read(castMembersProvider.notifier).save(member);
 
-                // Also save to Supabase if signed in
+                // Also save to Supabase if signed in. If the cloud insert
+                // fails, the join link we're about to share points at an
+                // invitation that doesn't exist — don't share it silently.
+                var cloudInviteOk = true;
                 final supa = SupabaseService.instance;
                 if (supa.isSignedIn) {
                   try {
@@ -697,7 +702,9 @@ class _CastManagerScreenState extends ConsumerState<CastManagerScreen> {
                       id: member.id,
                     );
                   } catch (e) {
-                    debugPrint('Supabase cast invitation failed: $e');
+                    cloudInviteOk = false;
+                    DebugLogService.instance.logError(LogCategory.network,
+                        'Cloud cast invitation failed for "$name"', e);
                   }
                 }
 
@@ -705,6 +712,18 @@ class _CastManagerScreenState extends ConsumerState<CastManagerScreen> {
                   Navigator.pop(dialogContext);
                   // Dismiss keyboard before sharing
                   FocusScope.of(context).unfocus();
+                }
+
+                if (!cloudInviteOk) {
+                  if (mounted) {
+                    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+                      content: Text("Couldn't create the cloud invitation — "
+                          'check your connection and tap the share icon to '
+                          'invite once you\'re back online.'),
+                      duration: Duration(seconds: 6),
+                    ));
+                  }
+                  return;
                 }
 
                 // Delay to let dialog and keyboard fully dismiss

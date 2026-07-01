@@ -25,6 +25,7 @@ import '../../data/services/stt_adaptation_service.dart';
 import '../../data/services/stt_vocabulary_service.dart';
 import '../../data/services/analytics_service.dart';
 import '../../data/services/media_control_service.dart';
+import '../../data/services/model_download_service.dart';
 import '../../data/services/sync_queue.dart';
 import '../../data/services/voice_config_service.dart';
 import '../../data/services/audio_level_service.dart';
@@ -126,6 +127,12 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
   int _lastLineIndex = 0;
   int? _pendingResumeLine; // surfaced as a snackbar once the screen is built
 
+  // STT failed to init (permission denied / recognizer unavailable): skip the
+  // per-line wait-for-init poll and tell the actor once instead of silently
+  // doing nothing on every one of their lines.
+  bool _sttInitFailed = false;
+  bool _sttUnavailableNoticeShown = false;
+
   @override
   void initState() {
     super.initState();
@@ -193,6 +200,7 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
     );
     await _tts.init();
     if (!mounted) return;
+    _maybeWarnSystemVoiceFallback();
 
     final production = ref.read(currentProductionProvider);
     final myCharacter = ref.read(rehearsalCharacterProvider);
@@ -274,14 +282,54 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
     }
   }
 
+  /// Kokoro (AI voices) silently degrading to robotic system voices was a
+  /// real user complaint — say it out loud, once per app session, with the
+  /// reason.
+  static bool _systemVoiceNoticeShown = false;
+  Future<void> _maybeWarnSystemVoiceFallback() async {
+    if (_systemVoiceNoticeShown) return;
+    if (_tts.activeEngine != TtsEngine.system) return;
+    _systemVoiceNoticeShown = true;
+
+    String reason;
+    if (!Platform.isIOS) {
+      reason = 'AI voices aren\'t supported on this device yet';
+    } else if (await ModelDownloadService.instance.isKokoroReady()) {
+      reason = 'the AI voice model failed to load';
+      _dlog.logError(LogCategory.tts,
+          'Kokoro model is downloaded but did not load — using system voices');
+    } else {
+      reason = 'the AI voice model isn\'t downloaded '
+          '(Settings → AI Models)';
+    }
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+      content: Text('Using system voices — $reason.'),
+      duration: const Duration(seconds: 6),
+    ));
+  }
+
   Future<void> _initSttDeferred(
     dynamic production,
     String? myCharacter,
     ParsedScript? script,
     String locale,
   ) async {
-    await _stt.init(locale: locale);
+    final sttOk = await _stt.init(locale: locale);
     if (!mounted) return;
+    if (!sttOk && !Platform.isAndroid) {
+      // The core feature (line matching) is dead without STT — say so instead
+      // of leaving the actor wondering why nothing reacts to their voice.
+      _sttInitFailed = true;
+      _dlog.logError(LogCategory.stt,
+          'Rehearsal: STT init failed — line matching disabled this session');
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+        content: Text('Speech recognition unavailable — your lines won\'t be '
+            'matched automatically. Check microphone & speech recognition '
+            'permissions in Settings, then restart rehearsal.'),
+        duration: Duration(seconds: 10),
+      ));
+    }
 
     // Build STT vocabulary from script for correction
     if (script != null && production != null) {
@@ -1514,8 +1562,10 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
       final paths =
           await _tts.prepareKokoro(line.text, character: voiceCharacter);
       if (paths != null) _ttsPrefetch[line.id] = paths;
-    } catch (_) {
-      // Best-effort — swallow and fall back to on-demand synthesis at playback.
+    } catch (e) {
+      // Best-effort — fall back to on-demand synthesis at playback, but log
+      // it: silent prefetch failures show up as latency complaints.
+      _dlog.log(LogCategory.tts, 'Kokoro prefetch failed for ${line.id}: $e');
     }
   }
 
@@ -1599,8 +1649,12 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
             .setVolume(await AudioLevelService.instance.volumeFor(recording.localPath));
         await _player.play();
         return;
-      } catch (_) {
-        // Fall through to understudy
+      } catch (e) {
+        // Fall through to understudy — but leave a trace: a corrupt file or
+        // session error here is why an actor hears TTS instead of their
+        // castmate, and it was undiagnosable without a log.
+        _dlog.logError(LogCategory.rehearsal,
+            'Recording playback failed for ${line.id}, falling back', e);
       }
     }
 
@@ -1619,8 +1673,10 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
               .volumeFor(understudyRecording.localPath));
           await _player.play();
           return;
-        } catch (_) {
-          // Fall through to TTS
+        } catch (e) {
+          // Fall through to TTS (logged for the same reason as above).
+          _dlog.logError(LogCategory.rehearsal,
+              'Understudy playback failed for ${line.id}, falling back', e);
         }
       }
     }
@@ -1727,19 +1783,31 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
       return;
     }
 
-    // If STT isn't ready yet (deferred init still running), wait for it
-    if (!_stt.isAvailable) {
+    // If STT isn't ready yet (deferred init still running), wait for it —
+    // but not when init already FAILED: polling a dead recognizer just
+    // freezes every actor line for 5 seconds.
+    if (!_stt.isAvailable && !_sttInitFailed) {
       _dlog.log(LogCategory.rehearsal, 'Waiting for STT init...');
       // Poll briefly — STT init typically takes 1-3 seconds
       for (var i = 0; i < 50 && !_stt.isAvailable && mounted; i++) {
         await Future.delayed(const Duration(milliseconds: 100));
       }
+      if (!mounted) return;
     }
 
     final available = _stt.isAvailable;
     if (!available) {
-      // STT truly not available — just wait for manual advance
+      // STT truly not available — wait for manual advance, and tell the actor
+      // why nothing is listening (once per rehearsal, not per line).
       _dlog.log(LogCategory.rehearsal, 'STT not available, manual advance');
+      if (!_sttUnavailableNoticeShown) {
+        _sttUnavailableNoticeShown = true;
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content: Text('Speech recognition isn\'t available — tap the '
+              'forward arrow to advance past your lines.'),
+          duration: Duration(seconds: 6),
+        ));
+      }
       ref.read(rehearsalStateProvider.notifier).state = RehearsalState.ready;
       return;
     }
@@ -2235,6 +2303,13 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
     try {
       final dir = await getTemporaryDirectory();
       final path = p.join(dir.path, 'rehearsal_${line.id}.m4a');
+      // Capture paths are deterministic per line and survive across sessions.
+      // Clear any previous take now so a failed capture can never pass off
+      // last session's audio as this one.
+      try {
+        final stale = File(path);
+        if (stale.existsSync()) stale.deleteSync();
+      } catch (_) {}
       _dlog.log(LogCategory.rehearsal, 'Capture: starting for ${line.id.substring(0, 8)}...');
       final ok = await _stt.startRecording(path);
       _dlog.log(LogCategory.rehearsal, 'Capture: startRecording returned $ok');

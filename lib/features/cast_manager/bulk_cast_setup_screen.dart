@@ -10,6 +10,7 @@ import '../../core/theme/app_theme.dart';
 import '../../data/models/cast_member_model.dart';
 import '../../data/models/script_models.dart';
 import '../../data/services/contact_picker_service.dart';
+import '../../data/services/debug_log_service.dart';
 import '../../data/services/deep_link_service.dart';
 import '../../data/services/supabase_service.dart';
 import '../../providers/production_providers.dart';
@@ -241,11 +242,16 @@ class _BulkCastSetupScreenState extends ConsumerState<BulkCastSetupScreen> {
     }
   }
 
+  /// Characters whose cloud invitation failed in the last save — their join
+  /// links won't resolve until re-saved online.
+  final List<String> _failedCloudInvites = [];
+
   Future<void> _saveCastAssignments() async {
     final production = ref.read(currentProductionProvider);
     if (production == null) return;
 
     final supa = SupabaseService.instance;
+    _failedCloudInvites.clear();
 
     for (final entry in _nameControllers.entries) {
       final charName = entry.key;
@@ -267,7 +273,11 @@ class _BulkCastSetupScreenState extends ConsumerState<BulkCastSetupScreen> {
           );
           memberId = row['id'] as String;
         } catch (e) {
-          debugPrint('Supabase cast invitation failed: $e');
+          // The invite link for this character will point at a cloud row that
+          // doesn't exist — record it so the save summary can say so.
+          _failedCloudInvites.add(charName);
+          DebugLogService.instance.logError(LogCategory.network,
+              'Cloud cast invitation failed for "$name" ($charName)', e);
         }
       }
 
@@ -305,9 +315,18 @@ class _BulkCastSetupScreenState extends ConsumerState<BulkCastSetupScreen> {
       return;
     }
 
-    ScaffoldMessenger.of(
-      context,
-    ).showSnackBar(SnackBar(content: Text('$saved actor(s) saved')));
+    if (_failedCloudInvites.isNotEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text('$saved actor(s) saved, but cloud invitations failed '
+            'for: ${_failedCloudInvites.join(', ')}. Their join links won\'t '
+            'work — re-save when back online.'),
+        duration: const Duration(seconds: 8),
+      ));
+    } else {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('$saved actor(s) saved')));
+    }
 
     // Show invite links sheet so director can share individually
     _showInviteLinksSheet();

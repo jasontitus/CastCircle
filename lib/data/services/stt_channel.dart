@@ -1,6 +1,8 @@
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 
+import 'debug_log_service.dart';
+
 /// Platform channel for native real-time speech recognition.
 ///
 /// Backed by the OS recognizer on each platform — Apple SFSpeechRecognizer on
@@ -41,13 +43,23 @@ class SttChannel {
         'locale': locale,
       });
       _initialized = result ?? false;
-      debugPrint('STT: initialize($locale) = $_initialized');
+      if (_initialized) {
+        debugPrint('STT: initialize($locale) = true');
+      } else {
+        // Permission denied / recognizer unavailable — must be visible in
+        // release debug logs, not just debugPrint.
+        DebugLogService.instance.logError(LogCategory.stt,
+            'STT initialize($locale) returned false — permission denied or '
+            'recognizer unavailable');
+      }
       return _initialized;
     } on PlatformException catch (e) {
-      debugPrint('STT: initialize failed: ${e.message}');
+      DebugLogService.instance
+          .logError(LogCategory.stt, 'STT initialize failed', e);
       return false;
     } on MissingPluginException {
-      debugPrint('STT: platform channel not available');
+      DebugLogService.instance.logError(
+          LogCategory.stt, 'STT platform channel not available on this platform');
       return false;
     }
   }
@@ -76,10 +88,12 @@ class SttChannel {
       _listening = result ?? false;
       return _listening;
     } on PlatformException catch (e) {
-      debugPrint('STT: listen failed: ${e.message}');
+      DebugLogService.instance.logError(LogCategory.stt, 'STT listen failed', e);
       _listening = false;
       return false;
     } on MissingPluginException {
+      DebugLogService.instance.logError(
+          LogCategory.stt, 'STT listen: platform channel not available');
       _listening = false;
       return false;
     }
@@ -115,7 +129,8 @@ class SttChannel {
         _onDone = null;
       case 'onError':
         final error = call.arguments as String?;
-        debugPrint('STT: error: $error');
+        DebugLogService.instance
+            .logError(LogCategory.stt, 'STT native error: $error');
       case 'onLevel':
         final level = (call.arguments as num?)?.toDouble() ?? 0.0;
         onLevel?.call(level);
@@ -130,9 +145,12 @@ class SttChannel {
         'path': path,
       }) ?? false;
     } on PlatformException catch (e) {
-      debugPrint('STT: startRecording failed: ${e.message}');
+      DebugLogService.instance
+          .logError(LogCategory.stt, 'STT startRecording failed', e);
       return false;
     } on MissingPluginException {
+      DebugLogService.instance.logError(
+          LogCategory.stt, 'STT startRecording: channel not available');
       return false;
     }
   }
@@ -145,7 +163,8 @@ class SttChannel {
       if (result == null) return null;
       return Map<String, dynamic>.from(result);
     } on PlatformException catch (e) {
-      debugPrint('STT: stopRecording failed: ${e.message}');
+      DebugLogService.instance
+          .logError(LogCategory.stt, 'STT stopRecording failed', e);
       return null;
     } on MissingPluginException {
       return null;

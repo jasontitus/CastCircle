@@ -1,5 +1,7 @@
 import 'package:flutter/services.dart';
 
+import 'debug_log_service.dart';
+
 /// Service for handling AirPods / lock screen / Action Button media controls.
 ///
 /// Maps remote commands to rehearsal actions:
@@ -34,7 +36,10 @@ class MediaControlService {
       await _channel.invokeMethod('activate');
       _active = true;
     } on MissingPluginException {
-      // Plugin not registered (e.g., on Android or simulator)
+      // Plugin not registered (e.g., on Android or simulator) — log once so
+      // "AirPods controls do nothing" is diagnosable from a device report.
+      DebugLogService.instance.log(LogCategory.general,
+          'Media controls unavailable on this platform (plugin not registered)');
     }
   }
 

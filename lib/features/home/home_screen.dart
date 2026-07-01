@@ -15,6 +15,7 @@ import '../../data/models/production_models.dart';
 import '../../data/models/script_models.dart';
 import '../../data/services/supabase_service.dart';
 import '../../features/script_editor/cloud_sync_dialog.dart';
+import '../../main.dart' show rootScaffoldMessengerKey;
 import '../../providers/production_providers.dart';
 
 /// FutureProvider that loads the saved character name for a production.
@@ -603,13 +604,21 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     _submittingProduction = false;
 
     if (supa.isSignedIn) {
-      // Fire-and-forget — failure is non-fatal (local copy exists; the sync
-      // layer reconciles later), and it must not block the UI.
+      // Fire-and-forget so the UI isn't blocked — but a failure means the
+      // join code resolves to NOTHING for every invited castmate and no
+      // retry exists, so it must be loud, not just a log line.
       unawaited(supa
           .createProduction(title: title, id: productionId, joinCode: joinCode)
           .catchError((Object e) {
-        dlog.log(LogCategory.error,
-            '_submitProduction: background cloud create failed: $e');
+        dlog.logError(LogCategory.error,
+            '_submitProduction: background cloud create failed — invites for '
+            '"$title" will not work until this heals', e);
+        rootScaffoldMessengerKey.currentState?.showSnackBar(SnackBar(
+          content: Text('"$title" was saved on this device but couldn\'t be '
+              'created in the cloud — invites won\'t work yet. Check your '
+              'connection.'),
+          duration: const Duration(seconds: 8),
+        ));
         return <String, dynamic>{};
       }));
     }
