@@ -34,15 +34,30 @@ class SupabaseService {
     required String publishableKey,
   }) async {
     if (_initialized) return;
+    // Timeout prevents startup hanging on expired tokens or an unreachable
+    // server. The timeout does NOT cancel initialization — it keeps running.
+    final initFuture =
+        Supabase.initialize(url: url, publishableKey: publishableKey);
     try {
-      // Timeout prevents hanging on expired tokens or unreachable server
-      await Supabase.initialize(url: url, publishableKey: publishableKey)
-          .timeout(const Duration(seconds: 5));
+      await initFuture.timeout(const Duration(seconds: 5));
       _initialized = true;
     } on TimeoutException {
-      debugPrint('Supabase: init timed out after 5s, proceeding offline');
-      // Mark as initialized anyway — the SDK may still work for cached auth
-      _initialized = true;
+      // Do NOT mark initialized here: until Supabase.initialize actually
+      // completes, Supabase.instance.client throws — the old code set the
+      // flag anyway, so innocuous isSignedIn checks blew up on slow-network
+      // cold starts. Flip the flag when init really finishes.
+      _dlog.log(
+          LogCategory.network,
+          'Supabase init slow (>5s) — starting offline; cloud features '
+          'enable when it completes');
+      unawaited(initFuture.then((_) {
+        _initialized = true;
+        _dlog.log(LogCategory.network,
+            'Supabase init completed late — cloud features enabled');
+      }).catchError((Object e) {
+        _dlog.logError(
+            LogCategory.network, 'Supabase init failed after timeout', e);
+      }));
     }
   }
 
