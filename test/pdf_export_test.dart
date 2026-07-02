@@ -177,15 +177,19 @@ Confusion now hath made his masterpiece.
 ''';
       final script = parser.parse(rawText, title: 'Dual Char Test');
 
+      // Multi-character crediting: the character LIST credits the individual
+      // speakers; the shared line keeps the combined cue plus the split.
       final charNames = script.characters.map((c) => c.name).toSet();
       expect(charNames, contains('MACDUFF'));
-      expect(charNames, contains('MACBETH AND LENNOX'));
+      expect(charNames, contains('MACBETH'));
+      expect(charNames, contains('LENNOX'));
 
       final dialogueLines = script.lines
           .where((l) => l.lineType == LineType.dialogue)
           .toList();
       expect(dialogueLines.length, 3);
       expect(dialogueLines[1].character, 'MACBETH AND LENNOX');
+      expect(dialogueLines[1].multiCharacters, ['MACBETH', 'LENNOX']);
     });
 
     test('multi-line dialogue continuation across page breaks', () {

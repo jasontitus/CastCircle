@@ -309,9 +309,11 @@ class ScriptParser {
 
   /// Name-on-own-line format: "ALL CAPS NAME." alone on a line.
   void _detectCharactersOwnLine(String rawText) {
-    // Character name on own line with trailing period: "MACBETH."
+    // Character name on own line with trailing period: "MACBETH." — commas
+    // allowed so shared cues like "MACBETH, LENNOX." are detected (and then
+    // split into individuals by _detectMultiCharacterNames).
     final ownLineWithPeriod = RegExp(
-      r'^([A-Z][A-Z. ]+)\.\s*$',
+      r'^([A-Z][A-Z. ,]+)\.\s*$',
       multiLine: true,
     );
     for (final match in ownLineWithPeriod.allMatches(rawText)) {
@@ -581,27 +583,47 @@ class ScriptParser {
       }
     }
 
-    // 3. Fuzzy match: only merge rare names (≤ 2 occurrences) into common ones
+    // 3. Fuzzy match: only merge rare names (≤ 2 occurrences) into common
+    // ones. Pick the CLOSEST candidate, not the first within threshold —
+    // taking the first in set-iteration order sent "MRS, BENNET" (distance 1
+    // from MRS. BENNET) to MR. BENNET (distance 2), swapping the speakers.
     final nameList = knownCharacters.toList();
     for (final name in nameList) {
       if (toRemove.contains(name)) continue;
       final nameCount = counts[name] ?? 0;
       if (nameCount > 2) continue; // Not a rare name — don't fuzzy match
+      if (name.length < 4) continue;
 
+      // Scale threshold: short names (≤5 chars) need exact-minus-1,
+      // longer names allow up to 2 edits. Prevents MARY→DARCY.
+      final maxDist = name.length <= 5 ? 1 : 2;
+      String? best;
+      var bestDist = maxDist + 1;
+      var bestCount = -1;
       for (final candidate in nameList) {
         if (candidate == name || toRemove.contains(candidate)) continue;
         final candidateCount = counts[candidate] ?? 0;
         if (candidateCount <= nameCount) continue; // Merge INTO more common name
 
+        // MR. BENNET and MRS. BENNET are edit-distance 1 but are two PEOPLE —
+        // never fuzzy-merge names that differ only in their title.
+        if (_isConflictingTitleVariant(name, candidate)) continue;
+        // OCR rarely corrupts the leading capital; requiring it blocks
+        // real-but-rare characters from vanishing into lookalikes (ANNE→JANE).
+        if (name[0] != candidate[0]) continue;
+
         final dist = _editDistance(name, candidate);
-        // Scale threshold: short names (≤5 chars) need exact-minus-1,
-        // longer names allow up to 2 edits. Prevents MARY→DARCY.
-        final maxDist = name.length <= 5 ? 1 : 2;
-        if (dist > 0 && dist <= maxDist && name.length >= 4) {
-          toAlias[name] = candidate;
-          toRemove.add(name);
-          break;
+        if (dist == 0 || dist > maxDist) continue;
+        if (dist < bestDist ||
+            (dist == bestDist && candidateCount > bestCount)) {
+          best = candidate;
+          bestDist = dist;
+          bestCount = candidateCount;
         }
+      }
+      if (best != null) {
+        toAlias[name] = best;
+        toRemove.add(name);
       }
     }
 
@@ -722,7 +744,12 @@ class ScriptParser {
           .where((p) => p.isNotEmpty)
           .toList();
       if (parts.length >= 2 &&
-          parts.every((p) => _looksLikeCharacterName(p))) {
+          parts.every((p) =>
+              _looksLikeCharacterName(p) &&
+              // "MRS, BENNET" (OCR comma-for-period) is ONE person, not the
+              // pair [MRS, BENNET] — splitting it injected bare title words
+              // as characters.
+              !_titlePrefixes.contains(p.replaceAll('.', '').trim()))) {
         return parts;
       }
     }
@@ -733,6 +760,16 @@ class ScriptParser {
   static bool _looksLikeCharacterName(String s) {
     if (s.length < 2) return false;
     return RegExp(r'^[A-Z][A-Z. ]+$').hasMatch(s);
+  }
+
+  /// True when [a] and [b] are the same surname under two DIFFERENT titles
+  /// ("MR. BENNET" vs "MRS. BENNET") — distinct people despite a tiny edit
+  /// distance, so fuzzy merging must never combine them.
+  static bool _isConflictingTitleVariant(String a, String b) {
+    final baseA = _stripTitle(a);
+    final baseB = _stripTitle(b);
+    if (baseA == null || baseB == null) return false;
+    return baseA == baseB && a != b;
   }
 
   /// Strip title prefix from a name, returning null if no title found.
@@ -851,6 +888,28 @@ class ScriptParser {
         if (ownLine.hasMatch(line)) {
           return (character: char, dialogue: '');
         }
+      }
+    }
+
+    // OCR-tolerant second pass: punctuation INSIDE a known multi-word name is
+    // routinely misread ("MRS, BENNET. …", "MRS.BENNET. …") which used to
+    // shunt the whole line into the previous speaker's dialogue. Allow
+    // [.,:] variants and missing spaces between the name's tokens, but keep
+    // the trailing cue separator strict ('.' or ':' + space) so dialogue that
+    // merely STARTS with a name ("MARY, come here…") is never consumed.
+    for (final char in sorted) {
+      final tokens = char
+          .split(RegExp(r'[.\s]+'))
+          .where((t) => t.isNotEmpty)
+          .toList();
+      if (tokens.length < 2) continue; // single tokens: exact pass covers them
+      final flexible = tokens.map(RegExp.escape).join(r'[.,:]?\s*');
+      final match = RegExp(
+        '^$flexible\\s*[.:]\\s+(.*)',
+        caseSensitive: caseSensitive,
+      ).firstMatch(line);
+      if (match != null) {
+        return (character: char, dialogue: match.group(1)!);
       }
     }
     return null;
@@ -1006,8 +1065,45 @@ class ScriptParser {
       ));
     }
 
+    // Accumulates a parenthesized stage direction that spans multiple raw
+    // lines ("(The ball begins. ELIZABETH sits" … "to one side.)"). Without
+    // this, the wrapped continuation lines were glued into the surrounding
+    // DIALOGUE as if the speaker said them.
+    var pendingDirection = '';
+
     for (final rawLine in textLines) {
       final line = rawLine.trim();
+
+      // Finish (or keep accumulating) a multi-line parenthetical direction.
+      if (pendingDirection.isNotEmpty) {
+        final cleanedCont = _cleanLine(line);
+        // A new character cue means the direction's ')' was lost by OCR —
+        // emit what we have and process the cue normally below.
+        final bailToCue =
+            cleanedCont.isNotEmpty && _detectCharacterCue(cleanedCont) != null;
+        if (!bailToCue) {
+          final closeIdx = cleanedCont.indexOf(')');
+          if (closeIdx >= 0) {
+            addStageDirection(
+                '$pendingDirection ${cleanedCont.substring(0, closeIdx + 1)}');
+            pendingDirection = '';
+            // Dialogue may continue after the direction on the same line;
+            // attribute it to the still-current speaker.
+            final rest = cleanedCont.substring(closeIdx + 1).trim();
+            dialogueParts = [if (rest.isNotEmpty) rest else ''];
+            continue;
+          }
+          if (pendingDirection.length < 400) {
+            if (cleanedCont.isNotEmpty) pendingDirection += ' $cleanedCont';
+            continue;
+          }
+        }
+        // Bail: runaway accumulation (OCR lost the ')') or a cue arrived.
+        addStageDirection(pendingDirection);
+        pendingDirection = '';
+        dialogueParts = [''];
+        // fall through to process this line normally
+      }
 
       // ACT headers — check BEFORE noise filter since "ACT 1" looks like noise.
       // Matches: "ACT I", "ACT 1", "ACT THE FIRST.", "ACT FIRST.",
@@ -1073,9 +1169,20 @@ class ScriptParser {
       // Standalone stage direction (parenthesized)
       if (cleaned.startsWith('(') && cleaned.endsWith(')')) {
         flushDialogue();
-        currentCharacter = '';
-        dialogueParts = [];
+        // Acting editions (e.g. Jon Jory's) continue a speech after a
+        // centered parenthetical with NO repeated cue — keep the speaker so
+        // the continuation is attributed (as its own line) instead of
+        // silently dropped. Scene transitions still clear the speaker
+        // inside addStageDirection.
+        dialogueParts = [''];
         addStageDirection(cleaned);
+        continue;
+      }
+
+      // Opening fragment of a multi-line parenthetical direction.
+      if (cleaned.startsWith('(') && !cleaned.contains(')')) {
+        flushDialogue();
+        pendingDirection = cleaned;
         continue;
       }
 
@@ -1122,6 +1229,7 @@ class ScriptParser {
       }
     }
 
+    if (pendingDirection.isNotEmpty) addStageDirection(pendingDirection);
     flushDialogue();
     return result;
   }
