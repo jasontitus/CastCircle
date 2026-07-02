@@ -49,11 +49,17 @@ class KokoroMLXPlugin: NSObject {
             let speed = args["speed"] as? Double ?? 1.0
 
             Task {
-                // Request background time so synthesis can finish if app is backgrounded
+                // Request background time so an IN-FLIGHT synthesis can finish
+                // if the app is backgrounded mid-inference. (New synthesis is
+                // refused while backgrounded — GPU work there is a kill; see
+                // KokoroMLXService.synthesize.) UIApplication is
+                // main-actor-only, so hop for begin/end.
                 var bgTask: UIBackgroundTaskIdentifier = .invalid
-                bgTask = UIApplication.shared.beginBackgroundTask(withName: "KokoroSynth") {
-                    UIApplication.shared.endBackgroundTask(bgTask)
-                    bgTask = .invalid
+                await MainActor.run {
+                    bgTask = UIApplication.shared.beginBackgroundTask(withName: "KokoroSynth") {
+                        UIApplication.shared.endBackgroundTask(bgTask)
+                        bgTask = .invalid
+                    }
                 }
 
                 do {
@@ -71,8 +77,10 @@ class KokoroMLXPlugin: NSObject {
                     }
                 }
 
-                if bgTask != .invalid {
-                    UIApplication.shared.endBackgroundTask(bgTask)
+                await MainActor.run {
+                    if bgTask != .invalid {
+                        UIApplication.shared.endBackgroundTask(bgTask)
+                    }
                 }
             }
 

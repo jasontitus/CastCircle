@@ -608,6 +608,14 @@ class TtsService {
             'Kokoro synthesis cancelled (gen=$gen, current=$_speakGen)');
         return true;
       }
+      if (e.message != null && e.message!.contains('backgrounded')) {
+        // Expected while the app is in the background: GPU synthesis would be
+        // killed by iOS, so this line uses the system voice instead. Kokoro
+        // resumes automatically once the app is foregrounded.
+        DebugLogService.instance.log(LogCategory.tts,
+            'Kokoro unavailable in background — using system voice for this line');
+        return false;
+      }
       DebugLogService.instance.logError(LogCategory.tts, 'Kokoro synthesis failed', e);
       return false;
     } catch (e) {

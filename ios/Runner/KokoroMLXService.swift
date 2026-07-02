@@ -1,6 +1,7 @@
 import Foundation
 import AVFoundation
 import CryptoKit
+import UIKit
 import MLX
 import MLXUtilsLibrary
 
@@ -121,6 +122,20 @@ class KokoroMLXService {
             try? FileManager.default.setAttributes(
                 [.modificationDate: Date()], ofItemAtPath: cachedPath.path)
             return cachedPath.path
+        }
+
+        // MLX inference is Metal (GPU) work, and iOS TERMINATES apps that
+        // submit GPU work while backgrounded — the background-audio
+        // entitlement keeps rehearsal playing in the background, so every
+        // freshly-synthesized line there was an instant kill. Refuse (the
+        // Dart side falls back to system TTS, which is background-legal)
+        // instead of crashing.
+        let inBackground = await MainActor.run {
+            UIApplication.shared.applicationState == .background
+        }
+        if inBackground {
+            NSLog("KokoroMLX: refusing synthesis while backgrounded (GPU work would be killed)")
+            throw KokoroError.backgrounded
         }
 
         // Mark this generation so older in-flight calls can bail out
@@ -293,6 +308,7 @@ enum KokoroError: LocalizedError {
     case voiceNotFound(String)
     case emptyAudio
     case cancelled
+    case backgrounded
 
     var errorDescription: String? {
         switch self {
@@ -302,6 +318,8 @@ enum KokoroError: LocalizedError {
         case .voiceNotFound(let v): return "Voice '\(v)' not found in voice embeddings."
         case .emptyAudio: return "No audio generated for the given text."
         case .cancelled: return "Synthesis cancelled (newer request superseded)."
+        case .backgrounded:
+            return "App is backgrounded — GPU synthesis unavailable."
         }
     }
 }
