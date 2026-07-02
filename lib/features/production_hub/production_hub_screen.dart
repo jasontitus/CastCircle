@@ -807,7 +807,10 @@ class _ProductionHubScreenState extends ConsumerState<ProductionHubScreen> {
       }
 
       ref.read(currentScriptProvider.notifier).state = cloudScript;
-      await persistScript(ref);
+      // Local-only: this script just came FROM the cloud — persistScript
+      // would push it straight back (an unnecessary delete+reinsert window
+      // for the whole cast).
+      await persistScriptLocally(ref, production.id, cloudScript);
 
       if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
