@@ -263,7 +263,7 @@ void main() {
       expect(readyLines, ['line-1']);
 
       // B can now resolve A's recording for playback, keyed by line id
-      final cached = deviceB.getCachedRecordings();
+      final cached = deviceB.getCachedRecordings(productionId);
       expect(cached, contains('line-1'));
       expect(cached['line-1']!.character, 'HAMLET');
       expect(File(cached['line-1']!.localPath).readAsBytesSync(),
@@ -293,7 +293,7 @@ void main() {
           cacheDirectory: '${tempDir.path}/actorB/recording_cache');
       cloud.ready = false;
       await deviceBRestarted.hydrateCache();
-      final cached = deviceBRestarted.getCachedRecordings();
+      final cached = deviceBRestarted.getCachedRecordings(productionId);
       expect(cached, contains('line-1'),
           reason: 'downloaded recording must be playable offline after restart');
       expect(File(cached['line-1']!.localPath).readAsBytesSync(), [9, 9, 9]);
@@ -304,6 +304,33 @@ void main() {
           productionId: productionId, localRecordings: {}, myUserId: 'user-b');
       expect(downloaded, 0);
       expect(cloud.downloadCount, downloadsBefore);
+    });
+
+    test('cached recordings do not leak into OTHER productions', () async {
+      // Actor A uploads to prod-1; actor B downloads them.
+      final deviceA = deviceFor('actorA');
+      cloud.userId = 'user-a';
+      final aTake = await makeLocalRecording('actorA', 'line-1', 'HAMLET');
+      await deviceA.syncForProduction(
+          productionId: productionId, localRecordings: {'line-1': aTake});
+      final deviceB = deviceFor('actorB');
+      cloud.userId = 'user-b';
+      await deviceB.syncForProduction(
+          productionId: productionId, localRecordings: {}, myUserId: 'user-b');
+      expect(deviceB.getCachedRecordings(productionId), contains('line-1'));
+
+      // A brand-new production on the same device must see NONE of them —
+      // this leak made a fresh production flag every cached recording as
+      // "orphaned" (the "11 shared recordings don't match" banner).
+      expect(deviceB.getCachedRecordings('prod-brand-new'), isEmpty);
+
+      // Same across a restart (manifest round-trip preserves the scoping).
+      await deviceB.flushManifest();
+      final restarted = RecordingSyncService.forTesting(cloud,
+          cacheDirectory: '${tempDir.path}/actorB/recording_cache');
+      await restarted.hydrateCache();
+      expect(restarted.getCachedRecordings(productionId), contains('line-1'));
+      expect(restarted.getCachedRecordings('prod-brand-new'), isEmpty);
     });
 
     test('does not re-download an up-to-date cached recording', () async {
@@ -339,7 +366,7 @@ void main() {
       cloud.userId = 'user-b';
       await deviceB.syncForProduction(
           productionId: productionId, localRecordings: {});
-      expect(deviceB.getCachedRecordings()['line-1'], isNotNull);
+      expect(deviceB.getCachedRecordings(productionId)['line-1'], isNotNull);
 
       // Actor A re-records the line
       cloud.userId = 'user-a';
@@ -355,7 +382,7 @@ void main() {
 
       expect(downloaded, 1);
       expect(
-          File(deviceB.getCachedRecordings()['line-1']!.localPath)
+          File(deviceB.getCachedRecordings(productionId)['line-1']!.localPath)
               .readAsBytesSync(),
           [2, 2, 2]);
     });
@@ -375,13 +402,13 @@ void main() {
       // Simulate the OS (or user) clearing the cache file
       final cachedPath = deviceB.getCachedPath('line-1')!;
       File(cachedPath).deleteSync();
-      expect(deviceB.getCachedRecordings(), isNot(contains('line-1')));
+      expect(deviceB.getCachedRecordings(productionId), isNot(contains('line-1')));
 
       final downloaded = await deviceB.syncForProduction(
           productionId: productionId, localRecordings: {});
 
       expect(downloaded, 1);
-      expect(deviceB.getCachedRecordings(), contains('line-1'));
+      expect(deviceB.getCachedRecordings(productionId), contains('line-1'));
     });
 
     test('keeps my own recording rather than downloading someone else\'s',
@@ -434,7 +461,7 @@ void main() {
       );
 
       expect(readyLines, ['line-9']);
-      final cached = deviceB.getCachedRecordings()['line-9'];
+      final cached = deviceB.getCachedRecordings(productionId)['line-9'];
       expect(cached, isNotNull);
       expect(cached!.character, 'OPHELIA');
       expect(File(cached.localPath).readAsBytesSync(), [9, 9]);
@@ -457,7 +484,7 @@ void main() {
       );
 
       expect(cloud.downloadCount, 0);
-      expect(deviceA.getCachedRecordings(), isEmpty);
+      expect(deviceA.getCachedRecordings(productionId), isEmpty);
     });
   });
 
@@ -513,7 +540,7 @@ void main() {
 
       // The understudy/castmate map used by the rehearsal playback chain
       // resolves every one of Actor A's lines to a playable local file.
-      final castmateRecordings = deviceB.getCachedRecordings();
+      final castmateRecordings = deviceB.getCachedRecordings(productionId);
       for (final lineId in lines.keys) {
         final rec = castmateRecordings[lineId];
         expect(rec, isNotNull, reason: 'missing recording for $lineId');
@@ -534,7 +561,7 @@ void main() {
       await deviceB.syncForProduction(
           productionId: productionId, localRecordings: {});
       expect(
-          File(deviceB.getCachedRecordings()['line-2']!.localPath)
+          File(deviceB.getCachedRecordings(productionId)['line-2']!.localPath)
               .readAsBytesSync(),
           [99]);
     });

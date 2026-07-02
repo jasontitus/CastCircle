@@ -389,6 +389,7 @@ class RecordingSyncService {
           recordedAt: cloudTimestamp,
           durationMs: cloud['duration_ms'] as int? ?? 0,
           character: characterName,
+          productionId: productionId,
         );
 
         downloaded++;
@@ -433,13 +434,16 @@ class RecordingSyncService {
 
   // ── Build Recording Map from Cache ──────────────────────
 
-  /// Get a single cached recording as a [Recording], or null if not cached.
-  /// Much cheaper than [getCachedRecordings] when one file just arrived —
-  /// during a big sync the full-map version stats every cache entry per
-  /// downloaded file.
-  Recording? getCachedRecording(String lineId) {
+  /// Get a single cached recording as a [Recording], or null if not cached
+  /// (or cached under a different production). Much cheaper than
+  /// [getCachedRecordings] when one file just arrived — during a big sync the
+  /// full-map version stats every cache entry per downloaded file.
+  Recording? getCachedRecording(String lineId, {String? productionId}) {
     final cached = _cache[lineId];
     if (cached == null) return null;
+    if (productionId != null && cached.productionId != productionId) {
+      return null;
+    }
     return Recording(
       id: 'cache_$lineId',
       scriptLineId: lineId,
@@ -452,12 +456,17 @@ class RecordingSyncService {
     );
   }
 
-  /// Get all cached recordings as a Map<lineId, Recording> for use
-  /// with the recordingsProvider or understudyRecordingsProvider.
-  Map<String, Recording> getCachedRecordings() {
+  /// Get [productionId]'s cached recordings as a Map<lineId, Recording> for
+  /// use with the recordingsProvider or understudyRecordingsProvider.
+  ///
+  /// The cache itself is global; the filter is REQUIRED — loading the whole
+  /// map used to leak one production's recordings into every other
+  /// production's provider (a fresh production showed them all as orphans).
+  Map<String, Recording> getCachedRecordings(String productionId) {
     final result = <String, Recording>{};
     for (final entry in _cache.entries) {
       final cached = entry.value;
+      if (cached.productionId != productionId) continue;
       if (File(cached.localPath).existsSync()) {
         result[entry.key] = Recording(
           id: 'cache_${entry.key}',
@@ -540,6 +549,7 @@ class RecordingSyncService {
         recordedAt: _parseTimestamp(payload['recorded_at']),
         durationMs: payload['duration_ms'] as int? ?? 0,
         character: characterName,
+        productionId: productionId,
       );
       _saveManifest();
 
@@ -631,6 +641,12 @@ class _CachedRecording {
   final int durationMs;
   final String character;
 
+  /// Which production this recording belongs to. The cache map is global
+  /// (keyed by lineId only), so consumers MUST filter by production — without
+  /// this, one production's cached recordings leaked into every other
+  /// production's provider and got flagged as orphans there.
+  final String productionId;
+
   _CachedRecording({
     required this.lineId,
     required this.userId,
@@ -638,6 +654,7 @@ class _CachedRecording {
     required this.recordedAt,
     required this.durationMs,
     required this.character,
+    required this.productionId,
   });
 
   Map<String, dynamic> toJson() => {
@@ -647,12 +664,20 @@ class _CachedRecording {
         'recordedAt': recordedAt,
         'durationMs': durationMs,
         'character': character,
+        'productionId': productionId,
       };
 
   static _CachedRecording? fromJson(Map<String, dynamic> json) {
     final lineId = json['lineId'] as String?;
     final localPath = json['localPath'] as String?;
     if (lineId == null || localPath == null) return null;
+    // Manifests written before productionId existed: the cache layout is
+    // recording_cache/<productionId>/<lineId>.m4a, so recover it from the path.
+    var productionId = json['productionId'] as String? ?? '';
+    if (productionId.isEmpty) {
+      final segments = p.split(p.dirname(localPath));
+      if (segments.isNotEmpty) productionId = segments.last;
+    }
     return _CachedRecording(
       lineId: lineId,
       userId: json['userId'] as String? ?? '',
@@ -660,6 +685,7 @@ class _CachedRecording {
       recordedAt: json['recordedAt'] as int? ?? 0,
       durationMs: json['durationMs'] as int? ?? 0,
       character: json['character'] as String? ?? '',
+      productionId: productionId,
     );
   }
 }

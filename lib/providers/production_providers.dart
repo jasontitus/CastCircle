@@ -372,7 +372,8 @@ void launchRecordingSync(WidgetRef ref, String productionId) {
       // Add just the recording that arrived — rebuilding the full cache map
       // stats every cached file per download, which during a big first sync
       // is O(n²) file stats plus n map copies.
-      final rec = RecordingSyncService.instance.getCachedRecording(lineId);
+      final rec = RecordingSyncService.instance
+          .getCachedRecording(lineId, productionId: productionId);
       if (rec != null) {
         ref
             .read(understudyRecordingsProvider.notifier)
@@ -393,7 +394,8 @@ void launchRecordingSync(WidgetRef ref, String productionId) {
     // Surface recordings already downloaded to disk (previous runs) BEFORE
     // the network sync — so castmates' takes play even when offline.
     await RecordingSyncService.instance.hydrateCache();
-    final hydrated = RecordingSyncService.instance.getCachedRecordings();
+    final hydrated =
+        RecordingSyncService.instance.getCachedRecordings(productionId);
     if (hydrated.isNotEmpty) {
       ref.read(understudyRecordingsProvider.notifier).loadFromMap(hydrated);
     }
@@ -407,7 +409,8 @@ void launchRecordingSync(WidgetRef ref, String productionId) {
     );
 
     if (downloaded > 0) {
-      final cached = RecordingSyncService.instance.getCachedRecordings();
+      final cached =
+          RecordingSyncService.instance.getCachedRecordings(productionId);
       ref.read(understudyRecordingsProvider.notifier).loadFromMap(cached);
     }
   });
