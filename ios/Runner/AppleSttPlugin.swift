@@ -35,7 +35,53 @@ class AppleSttPlugin: NSObject {
         )
         super.init()
         channel.setMethodCallHandler(handle)
+
+        #if os(iOS)
+        // Phone calls / Siri / alarms interrupt the shared session and kill
+        // the input engine; unplugging headphones kills the input route.
+        // Surface both to Dart so rehearsal can pause instead of stranding
+        // (the state machine used to wait forever for a playback completion
+        // that never fires).
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(handleInterruption(_:)),
+            name: AVAudioSession.interruptionNotification, object: nil)
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(handleRouteChange(_:)),
+            name: AVAudioSession.routeChangeNotification, object: nil)
+        #endif
     }
+
+    #if os(iOS)
+    @objc private func handleInterruption(_ notification: Notification) {
+        guard let info = notification.userInfo,
+              let typeRaw = info[AVAudioSessionInterruptionTypeKey] as? UInt,
+              let type = AVAudioSession.InterruptionType(rawValue: typeRaw) else { return }
+        let began = type == .began
+        var shouldResume = false
+        if !began, let optsRaw = info[AVAudioSessionInterruptionOptionKey] as? UInt {
+            shouldResume = AVAudioSession.InterruptionOptions(rawValue: optsRaw)
+                .contains(.shouldResume)
+        }
+        NSLog("AppleStt: audio interruption \(began ? "began" : "ended") shouldResume=\(shouldResume)")
+        DispatchQueue.main.async { [weak self] in
+            self?.channel.invokeMethod("onAudioInterruption", arguments: [
+                "began": began,
+                "shouldResume": shouldResume,
+            ])
+        }
+    }
+
+    @objc private func handleRouteChange(_ notification: Notification) {
+        guard let info = notification.userInfo,
+              let reasonRaw = info[AVAudioSessionRouteChangeReasonKey] as? UInt,
+              let reason = AVAudioSession.RouteChangeReason(rawValue: reasonRaw),
+              reason == .oldDeviceUnavailable else { return } // headphones unplugged
+        NSLog("AppleStt: audio route lost (old device unavailable)")
+        DispatchQueue.main.async { [weak self] in
+            self?.channel.invokeMethod("onAudioRouteLost", arguments: nil)
+        }
+    }
+    #endif
 
     func handle(_ call: FlutterMethodCall, result: @escaping FlutterResult) {
         switch call.method {

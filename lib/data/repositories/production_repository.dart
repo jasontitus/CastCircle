@@ -134,6 +134,7 @@ class ProductionRepository {
           ocrConfidence: Value(l.ocrConfidence),
           sourcePage: Value(l.sourcePage),
           sourceLineOnPage: Value(l.sourceLineOnPage),
+          multiCharacters: Value(l.multiCharacters.join(',')),
         )).toList();
     // Atomic delete + re-insert: a crash/throw between the two would otherwise
     // leave the production with ALL its script lines deleted and none restored
@@ -158,6 +159,9 @@ class ProductionRepository {
       ocrConfidence: row.ocrConfidence,
       sourcePage: row.sourcePage,
       sourceLineOnPage: row.sourceLineOnPage,
+      multiCharacters: row.multiCharacters.isEmpty
+          ? const []
+          : row.multiCharacters.split(','),
     );
   }
 

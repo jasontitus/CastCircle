@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
@@ -119,6 +120,66 @@ class RecordingSyncService {
   /// Metadata for cached recordings: lineId → {recordedAt, userId, path}
   final Map<String, _CachedRecording> _cache = {};
 
+  // The cache index used to be memory-only: after an app restart the
+  // downloaded files were still on disk but invisible — offline rehearsal
+  // fell back to TTS, and online every file was re-downloaded. A manifest
+  // JSON beside the cache persists the index across launches.
+  bool _hydrated = false;
+  Future<void>? _manifestChain;
+
+  Future<String> _manifestPath() async =>
+      p.join(await cacheDir, 'manifest.json');
+
+  /// Test hook: wait for in-flight manifest writes.
+  @visibleForTesting
+  Future<void> flushManifest() async =>
+      await (_manifestChain ?? Future.value());
+
+  /// Restore the cache index from the manifest (once per launch). Entries
+  /// whose file no longer exists are dropped; entries already in memory
+  /// (downloaded this session) win over the manifest.
+  Future<void> hydrateCache() async {
+    if (_hydrated) return;
+    _hydrated = true;
+    try {
+      final file = File(await _manifestPath());
+      if (!file.existsSync()) return;
+      final data = jsonDecode(await file.readAsString());
+      if (data is! List) return;
+      var restored = 0;
+      for (final entry in data.whereType<Map>()) {
+        final cached = _CachedRecording.fromJson(Map<String, dynamic>.from(entry));
+        if (cached == null) continue;
+        if (_cache.containsKey(cached.lineId)) continue;
+        if (!File(cached.localPath).existsSync()) continue;
+        _cache[cached.lineId] = cached;
+        restored++;
+      }
+      if (restored > 0) {
+        _dlog.log(LogCategory.general,
+            'RecordingSync: restored $restored cached recording(s) from disk');
+      }
+    } catch (e) {
+      _dlog.logError(
+          LogCategory.error, 'RecordingSync: cache manifest restore failed', e);
+    }
+  }
+
+  /// Persist the cache index. Writes are chained (downloads run 4-way
+  /// concurrent) and the content is snapshotted at write time.
+  void _saveManifest() {
+    _manifestChain = (_manifestChain ?? Future.value()).then((_) async {
+      try {
+        final snapshot =
+            jsonEncode(_cache.values.map((c) => c.toJson()).toList());
+        await File(await _manifestPath()).writeAsString(snapshot);
+      } catch (e) {
+        _dlog.logError(
+            LogCategory.error, 'RecordingSync: cache manifest save failed', e);
+      }
+    });
+  }
+
   /// Active realtime channel (null when not subscribed).
   RealtimeChannel? _realtimeChannel;
 
@@ -164,6 +225,9 @@ class RecordingSyncService {
     required Map<String, Recording> localRecordings,
     String? myUserId,
   }) async {
+    // Restore the on-disk cache index first so already-downloaded files are
+    // recognized (and skipped) instead of re-downloaded.
+    await hydrateCache();
     if (!_cloud.isReady) return 0;
 
     _dlog.log(LogCategory.general,
@@ -338,6 +402,8 @@ class RecordingSyncService {
       }
     });
 
+    if (downloaded > 0) _saveManifest();
+
     _dlog.log(LogCategory.general,
         'RecordingSync: done — $uploaded uploaded, $downloaded downloaded');
 
@@ -475,6 +541,7 @@ class RecordingSyncService {
         durationMs: payload['duration_ms'] as int? ?? 0,
         character: characterName,
       );
+      _saveManifest();
 
       onRecordingReady?.call(lineId, path);
     } catch (e) {
@@ -507,6 +574,7 @@ class RecordingSyncService {
       await prodDir.delete(recursive: true);
     }
     _cache.removeWhere((_, v) => v.localPath.contains(productionId));
+    _saveManifest();
   }
 
   /// Clear all cached recordings.
@@ -518,6 +586,7 @@ class RecordingSyncService {
       await cacheDirectory.create(recursive: true);
     }
     _cache.clear();
+    _saveManifest();
   }
 
   // ── Helpers ──────────────────────────────────────────────
@@ -570,4 +639,27 @@ class _CachedRecording {
     required this.durationMs,
     required this.character,
   });
+
+  Map<String, dynamic> toJson() => {
+        'lineId': lineId,
+        'userId': userId,
+        'localPath': localPath,
+        'recordedAt': recordedAt,
+        'durationMs': durationMs,
+        'character': character,
+      };
+
+  static _CachedRecording? fromJson(Map<String, dynamic> json) {
+    final lineId = json['lineId'] as String?;
+    final localPath = json['localPath'] as String?;
+    if (lineId == null || localPath == null) return null;
+    return _CachedRecording(
+      lineId: lineId,
+      userId: json['userId'] as String? ?? '',
+      localPath: localPath,
+      recordedAt: json['recordedAt'] as int? ?? 0,
+      durationMs: json['durationMs'] as int? ?? 0,
+      character: json['character'] as String? ?? '',
+    );
+  }
 }

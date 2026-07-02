@@ -333,6 +333,68 @@ void main() {
       expect(uploader.savedMetadataJobs.last.durationMs, 2000);
     });
 
+    test('queued uploads survive an app restart via the persistence file',
+        () async {
+      final persistPath = '${tempDir.path}/sync_queue.json';
+      final path1 = await makeAudioFile('line-1');
+      final path2 = await makeAudioFile('line-2');
+      final goneFilePath = '${tempDir.path}/deleted-later.m4a';
+      await File(goneFilePath).writeAsBytes(List.filled(64, 1));
+
+      final q1 = SyncQueue.forTesting(uploader, persistPath: persistPath);
+      uploader.ready = false; // offline — jobs stay queued
+      q1.enqueue(
+        productionId: 'prod-1',
+        characterName: 'HAMLET',
+        lineId: 'line-1',
+        localPath: path1,
+        durationMs: 1000,
+      );
+      q1.enqueue(
+        productionId: 'prod-1',
+        characterName: 'HAMLET',
+        lineId: 'line-2',
+        localPath: path2,
+        durationMs: 2000,
+      );
+      q1.enqueue(
+        productionId: 'prod-1',
+        characterName: 'HAMLET',
+        lineId: 'line-3',
+        localPath: goneFilePath,
+        durationMs: 500,
+      );
+      await q1.flushPersistence();
+
+      // "App restart": new queue instance, audio for line-3 gone, and line-2
+      // was re-recorded live before the restore ran.
+      await File(goneFilePath).delete();
+      final uploader2 = FakeUploader()..ready = false;
+      final q2 = SyncQueue.forTesting(uploader2, persistPath: persistPath);
+      final newPath2 = await makeAudioFile('line-2-take2');
+      q2.enqueue(
+        productionId: 'prod-1',
+        characterName: 'HAMLET',
+        lineId: 'line-2',
+        localPath: newPath2,
+        durationMs: 2500,
+      );
+      await q2.flushPersistence();
+
+      expect(q2.pending, hasLength(2)); // line-1 restored, line-2 live take
+      expect(
+        q2.pending.map((j) => j.localPath),
+        containsAll([path1, newPath2]),
+      );
+      expect(q2.pending.map((j) => j.lineId), isNot(contains('line-3')));
+
+      uploader2.ready = true;
+      await q2.processQueue();
+      expect(q2.pending, isEmpty);
+      expect(uploader2.uploads, hasLength(2));
+      q2.reset();
+    });
+
     test('re-recording a permanently failed line re-queues it fresh',
         () async {
       final path = await makeAudioFile('line-1');

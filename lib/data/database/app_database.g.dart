@@ -663,6 +663,18 @@ class $ScriptLinesTable extends ScriptLines
     type: DriftSqlType.int,
     requiredDuringInsert: false,
   );
+  static const VerificationMeta _multiCharactersMeta = const VerificationMeta(
+    'multiCharacters',
+  );
+  @override
+  late final GeneratedColumn<String> multiCharacters = GeneratedColumn<String>(
+    'multi_characters',
+    aliasedName,
+    false,
+    type: DriftSqlType.string,
+    requiredDuringInsert: false,
+    defaultValue: const Constant(''),
+  );
   @override
   List<GeneratedColumn> get $columns => [
     id,
@@ -678,6 +690,7 @@ class $ScriptLinesTable extends ScriptLines
     ocrConfidence,
     sourcePage,
     sourceLineOnPage,
+    multiCharacters,
   ];
   @override
   String get aliasedName => _alias ?? actualTableName;
@@ -790,6 +803,15 @@ class $ScriptLinesTable extends ScriptLines
         ),
       );
     }
+    if (data.containsKey('multi_characters')) {
+      context.handle(
+        _multiCharactersMeta,
+        multiCharacters.isAcceptableOrUnknown(
+          data['multi_characters']!,
+          _multiCharactersMeta,
+        ),
+      );
+    }
     return context;
   }
 
@@ -851,6 +873,10 @@ class $ScriptLinesTable extends ScriptLines
         DriftSqlType.int,
         data['${effectivePrefix}source_line_on_page'],
       ),
+      multiCharacters: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}multi_characters'],
+      )!,
     );
   }
 
@@ -874,6 +900,7 @@ class ScriptLine extends DataClass implements Insertable<ScriptLine> {
   final double? ocrConfidence;
   final int? sourcePage;
   final int? sourceLineOnPage;
+  final String multiCharacters;
   const ScriptLine({
     required this.id,
     required this.productionId,
@@ -888,6 +915,7 @@ class ScriptLine extends DataClass implements Insertable<ScriptLine> {
     this.ocrConfidence,
     this.sourcePage,
     this.sourceLineOnPage,
+    required this.multiCharacters,
   });
   @override
   Map<String, Expression> toColumns(bool nullToAbsent) {
@@ -911,6 +939,7 @@ class ScriptLine extends DataClass implements Insertable<ScriptLine> {
     if (!nullToAbsent || sourceLineOnPage != null) {
       map['source_line_on_page'] = Variable<int>(sourceLineOnPage);
     }
+    map['multi_characters'] = Variable<String>(multiCharacters);
     return map;
   }
 
@@ -935,6 +964,7 @@ class ScriptLine extends DataClass implements Insertable<ScriptLine> {
       sourceLineOnPage: sourceLineOnPage == null && nullToAbsent
           ? const Value.absent()
           : Value(sourceLineOnPage),
+      multiCharacters: Value(multiCharacters),
     );
   }
 
@@ -957,6 +987,7 @@ class ScriptLine extends DataClass implements Insertable<ScriptLine> {
       ocrConfidence: serializer.fromJson<double?>(json['ocrConfidence']),
       sourcePage: serializer.fromJson<int?>(json['sourcePage']),
       sourceLineOnPage: serializer.fromJson<int?>(json['sourceLineOnPage']),
+      multiCharacters: serializer.fromJson<String>(json['multiCharacters']),
     );
   }
   @override
@@ -976,6 +1007,7 @@ class ScriptLine extends DataClass implements Insertable<ScriptLine> {
       'ocrConfidence': serializer.toJson<double?>(ocrConfidence),
       'sourcePage': serializer.toJson<int?>(sourcePage),
       'sourceLineOnPage': serializer.toJson<int?>(sourceLineOnPage),
+      'multiCharacters': serializer.toJson<String>(multiCharacters),
     };
   }
 
@@ -993,6 +1025,7 @@ class ScriptLine extends DataClass implements Insertable<ScriptLine> {
     Value<double?> ocrConfidence = const Value.absent(),
     Value<int?> sourcePage = const Value.absent(),
     Value<int?> sourceLineOnPage = const Value.absent(),
+    String? multiCharacters,
   }) => ScriptLine(
     id: id ?? this.id,
     productionId: productionId ?? this.productionId,
@@ -1011,6 +1044,7 @@ class ScriptLine extends DataClass implements Insertable<ScriptLine> {
     sourceLineOnPage: sourceLineOnPage.present
         ? sourceLineOnPage.value
         : this.sourceLineOnPage,
+    multiCharacters: multiCharacters ?? this.multiCharacters,
   );
   ScriptLine copyWithCompanion(ScriptLinesCompanion data) {
     return ScriptLine(
@@ -1041,6 +1075,9 @@ class ScriptLine extends DataClass implements Insertable<ScriptLine> {
       sourceLineOnPage: data.sourceLineOnPage.present
           ? data.sourceLineOnPage.value
           : this.sourceLineOnPage,
+      multiCharacters: data.multiCharacters.present
+          ? data.multiCharacters.value
+          : this.multiCharacters,
     );
   }
 
@@ -1059,7 +1096,8 @@ class ScriptLine extends DataClass implements Insertable<ScriptLine> {
           ..write('stageDirection: $stageDirection, ')
           ..write('ocrConfidence: $ocrConfidence, ')
           ..write('sourcePage: $sourcePage, ')
-          ..write('sourceLineOnPage: $sourceLineOnPage')
+          ..write('sourceLineOnPage: $sourceLineOnPage, ')
+          ..write('multiCharacters: $multiCharacters')
           ..write(')'))
         .toString();
   }
@@ -1079,6 +1117,7 @@ class ScriptLine extends DataClass implements Insertable<ScriptLine> {
     ocrConfidence,
     sourcePage,
     sourceLineOnPage,
+    multiCharacters,
   );
   @override
   bool operator ==(Object other) =>
@@ -1096,7 +1135,8 @@ class ScriptLine extends DataClass implements Insertable<ScriptLine> {
           other.stageDirection == this.stageDirection &&
           other.ocrConfidence == this.ocrConfidence &&
           other.sourcePage == this.sourcePage &&
-          other.sourceLineOnPage == this.sourceLineOnPage);
+          other.sourceLineOnPage == this.sourceLineOnPage &&
+          other.multiCharacters == this.multiCharacters);
 }
 
 class ScriptLinesCompanion extends UpdateCompanion<ScriptLine> {
@@ -1113,6 +1153,7 @@ class ScriptLinesCompanion extends UpdateCompanion<ScriptLine> {
   final Value<double?> ocrConfidence;
   final Value<int?> sourcePage;
   final Value<int?> sourceLineOnPage;
+  final Value<String> multiCharacters;
   final Value<int> rowid;
   const ScriptLinesCompanion({
     this.id = const Value.absent(),
@@ -1128,6 +1169,7 @@ class ScriptLinesCompanion extends UpdateCompanion<ScriptLine> {
     this.ocrConfidence = const Value.absent(),
     this.sourcePage = const Value.absent(),
     this.sourceLineOnPage = const Value.absent(),
+    this.multiCharacters = const Value.absent(),
     this.rowid = const Value.absent(),
   });
   ScriptLinesCompanion.insert({
@@ -1144,6 +1186,7 @@ class ScriptLinesCompanion extends UpdateCompanion<ScriptLine> {
     this.ocrConfidence = const Value.absent(),
     this.sourcePage = const Value.absent(),
     this.sourceLineOnPage = const Value.absent(),
+    this.multiCharacters = const Value.absent(),
     this.rowid = const Value.absent(),
   }) : id = Value(id),
        productionId = Value(productionId),
@@ -1165,6 +1208,7 @@ class ScriptLinesCompanion extends UpdateCompanion<ScriptLine> {
     Expression<double>? ocrConfidence,
     Expression<int>? sourcePage,
     Expression<int>? sourceLineOnPage,
+    Expression<String>? multiCharacters,
     Expression<int>? rowid,
   }) {
     return RawValuesInsertable({
@@ -1181,6 +1225,7 @@ class ScriptLinesCompanion extends UpdateCompanion<ScriptLine> {
       if (ocrConfidence != null) 'ocr_confidence': ocrConfidence,
       if (sourcePage != null) 'source_page': sourcePage,
       if (sourceLineOnPage != null) 'source_line_on_page': sourceLineOnPage,
+      if (multiCharacters != null) 'multi_characters': multiCharacters,
       if (rowid != null) 'rowid': rowid,
     });
   }
@@ -1199,6 +1244,7 @@ class ScriptLinesCompanion extends UpdateCompanion<ScriptLine> {
     Value<double?>? ocrConfidence,
     Value<int?>? sourcePage,
     Value<int?>? sourceLineOnPage,
+    Value<String>? multiCharacters,
     Value<int>? rowid,
   }) {
     return ScriptLinesCompanion(
@@ -1215,6 +1261,7 @@ class ScriptLinesCompanion extends UpdateCompanion<ScriptLine> {
       ocrConfidence: ocrConfidence ?? this.ocrConfidence,
       sourcePage: sourcePage ?? this.sourcePage,
       sourceLineOnPage: sourceLineOnPage ?? this.sourceLineOnPage,
+      multiCharacters: multiCharacters ?? this.multiCharacters,
       rowid: rowid ?? this.rowid,
     );
   }
@@ -1261,6 +1308,9 @@ class ScriptLinesCompanion extends UpdateCompanion<ScriptLine> {
     if (sourceLineOnPage.present) {
       map['source_line_on_page'] = Variable<int>(sourceLineOnPage.value);
     }
+    if (multiCharacters.present) {
+      map['multi_characters'] = Variable<String>(multiCharacters.value);
+    }
     if (rowid.present) {
       map['rowid'] = Variable<int>(rowid.value);
     }
@@ -1283,6 +1333,7 @@ class ScriptLinesCompanion extends UpdateCompanion<ScriptLine> {
           ..write('ocrConfidence: $ocrConfidence, ')
           ..write('sourcePage: $sourcePage, ')
           ..write('sourceLineOnPage: $sourceLineOnPage, ')
+          ..write('multiCharacters: $multiCharacters, ')
           ..write('rowid: $rowid')
           ..write(')'))
         .toString();
@@ -3673,6 +3724,7 @@ typedef $$ScriptLinesTableCreateCompanionBuilder =
       Value<double?> ocrConfidence,
       Value<int?> sourcePage,
       Value<int?> sourceLineOnPage,
+      Value<String> multiCharacters,
       Value<int> rowid,
     });
 typedef $$ScriptLinesTableUpdateCompanionBuilder =
@@ -3690,6 +3742,7 @@ typedef $$ScriptLinesTableUpdateCompanionBuilder =
       Value<double?> ocrConfidence,
       Value<int?> sourcePage,
       Value<int?> sourceLineOnPage,
+      Value<String> multiCharacters,
       Value<int> rowid,
     });
 
@@ -3800,6 +3853,11 @@ class $$ScriptLinesTableFilterComposer
 
   ColumnFilters<int> get sourceLineOnPage => $composableBuilder(
     column: $table.sourceLineOnPage,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get multiCharacters => $composableBuilder(
+    column: $table.multiCharacters,
     builder: (column) => ColumnFilters(column),
   );
 
@@ -3921,6 +3979,11 @@ class $$ScriptLinesTableOrderingComposer
     builder: (column) => ColumnOrderings(column),
   );
 
+  ColumnOrderings<String> get multiCharacters => $composableBuilder(
+    column: $table.multiCharacters,
+    builder: (column) => ColumnOrderings(column),
+  );
+
   $$ProductionsTableOrderingComposer get productionId {
     final $$ProductionsTableOrderingComposer composer = $composerBuilder(
       composer: this,
@@ -3999,6 +4062,11 @@ class $$ScriptLinesTableAnnotationComposer
 
   GeneratedColumn<int> get sourceLineOnPage => $composableBuilder(
     column: $table.sourceLineOnPage,
+    builder: (column) => column,
+  );
+
+  GeneratedColumn<String> get multiCharacters => $composableBuilder(
+    column: $table.multiCharacters,
     builder: (column) => column,
   );
 
@@ -4092,6 +4160,7 @@ class $$ScriptLinesTableTableManager
                 Value<double?> ocrConfidence = const Value.absent(),
                 Value<int?> sourcePage = const Value.absent(),
                 Value<int?> sourceLineOnPage = const Value.absent(),
+                Value<String> multiCharacters = const Value.absent(),
                 Value<int> rowid = const Value.absent(),
               }) => ScriptLinesCompanion(
                 id: id,
@@ -4107,6 +4176,7 @@ class $$ScriptLinesTableTableManager
                 ocrConfidence: ocrConfidence,
                 sourcePage: sourcePage,
                 sourceLineOnPage: sourceLineOnPage,
+                multiCharacters: multiCharacters,
                 rowid: rowid,
               ),
           createCompanionCallback:
@@ -4124,6 +4194,7 @@ class $$ScriptLinesTableTableManager
                 Value<double?> ocrConfidence = const Value.absent(),
                 Value<int?> sourcePage = const Value.absent(),
                 Value<int?> sourceLineOnPage = const Value.absent(),
+                Value<String> multiCharacters = const Value.absent(),
                 Value<int> rowid = const Value.absent(),
               }) => ScriptLinesCompanion.insert(
                 id: id,
@@ -4139,6 +4210,7 @@ class $$ScriptLinesTableTableManager
                 ocrConfidence: ocrConfidence,
                 sourcePage: sourcePage,
                 sourceLineOnPage: sourceLineOnPage,
+                multiCharacters: multiCharacters,
                 rowid: rowid,
               ),
           withReferenceMapper: (p0) => p0

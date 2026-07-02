@@ -31,6 +31,12 @@ class SttChannel {
   /// Survives across listen sessions — set once by the consumer.
   void Function(double level)? onLevel;
 
+  /// Called when the OS audio session is interrupted (phone call, Siri,
+  /// alarm) or the input route is lost (headphones unplugged). `began` is
+  /// true at interruption start, false when it ends.
+  void Function(bool began, bool shouldResume)? onAudioInterruption;
+  void Function()? onAudioRouteLost;
+
   /// Initialize and request speech recognition permission.
   ///
   /// [locale] — BCP-47 locale for the speech recognizer (e.g. "en-US", "en-GB").
@@ -134,6 +140,17 @@ class SttChannel {
       case 'onLevel':
         final level = (call.arguments as num?)?.toDouble() ?? 0.0;
         onLevel?.call(level);
+      case 'onAudioInterruption':
+        final args = call.arguments as Map? ?? {};
+        final began = args['began'] as bool? ?? true;
+        final shouldResume = args['shouldResume'] as bool? ?? false;
+        DebugLogService.instance.log(LogCategory.stt,
+            'Audio interruption ${began ? 'began' : 'ended'} (shouldResume=$shouldResume)');
+        onAudioInterruption?.call(began, shouldResume);
+      case 'onAudioRouteLost':
+        DebugLogService.instance
+            .log(LogCategory.stt, 'Audio route lost (headphones unplugged?)');
+        onAudioRouteLost?.call();
     }
   }
 

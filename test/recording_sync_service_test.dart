@@ -270,6 +270,42 @@ void main() {
           [1, 2, 3, 4]);
     });
 
+    test('cache survives an app restart: hydrates from manifest, plays '
+        'offline, and skips re-downloads online', () async {
+      // Actor A uploads; actor B downloads once.
+      final deviceA = deviceFor('actorA');
+      cloud.userId = 'user-a';
+      final aTake = await makeLocalRecording('actorA', 'line-1', 'HAMLET',
+          bytes: [9, 9, 9]);
+      await deviceA.syncForProduction(
+        productionId: productionId,
+        localRecordings: {'line-1': aTake},
+      );
+      final deviceB = deviceFor('actorB');
+      cloud.userId = 'user-b';
+      await deviceB.syncForProduction(
+          productionId: productionId, localRecordings: {}, myUserId: 'user-b');
+      await deviceB.flushManifest();
+      final downloadsBefore = cloud.downloadCount;
+
+      // "Restart": fresh service instance, SAME cache directory, OFFLINE.
+      final deviceBRestarted = RecordingSyncService.forTesting(cloud,
+          cacheDirectory: '${tempDir.path}/actorB/recording_cache');
+      cloud.ready = false;
+      await deviceBRestarted.hydrateCache();
+      final cached = deviceBRestarted.getCachedRecordings();
+      expect(cached, contains('line-1'),
+          reason: 'downloaded recording must be playable offline after restart');
+      expect(File(cached['line-1']!.localPath).readAsBytesSync(), [9, 9, 9]);
+
+      // Back online: sync must not re-download the cached file.
+      cloud.ready = true;
+      final downloaded = await deviceBRestarted.syncForProduction(
+          productionId: productionId, localRecordings: {}, myUserId: 'user-b');
+      expect(downloaded, 0);
+      expect(cloud.downloadCount, downloadsBefore);
+    });
+
     test('does not re-download an up-to-date cached recording', () async {
       final deviceA = deviceFor('actorA');
       cloud.userId = 'user-a';

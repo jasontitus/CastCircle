@@ -230,6 +230,19 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
       }
     });
 
+    // A phone call / Siri / unplugged headphones kills the audio engine and
+    // (on the playback path) never delivers a completion — the state machine
+    // used to strand on "Playing" forever. Pause cleanly instead; the actor
+    // resumes with the Pause/Resume button.
+    _stt.onAudioInterruption = (began, shouldResume) {
+      if (!mounted || !began) return;
+      _pauseForInterruption('Audio was interrupted');
+    };
+    _stt.onAudioRouteLost = () {
+      if (!mounted) return;
+      _pauseForInterruption('Headphones disconnected');
+    };
+
     // Decide the starting line: a saved checkpoint (resume where they left off)
     // takes precedence; otherwise Cue Practice jumps a few lines before the
     // actor's first line, and other modes start from the beginning.
@@ -486,6 +499,8 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
     // Clear the completion handler so the singleton TtsService doesn't retain
     // this disposed State (and its ref) until the next rehearsal.
     _tts.setCompletionHandler(() {});
+    _stt.onAudioInterruption = null;
+    _stt.onAudioRouteLost = null;
     _tts.stop(reason: 'dispose');
     _stt.stop();
     _mediaControl.deactivate();
@@ -2140,6 +2155,33 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
         if (mounted) _processCurrentLine();
       });
     }
+  }
+
+  /// Pause the rehearsal because the OS took the audio away (interruption or
+  /// route loss). Mirrors _togglePause's pause branch, plus tells the actor
+  /// why — a rehearsal that just stops with no explanation reads as a hang.
+  void _pauseForInterruption(String reason) {
+    final state = ref.read(rehearsalStateProvider);
+    if (state != RehearsalState.playingOther &&
+        state != RehearsalState.listeningForMe &&
+        state != RehearsalState.ready) {
+      return; // not mid-rehearsal (complete/paused) — nothing to pause
+    }
+    _silenceTimer?.cancel();
+    _matchConfirmTimer?.cancel();
+    if (_isCapturingAudio) {
+      _stt.stopRecording(); // finalize whatever was captured
+      _isCapturingAudio = false;
+    }
+    _tts.stop(reason: 'audioInterruption');
+    _stt.stop(discard: true);
+    try { _player.pause(); } catch (_) {}
+    ref.read(rehearsalStateProvider.notifier).state = RehearsalState.paused;
+    _dlog.log(LogCategory.rehearsal, 'Rehearsal paused: $reason');
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+      content: Text('$reason — rehearsal paused. Tap Resume to continue.'),
+      duration: const Duration(seconds: 5),
+    ));
   }
 
   void _togglePause(int totalLines) {

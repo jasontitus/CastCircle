@@ -1,8 +1,11 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:flutter/foundation.dart';
+import 'package:path/path.dart' as p;
+import 'package:path_provider/path_provider.dart';
 
 import 'debug_log_service.dart';
 import 'supabase_service.dart';
@@ -33,6 +36,43 @@ class SyncJob {
     DateTime? recordedAt,
     this.retryCount = 0,
   }) : recordedAt = recordedAt ?? createdAt;
+
+  Map<String, dynamic> toJson() => {
+        'id': id,
+        'productionId': productionId,
+        'characterName': characterName,
+        'lineId': lineId,
+        'localPath': localPath,
+        'durationMs': durationMs,
+        'createdAt': createdAt.toIso8601String(),
+        'recordedAt': recordedAt.toIso8601String(),
+        'retryCount': retryCount,
+      };
+
+  static SyncJob? fromJson(Map<String, dynamic> json) {
+    final id = json['id'] as String?;
+    final productionId = json['productionId'] as String?;
+    final lineId = json['lineId'] as String?;
+    final localPath = json['localPath'] as String?;
+    if (id == null || productionId == null || lineId == null || localPath == null) {
+      return null;
+    }
+    return SyncJob(
+      id: id,
+      productionId: productionId,
+      characterName: json['characterName'] as String? ?? '',
+      lineId: lineId,
+      localPath: localPath,
+      durationMs: json['durationMs'] as int? ?? 0,
+      createdAt:
+          DateTime.tryParse(json['createdAt'] as String? ?? '') ?? DateTime.now(),
+      recordedAt: DateTime.tryParse(json['recordedAt'] as String? ?? ''),
+      // Persisted retries start fresh: the failure may have been transient
+      // (the app was likely killed mid-flight), so give the job its full
+      // retry budget on the next launch.
+      retryCount: 0,
+    );
+  }
 }
 
 /// Abstraction over the cloud upload calls so the queue can be tested
@@ -85,10 +125,14 @@ class _SupabaseUploader implements RecordingUploader {
 /// for upload when connectivity is available. Failed uploads are
 /// retried with exponential backoff.
 class SyncQueue {
-  SyncQueue._() : _uploader = _SupabaseUploader();
+  SyncQueue._()
+      : _uploader = _SupabaseUploader(),
+        _persistToDisk = true;
 
   @visibleForTesting
-  SyncQueue.forTesting(this._uploader);
+  SyncQueue.forTesting(this._uploader, {String? persistPath})
+      : _persistToDisk = persistPath != null,
+        _persistPathOverride = persistPath;
 
   static final instance = SyncQueue._();
 
@@ -100,6 +144,105 @@ class SyncQueue {
   Timer? _retryTimer;
   StreamSubscription? _connectivitySub;
   bool _processing = false;
+
+  // ── Persistence ────────────────────────────────────────
+  //
+  // Jobs are tiny JSON (the audio files already live on disk), but they used
+  // to exist only in RAM: recording 20 lines on the train and force-quitting
+  // lost every queued upload. The queue file is rewritten on every mutation
+  // and reloaded in [start()].
+  final bool _persistToDisk;
+  String? _persistPathOverride;
+  bool _loaded = false;
+  Future<void>? _persistChain;
+
+  Future<String> _persistPath() async {
+    if (_persistPathOverride != null) return _persistPathOverride!;
+    final dir = await getApplicationSupportDirectory();
+    return p.join(dir.path, 'sync_queue.json');
+  }
+
+  /// Run [action] serialized against all other queue-file access. Every load
+  /// AND write goes through this one chain — a restore racing a write used to
+  /// read a freshly-overwritten file and lose the previous run's jobs.
+  Future<void> _serializedFileAccess(Future<void> Function() action) {
+    final next = (_persistChain ?? Future.value()).then((_) => action());
+    _persistChain = next;
+    return next;
+  }
+
+  /// Serialize pending + failed to disk. The first write always runs the
+  /// restore first — otherwise an enqueue that lands before start()'s restore
+  /// would overwrite the file and lose the previous run's queued jobs.
+  void _persist() {
+    if (!_persistToDisk) return;
+    _serializedFileAccess(() async {
+      try {
+        await _loadPersisted();
+        final snapshot = jsonEncode({
+          'pending': _pending.map((j) => j.toJson()).toList(),
+          'failed': _failed.map((j) => j.toJson()).toList(),
+        });
+        await File(await _persistPath()).writeAsString(snapshot);
+      } catch (e) {
+        _dlog.logError(LogCategory.error, 'SyncQueue: persist failed', e);
+      }
+    });
+  }
+
+  /// Restore persisted jobs via the serialized chain (safe against writes).
+  Future<void> _restorePersisted() =>
+      _persistToDisk ? _serializedFileAccess(_loadPersisted) : Future.value();
+
+  /// Load persisted jobs (app restart). Jobs whose local audio file no longer
+  /// exists are dropped; a job for a line that was re-enqueued live before the
+  /// load finished is superseded by the live (newer) one. Only call from
+  /// within [_serializedFileAccess].
+  Future<void> _loadPersisted() async {
+    if (!_persistToDisk || _loaded) return;
+    _loaded = true;
+    try {
+      final file = File(await _persistPath());
+      if (!file.existsSync()) return;
+      final data = jsonDecode(await file.readAsString());
+      if (data is! Map) return;
+      final restored = <SyncJob>[
+        ...((data['pending'] as List? ?? [])
+            .whereType<Map>()
+            .map((j) => SyncJob.fromJson(Map<String, dynamic>.from(j)))
+            .whereType<SyncJob>()),
+        ...((data['failed'] as List? ?? [])
+            .whereType<Map>()
+            .map((j) => SyncJob.fromJson(Map<String, dynamic>.from(j)))
+            .whereType<SyncJob>()),
+      ];
+      var kept = 0;
+      for (final job in restored) {
+        if (!File(job.localPath).existsSync()) continue;
+        final alreadyQueued = _pending.any((j) =>
+                j.productionId == job.productionId && j.lineId == job.lineId) ||
+            _failed.any((j) =>
+                j.productionId == job.productionId && j.lineId == job.lineId);
+        if (alreadyQueued) continue; // live job is newer — it wins
+        _pending.add(job);
+        kept++;
+      }
+      if (kept > 0) {
+        _dlog.log(LogCategory.network,
+            'SyncQueue: restored $kept queued upload(s) from a previous run');
+        _persist();
+      }
+    } catch (e) {
+      _dlog.logError(LogCategory.error, 'SyncQueue: restore failed', e);
+    }
+  }
+
+  /// Test hook: wait for restore + any in-flight persist writes.
+  @visibleForTesting
+  Future<void> flushPersistence() async {
+    await _restorePersisted();
+    await (_persistChain ?? Future.value());
+  }
 
   List<SyncJob> get pending => List.unmodifiable(_pending);
   List<SyncJob> get failed => List.unmodifiable(_failed);
@@ -114,7 +257,8 @@ class SyncQueue {
   /// Called when a job is abandoned after exhausting all retries.
   void Function(SyncJob job, Object error)? onGaveUp;
 
-  /// Start monitoring connectivity and processing the queue.
+  /// Start monitoring connectivity and processing the queue. Also restores
+  /// jobs persisted by a previous run (uploads killed with the app).
   void start() {
     _connectivitySub?.cancel();
     _connectivitySub = Connectivity().onConnectivityChanged.listen((results) {
@@ -123,6 +267,9 @@ class SyncQueue {
         _processQueue();
       }
     });
+    unawaited(_restorePersisted().then((_) {
+      if (_pending.isNotEmpty && !_processing) _processQueue();
+    }));
   }
 
   /// Stop monitoring and cancel pending retries.
@@ -167,6 +314,7 @@ class SyncQueue {
         'SyncQueue: queued upload line=$lineId char="$characterName" '
         '${durationMs}ms${replaced ? ' (replaced prior take)' : ''} '
         '— ${_pending.length} pending, ${_failed.length} failed');
+    _persist();
 
     if (!_processing) _processQueue();
   }
@@ -206,6 +354,7 @@ class SyncQueue {
           _dlog.log(LogCategory.network,
               'SyncQueue: dropped line=${job.lineId} — local file gone (${job.localPath})');
           _pending.remove(job);
+          _persist();
           continue;
         }
 
@@ -222,6 +371,7 @@ class SyncQueue {
         // local recording must NOT be stamped with this stale URL (a non-null
         // remoteUrl would exclude it from every future sync).
         final superseded = !_pending.remove(job);
+        _persist();
         _dlog.log(
             LogCategory.network,
             'SyncQueue: uploaded line=${job.lineId} → $url'
@@ -231,6 +381,7 @@ class SyncQueue {
         }
       } catch (e) {
         final superseded = !_pending.remove(job);
+        _persist();
         if (superseded) {
           // A newer take for this line is already queued; let it drive the
           // retry instead of resurrecting this job.
@@ -249,6 +400,7 @@ class SyncQueue {
               '(attempt ${job.retryCount}/5, will retry)',
               e);
           _failed.add(job);
+          _persist();
         } else {
           _dlog.logError(
               LogCategory.network,
@@ -306,5 +458,9 @@ class SyncQueue {
     _retryTimer?.cancel();
     _retryTimer = null;
     _processing = false;
+    // Mark loaded so the persist below writes the CLEARED state instead of
+    // first re-importing the very file we're clearing.
+    _loaded = true;
+    _persist();
   }
 }

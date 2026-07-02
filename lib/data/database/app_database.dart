@@ -40,6 +40,12 @@ class ScriptLines extends Table {
   IntColumn get sourcePage => integer().nullable()();
   IntColumn get sourceLineOnPage => integer().nullable()();
 
+  // Individual characters of a shared/ensemble line ("BOTH", "MACBETH AND
+  // LENNOX"), comma-separated like Scenes.characters. Empty = single-character
+  // line. Without this column the list was silently dropped on every local
+  // save/load, so shared lines degraded after any app restart.
+  TextColumn get multiCharacters => text().withDefault(const Constant(''))();
+
   @override
   Set<Column> get primaryKey => {id};
 }
@@ -111,7 +117,7 @@ class AppDatabase extends _$AppDatabase {
   AppDatabase.forTesting(super.e);
 
   @override
-  int get schemaVersion => 6;
+  int get schemaVersion => 7;
 
   @override
   MigrationStrategy get migration => MigrationStrategy(
@@ -154,6 +160,12 @@ class AppDatabase extends _$AppDatabase {
                 await migrator.createIndex(index);
               } catch (_) {}
             }
+          }
+          if (from < 7) {
+            try {
+              await migrator.addColumn(
+                  scriptLines, scriptLines.multiCharacters);
+            } catch (_) {}
           }
         },
       );

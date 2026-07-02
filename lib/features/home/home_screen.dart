@@ -46,6 +46,16 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   bool _submittingProduction = false;
 
   @override
+  void initState() {
+    super.initState();
+    // Background: pull productions this user belongs to that aren't on this
+    // device (reinstall / new device used to show an empty home forever).
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) unawaited(restoreCloudProductions(ref));
+    });
+  }
+
+  @override
   Widget build(BuildContext context) {
     final productions = ref.watch(productionsProvider);
 

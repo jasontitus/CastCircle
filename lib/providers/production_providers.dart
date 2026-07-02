@@ -69,6 +69,14 @@ class ProductionsNotifier extends StateNotifier<List<Production>> {
     state = await _repo.getAllProductions();
   }
 
+  /// Save [productions] to Drift and reload once. Used by the cloud restore.
+  Future<void> addAll(List<Production> productions) async {
+    for (final production in productions) {
+      await _repo.saveProduction(production);
+    }
+    state = await _repo.getAllProductions();
+  }
+
   Future<void> add(Production production) async {
     final dlog = DebugLogService.instance;
     dlog.log(LogCategory.general,
@@ -382,6 +390,14 @@ void launchRecordingSync(WidgetRef ref, String productionId) {
   // no arbitrary sleep needed (a slow load used to make sync see an empty map
   // and re-download/skip-upload recordings it already had).
   Future(() async {
+    // Surface recordings already downloaded to disk (previous runs) BEFORE
+    // the network sync — so castmates' takes play even when offline.
+    await RecordingSyncService.instance.hydrateCache();
+    final hydrated = RecordingSyncService.instance.getCachedRecordings();
+    if (hydrated.isNotEmpty) {
+      ref.read(understudyRecordingsProvider.notifier).loadFromMap(hydrated);
+    }
+
     final localRecordings = ref.read(recordingsProvider);
 
     final downloaded = await RecordingSyncService.instance.syncForProduction(
@@ -395,6 +411,49 @@ void launchRecordingSync(WidgetRef ref, String productionId) {
       ref.read(understudyRecordingsProvider.notifier).loadFromMap(cached);
     }
   });
+}
+
+/// Restore productions this user belongs to from the cloud into Drift.
+///
+/// A reinstall / new device used to show an EMPTY home screen forever — the
+/// memberships and productions exist in Supabase but nothing ever fetched
+/// them (actors had to re-enter join codes; organizers had no recovery path
+/// at all). Merges cloud productions the local DB doesn't have; never
+/// overwrites local rows. Safe to call on every home-screen load.
+Future<void> restoreCloudProductions(WidgetRef ref) async {
+  final supa = SupabaseService.instance;
+  if (!supa.isInitialized || !supa.isSignedIn) return;
+  try {
+    final rows = await supa.fetchMyProductions();
+    if (rows.isEmpty) return;
+
+    final localIds =
+        ref.read(productionsProvider).map((p) => p.id).toSet();
+    final missing = rows
+        .where((row) => !localIds.contains(row['id'] as String?))
+        .map((row) => Production(
+              id: row['id'] as String,
+              title: row['title'] as String? ?? 'Untitled',
+              organizerId: row['organizer_id'] as String? ?? '',
+              createdAt:
+                  DateTime.tryParse(row['created_at'] as String? ?? '') ??
+                      DateTime.now(),
+              status: ProductionStatus.draft,
+              joinCode: row['join_code'] as String?,
+              locale: row['locale'] as String? ?? 'en-US',
+            ))
+        .toList();
+    if (missing.isEmpty) return;
+
+    await ref.read(productionsProvider.notifier).addAll(missing);
+    DebugLogService.instance.log(
+        LogCategory.network,
+        'Restored ${missing.length} production(s) from the cloud '
+        '(${missing.map((p) => p.title).join(', ')})');
+  } catch (e) {
+    DebugLogService.instance
+        .logError(LogCategory.network, 'Cloud production restore failed', e);
+  }
 }
 
 /// Fetch cloud script lines for a production. Returns null if Supabase
@@ -417,6 +476,8 @@ Future<List<ScriptLine>?> fetchCloudScriptLines(String productionId) async {
       text: row['line_text'] as String? ?? '',
       lineType: LineType.values.byName(row['line_type'] as String? ?? 'dialogue'),
       stageDirection: row['stage_direction'] as String? ?? '',
+      multiCharacters:
+          (row['multi_characters'] as List?)?.cast<String>() ?? const [],
     )).toList();
   } catch (e) {
     DebugLogService.instance.logError(
@@ -449,6 +510,11 @@ Future<void> pushScriptToCloud(WidgetRef ref) async {
       'line_text': e.value.text,
       'line_type': e.value.lineType.name,
       'stage_direction': e.value.stageDirection,
+      // Shared/ensemble lines ("BOTH", "MACBETH AND LENNOX") lose their
+      // character list without this — joiners then never see those lines
+      // under "my lines" and are never prompted to record them.
+      'multi_characters':
+          e.value.multiCharacters.isEmpty ? null : e.value.multiCharacters,
     }).toList();
 
     await supa.saveScriptLines(

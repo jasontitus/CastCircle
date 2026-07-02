@@ -1,5 +1,6 @@
 import Foundation
 import AVFoundation
+import CryptoKit
 import MLX
 import MLXUtilsLibrary
 
@@ -109,6 +110,17 @@ class KokoroMLXService {
         let voiceKey = voice + ".npy"
         guard let voiceEmbedding = voices[voiceKey] else {
             throw KokoroError.voiceNotFound(voice)
+        }
+
+        // Cache hit: the key is a stable digest, so a line synthesized in ANY
+        // previous session (same text/voice/speed) plays with zero synthesis
+        // latency. Touch the file's date so pruning is LRU.
+        pruneCacheIfNeeded()
+        let cachedPath = cacheURL(for: text, voice: voice, speed: speed)
+        if FileManager.default.fileExists(atPath: cachedPath.path) {
+            try? FileManager.default.setAttributes(
+                [.modificationDate: Date()], ofItemAtPath: cachedPath.path)
+            return cachedPath.path
         }
 
         // Mark this generation so older in-flight calls can bail out
@@ -222,10 +234,48 @@ class KokoroMLXService {
     // MARK: - Caching
 
     private func cacheURL(for text: String, voice: String, speed: Float) -> URL {
-        let hash = "\(text.hashValue)_\(voice)_\(String(format: "%.1f", speed))"
+        // SHA-256, NOT String.hashValue: hashValue is seed-randomized per
+        // process, so the old keys never matched across launches — the cache
+        // was write-only and grew forever.
+        let keySource = "\(text)|\(voice)|\(String(format: "%.2f", speed))"
+        let digest = SHA256.hash(data: Data(keySource.utf8))
+        let hex = digest.map { String(format: "%02x", $0) }.joined()
         let cacheDir = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("kokoro_tts", isDirectory: true)
-        return cacheDir.appendingPathComponent("\(hash).wav")
+        return cacheDir.appendingPathComponent("\(hex).wav")
+    }
+
+    /// LRU-prune the synthesis cache to ~200MB. Runs once per launch on a
+    /// utility queue (kicked from the first synthesize call).
+    private static var pruneScheduled = false
+    func pruneCacheIfNeeded() {
+        guard !Self.pruneScheduled else { return }
+        Self.pruneScheduled = true
+        DispatchQueue.global(qos: .utility).async {
+            let fm = FileManager.default
+            let dir = fm.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+                .appendingPathComponent("kokoro_tts", isDirectory: true)
+            guard let files = try? fm.contentsOfDirectory(
+                at: dir, includingPropertiesForKeys: [.contentModificationDateKey, .fileSizeKey]
+            ) else { return }
+            var entries: [(url: URL, date: Date, size: Int)] = files.compactMap { url in
+                guard let values = try? url.resourceValues(
+                    forKeys: [.contentModificationDateKey, .fileSizeKey]) else { return nil }
+                return (url, values.contentModificationDate ?? .distantPast, values.fileSize ?? 0)
+            }
+            let maxBytes = 200 * 1024 * 1024
+            var total = entries.reduce(0) { $0 + $1.size }
+            guard total > maxBytes else { return }
+            entries.sort { $0.date < $1.date } // oldest first
+            var removed = 0
+            for entry in entries {
+                if total <= maxBytes { break }
+                try? fm.removeItem(at: entry.url)
+                total -= entry.size
+                removed += 1
+            }
+            NSLog("KokoroMLX: pruned \(removed) cached WAVs (cache was over 200MB)")
+        }
     }
 
     private var modelDirectory: URL {

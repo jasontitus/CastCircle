@@ -128,6 +128,16 @@ class SttService {
   /// Called with the smoothed input level (0..1) on every level event.
   void Function(double level)? onLevel;
 
+  /// OS audio interruption (phone call, Siri, alarm) — pass-through from the
+  /// native channel. Set/cleared by the rehearsal screen.
+  set onAudioInterruption(
+          void Function(bool began, bool shouldResume)? callback) =>
+      _sttChannel.onAudioInterruption = callback;
+
+  /// Input route lost (headphones unplugged) — pass-through.
+  set onAudioRouteLost(void Function()? callback) =>
+      _sttChannel.onAudioRouteLost = callback;
+
   /// Called with the current silence duration on every level event while
   /// listening. [Duration.zero] while the actor is speaking. Only fires
   /// after some speech has been heard in this utterance, so leading
