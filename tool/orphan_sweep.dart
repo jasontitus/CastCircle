@@ -88,8 +88,18 @@ Future<void> main() async {
 
     if (memberRowId != null) {
       try {
-        await c.from('cast_members').delete().eq('id', memberRowId);
-      } catch (_) {}
+        final deleted = await c
+            .from('cast_members')
+            .delete()
+            .eq('id', memberRowId)
+            .select('id') as List;
+        if (deleted.isEmpty) {
+          print('WARNING: audit membership row NOT removed (RLS) — '
+              'junk row left on production $pid');
+        }
+      } catch (e) {
+        print('WARNING: audit membership cleanup failed for $pid: $e');
+      }
     }
   }
   exit(0);

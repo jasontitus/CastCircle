@@ -139,6 +139,45 @@ class SupabaseService {
     return row;
   }
 
+  /// Delete a production from the cloud FOR EVERYONE. Only the organizer's
+  /// RLS policy permits this; script lines, cast members, and recording
+  /// metadata cascade via foreign keys. Throws if nothing was deleted
+  /// (not the organizer, or already gone).
+  Future<void> deleteProductionEverywhere(String productionId) async {
+    final deleted = await _client
+        .from('productions')
+        .delete()
+        .eq('id', productionId)
+        .select('id');
+    if (deleted.isEmpty) {
+      throw StateError(
+          'Cloud delete removed nothing — only the organizer can delete a '
+          'production (or it was already gone).');
+    }
+    _dlog.log(LogCategory.network,
+        'Deleted production $productionId from the cloud (cascade)');
+  }
+
+  /// Leave a production: remove the signed-in user's own cast_members rows.
+  /// The production itself is untouched. Throws if no membership row was
+  /// removed (e.g. the "Members can leave" policy isn't deployed yet) so the
+  /// caller doesn't do a local delete that boomerangs back on the next sync.
+  Future<void> leaveProduction(String productionId) async {
+    final uid = currentUser?.id;
+    if (uid == null) throw StateError('Not signed in');
+    final deleted = await _client
+        .from('cast_members')
+        .delete()
+        .eq('production_id', productionId)
+        .eq('user_id', uid)
+        .select('id');
+    if (deleted.isEmpty) {
+      throw StateError('Leave removed no membership rows');
+    }
+    _dlog.log(LogCategory.network,
+        'Left production $productionId (${deleted.length} membership row(s))');
+  }
+
   // ── Voice Preset (cloud sync) ────────────────────────
 
   /// Save the organizer's voice preset choice to Supabase.

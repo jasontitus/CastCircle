@@ -163,23 +163,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
             onMenuAction: (action) =>
                 _handleMenuAction(context, ref, production, action),
           onDelete: () async {
-              final confirmed = await showDialog<bool>(
-                context: context,
-                builder: (ctx) => AlertDialog(
-                  title: const Text('Delete Production?'),
-                  content: Text(
-                      'Delete "${production.title}" and all its data?'),
-                  actions: [
-                    TextButton(
-                        onPressed: () => Navigator.pop(ctx, false),
-                        child: const Text('Cancel')),
-                    TextButton(
-                        onPressed: () => Navigator.pop(ctx, true),
-                        child: const Text('Delete',
-                            style: TextStyle(color: Colors.red))),
-                  ],
-                ),
-              );
+              final confirmed =
+                  await _confirmDeleteProduction(context, production);
               if (confirmed == true) {
                 if (!context.mounted) return;
                 await _deleteProduction(context, ref, production);
@@ -507,6 +492,38 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     WidgetRef ref,
     Production production,
   ) async {
+    // Cloud step FIRST — a local-only delete boomerangs back on the next
+    // cloud restore (the membership/production still exists in Supabase).
+    final supa = SupabaseService.instance;
+    final mine = isOwnProduction(production);
+    if (supa.isInitialized && supa.isSignedIn) {
+      try {
+        if (mine) {
+          await supa.deleteProductionEverywhere(production.id);
+        } else {
+          await supa.leaveProduction(production.id);
+        }
+      } catch (e) {
+        DebugLogService.instance.logError(
+            LogCategory.network,
+            '${mine ? 'Cloud delete' : 'Leave'} failed for '
+            '"${production.title}"',
+            e);
+        if (context.mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+            content: Text(mine
+                ? 'Couldn\'t delete "${production.title}" from the cloud — '
+                    'check your connection and try again. (Nothing was '
+                    'removed, or it would reappear on the next sync.)'
+                : 'Couldn\'t leave "${production.title}" — check your '
+                    'connection and try again.'),
+            duration: const Duration(seconds: 6),
+          ));
+        }
+        return; // keep local state consistent with the cloud
+      }
+    }
+
     await RecordingSyncService.instance.clearCache(production.id);
 
     final prefs = await SharedPreferences.getInstance();
@@ -528,7 +545,10 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
 
     if (context.mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Deleted "${production.title}"')),
+        SnackBar(
+            content: Text(mine
+                ? 'Deleted "${production.title}" for the whole cast'
+                : 'Left "${production.title}"')),
       );
     }
   }
@@ -644,13 +664,19 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     BuildContext context,
     Production production,
   ) {
+    final mine = isOwnProduction(production);
     return showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
-        title: const Text('Delete Production'),
+        title: Text(mine ? 'Delete Production' : 'Leave Production'),
         content: Text(
-          'Delete "${production.title}"? This will remove the script, '
-          'recordings, and all rehearsal data. This cannot be undone.',
+          mine
+              ? 'Delete "${production.title}" for the ENTIRE cast? This '
+                  'removes the cloud copy — the script, shared recordings, '
+                  'and every member\'s access. This cannot be undone.'
+              : '"${production.title}" was created by someone else — you '
+                  'joined it. Leaving removes it from your devices only; '
+                  'the organizer\'s production is not affected.',
         ),
         actions: [
           TextButton(
@@ -663,7 +689,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
               foregroundColor: Theme.of(context).colorScheme.onError,
             ),
             onPressed: () => Navigator.pop(context, true),
-            child: const Text('Delete'),
+            child: Text(mine ? 'Delete everywhere' : 'Leave'),
           ),
         ],
       ),
@@ -686,6 +712,16 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
 }
 
 /// Rich production card with Rehearse button and overflow menu.
+/// True when the signed-in user created [production] (or it was created
+/// offline on this device). Joined productions belong to someone else.
+bool isOwnProduction(Production production) {
+  final uid = SupabaseService.instance.currentUser?.id;
+  if (production.organizerId.isEmpty || production.organizerId == 'local') {
+    return true; // created on this device before/without sign-in
+  }
+  return uid != null && production.organizerId == uid;
+}
+
 class _ProductionCard extends StatelessWidget {
   final Production production;
   final String? savedCharacterName;
@@ -708,6 +744,7 @@ class _ProductionCard extends StatelessWidget {
     final theme = Theme.of(context);
     final hasCharacter =
         savedCharacterName != null && savedCharacterName!.isNotEmpty;
+    final mine = isOwnProduction(production);
 
     return Card(
       margin: const EdgeInsets.only(bottom: 12),
@@ -742,6 +779,31 @@ class _ProductionCard extends StatelessWidget {
                         ),
                       ),
                     ],
+                    const SizedBox(height: 4),
+                    // Ownership at a glance — so you know whose production
+                    // you're about to delete BEFORE you delete it.
+                    Row(
+                      children: [
+                        Icon(
+                          mine ? Icons.verified_user : Icons.group,
+                          size: 12,
+                          color: mine
+                              ? theme.colorScheme.primary
+                                  .withValues(alpha: 0.7)
+                              : theme.colorScheme.tertiary,
+                        ),
+                        const SizedBox(width: 4),
+                        Text(
+                          mine ? 'Created by you' : 'Joined — someone else\'s',
+                          style: theme.textTheme.labelSmall?.copyWith(
+                            color: mine
+                                ? theme.colorScheme.onSurface
+                                    .withValues(alpha: 0.5)
+                                : theme.colorScheme.tertiary,
+                          ),
+                        ),
+                      ],
+                    ),
                   ],
                 ),
               ),
@@ -823,9 +885,10 @@ class _ProductionCard extends StatelessWidget {
                   PopupMenuItem(
                     value: 'delete',
                     child: ListTile(
-                      leading: Icon(Icons.delete,
+                      leading: Icon(
+                          mine ? Icons.delete_forever : Icons.logout,
                           color: theme.colorScheme.error),
-                      title: Text('Delete',
+                      title: Text(mine ? 'Delete' : 'Leave',
                           style:
                               TextStyle(color: theme.colorScheme.error)),
                       dense: true,
