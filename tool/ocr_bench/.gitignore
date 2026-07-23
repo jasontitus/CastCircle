@@ -1,0 +1,6 @@
+# Regenerable / large artifacts — not committed
+results/
+models/
+llama.cpp/
+__pycache__/
+*.pyc
