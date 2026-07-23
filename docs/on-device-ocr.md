@@ -21,6 +21,9 @@ where something is unverified it says so.
   (`paddle_ocr_channel.dart` + import wiring, falls back to ML Kit). The iOS
   native plugin (onnxruntime-objc + the det→cls→rec pipeline) is the remaining
   build.
+- **Later challengers evaluated & rejected:** Baidu **Unlimited-OCR** (3B MoE
+  VLM, 2026-06) — benchmarked at ≈ parity with PaddleOCR but ~30× the size /
+  latency and GPU-only; keep PaddleOCR on-device (see §10, harness `tool/ocr_bench/`).
 
 ## 1. OCR engine head-to-head
 
@@ -232,3 +235,95 @@ Macbeths, Patience, Pygmalion, P&P). Result: **zero dialogue-like drops anywhere
 numbers (furniture). Confirms the column auto-detection only fires on a genuine
 narrow far-left furniture column and never removes body text. (Positive case —
 stripping P&P's handwritten margin notes — verified separately on pages 8/12.)
+
+## 10. Unlimited-OCR (Baidu 3B MoE VLM) vs PaddleOCR (2026-07-23)
+
+**Question:** Baidu open-sourced **Unlimited-OCR** on 2026-06-22 — a 3B-parameter
+Mixture-of-Experts vision-language model (~500M active/token, MIT license) that
+parses whole pages in one forward pass. Does it beat the shipped PaddleOCR
+PP-OCRv6 enough to be worth adopting?
+
+**TL;DR: No — not for on-device.** On raw accuracy it is **≈ parity** with
+PaddleOCR (marginally better on noisy/foreign-name speaker cues, marginally worse
+on average because it occasionally *silently drops page content*), while costing
+**~30× the model size, ~35× the per-page latency, and a hard GPU requirement**.
+It is a genuinely competent OCR model — unlike the general Gemma-4 VLM (§1) it
+does **not** hallucinate or loop — but the accuracy delta doesn't come close to
+justifying the cost, and it can't run on a phone. Keep PaddleOCR as the on-device
+engine. Unlimited-OCR's only plausible niche is an *optional cloud re-OCR* of a
+specific failing scan, and even there the silent-drop failure mode is a concern.
+
+Harness (reproducible): `tool/ocr_bench/` — renders sample pages, runs both
+engines, scores word-multiset F1 + char accuracy against the per-page reference.
+
+### 10.1 How it was run
+- **Unlimited-OCR:** the community GGUF (`DevQuasar/baidu.Unlimited-OCR-GGUF`,
+  **Q4_K_M** 1.9 GB + the f16 vision projector 788 MB) on **llama.cpp**
+  (`llama-mtmd-cli`, CPU). Official prompt `"document parsing."`, temp 0.
+  `--jinja` is **required** (its chat template aborts `llama-mtmd-cli` otherwise).
+  Emits structural markup `<|det|>LABEL [box]<|/det|>TEXT` (header/title/text/…),
+  stripped before scoring. **Caveat:** this is a Q4 quant on CPU, not the
+  full-precision GPU model — the true fp16 ceiling is likely a hair higher.
+- **PaddleOCR:** the committed `assets/paddle_ocr/{det,rec}.onnx` (PP-OCRv6 small,
+  fp16) via RapidOCR/ONNX Runtime — the exact weights the app ships.
+- **Corpus:** 20 gold-scored pages (Earnest, Doll's House, Pygmalion, Chekhov —
+  the four scripts with an embedded per-page text layer) + 6 qualitative pages
+  (Faustus 150-DPI = the P&P copier-scan proxy; bitonal Macbeth). The copyrighted
+  **P&P scan itself is not in the repo** (gitignored) — drop it in and re-run per
+  `tool/ocr_bench/README.md` to score the real target.
+- **Metric:** primary is **word-multiset F1** (order-insensitive — the embedded
+  reference has scrambled reading order, which unfairly penalizes the
+  better-ordered engine under plain CER; F1 also directly measures the
+  `produetion`→production garble that spawns phantom character names). char-acc
+  (1−CER) is secondary and *understates* Unlimited-OCR for that ordering reason.
+
+### 10.2 Accuracy (20 gold pages, mean)
+
+| script | pages | Paddle F1 | Unlimited F1 | Paddle char-acc | Unlimited char-acc | Paddle garble | Unlimited garble |
+|---|---|---|---|---|---|---|---|
+| chekhov (Russian names, ~400 DPI) | 5 | 0.972 | **0.980** | 0.993 | **0.995** | 0.031 | **0.019** |
+| dollshouse (clean grayscale) | 5 | **0.971** | 0.965 | **0.980** | 0.973 | 0.028 | 0.031 |
+| earnest (clean grayscale) | 5 | **0.984** | 0.971 | **0.991** | 0.986 | **0.009** | 0.022 |
+| pygmalion (dense, dialect) | 5 | **0.959** | 0.885† | **0.981** | 0.881† | 0.039 | 0.040 |
+| **ALL** | 20 | **0.971** | 0.950† | **0.986** | 0.958† | 0.027 | 0.028 |
+| **ALL, excl. 1 outlier†** | 19 | 0.973 | **0.971** | 0.989 | 0.986 | — | — |
+
+†**One catastrophic page** (Pygmalion p70): Unlimited-OCR **silently dropped ~60%
+of the page** (recall 0.41, output ended cleanly at the page number — it just
+skipped a middle block, no error, no loop). Remove that single page and the two
+engines are a **statistical tie** on the typical page. That failure mode is the
+finding: a VLM can quietly omit content, whereas PaddleOCR's deterministic DBNet
+detector emits a box for every text region it finds. Unlimited-OCR **wins the
+noisy Chekhov set** (foreign names, lower DPI — the hardest garble case) and is a
+touch behind on the cleanest grayscale pages.
+
+### 10.3 Speaker-cue fidelity on the low-DPI P&P proxy (Faustus, qualitative)
+This is the app-relevant axis — garbled ALL-CAPS/Title-case cue names become
+phantom characters in the parsed roster (the original reason for moving off ML
+Kit). On the degraded 150-DPI Faustus scan (the closest proxy to the real P&P
+copier scan), PaddleOCR still makes a **consistent cue garble** — `Meph.` →
+**`Mepk.`** (h→k) on every occurrence — which the parser would read as a separate
+character. **Unlimited-OCR reads `Meph.` correctly every time**, with correct
+reading order and expanded stage directions. (It does normalize away archaic
+diacritics — `vexèd`→vexed, `carvèd`→carved — cosmetic for a rehearsal script.)
+So the VLM's edge, where it has one, is exactly on the hard cue-name garble — but
+PaddleOCR's residual errors here are already rare, and §9's post-processing plus
+the parser's roster de-duping mop up most of what remains. On clean bitonal Macbeth
+both engines are effectively perfect.
+
+### 10.4 Cost / deployment (the deciding factor)
+
+| | PaddleOCR PP-OCRv6 (shipped) | Unlimited-OCR (Q4 GGUF) |
+|---|---|---|
+| params / size | ~8M / **30.5 MB** (det+rec fp16) | 3B MoE / **2.7 GB** (Q4+mmproj); ~6 GB bf16 |
+| latency | **~1.5 s/page** (this CPU; ~1.3 s Mac) | **~46 s/page** (4-core CPU; min 36 / max 66) |
+| hardware | **fully on-device** (iOS/Android, CPU) | officially **NVIDIA GPU**; CPU only via GGUF |
+| reliability | deterministic; detects every box | occasional **silent content-drop** (§10.2) |
+| output | line text + boxes (feeds margin filter §9) | markdown + region labels (needs tag-stripping) |
+
+At ~90× the on-disk footprint and ~30× the latency — and not runnable on a phone
+at all — Unlimited-OCR would have to be *clearly* more accurate to matter. It
+isn't; it's a tie. **Decision: keep PaddleOCR PP-OCRv6 on-device.** Revisit
+Unlimited-OCR only if we ever add an opt-in *cloud* "re-OCR this scan" path for a
+document PaddleOCR visibly fails — and validate the silent-drop behavior on real
+pages before trusting it there.
