@@ -259,6 +259,9 @@ class _CharacterManagerScreenState
       scenes: script.scenes,
       rawText: script.rawText,
     );
+    // Editor mutations used to live in memory only — an app kill, or
+    // simply opening another production, silently discarded them.
+    scheduleScriptSave(ref);
   }
 
   void _handleAction(
@@ -626,5 +629,8 @@ class _CharacterManagerScreenState
       scenes: updatedScenes,
       rawText: script.rawText,
     );
+    // Editor mutations used to live in memory only — an app kill, or
+    // simply opening another production, silently discarded them.
+    scheduleScriptSave(ref);
   }
 }

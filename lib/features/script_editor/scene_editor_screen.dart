@@ -385,6 +385,9 @@ class _SceneEditorScreenState extends ConsumerState<SceneEditorScreen> {
       scenes: scenes,
       rawText: script.rawText,
     );
+    // Editor mutations used to live in memory only — an app kill, or
+    // simply opening another production, silently discarded them.
+    scheduleScriptSave(ref);
   }
 
   void _performSplit(
@@ -461,6 +464,9 @@ class _SceneEditorScreenState extends ConsumerState<SceneEditorScreen> {
       scenes: scenes,
       rawText: script.rawText,
     );
+    // Editor mutations used to live in memory only — an app kill, or
+    // simply opening another production, silently discarded them.
+    scheduleScriptSave(ref);
   }
 
   void _performMerge(ParsedScript script, int sceneIndex) {
@@ -492,6 +498,9 @@ class _SceneEditorScreenState extends ConsumerState<SceneEditorScreen> {
       scenes: scenes,
       rawText: script.rawText,
     );
+    // Editor mutations used to live in memory only — an app kill, or
+    // simply opening another production, silently discarded them.
+    scheduleScriptSave(ref);
   }
 
   String _truncate(String text, int maxLen) {

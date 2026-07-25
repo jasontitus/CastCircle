@@ -1076,6 +1076,9 @@ class _CastManagerScreenState extends ConsumerState<CastManagerScreen> {
         scenes: script.scenes,
         rawText: script.rawText,
       );
+      // Editor mutations used to live in memory only — an app kill, or
+      // simply opening another production, silently discarded them.
+      scheduleScriptSave(ref);
     }
   }
 

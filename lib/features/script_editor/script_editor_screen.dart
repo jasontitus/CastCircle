@@ -6,6 +6,7 @@ import 'package:go_router/go_router.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:path/path.dart' as p;
 import 'package:share_plus/share_plus.dart';
+import 'package:uuid/uuid.dart';
 
 import '../../core/responsive.dart';
 import '../../core/theme/app_theme.dart';
@@ -1047,7 +1048,10 @@ class _ScriptEditorScreenState extends ConsumerState<ScriptEditorScreen> {
     if (firstText.isEmpty || secondText.isEmpty) return;
 
     final newLine = ScriptLine(
-      id: '${line.id}_split',
+      // Fresh uuid, NOT "<id>_split": splitting the same line twice minted the
+      // same id twice — duplicate ValueKeys crash the reorder list, and the
+      // cloud push (which preserves ids) collapses or rejects the pair.
+      id: const Uuid().v4(),
       act: line.act,
       scene: line.scene,
       lineNumber: line.lineNumber + 1,
@@ -1106,6 +1110,9 @@ class _ScriptEditorScreenState extends ConsumerState<ScriptEditorScreen> {
       scenes: script.scenes,
       rawText: script.rawText,
     );
+    // Editor mutations used to live in memory only — an app kill, or
+    // simply opening another production, silently discarded them.
+    scheduleScriptSave(ref);
   }
 
   void _updateLine(ScriptLine original, String newChar, String newText) {
@@ -1146,6 +1153,9 @@ class _ScriptEditorScreenState extends ConsumerState<ScriptEditorScreen> {
       scenes: script.scenes,
       rawText: script.rawText,
     );
+    // Editor mutations used to live in memory only — an app kill, or
+    // simply opening another production, silently discarded them.
+    scheduleScriptSave(ref);
   }
 
   Future<void> _syncToCloud(BuildContext context) async {

@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
@@ -298,6 +299,57 @@ Future<void> persistScript(WidgetRef ref) async {
     ));
   }
   trace?.stop();
+}
+
+// ── Script edit autosave ───────────────────────────────
+//
+// Editor screens (script/character/scene editors, gender toggles) only wrote
+// currentScriptProvider, which is in-memory: an app kill — or simply opening
+// another production — silently threw away every edit, and castmates never saw
+// them. Any screen that mutates the script now calls scheduleScriptSave(), and
+// this debounces the real persist so rapid edits don't thrash Drift/cloud.
+Timer? _scriptSaveTimer;
+bool _scriptSaveInFlight = false;
+bool _scriptSaveQueued = false;
+
+/// Persist the current script soon (debounced). Safe to call on every edit.
+void scheduleScriptSave(WidgetRef ref, {Duration delay = const Duration(milliseconds: 800)}) {
+  _scriptSaveTimer?.cancel();
+  _scriptSaveTimer = Timer(delay, () => _runScriptSave(ref));
+}
+
+/// Persist immediately (e.g. leaving an editor screen), skipping the debounce.
+Future<void> flushScriptSave(WidgetRef ref) async {
+  _scriptSaveTimer?.cancel();
+  _scriptSaveTimer = null;
+  await _runScriptSave(ref);
+}
+
+Future<void> _runScriptSave(WidgetRef ref) async {
+  // Serialize: two overlapping persists mean two cloud delete+reinsert cycles
+  // racing over the same rows.
+  if (_scriptSaveInFlight) {
+    _scriptSaveQueued = true;
+    return;
+  }
+  _scriptSaveInFlight = true;
+  try {
+    await persistScript(ref);
+  } catch (e) {
+    DebugLogService.instance
+        .logError(LogCategory.error, 'Script autosave failed', e);
+    rootScaffoldMessengerKey.currentState?.showSnackBar(const SnackBar(
+      content: Text("Couldn't save script changes — they're still on screen; "
+          'try again or check your connection.'),
+      duration: Duration(seconds: 6),
+    ));
+  } finally {
+    _scriptSaveInFlight = false;
+    if (_scriptSaveQueued) {
+      _scriptSaveQueued = false;
+      unawaited(_runScriptSave(ref));
+    }
+  }
 }
 
 /// Save [script] to Drift and the SharedPreferences backup WITHOUT pushing to

@@ -265,7 +265,16 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
       final cloudLines = await fetchCloudScriptLines(production.id);
       if (cloudLines == null || cloudLines.isEmpty) return;
       final script = buildParsedScript(production.title, cloudLines);
-      await _persistResolvedScript(ref, script);
+
+      // Persist under the production we FETCHED for, never "whatever is
+      // current now": the user can open another production while this is in
+      // flight, and saveScriptLines replaces that production's lines wholesale
+      // — this used to overwrite B's script with A's (and push it to B's cloud
+      // on the next save).
+      await persistScriptLocally(ref, production.id, script);
+
+      // Only swap the on-screen script if we're still on this production.
+      if (ref.read(currentProductionProvider)?.id != production.id) return;
       ref.read(currentScriptProvider.notifier).state = script;
       messenger.showSnackBar(SnackBar(
         content: Text(
@@ -444,19 +453,6 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     }
   }
 
-  Future<void> _persistResolvedScript(
-    WidgetRef ref,
-    ParsedScript script,
-  ) async {
-    ref.read(currentScriptProvider.notifier).state = script;
-    // Local-only: this script just came FROM the cloud — pushing it back would
-    // be a pointless (and for cast members RLS-rejected) delete+reinsert.
-    final production = ref.read(currentProductionProvider);
-    if (production != null) {
-      await persistScriptLocally(ref, production.id, script);
-    }
-  }
-
   bool _scriptsDiffer(ParsedScript localScript, ParsedScript cloudScript) {
     return diffScriptLines(localScript.lines, cloudScript.lines)
         .any((diff) => diff.type != DiffType.unchanged);
@@ -496,6 +492,28 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     // cloud restore (the membership/production still exists in Supabase).
     final supa = SupabaseService.instance;
     final mine = isOwnProduction(production);
+    final cloudBacked = production.organizerId.isNotEmpty &&
+        production.organizerId != 'local';
+    if (cloudBacked && !(supa.isInitialized && supa.isSignedIn)) {
+      // Deleting locally while the cloud row survives guarantees the
+      // production reappears on the next restore — refuse instead of
+      // pretending it worked.
+      DebugLogService.instance.log(
+          LogCategory.network,
+          'Delete refused for "${production.title}" — cloud unavailable '
+          '(initialized=${supa.isInitialized} signedIn=${supa.isSignedIn})');
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text(mine
+              ? "Can't delete \"${production.title}\" while offline — it "
+                  'would come back on the next sync. Try again when connected.'
+              : "Can't leave \"${production.title}\" while offline — try "
+                  'again when connected.'),
+          duration: const Duration(seconds: 6),
+        ));
+      }
+      return;
+    }
     if (supa.isInitialized && supa.isSignedIn) {
       try {
         if (mine) {
@@ -524,6 +542,11 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
       }
     }
 
+    // Stop realtime for this production BEFORE clearing its cache, or an
+    // in-flight download re-creates the directory and manifest rows.
+    if (ref.read(currentProductionProvider)?.id == production.id) {
+      RecordingSyncService.instance.unsubscribe();
+    }
     await RecordingSyncService.instance.clearCache(production.id);
 
     final prefs = await SharedPreferences.getInstance();

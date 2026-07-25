@@ -46,6 +46,43 @@ class KokoroMLXService {
             && FileManager.default.fileExists(atPath: voicesURL.path)
     }
 
+    // MARK: - Background state
+
+    /// Set from app lifecycle notifications so work already queued on
+    /// `synthQueue` can re-check before submitting GPU work. `applicationState`
+    /// is main-thread-only, so it can't be read from the synth queue directly.
+    private static let bgLock = NSLock()
+    private static var _isBackgrounded = false
+    static var isBackgrounded: Bool {
+        bgLock.lock(); defer { bgLock.unlock() }
+        return _isBackgrounded
+    }
+    private static func setBackgrounded(_ value: Bool) {
+        bgLock.lock(); _isBackgrounded = value; bgLock.unlock()
+    }
+
+    init() {
+        observeAppLifecycle()
+        // Seed from the current state in case the service is created while
+        // the app is already in the background.
+        if Thread.isMainThread {
+            Self.setBackgrounded(UIApplication.shared.applicationState == .background)
+        } else {
+            DispatchQueue.main.async {
+                Self.setBackgrounded(UIApplication.shared.applicationState == .background)
+            }
+        }
+    }
+
+    private func observeAppLifecycle() {
+        NotificationCenter.default.addObserver(
+            forName: UIApplication.didEnterBackgroundNotification,
+            object: nil, queue: nil) { _ in Self.setBackgrounded(true) }
+        NotificationCenter.default.addObserver(
+            forName: UIApplication.willEnterForegroundNotification,
+            object: nil, queue: nil) { _ in Self.setBackgrounded(false) }
+    }
+
     // MARK: - Model lifecycle
 
     /// Load the Kokoro MLX model from the app's documents directory.
@@ -159,6 +196,16 @@ class KokoroMLXService {
                     return
                 }
 
+                // Re-check HERE, not just at call time: this block may have sat
+                // behind an in-flight synthesis for seconds, and the app can
+                // have been backgrounded meanwhile. Submitting Metal work in
+                // the background is an immediate iOS kill.
+                if Self.isBackgrounded {
+                    NSLog("KokoroMLX: app backgrounded before queued synthesis ran — skipping GPU work")
+                    continuation.resume(throwing: KokoroError.backgrounded)
+                    return
+                }
+
                 do {
                     // Generate audio via Kokoro MLX inference
                     let (audioSamples, _) = try ttsEngine.generateAudio(
@@ -243,7 +290,9 @@ class KokoroMLXService {
         wav.append(withUnsafeBytes(of: dataSize.littleEndian) { Data($0) })
         wav.append(pcmData)
 
-        try wav.write(to: url)
+        // Atomic: a kill mid-write would otherwise leave a truncated file at a
+        // stable cache key — a permanent bad cache hit on every later launch.
+        try wav.write(to: url, options: .atomic)
     }
 
     // MARK: - Caching

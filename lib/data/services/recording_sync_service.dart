@@ -138,7 +138,10 @@ class RecordingSyncService {
   /// Restore the cache index from the manifest (once per launch). Entries
   /// whose file no longer exists are dropped; entries already in memory
   /// (downloaded this session) win over the manifest.
-  Future<void> hydrateCache() async {
+  Future<void> hydrateCache() => _hydration ??= _doHydrate();
+  Future<void>? _hydration;
+
+  Future<void> _doHydrate() async {
     if (_hydrated) return;
     _hydrated = true;
     try {
@@ -199,12 +202,32 @@ class RecordingSyncService {
     return _cacheDir!;
   }
 
-  /// Path for a cached recording file.
+  /// Identifiers that are safe to interpolate into a filesystem path.
+  /// production_id is a DB-enforced uuid, but recordings.line_id is free TEXT,
+  /// so a hostile row could carry "../../…" (or an absolute path, which
+  /// p.join happily adopts) and steer a download on every castmate's device
+  /// into overwriting arbitrary .m4a files — including their own saved takes.
+  static final _safeIdPattern = RegExp(r'^[A-Za-z0-9._-]{1,128}$');
+
+  static bool isSafePathId(String value) =>
+      _safeIdPattern.hasMatch(value) && !value.contains('..');
+
+  /// Path for a cached recording file. Throws on an unsafe id rather than
+  /// writing outside the cache directory.
   Future<String> cachePath(String productionId, String lineId) async {
+    if (!isSafePathId(productionId) || !isSafePathId(lineId)) {
+      throw ArgumentError(
+          'Unsafe recording identifiers (production=$productionId, line=$lineId)');
+    }
     final dir = await cacheDir;
     final prodDir = p.join(dir, productionId);
     await Directory(prodDir).create(recursive: true);
-    return p.join(prodDir, '$lineId.m4a');
+    final path = p.join(prodDir, '$lineId.m4a');
+    // Belt and braces: never escape the cache root.
+    if (!p.isWithin(dir, path)) {
+      throw ArgumentError('Recording path escapes the cache directory: $path');
+    }
+    return path;
   }
 
   /// Get the local path for a cached recording, or null if not cached.
@@ -256,6 +279,13 @@ class RecordingSyncService {
     for (final row in cloudRecordings) {
       final lineId = row['line_id'] as String?;
       if (lineId == null) continue;
+      // Reject hostile ids at the boundary (see cachePath) — loudly, so a
+      // poisoned row is diagnosable rather than a mystery skipped line.
+      if (!isSafePathId(lineId)) {
+        _dlog.logError(LogCategory.error,
+            'RecordingSync: ignoring cloud recording with unsafe line_id "$lineId"');
+        continue;
+      }
       // Keep the most recent recording per line
       final existing = cloudByLine[lineId];
       if (existing == null ||
@@ -525,6 +555,11 @@ class RecordingSyncService {
     final lineId = payload['line_id'] as String?;
     final recordUserId = payload['user_id'] as String?;
     if (lineId == null) return;
+    if (!isSafePathId(lineId)) {
+      _dlog.logError(LogCategory.error,
+          'RecordingSync: ignoring realtime recording with unsafe line_id "$lineId"');
+      return;
+    }
 
     // Skip our own recordings
     if (recordUserId == (myUserId ?? _cloud.currentUserId)) return;
@@ -583,7 +618,7 @@ class RecordingSyncService {
     if (await prodDir.exists()) {
       await prodDir.delete(recursive: true);
     }
-    _cache.removeWhere((_, v) => v.localPath.contains(productionId));
+    _cache.removeWhere((_, v) => v.productionId == productionId);
     _saveManifest();
   }
 
