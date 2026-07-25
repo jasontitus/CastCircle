@@ -222,14 +222,22 @@ otp_length = 8
 # Number of seconds before the email OTP expires (defaults to 1 hour).
 otp_expiry = 3600
 
-# Use a production-ready SMTP server
-# [auth.email.smtp]
-# enabled = true
-# host = "smtp.sendgrid.net"
-# port = 587
-# user = "apikey"
-# pass = "env(SENDGRID_API_KEY)"
-# admin_email = "admin@email.com"
+# Production SMTP via Resend (tiltastech.com is already a verified sending
+# domain on the shared Resend account — the same one whats-goin-on uses).
+# Supabase's built-in mailer is capped at a few messages/hour and is explicitly
+# not for production, which matters now that email confirmation is REQUIRED:
+# without this, a new actor simply never receives their link.
+#
+# The key is read from the environment at `supabase config push` time —
+# NEVER hardcode it here, this file is in git.
+[auth.email.smtp]
+enabled = true
+host = "smtp.resend.com"
+port = 465
+user = "resend"
+pass = "env(RESEND_API_KEY)"
+admin_email = "castcircle@tiltastech.com"
+sender_name = "CastCircle"
 # sender_name = "Admin"
 
 # Uncomment to customize email template

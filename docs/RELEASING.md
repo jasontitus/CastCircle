@@ -82,3 +82,33 @@ Needs the Play service-account JSON at `~/.google-play/play-store-key.json`.
 
 ## Version numbers
 `pubspec.yaml` `version: 0.1.1+NN` drives both iOS `CFBundleVersion` and Android `versionCode`. `ship-testflight.sh` auto-bumps `NN`. Keep Android's `versionCode` ahead of whatever Play has already seen.
+
+---
+
+## Supabase auth email (Resend SMTP)
+
+Email confirmation is **required** for signup, and mail goes out through
+Resend on the shared `tiltastech.com` sending domain (same Resend account
+as `whats-goin-on`, which already verified the domain).
+
+**Before ANY `supabase config push`, export the key:**
+
+```bash
+export RESEND_API_KEY=re_...          # from the Resend dashboard
+supabase config push --yes
+```
+
+`supabase/config.toml` stores `pass = "env(RESEND_API_KEY)"`, so the secret
+is never committed — but that also means **a push without the variable set
+sends an empty password and silently breaks every auth email** (signup
+confirmations, password resets). If confirmation emails stop arriving, that
+is the first thing to check.
+
+Verify a change end to end:
+1. `POST /auth/v1/signup` with an address on a verified domain → expect
+   HTTP 200 with `confirmation_sent_at` set and **no** `access_token`
+   (a broken SMTP config returns HTTP 500 instead).
+2. `GET https://api.resend.com/emails?limit=3` with the key → the
+   "Confirm Your Signup" message should be listed as `delivered`
+   (a nonexistent test mailbox will show `bounced`, which still proves
+   the pipeline works — avoid repeating it, bounces cost reputation).
