@@ -1092,6 +1092,13 @@ class _ScriptEditorScreenState extends ConsumerState<ScriptEditorScreen> {
         charCounts[line.character] = (charCounts[line.character] ?? 0) + 1;
       }
     }
+    // Carry genders across the rebuild. ScriptCharacter defaults to female, so
+    // omitting this reset the WHOLE cast's gender on any line edit — and the
+    // autosave below then persisted it, giving every male character a female
+    // voice for the rest of the session.
+    final existingGenders = {
+      for (final c in script.characters) c.name: c.gender,
+    };
     var colorIdx = 0;
     final characters = charCounts.entries.toList()
       ..sort((a, b) => b.value.compareTo(a.value));
@@ -1100,6 +1107,7 @@ class _ScriptEditorScreenState extends ConsumerState<ScriptEditorScreen> {
               name: e.key,
               colorIndex: colorIdx++,
               lineCount: e.value,
+              gender: existingGenders[e.key] ?? CharacterGender.female,
             ))
         .toList();
 
@@ -1134,6 +1142,11 @@ class _ScriptEditorScreenState extends ConsumerState<ScriptEditorScreen> {
         charCounts[line.character] = (charCounts[line.character] ?? 0) + 1;
       }
     }
+    // Same gender preservation as _rebuildScript — without it, editing a
+    // single line's text resets every character's gender.
+    final existingGenders = {
+      for (final c in script.characters) c.name: c.gender,
+    };
     var colorIdx = 0;
     final characters = charCounts.entries
         .toList()
@@ -1143,6 +1156,7 @@ class _ScriptEditorScreenState extends ConsumerState<ScriptEditorScreen> {
               name: e.key,
               colorIndex: colorIdx++,
               lineCount: e.value,
+              gender: existingGenders[e.key] ?? CharacterGender.female,
             ))
         .toList();
 

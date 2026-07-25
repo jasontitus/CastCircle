@@ -233,6 +233,11 @@ class VoiceConfigService {
       String productionId, String characterName, CharacterGender gender) async {
     final genders = await getGenders(productionId);
     genders[characterName] = gender;
+    await _saveGenders(productionId, genders);
+  }
+
+  Future<void> _saveGenders(
+      String productionId, Map<String, CharacterGender> genders) async {
     final prefs = await _preferences;
     final json = jsonEncode(
         genders.map((key, value) => MapEntry(key, value.name)));
@@ -273,9 +278,51 @@ class VoiceConfigService {
     } else {
       locales[characterName] = locale;
     }
+    await _saveLocales(productionId, locales);
+  }
+
+  Future<void> _saveLocales(
+      String productionId, Map<String, String> locales) async {
     final prefs = await _preferences;
     await prefs.setString(
         'character_locales_$productionId', jsonEncode(locales));
+  }
+
+  // ── Character Rename / Merge ─────────────────────────────
+
+  /// Re-key every per-character setting from [oldName] to [newName].
+  ///
+  /// Overrides, genders and locales are all keyed by character NAME, so a
+  /// rename that only rewrites the script strands them on a name the script
+  /// no longer contains — the custom voice disappears and the gender silently
+  /// falls back to the default. An entry already stored under [newName] wins:
+  /// a merge folds a character into a real one whose settings must survive.
+  Future<void> renameCharacter(
+      String productionId, String oldName, String newName) async {
+    if (oldName == newName) return;
+
+    final overrides = await getOverrides(productionId);
+    final movedOverride = overrides.remove(oldName);
+    if (movedOverride != null && !overrides.containsKey(newName)) {
+      overrides[newName] = CharacterVoiceConfig(
+        characterName: newName,
+        voiceId: movedOverride.voiceId,
+        speed: movedOverride.speed,
+      );
+    }
+    await _saveOverrides(productionId, overrides);
+
+    final genders = await getGenders(productionId);
+    final movedGender = genders.remove(oldName);
+    if (movedGender != null) genders.putIfAbsent(newName, () => movedGender);
+    await _saveGenders(productionId, genders);
+
+    final locales = await getLocales(productionId);
+    final movedLocale = locales.remove(oldName);
+    if (movedLocale != null) locales.putIfAbsent(newName, () => movedLocale);
+    await _saveLocales(productionId, locales);
+
+    debugPrint('VoiceConfig: Re-keyed "$oldName" → "$newName"');
   }
 
   // ── Resolved Voice Assignment ───────────────────────────

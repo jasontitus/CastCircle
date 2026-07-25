@@ -347,6 +347,10 @@ class SyncQueue {
     while (_pending.isNotEmpty) {
       final job = _pending.first;
 
+      // Set only on a genuinely successful upload; the callback runs AFTER the
+      // try below (see the note at the call site).
+      String? uploadedUrl;
+
       try {
         final file = File(job.localPath);
         if (!file.existsSync()) {
@@ -376,9 +380,7 @@ class SyncQueue {
             LogCategory.network,
             'SyncQueue: uploaded line=${job.lineId} → $url'
             '${superseded ? ' (superseded by a newer take, not marking local)' : ''}');
-        if (!superseded) {
-          onUploaded?.call(job.productionId, job.lineId, url);
-        }
+        if (!superseded) uploadedUrl = url;
       } catch (e) {
         final superseded = !_pending.remove(job);
         _persist();
@@ -408,6 +410,23 @@ class SyncQueue {
               'this recording will not reach castmates until re-recorded',
               e);
           onGaveUp?.call(job, e);
+        }
+      }
+
+      // Outside the upload try ON PURPOSE. This callback does real work (a
+      // Drift write to stamp the remote URL); when it threw from inside the
+      // try, a SUCCESSFUL upload was reported as a failure — remove() had
+      // already taken the job off _pending, so the catch decided it had been
+      // superseded and logged "a newer take is queued — dropping the old job".
+      if (uploadedUrl != null) {
+        try {
+          onUploaded?.call(job.productionId, job.lineId, uploadedUrl);
+        } catch (e) {
+          _dlog.logError(
+              LogCategory.error,
+              'SyncQueue: line=${job.lineId} uploaded fine, but recording the '
+              'remote URL locally failed — the next sync will re-upload it',
+              e);
         }
       }
     }

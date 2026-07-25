@@ -69,9 +69,12 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
   final GlobalKey _currentLineKey = GlobalKey();
 
   final bool _autoPlay = true; // auto-advance through other characters' lines
-  String _recognizedText = '';
-  double _matchScore = 0.0;
-  bool _showMatchFeedback = false;
+  // Live STT state. ValueNotifiers, not setState fields, for the same reason
+  // as _micLevel below: the recognizer emits several partial results per
+  // second and only the transcript line and the match-feedback bar care.
+  final ValueNotifier<String> _recognizedText = ValueNotifier('');
+  final ValueNotifier<double> _matchScore = ValueNotifier(0.0);
+  final ValueNotifier<bool> _showMatchFeedback = ValueNotifier(false);
   // Smoothed mic input level (0..1) while listening. A ValueNotifier consumed
   // by only the mic indicator: the native tap reports ~12 events/sec, and
   // routing that through setState rebuilt the ENTIRE screen (including ~70
@@ -494,6 +497,9 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
     _matchConfirmTimer?.cancel();
     _ttsPrefetch.clear();
     _micLevel.dispose();
+    _recognizedText.dispose();
+    _matchScore.dispose();
+    _showMatchFeedback.dispose();
     _scrollController.dispose();
     _player.dispose();
     // Clear the completion handler so the singleton TtsService doesn't retain
@@ -625,9 +631,15 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
                       context, script, dialogueLines, currentIdx, myCharacter,
                       rehearsalState),
             ),
-            // Match feedback for STT
-            if (_showMatchFeedback && isMyLine)
-              _buildMatchFeedback(context),
+            // Match feedback for STT. Listens instead of reading the field so
+            // a new partial result repaints this bar alone.
+            if (isMyLine)
+              ValueListenableBuilder<bool>(
+                valueListenable: _showMatchFeedback,
+                builder: (context, show, _) => show
+                    ? _buildMatchFeedback(context)
+                    : const SizedBox.shrink(),
+              ),
             // AirPods / Action Button hint
             if (_showJumpBackHint && !isComplete)
               _buildJumpBackHint(context),
@@ -992,18 +1004,25 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
                       height: 1.4,
                     ),
                   ),
-                // Show recognized text under current line if listening
-                if (isCurrent && isMe && _recognizedText.isNotEmpty)
-                  Padding(
-                    padding: const EdgeInsets.only(top: 8),
-                    child: Text(
-                      _recognizedText,
-                      style: TextStyle(
-                        color: Colors.grey[400],
-                        fontSize: 14,
-                        fontStyle: FontStyle.italic,
-                      ),
-                    ),
+                // Show recognized text under current line if listening.
+                // Only the current line subscribes, so a partial result
+                // repaints one Text instead of every built list item.
+                if (isCurrent && isMe)
+                  ValueListenableBuilder<String>(
+                    valueListenable: _recognizedText,
+                    builder: (context, recognized, _) => recognized.isEmpty
+                        ? const SizedBox.shrink()
+                        : Padding(
+                            padding: const EdgeInsets.only(top: 8),
+                            child: Text(
+                              recognized,
+                              style: TextStyle(
+                                color: Colors.grey[400],
+                                fontSize: 14,
+                                fontStyle: FontStyle.italic,
+                              ),
+                            ),
+                          ),
                   ),
               ],
             ),
@@ -1056,31 +1075,38 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
 
   Widget _buildMatchFeedback(BuildContext context) {
     final threshold = ref.read(matchThresholdProvider) / 100.0;
-    final matched = _matchScore >= threshold;
-    final percentage = (_matchScore * 100).toInt();
 
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-      color: matched
-          ? Colors.green.withValues(alpha: 0.2)
-          : Colors.orange.withValues(alpha: 0.2),
-      child: Row(
-        children: [
-          Icon(
-            matched ? Icons.check_circle : Icons.info_outline,
-            color: matched ? Colors.green : Colors.orange,
-            size: 18,
+    // The score changes with every partial result — rebuild just this bar.
+    return ValueListenableBuilder<double>(
+      valueListenable: _matchScore,
+      builder: (context, score, _) {
+        final matched = score >= threshold;
+        final percentage = (score * 100).toInt();
+
+        return Container(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+          color: matched
+              ? Colors.green.withValues(alpha: 0.2)
+              : Colors.orange.withValues(alpha: 0.2),
+          child: Row(
+            children: [
+              Icon(
+                matched ? Icons.check_circle : Icons.info_outline,
+                color: matched ? Colors.green : Colors.orange,
+                size: 18,
+              ),
+              const SizedBox(width: 8),
+              Text(
+                matched ? 'Match! $percentage%' : '$percentage% — keep going',
+                style: TextStyle(
+                  color: matched ? Colors.green : Colors.orange,
+                  fontSize: 13,
+                ),
+              ),
+            ],
           ),
-          const SizedBox(width: 8),
-          Text(
-            matched ? 'Match! $percentage%' : '$percentage% — keep going',
-            style: TextStyle(
-              color: matched ? Colors.green : Colors.orange,
-              fontSize: 13,
-            ),
-          ),
-        ],
-      ),
+        );
+      },
     );
   }
 
@@ -1354,7 +1380,9 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
         // Accept whatever was said and advance (manual skip)
         // Discard pending transcription to avoid delayed callbacks
         _stt.stop(discard: true);
-        _recordCurrentLineAttempt(skipped: _matchScore < (ref.read(matchThresholdProvider) / 100.0));
+        _recordCurrentLineAttempt(
+            skipped: _matchScore.value <
+                (ref.read(matchThresholdProvider) / 100.0));
         _advanceLine(totalLines);
       case RehearsalState.paused:
       case RehearsalState.sceneComplete:
@@ -1663,13 +1691,18 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
     }
   }
 
+  /// Drop the live transcript and the match bar between lines. No setState:
+  /// the notifiers repaint their own two widgets, and every caller has
+  /// already moved a provider that rebuilds the rest of the screen.
+  void _clearMatchFeedback() {
+    _showMatchFeedback.value = false;
+    _recognizedText.value = '';
+  }
+
   Future<void> _playOtherLine(ScriptLine line) async {
     ref.read(rehearsalStateProvider.notifier).state =
         RehearsalState.playingOther;
-    setState(() {
-      _showMatchFeedback = false;
-      _recognizedText = '';
-    });
+    _clearMatchFeedback();
 
     _maybeWarnOrphanedRecordings();
 
@@ -1809,10 +1842,7 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
   Future<void> _startListeningForMyLine(ScriptLine line) async {
     ref.read(rehearsalStateProvider.notifier).state =
         RehearsalState.listeningForMe;
-    setState(() {
-      _recognizedText = '';
-      _showMatchFeedback = false;
-    });
+    _clearMatchFeedback();
 
     // Release TTS audio session so STT can acquire the microphone.
     // Without this, the audioPlayer holds the session in playback mode
@@ -1902,7 +1932,7 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
       if (ref.read(rehearsalStateProvider) != RehearsalState.listeningForMe) {
         return;
       }
-      if (_matchScore >= threshold &&
+      if (_matchScore.value >= threshold &&
           silence >=
               Duration(
                   milliseconds:
@@ -1933,11 +1963,13 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
             : recognized;
 
         final score = SttService.matchScore(line.text, corrected);
-        setState(() {
-          _recognizedText = corrected;
-          _matchScore = score;
-          _showMatchFeedback = corrected.isNotEmpty;
-        });
+        // Notifiers, not setState: partial results arrive several times a
+        // second and setState here rebuilt the whole screen — including the
+        // ~145 offscreen list items cacheExtent: 10000 keeps alive — for what
+        // is really a two-widget update.
+        _recognizedText.value = corrected;
+        _matchScore.value = score;
+        _showMatchFeedback.value = corrected.isNotEmpty;
 
         if (score > _currentBestScore) _currentBestScore = score;
 
@@ -2033,7 +2065,7 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
 
       // Record the attempt with whatever score was achieved
       final threshold = ref.read(matchThresholdProvider) / 100.0;
-      _recordAttempt(line, skipped: _matchScore < threshold);
+      _recordAttempt(line, skipped: _matchScore.value < threshold);
 
       // Advance to next line
       final script = ref.read(currentScriptProvider);
@@ -2076,10 +2108,7 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
     ref.read(rehearsalStateProvider.notifier).state = RehearsalState.ready;
     _scrollToCurrentLine();
 
-    setState(() {
-      _showMatchFeedback = false;
-      _recognizedText = '';
-    });
+    _clearMatchFeedback();
 
     // Auto-play next line after minimal delay
     if (_autoPlay) {
@@ -2103,10 +2132,7 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
     ref.read(rehearsalStateProvider.notifier).state = RehearsalState.ready;
     _scrollToCurrentLine();
 
-    setState(() {
-      _showMatchFeedback = false;
-      _recognizedText = '';
-    });
+    _clearMatchFeedback();
 
     // Haptic on jump back
     HapticFeedback.heavyImpact();
@@ -2139,10 +2165,7 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
     _currentAttemptCount = 0;
     _currentBestScore = 0.0;
 
-    setState(() {
-      _showMatchFeedback = false;
-      _recognizedText = '';
-    });
+    _clearMatchFeedback();
 
     _scrollController.animateTo(
       0,
@@ -2319,7 +2342,7 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
   Future<void> _startRecordOnlyCapture(ScriptLine line) async {
     _currentAttemptCount++;
     _matchConfirmed = false;
-    _matchScore = 0.0;
+    _matchScore.value = 0.0;
     _micLevel.value = 0.0;
     _lastRecognizedRaw = ''; // no recognizer on Android — nothing to learn from
 

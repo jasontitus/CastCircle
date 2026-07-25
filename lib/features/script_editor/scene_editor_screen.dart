@@ -369,14 +369,18 @@ class _SceneEditorScreenState extends ConsumerState<SceneEditorScreen> {
     final scenes = List<ScriptScene>.from(script.scenes);
     scenes[index] = updated;
 
-    // Update scene tags on the lines too
-    final updatedLines = script.lines.map((l) {
-      if (l.orderIndex >= updated.startLineIndex &&
-          l.orderIndex <= updated.endLineIndex) {
-        return l.copyWith(scene: updated.location);
+    // Update scene tags on the lines too. start/endLineIndex are positions in
+    // ParsedScript.lines (see linesInScene) — comparing them against
+    // orderIndex, which stops matching the position as soon as a line is
+    // inserted or deleted, retagged the wrong lines.
+    final updatedLines = List<ScriptLine>.from(script.lines);
+    if (updatedLines.isNotEmpty) {
+      final start = updated.startLineIndex.clamp(0, updatedLines.length - 1);
+      final end = (updated.endLineIndex + 1).clamp(start, updatedLines.length);
+      for (var i = start; i < end; i++) {
+        updatedLines[i] = updatedLines[i].copyWith(scene: updated.location);
       }
-      return l;
-    }).toList();
+    }
 
     ref.read(currentScriptProvider.notifier).state = ParsedScript(
       title: script.title,
@@ -404,15 +408,16 @@ class _SceneEditorScreenState extends ConsumerState<SceneEditorScreen> {
     );
     if (splitLineIdx < 0) return;
 
+    // Scene bounds go stale as soon as lines are deleted in the script editor,
+    // so endLineIndex + 1 can run past the list — clamp exactly the way
+    // ParsedScript.linesInScene does instead of letting sublist throw.
+    final start = scene.startLineIndex.clamp(0, script.lines.length - 1);
+    final end = (scene.endLineIndex + 1).clamp(start, script.lines.length);
+    final splitAt = splitLineIdx.clamp(start, end);
+
     // Get characters for each half
-    final firstHalfLines = script.lines.sublist(
-      scene.startLineIndex,
-      splitLineIdx,
-    );
-    final secondHalfLines = script.lines.sublist(
-      splitLineIdx,
-      scene.endLineIndex + 1,
-    );
+    final firstHalfLines = script.lines.sublist(start, splitAt);
+    final secondHalfLines = script.lines.sublist(splitAt, end);
 
     final firstChars = <String>{};
     for (final l in firstHalfLines) {
@@ -438,8 +443,10 @@ class _SceneEditorScreenState extends ConsumerState<SceneEditorScreen> {
         sceneName: '${scene.sceneName} (Part 1)',
         location: scene.location,
         description: scene.description,
-        startLineIndex: scene.startLineIndex,
-        endLineIndex: splitLineIdx - 1,
+        // Write the clamped bounds back: the halves replace a scene whose
+        // stored range may already have outlived the lines it points at.
+        startLineIndex: start,
+        endLineIndex: splitAt - 1,
         characters: firstChars.toList()..sort(),
       ),
     );
@@ -451,8 +458,8 @@ class _SceneEditorScreenState extends ConsumerState<SceneEditorScreen> {
         sceneName: '${scene.sceneName} (Part 2)',
         location: scene.location,
         description: '',
-        startLineIndex: splitLineIdx,
-        endLineIndex: scene.endLineIndex,
+        startLineIndex: splitAt,
+        endLineIndex: end - 1,
         characters: secondChars.toList()..sort(),
       ),
     );

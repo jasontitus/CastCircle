@@ -5,6 +5,7 @@ import 'package:flutter/foundation.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:path/path.dart' as p;
 
+import 'debug_log_service.dart';
 import 'model_download_service.dart';
 
 /// Manages downloading and caching of on-device ML models.
@@ -199,11 +200,15 @@ class ModelManager {
   }
 
   /// Download a single file with progress reporting.
+  ///
+  /// [redirectsLeft] bounds the hand-rolled redirect following below — a
+  /// redirect loop used to recurse until the stack blew.
   Future<void> _downloadFile(
     String url,
     String localPath,
-    void Function(double progress)? onProgress,
-  ) async {
+    void Function(double progress)? onProgress, {
+    int redirectsLeft = 5,
+  }) async {
     final file = File(localPath);
     if (await file.exists()) {
       onProgress?.call(1.0);
@@ -228,7 +233,25 @@ class ModelManager {
           if (redirectUrl != null) {
             await response.drain<void>();
             client.close();
-            await _downloadFile(redirectUrl, localPath, onProgress);
+            // Location may be relative; resolve it against the current URL.
+            final target = Uri.parse(url).resolve(redirectUrl);
+            // Redirects are followed by hand here (autoUncompress is off), so
+            // the scheme check HttpClient would do is ours to make: an
+            // https→http hop would put the model bytes we then execute-as-data
+            // on the wire in the clear, open to tampering.
+            if (target.scheme != 'https') {
+              final msg = 'Model download refused: redirect to a non-HTTPS URL '
+                  '(${target.scheme}://${target.host})';
+              DebugLogService.instance.logError(LogCategory.network, msg);
+              throw Exception(msg);
+            }
+            if (redirectsLeft <= 0) {
+              final msg = 'Model download refused: too many redirects from $url';
+              DebugLogService.instance.logError(LogCategory.network, msg);
+              throw Exception(msg);
+            }
+            await _downloadFile(target.toString(), localPath, onProgress,
+                redirectsLeft: redirectsLeft - 1);
             return;
           }
         }

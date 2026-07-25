@@ -3,10 +3,12 @@ import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:flutter/foundation.dart';
+import 'package:flutter/material.dart' show SnackBar, Text;
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 import 'package:supabase_flutter/supabase_flutter.dart' show RealtimeChannel;
 
+import '../../main.dart' show rootScaffoldMessengerKey;
 import '../models/script_models.dart';
 import 'debug_log_service.dart';
 import 'supabase_service.dart';
@@ -261,7 +263,11 @@ class RecordingSyncService {
     try {
       cloudRecordings = await _cloud.fetchRecordings(productionId);
     } catch (e) {
+      // Returning 0 here is indistinguishable from "nothing to sync": the
+      // actor rehearses against TTS with no idea their castmates' takes exist.
       _dlog.logError(LogCategory.error, 'RecordingSync: fetch failed', e);
+      _tellUser("Couldn't check for castmates' recordings — rehearsal will "
+          'use computer voices for their lines. Check your connection.');
       return 0;
     }
 
@@ -331,6 +337,7 @@ class RecordingSyncService {
     }
 
     int uploaded = 0;
+    int uploadFailures = 0;
     await _runPooled(toUpload, (entry) async {
       final lineId = entry.key;
       final recording = entry.value;
@@ -356,6 +363,7 @@ class RecordingSyncService {
         _dlog.log(LogCategory.general,
             'RecordingSync: uploaded $lineId (${recording.character})');
       } catch (e) {
+        uploadFailures++;
         _dlog.logError(
             LogCategory.error, 'RecordingSync: upload failed for $lineId', e);
       }
@@ -395,6 +403,7 @@ class RecordingSyncService {
     }
 
     int downloaded = 0;
+    int downloadFailures = 0;
     await _runPooled(toDownload, (entry) async {
       final lineId = entry.key;
       final cloud = entry.value;
@@ -428,6 +437,7 @@ class RecordingSyncService {
         _dlog.log(LogCategory.general,
             'RecordingSync: downloaded $lineId ($characterName)');
       } catch (e) {
+        downloadFailures++;
         _dlog.logError(
             LogCategory.error, 'RecordingSync: download failed for $lineId', e);
       }
@@ -435,10 +445,43 @@ class RecordingSyncService {
 
     if (downloaded > 0) _saveManifest();
 
-    _dlog.log(LogCategory.general,
-        'RecordingSync: done — $uploaded uploaded, $downloaded downloaded');
+    _dlog.log(
+        LogCategory.general,
+        'RecordingSync: done — $uploaded uploaded, $downloaded downloaded, '
+        '$uploadFailures upload failure(s), $downloadFailures '
+        'download failure(s)');
+
+    // Per-transfer failures were log-only, so "every transfer failed" looked
+    // exactly like "nothing to sync": the actor rehearses against TTS never
+    // knowing castmate takes exist, and their own takes silently never ship.
+    final trouble = <String>[
+      if (downloadFailures > 0)
+        "$downloadFailures castmate recording(s) couldn't be downloaded — "
+            'those lines will use computer voices',
+      if (uploadFailures > 0)
+        "$uploadFailures of your recordings couldn't be uploaded — castmates "
+            "won't hear them yet",
+    ];
+    if (trouble.isNotEmpty) {
+      _tellUser('${trouble.join('. ')}.');
+    }
 
     return downloaded;
+  }
+
+  /// Surface a sync problem to the user. Sync runs in the background with no
+  /// widget context, hence the app-wide messenger. Guarded because there is no
+  /// messenger before the app tree exists (or in tests) — and a missing
+  /// SnackBar must never take down a sync; the failure is always logged first.
+  void _tellUser(String message) {
+    try {
+      rootScaffoldMessengerKey.currentState?.showSnackBar(SnackBar(
+        content: Text(message),
+        duration: const Duration(seconds: 8),
+      ));
+    } catch (e) {
+      debugPrint('RecordingSync: could not show "$message" ($e)');
+    }
   }
 
   /// Run [task] over [items] with a few concurrent workers instead of one at

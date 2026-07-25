@@ -605,6 +605,11 @@ class _CastManagerScreenState extends ConsumerState<CastManagerScreen> {
   void _assignRole(String characterName, CastRole role) {
     final nameController = TextEditingController();
     final contactController = TextEditingController();
+    // The Assign handler awaits (local save, cloud invitation, share sheet)
+    // before the dialog closes — a second tap in that window minted a second
+    // cast member with its own id, its own cloud invitation and its own live
+    // invite link.
+    var isSubmitting = false;
 
     showDialog(
       context: context,
@@ -641,7 +646,20 @@ class _CastManagerScreenState extends ConsumerState<CastManagerScreen> {
                             contact.phone ?? contact.email ?? '';
                         setDialogState(() {});
                       } catch (e) {
-                        debugPrint('Contact pick failed: $e');
+                        // A denied Contacts permission threw here silently —
+                        // the button just looked dead.
+                        DebugLogService.instance.logError(
+                            LogCategory.general, 'Contact pick failed', e);
+                        if (!mounted) return;
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          const SnackBar(
+                            content: Text(
+                                "Couldn't open your contacts — check that "
+                                'CastCircle has Contacts permission, or type '
+                                'the name in by hand.'),
+                            duration: Duration(seconds: 5),
+                          ),
+                        );
                       }
                     },
                   ),
@@ -665,76 +683,90 @@ class _CastManagerScreenState extends ConsumerState<CastManagerScreen> {
               child: const Text('Cancel'),
             ),
             FilledButton(
-              onPressed: () async {
-                final name = nameController.text.trim();
-                if (name.isEmpty) return;
+              onPressed: isSubmitting
+                  ? null
+                  : () async {
+                      final name = nameController.text.trim();
+                      if (name.isEmpty) return;
 
-                final production = ref.read(currentProductionProvider);
-                if (production == null) return;
+                      final production = ref.read(currentProductionProvider);
+                      if (production == null) return;
 
-                final contact = contactController.text.trim();
-                final member = CastMemberModel(
-                  id: const Uuid().v4(),
-                  productionId: production.id,
-                  characterName: characterName,
-                  displayName: name,
-                  contactInfo: contact.isNotEmpty ? contact : null,
-                  role: role,
-                  invitedAt: DateTime.now(),
-                );
+                      setDialogState(() => isSubmitting = true);
 
-                await ref.read(castMembersProvider.notifier).save(member);
+                      final contact = contactController.text.trim();
+                      final member = CastMemberModel(
+                        id: const Uuid().v4(),
+                        productionId: production.id,
+                        characterName: characterName,
+                        displayName: name,
+                        contactInfo: contact.isNotEmpty ? contact : null,
+                        role: role,
+                        invitedAt: DateTime.now(),
+                      );
 
-                // Also save to Supabase if signed in. If the cloud insert
-                // fails, the join link we're about to share points at an
-                // invitation that doesn't exist — don't share it silently.
-                var cloudInviteOk = true;
-                final supa = SupabaseService.instance;
-                if (supa.isSignedIn) {
-                  try {
-                    await supa.createCastInvitation(
-                      productionId: production.id,
-                      characterName: characterName,
-                      displayName: name,
-                      contactInfo: contact.isNotEmpty ? contact : null,
-                      role: role.toSupabaseString(),
-                      // Reuse the local id so cloud + local stay in sync.
-                      id: member.id,
-                    );
-                  } catch (e) {
-                    cloudInviteOk = false;
-                    DebugLogService.instance.logError(LogCategory.network,
-                        'Cloud cast invitation failed for "$name"', e);
-                  }
-                }
+                      await ref.read(castMembersProvider.notifier).save(member);
 
-                if (dialogContext.mounted) {
-                  Navigator.pop(dialogContext);
-                  // Dismiss keyboard before sharing
-                  FocusScope.of(context).unfocus();
-                }
+                      // Also save to Supabase if signed in. If the cloud
+                      // insert fails, the join link we're about to share
+                      // points at an invitation that doesn't exist — don't
+                      // share it silently.
+                      var cloudInviteOk = true;
+                      final supa = SupabaseService.instance;
+                      if (supa.isSignedIn) {
+                        try {
+                          await supa.createCastInvitation(
+                            productionId: production.id,
+                            characterName: characterName,
+                            displayName: name,
+                            contactInfo: contact.isNotEmpty ? contact : null,
+                            role: role.toSupabaseString(),
+                            // Reuse the local id so cloud + local stay in sync.
+                            id: member.id,
+                          );
+                        } catch (e) {
+                          cloudInviteOk = false;
+                          DebugLogService.instance.logError(LogCategory.network,
+                              'Cloud cast invitation failed for "$name"', e);
+                        }
+                      }
 
-                if (!cloudInviteOk) {
-                  if (mounted) {
-                    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-                      content: Text("Couldn't create the cloud invitation — "
-                          'check your connection and tap the share icon to '
-                          'invite once you\'re back online.'),
-                      duration: Duration(seconds: 6),
-                    ));
-                  }
-                  return;
-                }
+                      if (dialogContext.mounted) {
+                        Navigator.pop(dialogContext);
+                        // Dismiss keyboard before sharing
+                        FocusScope.of(context).unfocus();
+                      }
 
-                // Delay to let dialog and keyboard fully dismiss
-                await Future.delayed(const Duration(milliseconds: 400));
+                      if (!cloudInviteOk) {
+                        if (mounted) {
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            const SnackBar(
+                              content: Text(
+                                  "Couldn't create the cloud invitation — "
+                                  'check your connection and tap the share '
+                                  'icon to invite once you\'re back online.'),
+                              duration: Duration(seconds: 6),
+                            ),
+                          );
+                        }
+                        return;
+                      }
 
-                // Open share sheet with the invite
-                if (mounted) {
-                  _inviteActor(characterName);
-                }
-              },
-              child: const Text('Assign'),
+                      // Delay to let dialog and keyboard fully dismiss
+                      await Future.delayed(const Duration(milliseconds: 400));
+
+                      // Open share sheet with the invite
+                      if (mounted) {
+                        _inviteActor(characterName);
+                      }
+                    },
+              child: isSubmitting
+                  ? const SizedBox(
+                      width: 16,
+                      height: 16,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  : const Text('Assign'),
             ),
           ],
         ),
@@ -742,8 +774,33 @@ class _CastManagerScreenState extends ConsumerState<CastManagerScreen> {
     );
   }
 
-  void _unassignRole(CastMemberModel member) {
-    ref.read(castMembersProvider.notifier).remove(member.id);
+  Future<void> _unassignRole(CastMemberModel member) async {
+    final who = member.displayName.isNotEmpty ? member.displayName : 'Actor';
+    final supa = SupabaseService.instance;
+
+    // Delete the cloud row FIRST: _syncCastFromCloud re-saves every cloud row
+    // locally, so a local-only removal boomerangs back on the next open — and
+    // the invite link would still work in the meantime.
+    if (supa.isSignedIn) {
+      try {
+        await supa.removeCastMember(member.id);
+      } catch (e) {
+        DebugLogService.instance.logError(
+            LogCategory.network,
+            'Unassign failed for "$who" (${member.characterName})',
+            e);
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text("Couldn't remove $who from the shared cast — they'd "
+              'reappear on the next sync. Check your connection, or ask the '
+              'organizer to remove them.'),
+          duration: const Duration(seconds: 6),
+        ));
+        return;
+      }
+    }
+
+    await ref.read(castMembersProvider.notifier).remove(member.id);
   }
 
   /// Build a smart invite link and share it directly.

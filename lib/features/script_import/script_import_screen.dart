@@ -10,6 +10,7 @@ import 'package:path_provider/path_provider.dart';
 import '../../core/responsive.dart';
 import '../../data/models/script_models.dart';
 import '../../data/services/analytics_service.dart';
+import '../../data/services/debug_log_service.dart';
 import '../../data/services/paddle_ocr_channel.dart';
 import '../../data/services/supabase_service.dart';
 import '../../data/services/voice_config_service.dart';
@@ -28,7 +29,11 @@ class _ScriptImportScreenState extends ConsumerState<ScriptImportScreen> {
   bool _saving = false;
   String? _error;
   ParsedScript? _preview;
-  String? _importedPdfPath; // persisted copy of imported PDF for page viewer
+  String? _importedPdfPath; // copy of the imported PDF for the page viewer
+
+  /// True while [_importedPdfPath] points at the staging copy in the temp dir,
+  /// i.e. before the user accepted the import. See [_commitStagedPdf].
+  bool _pdfPendingCommit = false;
 
   @override
   Widget build(BuildContext context) {
@@ -254,6 +259,10 @@ class _ScriptImportScreenState extends ConsumerState<ScriptImportScreen> {
                     onPressed: () => setState(() {
                       _preview = null;
                       _error = null;
+                      // Drop the staged PDF too, or a following text import
+                      // would commit the abandoned PDF as this script's source.
+                      _importedPdfPath = null;
+                      _pdfPendingCommit = false;
                     }),
                     child: const Text('Re-import'),
                   ),
@@ -261,20 +270,7 @@ class _ScriptImportScreenState extends ConsumerState<ScriptImportScreen> {
                 const SizedBox(width: 12),
                 Expanded(
                   child: FilledButton.icon(
-                    onPressed: _saving
-                        ? null
-                        : () async {
-                            setState(() => _saving = true);
-                            ref.read(currentScriptProvider.notifier).state =
-                                script;
-                            AnalyticsService.instance.logScriptImported(
-                              format: _importedPdfPath != null ? 'pdf' : 'text',
-                              lineCount: script.lines.length,
-                              characterCount: script.characters.length,
-                            );
-                            await persistScript(ref);
-                            if (context.mounted) context.push('/production');
-                          },
+                    onPressed: _saving ? null : () => _acceptScript(script),
                     icon: _saving
                         ? const SizedBox(
                             width: 18,
@@ -417,7 +413,7 @@ class _ScriptImportScreenState extends ConsumerState<ScriptImportScreen> {
             OcrReviewScreen(lines: script.lines, pdfPath: _importedPdfPath),
       ),
     );
-    if (result == null) return;
+    if (result == null || !mounted) return;
     setState(() {
       _preview = ParsedScript(
         title: script.title,
@@ -513,6 +509,77 @@ class _ScriptImportScreenState extends ConsumerState<ScriptImportScreen> {
     return colors[index.abs() % colors.length];
   }
 
+  /// Take the previewed import: promote the staged PDF, save the script, and
+  /// open the production hub.
+  Future<void> _acceptScript(ParsedScript script) async {
+    setState(() => _saving = true);
+    try {
+      await _commitStagedPdf();
+      if (!mounted) return;
+      ref.read(currentScriptProvider.notifier).state = script;
+      AnalyticsService.instance.logScriptImported(
+        format: _importedPdfPath != null ? 'pdf' : 'text',
+        lineCount: script.lines.length,
+        characterCount: script.characters.length,
+      );
+      await persistScript(ref);
+      if (!mounted) return;
+      context.push('/production');
+    } catch (e, stack) {
+      DebugLogService.instance.logError(
+          LogCategory.general, 'Accepting imported script failed', e, stack);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text("Couldn't save the imported script — it has NOT been "
+            'added to this production. $e'),
+        duration: const Duration(seconds: 8),
+      ));
+    } finally {
+      // Or the button sticks on "Saving..." forever after a failure.
+      if (mounted) setState(() => _saving = false);
+    }
+  }
+
+  /// Move the staged PDF to `Documents/scripts/{productionId}.pdf` and record
+  /// it on the production. Deferred until the user accepts: that destination
+  /// holds the PREVIOUS script's source PDF, and overwriting it at import time
+  /// leaves every "view page" showing the wrong document if they back out.
+  Future<void> _commitStagedPdf() async {
+    final staged = _importedPdfPath;
+    if (!_pdfPendingCommit || staged == null) return;
+    final production = ref.read(currentProductionProvider);
+    if (production == null) {
+      // Shouldn't happen — staging only starts with a production open — but
+      // dropping the PDF without a word would break the page viewer later.
+      DebugLogService.instance.logError(LogCategory.general,
+          'Staged PDF not committed — no production is open');
+      return;
+    }
+
+    final docsDir = await getApplicationDocumentsDirectory();
+    final pdfDir = Directory(p.join(docsDir.path, 'scripts'));
+    if (!pdfDir.existsSync()) pdfDir.createSync(recursive: true);
+    final destPath = p.join(pdfDir.path, '${production.id}.pdf');
+    // Copy beside the destination and rename into place: copying straight onto
+    // destPath truncates the previous script's PDF if it fails part-way.
+    final incoming = await File(staged).copy('$destPath.incoming');
+    await incoming.rename(destPath);
+    try {
+      await File(staged).delete();
+    } catch (e) {
+      // Only a leftover temp file — the import itself succeeded.
+      DebugLogService.instance
+          .logError(LogCategory.general, 'Staged PDF cleanup failed', e);
+    }
+
+    if (!mounted) return;
+    _pdfPendingCommit = false;
+    _importedPdfPath = destPath;
+    final updated = production.copyWith(scriptPath: destPath);
+    ref.read(productionsProvider.notifier).update(updated);
+    ref.read(currentProductionProvider.notifier).state = updated;
+  }
+
   Future<void> _pickPdfFile() async {
     try {
       final result = await FilePicker.platform.pickFiles(
@@ -524,6 +591,7 @@ class _ScriptImportScreenState extends ConsumerState<ScriptImportScreen> {
 
       final filePath = result.files.first.path;
       if (filePath == null) return;
+      if (!mounted) return;
 
       setState(() {
         _loading = true;
@@ -533,20 +601,23 @@ class _ScriptImportScreenState extends ConsumerState<ScriptImportScreen> {
       final service = ref.read(scriptImportServiceProvider);
 
       try {
+        // OCR of a scanned script runs for minutes, and back works throughout —
+        // every step after this await has to re-check that we're still here.
         final script = await service.importFromPdf(filePath);
+        if (!mounted) return;
 
-        // Copy PDF to app documents so it persists for the page viewer
+        // Stage the PDF in the temp dir so the page viewer works during review.
+        // It only replaces the production's stored PDF on Accept
+        // (see [_commitStagedPdf]).
         final production = ref.read(currentProductionProvider);
         if (production != null) {
-          final docsDir = await getApplicationDocumentsDirectory();
-          final pdfDir = Directory(p.join(docsDir.path, 'scripts'));
-          if (!pdfDir.existsSync()) pdfDir.createSync(recursive: true);
-          final destPath = p.join(pdfDir.path, '${production.id}.pdf');
-          await File(filePath).copy(destPath);
-          _importedPdfPath = destPath;
-          final updated = production.copyWith(scriptPath: destPath);
-          ref.read(productionsProvider.notifier).update(updated);
-          ref.read(currentProductionProvider.notifier).state = updated;
+          final tmpDir = await getTemporaryDirectory();
+          if (!mounted) return;
+          final stagedPath = p.join(tmpDir.path, '${production.id}.staged.pdf');
+          await File(filePath).copy(stagedPath);
+          if (!mounted) return;
+          _importedPdfPath = stagedPath;
+          _pdfPendingCommit = true;
         }
 
         setState(() {
@@ -557,15 +628,18 @@ class _ScriptImportScreenState extends ConsumerState<ScriptImportScreen> {
         // A scan with unreadable pages produces a clean-LOOKING preview that
         // is silently missing scenes — warn now, not at rehearsal.
         final failed = service.lastImportFailedPages;
-        if (failed > 0 && mounted) {
+        if (failed > 0) {
           ScaffoldMessenger.of(context).showSnackBar(SnackBar(
             content: Text('$failed page(s) couldn\'t be read — parts of the '
                 'script may be missing. Check the preview against the PDF.'),
             duration: const Duration(seconds: 8),
           ));
         }
-      } on UnimplementedError {
+      } on UnimplementedError catch (e) {
         // ML Kit not available — show helpful message
+        DebugLogService.instance
+            .logError(LogCategory.general, 'PDF import unavailable', e);
+        if (!mounted) return;
         setState(() {
           _error =
               'PDF import requires Google ML Kit Text Recognition.\n'
@@ -574,7 +648,10 @@ class _ScriptImportScreenState extends ConsumerState<ScriptImportScreen> {
           _loading = false;
         });
       }
-    } catch (e) {
+    } catch (e, stack) {
+      DebugLogService.instance
+          .logError(LogCategory.general, 'PDF import failed', e, stack);
+      if (!mounted) return;
       setState(() {
         _error = 'Failed to import PDF: $e';
         _loading = false;
@@ -593,6 +670,7 @@ class _ScriptImportScreenState extends ConsumerState<ScriptImportScreen> {
 
       final filePath = result.files.first.path;
       if (filePath == null) return;
+      if (!mounted) return;
 
       setState(() {
         _loading = true;
@@ -601,12 +679,16 @@ class _ScriptImportScreenState extends ConsumerState<ScriptImportScreen> {
 
       final service = ref.read(scriptImportServiceProvider);
       final script = await service.importFromMarkdownFile(filePath);
+      if (!mounted) return;
 
       setState(() {
         _preview = script;
         _loading = false;
       });
-    } catch (e) {
+    } catch (e, stack) {
+      DebugLogService.instance
+          .logError(LogCategory.general, 'Markdown import failed', e, stack);
+      if (!mounted) return;
       setState(() {
         _error = 'Failed to import markdown: $e';
         _loading = false;
@@ -625,6 +707,7 @@ class _ScriptImportScreenState extends ConsumerState<ScriptImportScreen> {
 
       final filePath = result.files.first.path;
       if (filePath == null) return;
+      if (!mounted) return;
 
       setState(() {
         _loading = true;
@@ -633,12 +716,16 @@ class _ScriptImportScreenState extends ConsumerState<ScriptImportScreen> {
 
       final service = ref.read(scriptImportServiceProvider);
       final script = await service.importFromTextFile(filePath);
+      if (!mounted) return;
 
       setState(() {
         _preview = script;
         _loading = false;
       });
-    } catch (e) {
+    } catch (e, stack) {
+      DebugLogService.instance
+          .logError(LogCategory.general, 'Text import failed', e, stack);
+      if (!mounted) return;
       setState(() {
         _error = 'Failed to import script: $e';
         _loading = false;

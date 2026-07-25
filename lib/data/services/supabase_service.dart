@@ -268,6 +268,50 @@ class SupabaseService {
     return _client.from('cast_members').insert(data).select().single();
   }
 
+  /// Remove a cast member FOR EVERYONE (organizer-side unassign).
+  ///
+  /// Dropping only the local Drift row leaves the cloud invitation alive: the
+  /// next cast sync re-saves it locally and the actor's join link keeps
+  /// working. Throws if nothing was deleted (RLS lets only the organizer
+  /// remove somebody else's row) so the caller can keep the local row rather
+  /// than have it boomerang back on the next sync.
+  Future<void> removeCastMember(String castMemberId) async {
+    final deleted = await _client
+        .from('cast_members')
+        .delete()
+        .eq('id', castMemberId)
+        .select('id');
+    if (deleted.isEmpty) {
+      throw StateError(
+          'Cloud delete removed nothing — only the organizer can remove a '
+          'cast member (or the row was already gone).');
+    }
+    _dlog.log(LogCategory.network,
+        'Removed cast member $castMemberId from the cloud');
+  }
+
+  /// Point a cast member at a renamed character.
+  ///
+  /// character_name is the only link between an actor and their role, so a
+  /// character rename that stops at the local row leaves the cloud copy — and
+  /// therefore every other device — assigned to a name the script dropped.
+  Future<void> renameCastCharacter({
+    required String castMemberId,
+    required String characterName,
+  }) async {
+    final updated = await _client
+        .from('cast_members')
+        .update({'character_name': characterName})
+        .eq('id', castMemberId)
+        .select('id');
+    if (updated.isEmpty) {
+      throw StateError(
+          'Cloud rename updated no rows for cast member $castMemberId.');
+    }
+    _dlog.log(LogCategory.network,
+        'Renamed cast member $castMemberId → "$characterName"');
+  }
+
   /// Claim an existing invitation by setting user_id and joined_at.
   Future<void> claimInvitation({
     required String castMemberId,

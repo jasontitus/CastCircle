@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/foundation.dart';
@@ -14,6 +15,7 @@ import '../../data/models/script_models.dart';
 import '../../data/services/debug_log_service.dart';
 import '../../data/services/audio_level_service.dart';
 import '../../data/services/playback_session.dart';
+import '../../data/services/supabase_service.dart';
 import '../../providers/production_providers.dart';
 
 /// Browse all recordings for the current production, grouped by character.
@@ -30,6 +32,14 @@ class _RecordingsBrowserScreenState
   final AudioPlayer _player = AudioPlayer();
   String? _playingLineId;
   String? _filterCharacter; // null = show all
+
+  /// recording.id → whether its audio actually resolves on disk. Resolving a
+  /// path hits the filesystem (and the download cache), so it can't happen in
+  /// build(): tiles start optimistic and flip when the scan comes back. This
+  /// used to be a hardcoded `true`, which made the missing-file indicator and
+  /// the "don't try to play it" guard dead code.
+  final Map<String, bool> _fileResolved = {};
+  String? _scannedKey;
 
   @override
   void initState() {
@@ -76,6 +86,8 @@ class _RecordingsBrowserScreenState
     recordedEntries.sort(
       (a, b) => a.line.orderIndex.compareTo(b.line.orderIndex),
     );
+
+    _scanFileExistence(recordedEntries);
 
     // Characters that have at least one recording
     final recordedCharacters = <String>{};
@@ -164,6 +176,33 @@ class _RecordingsBrowserScreenState
     );
   }
 
+  /// Resolve every listed recording's file once per list contents, off the
+  /// build path. See [_fileResolved].
+  void _scanFileExistence(List<_RecordedLine> entries) {
+    final key = entries.map((e) => e.recording.id).join('|');
+    if (key == _scannedKey) return;
+    _scannedKey = key;
+    unawaited(() async {
+      final resolved = <String, bool>{};
+      for (final entry in entries) {
+        resolved[entry.recording.id] =
+            await _resolveRecordingPath(entry.recording) != null;
+      }
+      if (!mounted) return;
+      final missing = resolved.values.where((ok) => !ok).length;
+      if (missing > 0) {
+        DebugLogService.instance.log(LogCategory.general,
+            'Recordings: $missing of ${resolved.length} recording file(s) '
+            'missing on this device');
+      }
+      setState(() {
+        _fileResolved
+          ..clear()
+          ..addAll(resolved);
+      });
+    }());
+  }
+
   Widget _buildSummary(
     BuildContext context,
     int totalRecordings,
@@ -181,7 +220,11 @@ class _RecordingsBrowserScreenState
           _statColumn(context, '$totalLines', 'Total Lines'),
           _statColumn(
             context,
-            '${(totalRecordings / totalLines * 100).toInt()}%',
+            // A script with no dialogue lines makes this Infinity/NaN, and
+            // double.toInt() THROWS on those — the whole screen went blank.
+            totalLines > 0
+                ? '${(totalRecordings / totalLines * 100).toInt()}%'
+                : '—',
             'Coverage',
           ),
           _statColumn(context, _formatDuration(duration), 'Duration'),
@@ -264,8 +307,10 @@ class _RecordingsBrowserScreenState
     final charColor = charIdx >= 0
         ? AppTheme.colorForCharacter(charIdx)
         : Colors.blue;
-    // Don't check fileExists synchronously — the path resolver handles stale paths
-    const fileExists = true;
+    // Optimistic until the async scan says otherwise (see [_fileResolved]);
+    // the resolver, not a raw path check, decides — stale container paths and
+    // cloud-cached copies still count as present.
+    final fileExists = _fileResolved[recording.id] ?? true;
 
     return Dismissible(
       key: ValueKey(recording.id),
@@ -286,7 +331,9 @@ class _RecordingsBrowserScreenState
           builder: (ctx) => AlertDialog(
             title: const Text('Delete Recording?'),
             content: Text(
-              'Delete recording for "${line.text.length > 50 ? '${line.text.substring(0, 47)}...' : line.text}"?',
+              'Delete recording for "${line.text.length > 50 ? '${line.text.substring(0, 47)}...' : line.text}"?\n\n'
+              'It is removed from this device and from the cast\'s cloud copy. '
+              'Castmates who already downloaded it keep theirs.',
             ),
             actions: [
               TextButton(
@@ -427,19 +474,105 @@ class _RecordingsBrowserScreenState
   }
 
   Future<void> _deleteRecording(Recording recording) async {
+    final dlog = DebugLogService.instance;
+    // Read providers before the first await: riverpod throws if `ref` is used
+    // after the user navigates away mid-delete.
+    final notifier = ref.read(recordingsProvider.notifier);
+    final productionId = ref.read(currentProductionProvider)?.id;
+
     // Delete local file
+    var localFileGone = true;
     try {
       final file = File(recording.localPath);
       if (file.existsSync()) await file.delete();
-    } catch (_) {}
+    } catch (e) {
+      // Was a bare `catch (_) {}`: the take stayed on disk and kept playing
+      // through the path resolver, with the UI insisting it was deleted.
+      localFileGone = false;
+      dlog.logError(LogCategory.error,
+          'Delete: could not remove file ${recording.localPath}', e);
+    }
 
     // Remove from provider (and Drift DB)
-    ref.read(recordingsProvider.notifier).remove(recording.scriptLineId);
+    try {
+      await notifier.remove(recording.scriptLineId);
+    } catch (e) {
+      dlog.logError(LogCategory.error,
+          'Delete: could not remove recording row ${recording.id}', e);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text("Couldn't delete that recording: $e"),
+          duration: const Duration(seconds: 6),
+        ));
+      }
+      return;
+    }
 
-    if (mounted) {
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text('Recording deleted')));
+    final cloud = await _deleteCloudCopy(recording, productionId);
+
+    if (!mounted) return;
+    final problems = <String>[
+      if (!localFileGone) 'the audio file is still on this device',
+      if (cloud == _CloudDelete.failed)
+        'the cloud copy could not be removed, so castmates may still hear it',
+    ];
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+      content: Text(problems.isEmpty
+          ? 'Recording deleted'
+          : 'Recording removed here, but ${problems.join(', and ')}.'),
+      duration: Duration(seconds: problems.isEmpty ? 4 : 8),
+    ));
+  }
+
+  /// Delete this take's cloud row so castmates stop syncing it.
+  ///
+  /// The row — not the storage object — is what every castmate's sync reads;
+  /// uploads already orphan their previous objects by design (a unique key per
+  /// take), so leaving the blob behind changes nothing that plays.
+  /// Castmates who already downloaded the take keep their cached copy.
+  Future<_CloudDelete> _deleteCloudCopy(
+      Recording recording, String? productionId) async {
+    final supa = SupabaseService.instance;
+    if (!supa.isInitialized || !supa.isSignedIn) return _CloudDelete.skipped;
+    final userId = supa.currentUser?.id;
+    if (productionId == null || userId == null) return _CloudDelete.skipped;
+    // A castmate's take cached on this device is not ours to delete from the
+    // cloud; removing it here just stops it playing locally.
+    if (recording.id.startsWith('cache_')) return _CloudDelete.skipped;
+
+    final wasUploaded =
+        recording.remoteUrl != null && recording.remoteUrl!.isNotEmpty;
+    try {
+      final removed = await supa.client
+          .from('recordings')
+          .delete()
+          .eq('production_id', productionId)
+          .eq('line_id', recording.scriptLineId)
+          .eq('user_id', userId)
+          .select();
+      if (removed.isNotEmpty) {
+        DebugLogService.instance.log(
+            LogCategory.network,
+            'Delete: removed cloud recording row for '
+            'line=${recording.scriptLineId}');
+        return _CloudDelete.deleted;
+      }
+      // No rows came back. If this take was never uploaded there was nothing
+      // to delete; if it WAS, the delete was refused (the recordings table has
+      // no DELETE policy today) and the cast still has it.
+      if (!wasUploaded) return _CloudDelete.skipped;
+      DebugLogService.instance.log(
+          LogCategory.error,
+          'Delete: cloud row for line=${recording.scriptLineId} was NOT '
+          'removed (no rows deleted — RLS has no delete policy?); castmates '
+          'will keep syncing this take');
+      return _CloudDelete.failed;
+    } catch (e) {
+      DebugLogService.instance.logError(
+          LogCategory.error,
+          'Delete: cloud delete failed for line=${recording.scriptLineId}',
+          e);
+      return _CloudDelete.failed;
     }
   }
 
@@ -565,4 +698,12 @@ class _RecordedLine {
   final Recording recording;
 
   const _RecordedLine({required this.line, required this.recording});
+}
+
+/// Outcome of removing a take's cloud row.
+enum _CloudDelete {
+  /// Nothing to delete (signed out, never uploaded, or not our recording).
+  skipped,
+  deleted,
+  failed,
 }

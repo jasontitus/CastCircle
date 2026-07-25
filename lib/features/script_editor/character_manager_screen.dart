@@ -5,6 +5,8 @@ import 'package:go_router/go_router.dart';
 import '../../core/responsive.dart';
 import '../../core/theme/app_theme.dart';
 import '../../data/models/script_models.dart';
+import '../../data/services/debug_log_service.dart';
+import '../../data/services/supabase_service.dart';
 import '../../data/services/voice_config_service.dart';
 import '../../providers/production_providers.dart';
 
@@ -541,12 +543,19 @@ class _CharacterManagerScreenState
 
   // ── Mutations ─────────────────────────────────────────
 
-  void _applyRename(
+  /// Rename (or merge) a character everywhere it is keyed by NAME.
+  ///
+  /// Both the rename and the merge path land here: only the script lines used
+  /// to be rewritten, so the cast assignment (local + cloud), the voice
+  /// override, the dialect and the gender all stayed pinned to a name the
+  /// script no longer contains — the actor showed up as unassigned and their
+  /// custom voice vanished.
+  Future<void> _applyRename(
     WidgetRef ref,
     ParsedScript script,
     String oldName,
     String newName,
-  ) {
+  ) async {
     final updatedLines = script.lines.map((l) {
       if (l.character == oldName) {
         return l.copyWith(character: newName);
@@ -563,7 +572,131 @@ class _CharacterManagerScreenState
       return l;
     }).toList();
 
-    _rebuildScript(ref, script, updatedLines);
+    _rebuildScript(
+      ref,
+      script,
+      updatedLines,
+      renamedFrom: oldName,
+      renamedTo: newName,
+    );
+
+    final production = ref.read(currentProductionProvider);
+    if (production == null) return;
+
+    await _migrateVoiceConfig(production.id, oldName, newName);
+    await _migrateCastMembers(production.id, oldName, newName);
+  }
+
+  /// Move the persisted voice override, dialect and gender onto [newName].
+  Future<void> _migrateVoiceConfig(
+    String productionId,
+    String oldName,
+    String newName,
+  ) async {
+    try {
+      await VoiceConfigService.instance.renameCharacter(
+        productionId,
+        oldName,
+        newName,
+      );
+      final locales = await VoiceConfigService.instance.getLocales(
+        productionId,
+      );
+      if (mounted) setState(() => _charLocales = locales);
+    } catch (e) {
+      DebugLogService.instance.logError(
+        LogCategory.general,
+        'Voice config rename "$oldName" → "$newName" failed',
+        e,
+      );
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            'Renamed the script lines, but $newName\'s voice, dialect and '
+            'gender settings could not be moved over — set them again in '
+            'Cast & Roles.',
+          ),
+          duration: const Duration(seconds: 6),
+        ),
+      );
+    }
+  }
+
+  /// Re-point the cast rows (local Drift + cloud) at [newName].
+  Future<void> _migrateCastMembers(
+    String productionId,
+    String oldName,
+    String newName,
+  ) async {
+    final notifier = ref.read(castMembersProvider.notifier);
+    final supa = SupabaseService.instance;
+    final failures = <String>[];
+
+    try {
+      // This screen never loads the cast itself — without this a rename made
+      // before ever opening Cast & Roles would see an empty list and skip the
+      // migration entirely.
+      await notifier.loadForProduction(productionId);
+      final affected = ref
+          .read(castMembersProvider)
+          .where((m) => m.characterName == oldName)
+          .toList();
+
+      for (final member in affected) {
+        if (supa.isSignedIn) {
+          try {
+            await supa.renameCastCharacter(
+              castMemberId: member.id,
+              characterName: newName,
+            );
+          } catch (e) {
+            // Still rename locally so the UI is coherent, but say so: the
+            // cloud row wins on the next sync and will revert this.
+            failures.add(member.displayName.isNotEmpty
+                ? member.displayName
+                : oldName);
+            DebugLogService.instance.logError(
+              LogCategory.network,
+              'Cloud cast rename "$oldName" → "$newName" failed for '
+              '${member.id}',
+              e,
+            );
+          }
+        }
+        await notifier.save(member.copyWith(characterName: newName));
+      }
+    } catch (e) {
+      DebugLogService.instance.logError(
+        LogCategory.general,
+        'Cast rename "$oldName" → "$newName" failed',
+        e,
+      );
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            'Renamed the script lines, but the actor assigned to $oldName '
+            'could not be moved to $newName — reassign them in Cast & Roles.',
+          ),
+          duration: const Duration(seconds: 6),
+        ),
+      );
+      return;
+    }
+
+    if (failures.isEmpty) return;
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          'Couldn\'t update the cloud cast for ${failures.join(', ')} — the '
+          'old character name will come back on the next sync. Check your '
+          'connection and rename again.',
+        ),
+        duration: const Duration(seconds: 6),
+      ),
+    );
   }
 
   void _applyDelete(WidgetRef ref, ParsedScript script, String charName) {
@@ -582,12 +715,21 @@ class _CharacterManagerScreenState
   void _rebuildScript(
     WidgetRef ref,
     ParsedScript script,
-    List<ScriptLine> updatedLines,
-  ) {
+    List<ScriptLine> updatedLines, {
+    String? renamedFrom,
+    String? renamedTo,
+  }) {
     // Recalculate characters, preserving genders from existing script
     final existingGenders = {
       for (final c in script.characters) c.name: c.gender,
     };
+    // A rename rebuilds the list under the NEW name, which has no entry in the
+    // map above — without carrying it over the gender resets to the default.
+    // putIfAbsent so a merge target keeps its own gender.
+    if (renamedFrom != null && renamedTo != null) {
+      final carried = existingGenders[renamedFrom];
+      if (carried != null) existingGenders.putIfAbsent(renamedTo, () => carried);
+    }
     final charCounts = <String, int>{};
     for (final line in updatedLines) {
       if (line.lineType == LineType.dialogue && line.character.isNotEmpty) {

@@ -8,6 +8,7 @@ import 'package:share_plus/share_plus.dart';
 import '../../app.dart';
 import '../../core/constants.dart';
 import '../../core/responsive.dart';
+import '../../data/services/debug_log_service.dart';
 import '../../data/services/supabase_service.dart';
 import '../../data/services/tts_service.dart';
 import '../../main.dart';
@@ -330,7 +331,24 @@ class SettingsScreen extends ConsumerWidget {
     // Sign out of Supabase if there's an active session.
     if (SupabaseService.instance.isInitialized &&
         SupabaseService.instance.isSignedIn) {
-      await SupabaseService.instance.signOut();
+      try {
+        await SupabaseService.instance.signOut();
+      } catch (e) {
+        // An AuthException here used to be an unhandled async error: the local
+        // state was never cleared, the session token stayed on the device, and
+        // the user was told nothing. Clear locally and say the session may
+        // still be live on this device.
+        DebugLogService.instance
+            .logError(LogCategory.error, 'Sign-out failed', e);
+        if (context.mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+            content: Text('Signed out on this device, but the server '
+                "couldn't be reached ($e). Sign in again to be sure the "
+                'session is closed.'),
+            duration: const Duration(seconds: 8),
+          ));
+        }
+      }
     }
 
     // Reset in-memory auth state.

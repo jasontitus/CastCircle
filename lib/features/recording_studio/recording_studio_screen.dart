@@ -20,6 +20,7 @@ import '../../data/services/audio_level_service.dart';
 import '../../data/services/playback_session.dart';
 import '../../providers/production_providers.dart';
 import '../../features/settings/settings_screen.dart';
+import '../../main.dart' show rootScaffoldMessengerKey;
 
 /// Recording state for the studio.
 enum RecordingStatus {
@@ -50,6 +51,16 @@ class _RecordingStudioScreenState extends ConsumerState<RecordingStudioScreen> {
   late List<ScriptLine> _myLines;
   String? _character;
 
+  /// Everything a finished take needs, cached from build(). Riverpod throws if
+  /// `ref` is touched once the widget is gone, and a take that is still saving
+  /// when the user leaves the studio must survive exactly that moment.
+  RecordingsNotifier? _recordingsNotifier;
+  String? _productionId;
+
+  /// True while [_stopRecording] owns the recorder. dispose() must not stop or
+  /// release it during that window — it would kill the take mid-save.
+  bool _stopInFlight = false;
+
   @override
   void initState() {
     super.initState();
@@ -73,15 +84,133 @@ class _RecordingStudioScreenState extends ConsumerState<RecordingStudioScreen> {
   @override
   void dispose() {
     _durationTimer?.cancel();
-    _recorder?.dispose();
+    final recorder = _recorder;
+    if (_stopInFlight) {
+      // _stopRecording is mid-save and will release the recorder itself.
+    } else if (recorder != null && _status == RecordingStatus.recording) {
+      // Closing the studio mid-take used to hand the recorder straight to
+      // dispose(): the capture was abandoned, the take never registered, and
+      // nothing said so. Finish and register it instead — off the widget,
+      // using the values cached in build().
+      unawaited(_finishTakeAfterDispose(
+        recorder: recorder,
+        line: _myLines[_currentLineIdx],
+        character: _character,
+        notifier: _recordingsNotifier,
+        productionId: _productionId,
+        durationMs: _recordingDuration.inMilliseconds,
+      ));
+    } else {
+      recorder?.dispose();
+    }
     _player?.dispose();
     super.dispose();
+  }
+
+  /// Stop + save a take whose screen is already gone. Runs detached from the
+  /// widget, so failures go to the log and the app-wide messenger.
+  Future<void> _finishTakeAfterDispose({
+    required AudioRecorder recorder,
+    required ScriptLine line,
+    required String? character,
+    required RecordingsNotifier? notifier,
+    required String? productionId,
+    required int durationMs,
+  }) async {
+    try {
+      final path = await recorder.stop();
+      if (path == null || character == null || notifier == null) {
+        DebugLogService.instance.logError(
+            LogCategory.error,
+            'Studio: take lost on close — recorder returned '
+            '${path == null ? 'no file' : 'no character/notifier'} '
+            'for line=${line.id}');
+        rootScaffoldMessengerKey.currentState?.showSnackBar(const SnackBar(
+          content: Text('The recording in progress was lost when the studio '
+              'closed — please record that line again.'),
+          duration: Duration(seconds: 6),
+        ));
+        return;
+      }
+      await _registerTake(
+        path: path,
+        line: line,
+        character: character,
+        notifier: notifier,
+        productionId: productionId,
+        durationMs: durationMs,
+      );
+      rootScaffoldMessengerKey.currentState?.showSnackBar(SnackBar(
+        content: Text('Saved the take for ${character.toUpperCase()} that was '
+            'still recording when you left the studio.'),
+      ));
+    } catch (e) {
+      DebugLogService.instance.logError(LogCategory.error,
+          'Studio: saving the in-progress take on close failed', e);
+      rootScaffoldMessengerKey.currentState?.showSnackBar(SnackBar(
+        content: Text("Couldn't save the recording that was in progress: $e"),
+        duration: const Duration(seconds: 6),
+      ));
+    } finally {
+      await recorder.dispose();
+    }
+  }
+
+  /// Register a finished take locally and queue it for the cast.
+  ///
+  /// Deliberately takes the notifier/production instead of reading `ref`: it
+  /// also runs from [dispose], after this widget's ref is gone.
+  Future<void> _registerTake({
+    required String path,
+    required ScriptLine line,
+    required String character,
+    required RecordingsNotifier notifier,
+    required String? productionId,
+    required int durationMs,
+  }) async {
+    // Re-recording reuses the same filename — drop any stale loudness gain.
+    AudioLevelService.instance.invalidate(path);
+    final recording = Recording(
+      id: const Uuid().v4(),
+      scriptLineId: line.id,
+      character: character,
+      localPath: path,
+      durationMs: durationMs,
+      recordedAt: DateTime.now(),
+    );
+    await notifier.add(recording);
+
+    if (productionId == null) return;
+
+    // Upload to cloud via sync queue
+    SyncQueue.instance.enqueue(
+      productionId: productionId,
+      characterName: character,
+      lineId: line.id,
+      localPath: path,
+      durationMs: durationMs,
+      recordedAt: recording.recordedAt,
+    );
+
+    // STT adaptation: recording + transcript as training data
+    SttAdaptationService.instance.addSample(
+      productionId: productionId,
+      actorId: character,
+      audioPath: path,
+      transcript: line.text,
+      durationMs: durationMs,
+    );
   }
 
   @override
   Widget build(BuildContext context) {
     final script = ref.watch(currentScriptProvider);
     final character = ref.watch(recordingCharacterProvider);
+
+    // Kept fresh here so a take can still be saved after this widget is gone
+    // (see [_recordingsNotifier]).
+    _recordingsNotifier = ref.read(recordingsProvider.notifier);
+    _productionId = ref.read(currentProductionProvider)?.id;
 
     if (script == null || character == null) {
       return Scaffold(
@@ -475,65 +604,77 @@ class _RecordingStudioScreenState extends ConsumerState<RecordingStudioScreen> {
 
   Future<void> _stopRecording() async {
     _durationTimer?.cancel();
+
+    // Snapshot what the save needs before the first await: the user can leave
+    // the studio while stop() is running, and everything below must still work
+    // with this widget gone.
+    final line = _myLines[_currentLineIdx];
+    final character = _character;
+    final notifier = _recordingsNotifier;
+    final productionId = _productionId;
+    final durationMs = _recordingDuration.inMilliseconds;
+
     String? path;
+    _stopInFlight = true; // dispose() must leave the recorder alone until we're done
     try {
       path = await _recorder?.stop();
     } catch (e) {
       DebugLogService.instance
           .logError(LogCategory.error, 'Studio: recorder.stop failed', e);
+    } finally {
+      _stopInFlight = false;
+      // dispose() ran during the stop and deferred the recorder to us.
+      if (!mounted) _recorder?.dispose();
     }
 
     if (path == null) {
       // Nothing was saved — say so instead of staying stuck on "recording".
       DebugLogService.instance.logError(
           LogCategory.error, 'Studio: recorder.stop returned no file');
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-          content: Text('Recording failed — nothing was saved. Try again.'),
-        ));
-        setState(() => _status = RecordingStatus.idle);
-      }
+      rootScaffoldMessengerKey.currentState?.showSnackBar(const SnackBar(
+        content: Text('Recording failed — nothing was saved. Try again.'),
+      ));
+      if (mounted) setState(() => _status = RecordingStatus.idle);
       return;
     }
 
-    if (mounted) {
-      // Re-recording reuses the same filename — drop any stale loudness gain.
-      AudioLevelService.instance.invalidate(path);
-      final line = _myLines[_currentLineIdx];
-      final recording = Recording(
-        id: const Uuid().v4(),
-        scriptLineId: line.id,
-        character: _character!,
-        localPath: path,
-        durationMs: _recordingDuration.inMilliseconds,
-        recordedAt: DateTime.now(),
-      );
-      ref.read(recordingsProvider.notifier).add(recording);
-
-      // Upload to cloud via sync queue
-      final production = ref.read(currentProductionProvider);
-      if (production != null) {
-        SyncQueue.instance.enqueue(
-          productionId: production.id,
-          characterName: _character!,
-          lineId: line.id,
-          localPath: path,
-          durationMs: _recordingDuration.inMilliseconds,
-          recordedAt: recording.recordedAt,
-        );
-
-        // STT adaptation: recording + transcript as training data
-        SttAdaptationService.instance.addSample(
-          productionId: production.id,
-          actorId: _character!,
-          audioPath: path,
-          transcript: line.text,
-          durationMs: _recordingDuration.inMilliseconds,
-        );
-      }
-
-      setState(() => _status = RecordingStatus.recorded);
+    // Registering the take is NOT conditional on the screen still being
+    // mounted: stopping and immediately navigating away used to leave the
+    // audio on disk, unregistered and never queued — castmates never heard it
+    // and nothing was logged. Only the setState calls need the guard.
+    if (character == null || notifier == null) {
+      DebugLogService.instance.logError(LogCategory.error,
+          'Studio: no character selected — take at $path not registered');
+      rootScaffoldMessengerKey.currentState?.showSnackBar(const SnackBar(
+        content: Text("Couldn't save the recording — no character selected."),
+      ));
+      if (mounted) setState(() => _status = RecordingStatus.idle);
+      return;
     }
+
+    try {
+      await _registerTake(
+        path: path,
+        line: line,
+        character: character,
+        notifier: notifier,
+        productionId: productionId,
+        durationMs: durationMs,
+      );
+    } catch (e) {
+      DebugLogService.instance.logError(
+          LogCategory.error, 'Studio: saving the take failed for ${line.id}', e);
+      // The app-wide messenger, not this screen's: the failure has to be seen
+      // even when the user has already navigated away.
+      rootScaffoldMessengerKey.currentState?.showSnackBar(SnackBar(
+        content: Text("Couldn't save that take: $e"),
+        duration: const Duration(seconds: 6),
+      ));
+      if (mounted) setState(() => _status = RecordingStatus.idle);
+      return;
+    }
+
+    if (mounted) setState(() => _status = RecordingStatus.recorded);
   }
 
   Future<void> _playRecording() async {

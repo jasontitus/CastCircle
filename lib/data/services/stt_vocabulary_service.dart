@@ -1,6 +1,14 @@
-import 'package:flutter/foundation.dart';
+import 'package:flutter/foundation.dart'; // also re-exports Int32List
 
 import '../models/script_models.dart';
+
+// Hoisted out of the correction hot path: `RegExp(...)` compiles the pattern
+// on every construction, and these ran once per word (sometimes once per
+// vocabulary candidate) on every partial STT result.
+final _wsRe = RegExp(r'\s+');
+final _nonWordRe = RegExp(r'[^\w]');
+final _nonWordSpaceRe = RegExp(r'[^\w\s]');
+final _nonWordSpaceApostropheRe = RegExp("[^\\w\\s']");
 
 /// Vocabulary-aware post-processing for STT results.
 ///
@@ -25,6 +33,15 @@ class SttVocabularyService {
   // Per-actor correction patterns: productionId:actorId -> {wrong: right}
   final Map<String, Map<String, String>> _actorCorrections = {};
 
+  // Compiled search patterns for the learned corrections above, keyed by the
+  // misrecognized word.
+  final Map<String, RegExp> _correctionPatterns = {};
+
+  // The expected line text is identical for every partial result of a line,
+  // so its word set is tokenized once per line instead of once per result.
+  String? _expectedCacheKey;
+  Set<String> _expectedCacheWords = const {};
+
   // ── Vocabulary Building ──────────────────────────────
 
   /// Build vocabulary from a parsed script. Call this when a script is loaded.
@@ -36,7 +53,7 @@ class SttVocabularyService {
       if (line.character.isNotEmpty) {
         vocab.characterNames.add(line.character);
         // Split multi-word names
-        for (final part in line.character.split(RegExp(r'\s+'))) {
+        for (final part in line.character.split(_wsRe)) {
           if (part.length > 2) vocab.importantWords.add(part.toLowerCase());
         }
       }
@@ -52,9 +69,9 @@ class SttVocabularyService {
       }
       // Also extract words preserving apostrophes for hints
       final rawWords = line.text
-          .replaceAll(RegExp("[^\\w\\s']"), '')
+          .replaceAll(_nonWordSpaceApostropheRe, '')
           .toLowerCase()
-          .split(RegExp(r'\s+'))
+          .split(_wsRe)
           .where((w) => w.isNotEmpty);
       for (final w in rawWords) {
         if (w.contains("'")) {
@@ -138,7 +155,10 @@ class SttVocabularyService {
       if (corrections != null) {
         for (final entry in corrections.entries) {
           result = result.replaceAll(
-            RegExp(RegExp.escape(entry.key), caseSensitive: false),
+            // Cached: compiling the pattern per learned correction per
+            // partial result showed up in the rehearsal profile.
+            _correctionPatterns[entry.key] ??=
+                RegExp(RegExp.escape(entry.key), caseSensitive: false),
             entry.value,
           );
         }
@@ -148,7 +168,17 @@ class SttVocabularyService {
     // 2. Apply vocabulary-based word corrections
     final vocab = _vocabularies[productionId];
     if (vocab != null) {
-      result = _correctWithVocabulary(result, vocab);
+      result = _correctWithVocabulary(
+        result,
+        vocab,
+        // Words the expected line already contains verbatim are skipped: the
+        // whole-script scan could only swap them for a *different* script
+        // word, and step 3 would align them straight back. Skipping them
+        // keeps the result identical while removing nearly all of the
+        // O(words × vocabulary) work on a line the actor is reading right.
+        resolvedWords:
+            expectedText == null ? null : _expectedWordSet(expectedText),
+      );
     }
 
     // 3. If we know the expected line, do targeted correction
@@ -180,7 +210,7 @@ class SttVocabularyService {
         final wrong = recognizedWords[i];
         final right = expectedWords[i];
         // Only learn if the wrong version is close enough (likely same word)
-        if (_editDistance(wrong, right) <= 3) {
+        if (_editDistanceAtMost(wrong, right, 3) <= 3) {
           _actorCorrections[key]![wrong] = right;
         }
       }
@@ -219,42 +249,46 @@ class SttVocabularyService {
 
   // ── Internal ─────────────────────────────────────────
 
+  /// The set of words the expected line already contains, cached per line.
+  Set<String> _expectedWordSet(String expectedText) {
+    if (_expectedCacheKey == expectedText) return _expectedCacheWords;
+    _expectedCacheKey = expectedText;
+    _expectedCacheWords = _tokenize(expectedText).toSet();
+    return _expectedCacheWords;
+  }
+
   /// Correct words using production vocabulary (fuzzy match).
-  String _correctWithVocabulary(String text, _ProductionVocabulary vocab) {
-    final words = text.split(RegExp(r'\s+'));
+  ///
+  /// [resolvedWords] — words the caller already accounts for (the expected
+  /// line); they keep their recognized spelling and skip the scan entirely.
+  String _correctWithVocabulary(
+    String text,
+    _ProductionVocabulary vocab, {
+    Set<String>? resolvedWords,
+  }) {
+    final words = text.split(_wsRe);
     final corrected = <String>[];
 
     for (final word in words) {
-      final lower = word.toLowerCase().replaceAll(RegExp(r'[^\w]'), '');
-      if (lower.isEmpty) {
+      final lower = word.toLowerCase().replaceAll(_nonWordRe, '');
+      if (lower.isEmpty || (resolvedWords?.contains(lower) ?? false)) {
         corrected.add(word);
         continue;
       }
 
-      // Check if this word is close to an important vocabulary word
+      // Memoized per production: partial results repeat the same prefix
+      // words several times a second, so each distinct word pays for the
+      // vocabulary scan once instead of once per result.
       String? bestMatch;
-      int bestDistance = 3; // max edit distance to consider
-
-      for (final vocabWord in vocab.importantWords) {
-        final dist = _editDistance(lower, vocabWord);
-        if (dist > 0 && dist < bestDistance) {
-          bestDistance = dist;
-          bestMatch = vocabWord;
+      if (vocab.correctionCache.containsKey(lower)) {
+        bestMatch = vocab.correctionCache[lower];
+      } else {
+        bestMatch = _bestVocabularyMatch(lower, vocab);
+        // Keyed by recognized words, so bound it against a long session.
+        if (vocab.correctionCache.length >= _correctionCacheLimit) {
+          vocab.correctionCache.clear();
         }
-      }
-
-      // Also check character names (case-preserved)
-      for (final name in vocab.characterNames) {
-        final nameLower = name.toLowerCase();
-        for (final namePart in nameLower.split(RegExp(r'\s+'))) {
-          final dist = _editDistance(lower, namePart);
-          if (dist > 0 && dist < bestDistance) {
-            bestDistance = dist;
-            // Preserve original casing from character name
-            final nameIdx = nameLower.indexOf(namePart);
-            bestMatch = name.substring(nameIdx, nameIdx + namePart.length);
-          }
-        }
+        vocab.correctionCache[lower] = bestMatch;
       }
 
       corrected.add(bestMatch ?? word);
@@ -263,15 +297,60 @@ class SttVocabularyService {
     return corrected.join(' ');
   }
 
+  /// Closest vocabulary word to [lower] within edit distance 3 (exclusive),
+  /// or null. Character names win ties only if strictly closer, and the
+  /// first candidate at a given distance wins — same as scanning naively.
+  static String? _bestVocabularyMatch(
+      String lower, _ProductionVocabulary vocab) {
+    String? bestMatch;
+    var bestDistance = 3; // max edit distance to consider
+
+    for (final vocabWord in vocab.scanWords) {
+      // Edit distance is never less than the length difference, so a
+      // candidate this far off can't beat bestDistance — skip the DP.
+      // Removes ~90% of the distance computations on a real script.
+      if ((vocabWord.length - lower.length).abs() >= bestDistance) continue;
+      final dist = _editDistanceAtMost(lower, vocabWord, bestDistance - 1);
+      if (dist > 0 && dist < bestDistance) {
+        bestDistance = dist;
+        bestMatch = vocabWord;
+        // Distance 0 is ignored (identical word), so 1 is unbeatable.
+        if (bestDistance == 1) return bestMatch;
+      }
+    }
+
+    // Also check character names (case-preserved)
+    for (final part in vocab.nameParts) {
+      if ((part.lower.length - lower.length).abs() >= bestDistance) continue;
+      final dist = _editDistanceAtMost(lower, part.lower, bestDistance - 1);
+      if (dist > 0 && dist < bestDistance) {
+        bestDistance = dist;
+        bestMatch = part.cased;
+        if (bestDistance == 1) return bestMatch;
+      }
+    }
+
+    return bestMatch;
+  }
+
   /// Correct recognized text against expected text using LCS word alignment.
   ///
   /// Uses dynamic programming to align recognized words to expected words,
   /// then replaces near-matches with the expected word. Works regardless
   /// of whether word counts match.
   String _correctAgainstExpected(String recognized, String expected) {
-    final recWords = recognized.split(RegExp(r'\s+'));
-    final expWords = expected.split(RegExp(r'\s+'));
+    final recWords = recognized.split(_wsRe);
+    final expWords = expected.split(_wsRe);
     if (recWords.isEmpty || expWords.isEmpty) return recognized;
+
+    // Normalize once per word instead of once per DP cell — this used to run
+    // two lowercase+regex passes for every (recognized × expected) pair.
+    final recNorm = [
+      for (final w in recWords) w.toLowerCase().replaceAll(_nonWordRe, '')
+    ];
+    final expNorm = [
+      for (final w in expWords) w.toLowerCase().replaceAll(_nonWordRe, '')
+    ];
 
     // Build LCS alignment matrix
     final m = recWords.length;
@@ -280,9 +359,7 @@ class SttVocabularyService {
 
     for (var i = 1; i <= m; i++) {
       for (var j = 1; j <= n; j++) {
-        final recLower = recWords[i - 1].toLowerCase().replaceAll(RegExp(r'[^\w]'), '');
-        final expLower = expWords[j - 1].toLowerCase().replaceAll(RegExp(r'[^\w]'), '');
-        if (_editDistance(recLower, expLower) <= 2) {
+        if (_editDistanceAtMost(recNorm[i - 1], expNorm[j - 1], 2) <= 2) {
           dp[i][j] = dp[i - 1][j - 1] + 1;
         } else {
           dp[i][j] = dp[i - 1][j] > dp[i][j - 1]
@@ -296,9 +373,9 @@ class SttVocabularyService {
     final corrected = List<String>.from(recWords);
     var i = m, j = n;
     while (i > 0 && j > 0) {
-      final recLower = recWords[i - 1].toLowerCase().replaceAll(RegExp(r'[^\w]'), '');
-      final expLower = expWords[j - 1].toLowerCase().replaceAll(RegExp(r'[^\w]'), '');
-      if (_editDistance(recLower, expLower) <= 2) {
+      final recLower = recNorm[i - 1];
+      final expLower = expNorm[j - 1];
+      if (_editDistanceAtMost(recLower, expLower, 2) <= 2) {
         // Aligned pair — replace with expected word if close but not exact
         if (recLower != expLower) {
           corrected[i - 1] = expWords[j - 1];
@@ -315,32 +392,68 @@ class SttVocabularyService {
     return corrected.join(' ');
   }
 
-  /// Levenshtein edit distance.
-  static int _editDistance(String a, String b) {
+  /// Levenshtein edit distance, capped at [maxDist].
+  ///
+  /// Returns the exact distance when it is <= [maxDist], otherwise
+  /// [maxDist] + 1 — every caller only compares against a small threshold,
+  /// so the exact value beyond the cap is never needed.
+  ///
+  /// Two reusable rows rather than a full matrix, plus a per-row bail once
+  /// the whole row exceeds the cap. The previous version allocated a list
+  /// literal for *every* DP cell, which the vocabulary scan ran millions of
+  /// times per partial STT result.
+  static int _editDistanceAtMost(String a, String b, int maxDist) {
     if (a == b) return 0;
-    if (a.isEmpty) return b.length;
-    if (b.isEmpty) return a.length;
+    if (maxDist <= 0) return 1;
 
-    final matrix = List.generate(
-      a.length + 1,
-      (_) => List.filled(b.length + 1, 0),
-    );
+    final la = a.length;
+    final lb = b.length;
+    if (la == 0) return lb <= maxDist ? lb : maxDist + 1;
+    if (lb == 0) return la <= maxDist ? la : maxDist + 1;
+    if ((la - lb).abs() > maxDist) return maxDist + 1;
 
-    for (var i = 0; i <= a.length; i++) matrix[i][0] = i;
-    for (var j = 0; j <= b.length; j++) matrix[0][j] = j;
-
-    for (var i = 1; i <= a.length; i++) {
-      for (var j = 1; j <= b.length; j++) {
-        final cost = a[i - 1] == b[j - 1] ? 0 : 1;
-        matrix[i][j] = [
-          matrix[i - 1][j] + 1,
-          matrix[i][j - 1] + 1,
-          matrix[i - 1][j - 1] + cost,
-        ].reduce((a, b) => a < b ? a : b);
-      }
+    _ensureDpCapacity(lb + 1);
+    var prev = _dpPrev;
+    var curr = _dpCurr;
+    for (var j = 0; j <= lb; j++) {
+      prev[j] = j;
     }
 
-    return matrix[a.length][b.length];
+    for (var i = 1; i <= la; i++) {
+      curr[0] = i;
+      var rowMin = i;
+      final ca = a.codeUnitAt(i - 1);
+      for (var j = 1; j <= lb; j++) {
+        var v = prev[j] + 1; // deletion
+        final ins = curr[j - 1] + 1;
+        if (ins < v) v = ins;
+        final sub = prev[j - 1] + (ca == b.codeUnitAt(j - 1) ? 0 : 1);
+        if (sub < v) v = sub;
+        curr[j] = v;
+        if (v < rowMin) rowMin = v;
+      }
+      // Distances only grow row to row, so nothing below the cap remains.
+      if (rowMin > maxDist) return maxDist + 1;
+      final swap = prev;
+      prev = curr;
+      curr = swap;
+    }
+
+    final dist = prev[lb];
+    return dist <= maxDist ? dist : maxDist + 1;
+  }
+
+  // Scratch rows for [_editDistanceAtMost]. The scan is synchronous and
+  // non-reentrant, so two buffers are shared across calls instead of
+  // allocating a pair per call.
+  static Int32List _dpPrev = Int32List(64);
+  static Int32List _dpCurr = Int32List(64);
+
+  static void _ensureDpCapacity(int length) {
+    if (_dpPrev.length < length) {
+      _dpPrev = Int32List(length);
+      _dpCurr = Int32List(length);
+    }
   }
 
   /// Match score — delegates to SttService.matchScore (LCS-based).
@@ -373,7 +486,9 @@ class SttVocabularyService {
       for (var j = 1; j <= n; j++) {
         final ew = expectedWords[i - 1];
         final sw = spokenWords[j - 1];
-        if (ew == sw || ((ew.length - sw.length).abs() <= 1 && _editDistance(ew, sw) <= 1)) {
+        if (ew == sw ||
+            ((ew.length - sw.length).abs() <= 1 &&
+                _editDistanceAtMost(ew, sw, 1) <= 1)) {
           dp[i][j] = dp[i - 1][j - 1] + 1;
         } else {
           dp[i][j] = dp[i - 1][j] > dp[i][j - 1]
@@ -389,13 +504,18 @@ class SttVocabularyService {
   List<String> _tokenize(String text) {
     return text
         .toLowerCase()
-        .replaceAll(RegExp(r'[^\w\s]'), '')
+        .replaceAll(_nonWordSpaceRe, '')
         .trim()
-        .split(RegExp(r'\s+'))
+        .split(_wsRe)
         .where((w) => w.isNotEmpty)
         .toList();
   }
 }
+
+/// Cap on memoized word corrections per production. The keys are recognized
+/// words, so a long session with a bad recognizer could otherwise grow it
+/// without bound.
+const _correctionCacheLimit = 4000;
 
 /// Internal vocabulary data for a production.
 class _ProductionVocabulary {
@@ -403,4 +523,40 @@ class _ProductionVocabulary {
   final Set<String> importantWords = {};
   final Map<String, int> wordFrequency = {};
   final Map<String, String> lineTexts = {}; // lineId -> text
+
+  /// Memoized `_bestVocabularyMatch` results: recognized word -> correction
+  /// (null means "leave it alone").
+  final Map<String, String?> correctionCache = {};
+
+  List<String>? _scanWords;
+  List<_NamePart>? _nameParts;
+
+  /// Flattened scan inputs, built on the first correction. `buildFromScript`
+  /// replaces the whole vocabulary object, so these can never go stale.
+  /// Both keep the sets' insertion order: ties in the scan go to the first
+  /// candidate seen, so the order is part of the correction behaviour.
+  List<String> get scanWords =>
+      _scanWords ??= importantWords.toList(growable: false);
+
+  List<_NamePart> get nameParts => _nameParts ??= _buildNameParts();
+
+  List<_NamePart> _buildNameParts() {
+    final parts = <_NamePart>[];
+    for (final name in characterNames) {
+      final nameLower = name.toLowerCase();
+      for (final part in nameLower.split(_wsRe)) {
+        // Preserve the original casing from the character name
+        final idx = nameLower.indexOf(part);
+        parts.add(_NamePart(part, name.substring(idx, idx + part.length)));
+      }
+    }
+    return parts;
+  }
+}
+
+/// One word of a character name: what to match against, and what to emit.
+class _NamePart {
+  const _NamePart(this.lower, this.cased);
+  final String lower;
+  final String cased;
 }

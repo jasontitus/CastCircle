@@ -309,15 +309,23 @@ class _OcrReviewScreenState extends State<OcrReviewScreen> {
       children: [
         _buildCountsBar(context),
         Expanded(
-          child: ListView(
-            padding: const EdgeInsets.all(16),
-            children: _buildListChildren(
+          // ListView.builder, not ListView(children:): each review card holds
+          // a TextField (one of the heaviest widgets), and a bad scan flags
+          // 100-300 lines. Building them all on every setState (save, remove,
+          // select) cost hundreds of ms per tap.
+          child: Builder(builder: (context) {
+            final children = _buildListChildren(
               context,
               reviewLines,
               notScriptLines,
               twoPane: false,
-            ),
-          ),
+            );
+            return ListView.builder(
+              padding: const EdgeInsets.all(16),
+              itemCount: children.length,
+              itemBuilder: (context, i) => children[i],
+            );
+          }),
         ),
       ],
     );
@@ -336,15 +344,19 @@ class _OcrReviewScreenState extends State<OcrReviewScreen> {
             children: [
               Expanded(
                 flex: 5,
-                child: ListView(
-                  padding: const EdgeInsets.all(16),
-                  children: _buildListChildren(
+                child: Builder(builder: (context) {
+                  final children = _buildListChildren(
                     context,
                     reviewLines,
                     notScriptLines,
                     twoPane: true,
-                  ),
-                ),
+                  );
+                  return ListView.builder(
+                    padding: const EdgeInsets.all(16),
+                    itemCount: children.length,
+                    itemBuilder: (context, i) => children[i],
+                  );
+                }),
               ),
               const VerticalDivider(width: 1),
               Expanded(

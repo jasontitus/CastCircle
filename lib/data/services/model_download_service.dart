@@ -1,10 +1,17 @@
+import 'dart:convert';
+import 'dart:ffi';
 import 'dart:io';
 
+// crypto ships with the Flutter/Firebase dependency set already; it is used
+// here only for the optional post-download SHA-256 check.
+// ignore: depend_on_referenced_packages
+import 'package:crypto/crypto.dart' as crypto;
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 
+import 'debug_log_service.dart';
 import 'tts_service.dart';
 
 /// Represents a downloadable on-device AI model file.
@@ -22,6 +29,17 @@ class AiModel {
   /// Subdirectory within the models dir (e.g. 'kokoro_mlx').
   final String subdir;
 
+  /// Exact expected size on disk. Set ONLY for artifacts pinned to an
+  /// immutable URL (our own release assets), where any other size means a
+  /// stale build or a partial download. Null when upstream can legitimately
+  /// change the bytes — then only the truncation floor applies.
+  final int? exactSizeBytes;
+
+  /// Lowercase hex SHA-256 of the downloaded file, verified after download
+  /// when present. Null means "unknown" — never a placeholder: a wrong hash
+  /// would reject every good download.
+  final String? sha256;
+
   const AiModel({
     required this.id,
     required this.name,
@@ -31,6 +49,8 @@ class AiModel {
     required this.downloadUrl,
     required this.filename,
     this.subdir = '',
+    this.exactSizeBytes,
+    this.sha256,
   });
 }
 
@@ -96,6 +116,9 @@ class ModelDownloadService {
       // filename the Swift loader expects.
       sizeLabel: '~164 MB',
       sizeBytes: 163588519,
+      // Pinned release tag — the bytes never change, so the size is exact.
+      exactSizeBytes: 163588519,
+      // TODO(models): publish + pin the SHA-256 of this release asset.
       downloadUrl:
           'https://github.com/jasontitus/CastCircle/releases/download/kokoro-82m-bf16-v1/kokoro-v1_0-bf16.safetensors',
       filename: 'kokoro-v1_0.safetensors',
@@ -106,6 +129,9 @@ class ModelDownloadService {
       name: 'Kokoro Voice Styles',
       description: 'Voice embeddings for 28+ distinct character voices',
       sizeLabel: '~14 MB',
+      // NOTE: this is a third party's MUTABLE main branch — the bytes can
+      // change under us, so no exact size and no pinned hash are possible
+      // until it is mirrored to an immutable URL we control.
       sizeBytes: 14 * 1024 * 1024,
       downloadUrl:
           'https://github.com/mlalma/KokoroTestApp/raw/main/Resources/voices.npz',
@@ -117,6 +143,8 @@ class ModelDownloadService {
       name: 'Parakeet STT Model',
       description: 'MLX neural speech-to-text (0.6B params)',
       sizeLabel: '~2.5 GB',
+      // HuggingFace `main` — a repo update changes the bytes, so size is a
+      // truncation floor only (see [fileProblem]).
       sizeBytes: 2508288736,
       downloadUrl:
           'https://huggingface.co/mlx-community/parakeet-tdt-0.6b-v3/resolve/main/model.safetensors',
@@ -138,6 +166,7 @@ class ModelDownloadService {
 
   final Map<String, ModelDownloadState> _states = {};
   final List<VoidCallback> _listeners = [];
+  final _dlog = DebugLogService.instance;
 
   /// Current state for a model.
   ModelDownloadState getState(String modelId) {
@@ -175,13 +204,36 @@ class ModelDownloadService {
           final args = call.arguments as Map;
           final modelId = args['modelId'] as String;
           final size = args['size'] as int;
+          debugPrint(
+              'ModelDownload: $modelId complete (${(size / 1024 / 1024).toStringAsFixed(1)} MB)');
+
+          // "The transfer finished" is not "the file is good": verify what
+          // landed on disk before calling it downloaded, or a truncated /
+          // wrong-revision file reads as installed while the feature it powers
+          // silently falls back (TTS → system voices).
+          final model =
+              availableModels.where((m) => m.id == modelId).firstOrNull;
+          final problem =
+              model == null ? null : await _verifyDownload(model);
+          if (problem != null) {
+            _states[modelId] = ModelDownloadState(
+              status: ModelStatus.error,
+              errorMessage: 'Downloaded file failed verification ($problem) '
+                  '— it was discarded, please download again',
+            );
+            _notify();
+            _dlog.log(
+                LogCategory.error,
+                'ModelDownload: $modelId FAILED verification — $problem '
+                '(file discarded)');
+            break;
+          }
+
           _states[modelId] = const ModelDownloadState(
             status: ModelStatus.downloaded,
             progress: 1.0,
           );
           _notify();
-          debugPrint(
-              'ModelDownload: $modelId complete (${(size / 1024 / 1024).toStringAsFixed(1)} MB)');
 
           // Auto-load Kokoro TTS engine once both model files are downloaded
           if (modelId == 'kokoro_model' || modelId == 'kokoro_voices') {
@@ -199,24 +251,68 @@ class ModelDownloadService {
           );
           _notify();
           debugPrint('ModelDownload: $modelId failed: $error');
+          _dlog.log(LogCategory.error, 'ModelDownload: $modelId failed: $error');
           break;
       }
     });
   }
 
+  /// Why the file on disk for [model] can't be used, or null when it's good.
+  ///
+  /// The single source of truth for "is this model installed". Existence-only
+  /// checks and the size check in [isKokoroReady] used to disagree: Settings
+  /// showed a green "Downloaded" tile (whose only action was Delete) for a
+  /// truncated or stale file while TTS quietly fell back to system voices.
+  static String? fileProblem(AiModel model, File file) {
+    if (!file.existsSync()) return 'file missing';
+    final actual = file.lengthSync();
+
+    // Exact match where the URL is immutable — catches BOTH a partial download
+    // and a stale build (the old 327 MB fp32 Kokoro weights, which survive app
+    // updates in Documents and would otherwise be kept forever).
+    final exact = model.exactSizeBytes;
+    if (exact != null && actual != exact) {
+      return 'size $actual B != expected $exact B';
+    }
+
+    // Mutable upstreams only get a truncation floor: their real size drifts,
+    // and a floor that trips on a legitimate 5% shrink would re-download the
+    // same file forever. Half the expected size still catches the failures
+    // that actually happen — empty files, aborted transfers, HTML error pages.
+    if (exact == null && model.sizeBytes > 0 && actual < model.sizeBytes ~/ 2) {
+      return 'size $actual B is far below the expected ${model.sizeLabel}';
+    }
+    return null;
+  }
+
   /// Check which models are already downloaded on disk.
   Future<void> refreshDownloadedStatus() async {
     for (final model in availableModels) {
-      final path = await _filePath(model);
-      if (File(path).existsSync()) {
+      // Never stomp an in-flight download's progress state.
+      if (_states[model.id]?.status == ModelStatus.downloading) continue;
+
+      final file = File(await _filePath(model));
+      final problem = fileProblem(model, file);
+      if (problem == null) {
         _states[model.id] = const ModelDownloadState(
           status: ModelStatus.downloaded,
           progress: 1.0,
         );
+      } else if (file.existsSync()) {
+        // Present but unusable — say so loudly and offer the download again
+        // (the error tile shows the message and a Download button).
+        _dlog.log(LogCategory.error,
+            'ModelDownload: ${model.id} present but unusable — $problem');
+        _states[model.id] = ModelDownloadState(
+          status: ModelStatus.error,
+          errorMessage:
+              'Installed file is incomplete or outdated ($problem) — '
+              'download again',
+        );
       } else {
         // Reset error/stuck states on refresh — allow retry
         final current = _states[model.id];
-        if (current != null && current.status != ModelStatus.downloading) {
+        if (current != null) {
           _states[model.id] = const ModelDownloadState();
         }
       }
@@ -224,6 +320,38 @@ class ModelDownloadService {
     // Clean up any leftover .tmp files from failed downloads
     await _cleanupTmpFiles();
     _notify();
+  }
+
+  /// Post-download integrity check. Size first (cheap), then SHA-256 when the
+  /// descriptor pins one. A file that fails is DELETED — leaving it behind is
+  /// what produced the "installed but broken, only Delete offered" dead end.
+  Future<String?> _verifyDownload(AiModel model) async {
+    final file = File(await _filePath(model));
+    var problem = fileProblem(model, file);
+
+    final expected = model.sha256;
+    if (problem == null && expected != null) {
+      try {
+        // Streamed — these files run to gigabytes.
+        final digest = await crypto.sha256.bind(file.openRead()).first;
+        final actual = digest.toString().toLowerCase();
+        if (actual != expected.toLowerCase()) {
+          problem = 'sha256 $actual != expected ${expected.toLowerCase()}';
+        }
+      } catch (e) {
+        problem = 'sha256 could not be computed: $e';
+      }
+    }
+
+    if (problem != null && file.existsSync()) {
+      try {
+        await file.delete();
+      } catch (e) {
+        _dlog.log(LogCategory.error,
+            'ModelDownload: could not delete the bad ${model.id} file: $e');
+      }
+    }
+    return problem;
   }
 
   /// Auto-load Kokoro TTS after both model files finish downloading.
@@ -234,36 +362,27 @@ class ModelDownloadService {
     }
   }
 
-  /// Whether all Kokoro files are downloaded.
-  Future<bool> isKokoroReady() async {
-    for (final model in availableModels) {
-      if (model.subdir == 'kokoro_mlx') {
-        final path = await _filePath(model);
-        final file = File(path);
-        if (!file.existsSync()) return false;
-        // The model weights have an EXACT expected size, so a mismatch means a
-        // stale build (the old 327 MB fp32) or a partial download. Treat it as
-        // not-ready so it re-downloads the smaller bf16 weights — this migrates
-        // existing installs off fp32 (Documents survives app updates, so they'd
-        // otherwise keep fp32 forever). Voices use an approximate size, so only
-        // size-check the model file.
-        if (model.id == 'kokoro_model' && file.lengthSync() != model.sizeBytes) {
-          debugPrint('ModelDownload: kokoro weights size '
-              '${file.lengthSync()} != ${model.sizeBytes} — re-downloading bf16');
-          return false;
-        }
-      }
-    }
-    return true;
-  }
+  /// Whether all Kokoro files are downloaded AND usable.
+  Future<bool> isKokoroReady() => _groupReady('kokoro_mlx', 'Kokoro');
 
-  /// Whether all Parakeet STT files are downloaded.
-  Future<bool> isParakeetReady() async {
+  /// Whether all Parakeet STT files are downloaded AND usable.
+  Future<bool> isParakeetReady() => _groupReady('parakeet_stt', 'Parakeet');
+
+  /// Shared readiness check over every model in [subdir] — same [fileProblem]
+  /// the Settings tiles use, so the two can never disagree.
+  Future<bool> _groupReady(String subdir, String label) async {
     for (final model in availableModels) {
-      if (model.subdir == 'parakeet_stt') {
-        final path = await _filePath(model);
-        if (!File(path).existsSync()) return false;
+      if (model.subdir != subdir) continue;
+      final file = File(await _filePath(model));
+      final problem = fileProblem(model, file);
+      if (problem == null) continue;
+      // A missing file is unremarkable (not downloaded yet); a file that is
+      // THERE but wrong is a surprise the user must be able to see in the log.
+      if (file.existsSync()) {
+        _dlog.log(LogCategory.error,
+            'ModelDownload: $label not ready — ${model.id}: $problem');
       }
+      return false;
     }
     return true;
   }
@@ -304,6 +423,31 @@ class ModelDownloadService {
 
       // Create destination directory
       await Directory(p.dirname(outPath)).create(recursive: true);
+
+      // Preflight free space. A 2.5 GB model that runs the volume dry fails at
+      // 99% — after burning the user's data — and can take their photos/other
+      // apps' storage down with it on the way.
+      final free = _freeDiskSpaceBytes(p.dirname(outPath));
+      final needed = model.sizeBytes + _diskHeadroomBytes;
+      if (free != null && free < needed) {
+        final message =
+            'Not enough free space for ${model.name}: needs ${_mb(needed)}, '
+            '${_mb(free)} available. Free up some space and try again.';
+        _states[model.id] = ModelDownloadState(
+          status: ModelStatus.error,
+          errorMessage: message,
+        );
+        _notify();
+        _dlog.log(LogCategory.error, 'ModelDownload: $message');
+        return;
+      }
+      if (free == null) {
+        // Not a failure — this platform gives us no way to ask (see
+        // [_freeDiskSpaceBytes]). Recorded so a later out-of-space download
+        // failure isn't a mystery.
+        debugPrint('ModelDownload: free space unknown on this platform — '
+            'starting ${model.id} without a space preflight');
+      }
 
       // Start native background download
       await _channel.invokeMethod('startDownload', {
@@ -375,6 +519,9 @@ class ModelDownloadService {
     return Directory(p.join(appDir.path, 'models', 'kokoro_mlx'));
   }
 
+  static String _mb(int bytes) =>
+      '${(bytes / 1024 / 1024).toStringAsFixed(0)} MB';
+
   /// Remove leftover .tmp files from failed downloads.
   Future<void> _cleanupTmpFiles() async {
     for (final model in availableModels) {
@@ -389,5 +536,68 @@ class ModelDownloadService {
         }
       }
     }
+  }
+}
+
+// ── Free disk space ──────────────────────────────────────
+//
+// Slack left on top of the model size: the volume must not be driven to
+// literally zero, and the native downloader stages the transfer before moving
+// it into place.
+const _diskHeadroomBytes = 100 * 1024 * 1024;
+
+typedef _StatvfsNative = Int32 Function(Pointer<Uint8>, Pointer<Uint8>);
+typedef _StatvfsDart = int Function(Pointer<Uint8>, Pointer<Uint8>);
+typedef _MallocNative = Pointer<Uint8> Function(IntPtr);
+typedef _MallocDart = Pointer<Uint8> Function(int);
+typedef _FreeNative = Void Function(Pointer<Uint8>);
+typedef _FreeDart = void Function(Pointer<Uint8>);
+
+/// Bytes available on the volume holding [path], or null when this platform
+/// can't be asked.
+///
+/// Dart has no free-space API and the download plugin exposes no channel for
+/// it, so this calls POSIX `statvfs(3)` out of libSystem. Darwin only: the
+/// field offsets below are the Darwin layout (`fsblkcnt_t` is 32-bit there,
+/// 64-bit on Linux/bionic), and iOS + macOS are the only platforms these MLX
+/// models download to. Verified against `df -k` on macOS. Anywhere else — or
+/// on any error — this returns null and the caller skips the preflight rather
+/// than acting on a number it can't trust.
+int? _freeDiskSpaceBytes(String path) {
+  if (!Platform.isIOS && !Platform.isMacOS) return null;
+  try {
+    final lib = DynamicLibrary.process();
+    final statvfs = lib.lookupFunction<_StatvfsNative, _StatvfsDart>('statvfs');
+    final malloc = lib.lookupFunction<_MallocNative, _MallocDart>('malloc');
+    final free = lib.lookupFunction<_FreeNative, _FreeDart>('free');
+
+    final pathBytes = utf8.encode(path);
+    final cPath = malloc(pathBytes.length + 1);
+    const bufBytes = 128; // struct statvfs is 64 B on Darwin — room to spare
+    final buf = malloc(bufBytes);
+    if (cPath.address == 0 || buf.address == 0) return null;
+    try {
+      cPath.asTypedList(pathBytes.length + 1)
+        ..setAll(0, pathBytes)
+        ..[pathBytes.length] = 0;
+      buf.asTypedList(bufBytes).fillRange(0, bufBytes, 0);
+      if (statvfs(cPath, buf) != 0) return null;
+
+      final asU64 = buf.cast<Uint64>();
+      final asU32 = buf.cast<Uint32>();
+      final frsize = asU64[1]; // offset 8:  unsigned long f_frsize
+      final blocks = asU32[4]; // offset 16: fsblkcnt_t    f_blocks
+      final bavail = asU32[6]; // offset 24: fsblkcnt_t    f_bavail
+      // Sanity-check the layout rather than trust it: garbage here would block
+      // a legitimate download with a bogus "not enough space".
+      if (frsize <= 0 || blocks <= 0 || bavail > blocks) return null;
+      return bavail * frsize;
+    } finally {
+      free(cPath);
+      free(buf);
+    }
+  } catch (e) {
+    debugPrint('ModelDownload: free-space query failed: $e');
+    return null;
   }
 }

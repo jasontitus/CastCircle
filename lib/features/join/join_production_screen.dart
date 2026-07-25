@@ -70,12 +70,12 @@ class _JoinProductionScreenState extends ConsumerState<JoinProductionScreen> {
     final supa = SupabaseService.instance;
     final isSignedIn = supa.isSignedIn;
 
-    return Scaffold(
+    final scaffold = Scaffold(
       appBar: AppBar(
         title: const Text('Join a Production'),
         leading: IconButton(
           icon: const Icon(Icons.arrow_back),
-          onPressed: () => context.pop(),
+          onPressed: _loading ? null : () => context.pop(),
         ),
       ),
       body: SingleChildScrollView(
@@ -292,6 +292,22 @@ class _JoinProductionScreenState extends ConsumerState<JoinProductionScreen> {
         ),
       ),
     );
+
+    // Leaving mid-request would tear this State down while a lookup/join is
+    // still in flight; a half-finished join can also create the cloud cast row
+    // without ever saving the production locally. Hold the screen (and the
+    // swipe/system back it covers) until the request settles.
+    return PopScope(
+      canPop: !_loading,
+      onPopInvokedWithResult: (didPop, _) {
+        if (didPop || !_loading) return;
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content: Text('Still contacting the server — one moment.'),
+          duration: Duration(seconds: 2),
+        ));
+      },
+      child: scaffold,
+    );
   }
 
   List<Widget> _buildCharacterOptions() {
@@ -357,6 +373,7 @@ class _JoinProductionScreenState extends ConsumerState<JoinProductionScreen> {
       }
 
       final production = await supa.lookupByJoinCode(code);
+      if (!mounted) return;
 
       if (production == null) {
         setState(() {
@@ -372,6 +389,7 @@ class _JoinProductionScreenState extends ConsumerState<JoinProductionScreen> {
       // Fetch cast members to show available characters
       final productionId = production['id'] as String;
       final cast = await supa.fetchCastMembers(productionId);
+      if (!mounted) return;
 
       // Auto-select the character that was pre-filled from deep link
       String? autoSelected;
@@ -393,11 +411,13 @@ class _JoinProductionScreenState extends ConsumerState<JoinProductionScreen> {
         _loading = false;
       });
     } catch (e, stack) {
+      DebugLogService.instance
+          .logError(LogCategory.network, 'Join lookup failed', e, stack);
+      if (!mounted) return;
       setState(() {
         _error = 'Lookup failed: $e';
         _loading = false;
       });
-      debugPrint('Join lookup error: $e\n$stack');
     }
   }
 
@@ -485,12 +505,25 @@ class _JoinProductionScreenState extends ConsumerState<JoinProductionScreen> {
         locale: _foundProduction!['locale'] as String? ?? 'en-US',
       );
 
+      // The cast row now exists in the cloud. If the screen went away during
+      // those calls `ref` is dead, so stop here rather than throwing — the next
+      // sync pulls the production down.
+      if (!mounted) {
+        dlog.log(LogCategory.network,
+            'Join: screen closed mid-join — cloud row created, local save '
+            'deferred to the next sync');
+        return;
+      }
+
       await ref.read(productionsProvider.notifier).add(production);
+      if (!mounted) return;
       await ref.read(castMembersProvider.notifier).save(localMember);
+      if (!mounted) return;
       AnalyticsService.instance.logProductionJoined();
 
       // Sync script from cloud
       final cloudLines = await fetchCloudScriptLines(productionId);
+      if (!mounted) return;
       if (cloudLines != null && cloudLines.isNotEmpty) {
         dlog.log(LogCategory.network,
             'Join: pulled ${cloudLines.length} script lines from cloud');
@@ -501,6 +534,7 @@ class _JoinProductionScreenState extends ConsumerState<JoinProductionScreen> {
         // would push it straight back (a delete+reinsert the joiner isn't even
         // allowed to do, racing the organizer if RLS ever permits it).
         await persistScriptLocally(ref, productionId, script);
+        if (!mounted) return;
       } else {
         dlog.log(LogCategory.network,
             'Join: no cloud script yet — director may not have imported one');
@@ -516,12 +550,15 @@ class _JoinProductionScreenState extends ConsumerState<JoinProductionScreen> {
       dlog.log(LogCategory.network,
           'Join: success — opening production "${production.title}"');
 
-      // Navigate to production hub
+      // Navigate to production hub. Clear _loading first so the screen isn't
+      // still holding the back gesture as the router swaps it out.
       if (mounted) {
+        setState(() => _loading = false);
         context.go('/production');
       }
     } catch (e, stack) {
       dlog.logError(LogCategory.network, 'Join FAILED', e, stack);
+      if (!mounted) return;
       setState(() {
         _error = 'Failed to join: $e';
         _loading = false;
