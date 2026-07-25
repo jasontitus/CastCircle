@@ -4,7 +4,10 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_riverpod/legacy.dart';
 import 'package:go_router/go_router.dart';
 
+import 'package:supabase_flutter/supabase_flutter.dart' show OtpType;
+
 import '../../app.dart';
+import '../../data/services/debug_log_service.dart';
 import '../../data/services/supabase_service.dart';
 import '../../main.dart';
 import '../../providers/production_providers.dart';
@@ -27,6 +30,12 @@ class _AuthScreenState extends ConsumerState<AuthScreen> {
   bool _isSignUp = false;
   bool _isLoading = false;
   String? _error;
+
+  /// Set once a signup succeeds but returns no session (email confirmation
+  /// required), or a sign-in is rejected for an unconfirmed address. Drives
+  /// the "check your inbox" panel instead of dropping the user into the app
+  /// without a session.
+  String? _awaitingConfirmationFor;
 
   @override
   void dispose() {
@@ -157,6 +166,78 @@ class _AuthScreenState extends ConsumerState<AuthScreen> {
                       ],
                     ),
                   ),
+                  // Signup succeeded but the account needs email confirmation
+                  // before it has a session — say so instead of silently
+                  // doing nothing when the button is tapped.
+                  if (_awaitingConfirmationFor != null) ...[
+                    const SizedBox(height: 16),
+                    Card(
+                      color: Theme.of(context).colorScheme.secondaryContainer,
+                      child: Padding(
+                        padding: const EdgeInsets.all(16),
+                        child: Column(
+                          children: [
+                            Icon(Icons.mark_email_unread_outlined,
+                                size: 36,
+                                color: Theme.of(context)
+                                    .colorScheme
+                                    .onSecondaryContainer),
+                            const SizedBox(height: 8),
+                            Text(
+                              'Confirm your email',
+                              style: Theme.of(context)
+                                  .textTheme
+                                  .titleMedium
+                                  ?.copyWith(
+                                    color: Theme.of(context)
+                                        .colorScheme
+                                        .onSecondaryContainer,
+                                    fontWeight: FontWeight.bold,
+                                  ),
+                            ),
+                            const SizedBox(height: 6),
+                            Text(
+                              'We sent a link to $_awaitingConfirmationFor. '
+                              'Tap it, then come back and sign in.',
+                              textAlign: TextAlign.center,
+                              style: Theme.of(context)
+                                  .textTheme
+                                  .bodySmall
+                                  ?.copyWith(
+                                    color: Theme.of(context)
+                                        .colorScheme
+                                        .onSecondaryContainer
+                                        .withValues(alpha: 0.85),
+                                  ),
+                            ),
+                            const SizedBox(height: 12),
+                            Wrap(
+                              alignment: WrapAlignment.center,
+                              spacing: 8,
+                              children: [
+                                TextButton.icon(
+                                  onPressed:
+                                      _isLoading ? null : _resendConfirmation,
+                                  icon: const Icon(Icons.refresh, size: 18),
+                                  label: const Text('Resend email'),
+                                ),
+                                TextButton(
+                                  onPressed: _isLoading
+                                      ? null
+                                      : () => setState(() {
+                                            _awaitingConfirmationFor = null;
+                                            _isSignUp = false;
+                                            _error = null;
+                                          }),
+                                  child: const Text('I confirmed — sign in'),
+                                ),
+                              ],
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ],
                   if (_error != null) ...[
                     const SizedBox(height: 12),
                     Text(
@@ -243,7 +324,20 @@ class _AuthScreenState extends ConsumerState<AuthScreen> {
 
     try {
       if (_isSignUp) {
-        await SupabaseService.instance.signUpWithEmail(email, password);
+        final res = await SupabaseService.instance.signUpWithEmail(email, password);
+        // With email confirmation enabled the server returns a user but NO
+        // session — the account isn't usable until the link is clicked. The
+        // old code navigated straight into the app, leaving the user
+        // "signed in" with no session and every cloud call failing.
+        if (res.session == null) {
+          if (mounted) {
+            setState(() {
+              _awaitingConfirmationFor = email;
+              _isLoading = false;
+            });
+          }
+          return;
+        }
       } else {
         await SupabaseService.instance.signInWithEmail(email, password);
       }
@@ -262,12 +356,55 @@ class _AuthScreenState extends ConsumerState<AuthScreen> {
       }
     } catch (e) {
       if (mounted) {
-        setState(() => _error = e.toString());
+        setState(() => _error = _friendlyAuthError(e, email));
       }
     } finally {
       if (mounted) {
         setState(() => _isLoading = false);
       }
+    }
+  }
+
+  /// Raw Supabase errors are unhelpful to actors ("AuthApiException(message:
+  /// Email not confirmed, statusCode: 400)"). Translate the ones users
+  /// actually hit.
+  String _friendlyAuthError(Object e, String email) {
+    final text = e.toString().toLowerCase();
+    if (text.contains('not confirmed')) {
+      _awaitingConfirmationFor = email;
+      return 'Confirm your email first — check your inbox for the link '
+          'we sent to $email.';
+    }
+    if (text.contains('invalid login credentials')) {
+      return 'Wrong email or password.';
+    }
+    if (text.contains('already registered') ||
+        text.contains('already been registered')) {
+      return 'That email already has an account — try signing in.';
+    }
+    return e.toString();
+  }
+
+  Future<void> _resendConfirmation() async {
+    final email = _awaitingConfirmationFor;
+    if (email == null) return;
+    setState(() => _isLoading = true);
+    try {
+      await SupabaseService.instance.client.auth
+          .resend(type: OtpType.signup, email: email);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Confirmation email re-sent to $email')),
+        );
+      }
+    } catch (e) {
+      DebugLogService.instance
+          .logError(LogCategory.network, 'Resend confirmation failed', e);
+      if (mounted) {
+        setState(() => _error = "Couldn't resend the email: $e");
+      }
+    } finally {
+      if (mounted) setState(() => _isLoading = false);
     }
   }
 
