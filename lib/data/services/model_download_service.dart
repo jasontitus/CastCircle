@@ -118,7 +118,9 @@ class ModelDownloadService {
       sizeBytes: 163588519,
       // Pinned release tag — the bytes never change, so the size is exact.
       exactSizeBytes: 163588519,
-      // TODO(models): publish + pin the SHA-256 of this release asset.
+      // Verified against the published release asset 2026-07-03.
+      sha256:
+          '733bc3015578aad992f87863f8e6f90dbe00040bd3207d925b9ed693fa09e7bb',
       downloadUrl:
           'https://github.com/jasontitus/CastCircle/releases/download/kokoro-82m-bf16-v1/kokoro-v1_0-bf16.safetensors',
       filename: 'kokoro-v1_0.safetensors',
@@ -129,12 +131,19 @@ class ModelDownloadService {
       name: 'Kokoro Voice Styles',
       description: 'Voice embeddings for 28+ distinct character voices',
       sizeLabel: '~14 MB',
-      // NOTE: this is a third party's MUTABLE main branch — the bytes can
-      // change under us, so no exact size and no pinned hash are possible
-      // until it is mirrored to an immutable URL we control.
-      sizeBytes: 14 * 1024 * 1024,
+      // Mirrored 2026-07-03 to our own immutable release tag. It used to be
+      // fetched from a third party's MUTABLE main branch
+      // (mlalma/KokoroTestApp), so whoever controlled that account could
+      // silently change what every install downloaded — and the bytes are fed
+      // straight into a hand-rolled binary parser (NpyzReader). Verified
+      // byte-identical to the original at mirror time; all 27 voices the app
+      // uses are present.
+      sizeBytes: 14629684,
+      exactSizeBytes: 14629684,
+      sha256:
+          '56dbfa2f2970af2e395397020393d368c5f441d09b3de4e9b77f6222e790f10f',
       downloadUrl:
-          'https://github.com/mlalma/KokoroTestApp/raw/main/Resources/voices.npz',
+          'https://github.com/jasontitus/CastCircle/releases/download/kokoro-82m-bf16-v1/voices.npz',
       filename: 'voices.npz',
       subdir: 'kokoro_mlx',
     ),
