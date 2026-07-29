@@ -100,7 +100,18 @@ void main() {
   });
 
   tearDown(() async {
-    await tempDir.delete(recursive: true);
+    // Realtime/background downloads can still be writing into tempDir as the
+    // test ends; macOS throws ENOTEMPTY if the recursive delete races them.
+    // Retry briefly, then give up.
+    for (var attempt = 0; ; attempt++) {
+      try {
+        await tempDir.delete(recursive: true);
+        break;
+      } on FileSystemException {
+        if (attempt >= 10) rethrow;
+        await Future<void>.delayed(const Duration(milliseconds: 50));
+      }
+    }
   });
 
   /// Create a sync service representing one cast member's device.
