@@ -41,6 +41,20 @@ class ScriptParser {
   /// Detected script format (set during parse).
   ScriptFormat _format = ScriptFormat.standard;
 
+  /// Normalized running-header text to drop (the script's own title repeated
+  /// at the top of every page). OCR emits it as its own line, and without this
+  /// the parse appends it to the PRECEDING speech as a continuation — 33 of
+  /// P&P's 1189 lines ended with "Pride and Prejudice" glued on, which makes
+  /// them impossible for an actor to match, so rehearsal sat on them until the
+  /// silence timeout.
+  String? _titleHeader;
+
+  static String _normalizeForHeader(String s) => s
+      .toLowerCase()
+      .replaceAll(RegExp(r'[^a-z0-9 ]'), '')
+      .replaceAll(RegExp(r'\s+'), ' ')
+      .trim();
+
   // Noise patterns (page headers, footers, OCR artifacts)
   static final List<RegExp> _noisePatterns = [
     RegExp(r'^\d+\s+\w+(\s+\w+){0,4}$'), // "12 Author Name" (page num + short text)
@@ -114,6 +128,8 @@ class ScriptParser {
     // them into individual characters
     _detectMultiCharacterNames();
 
+    _titleHeader = _detectTitleHeader(rawText, title);
+
     // Second pass: parse lines
     final lines = _parseLines(rawText);
 
@@ -156,6 +172,29 @@ class ScriptParser {
       scenes: scenes,
       rawText: rawText,
     );
+  }
+
+  /// The script's title repeated as a page header, or null when there is no
+  /// such header (or stripping it would be unsafe).
+  ///
+  /// Requires 3+ standalone occurrences — a genuinely spoken line matching the
+  /// title wouldn't repeat — and refuses when the title is also a character
+  /// name: in Shakespeare the title IS the lead ("Macbeth", "Hamlet"), whose
+  /// cue lines normalize to the very same string, so stripping would delete
+  /// every one of that character's speeches.
+  String? _detectTitleHeader(String rawText, String title) {
+    final normTitle = _normalizeForHeader(title);
+    if (normTitle.isEmpty) return null;
+    for (final c in knownCharacters) {
+      if (_normalizeForHeader(c) == normTitle) return null;
+      // Also guard the aliased/normalized form.
+      if (_normalizeForHeader(_normalizeCharacter(c)) == normTitle) return null;
+    }
+    var standalone = 0;
+    for (final l in rawText.split('\n')) {
+      if (_normalizeForHeader(l) == normTitle) standalone++;
+    }
+    return standalone >= 3 ? normTitle : null;
   }
 
   /// Infer gender from a character name using title prefixes.
@@ -830,6 +869,9 @@ class ScriptParser {
   bool _isNoise(String line) {
     final stripped = line.trim();
     if (stripped.isEmpty) return true;
+    if (_titleHeader != null && _normalizeForHeader(stripped) == _titleHeader) {
+      return true;
+    }
     for (final pattern in _noisePatterns) {
       if (pattern.hasMatch(stripped)) return true;
     }

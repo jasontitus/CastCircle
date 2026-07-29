@@ -97,4 +97,17 @@ void main() {
     expect(dialogue.length, greaterThan(1100));
     expect(dialogue.length, lessThan(1350));
   });
+
+  test('running page header is never glued onto a line (print p11, p13, ...)',
+      () {
+    // The title sits at the top of every page; OCR emits it as its own line and
+    // the parser used to append it to the PRECEDING speech, producing lines like
+    // "Miss Elizabeth Bennet. Pride and Prejudice" that an actor can never
+    // match — rehearsal just sat on them until the silence timeout. 33 of 1189
+    // lines were affected.
+    final polluted =
+        dialogue.where((l) => l.text.contains('Pride and Prejudice')).toList();
+    expect(polluted, isEmpty,
+        reason: 'header leaked into: ${polluted.take(3).map((l) => l.text).toList()}');
+  });
 }

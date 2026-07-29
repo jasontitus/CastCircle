@@ -128,6 +128,8 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
   // production+scene+character+mode so a force-quit (or just leaving) doesn't
   // drop the actor back to the top of the scene next time.
   Timer? _progressSaveTimer;
+  /// Force-dismisses the resume toast (see _showResumeSnackBar).
+  Timer? _toastTimer;
   ProviderSubscription<int>? _progressSub;
   // Cached while the screen is mounted so the debounce timer, app-lifecycle
   // callback, and dispose() can persist progress WITHOUT touching `ref` after
@@ -462,15 +464,28 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
     await prefs.remove(key);
   }
 
+  /// Brief, non-blocking toast. `duration` alone is NOT enough: Flutter keeps a
+  /// SnackBar up indefinitely when the platform reports accessible navigation,
+  /// and any snackbar queued behind it extends the bar's presence — which is
+  /// how this ended up docked over the controls for a whole 2-minute run.
+  /// So: float it above the content, and force-dismiss on our own timer.
   void _showResumeSnackBar(int idx) {
     if (!mounted) return;
-    ScaffoldMessenger.of(context)
+    final messenger = ScaffoldMessenger.of(context);
+    messenger
       ..hideCurrentSnackBar()
       ..showSnackBar(SnackBar(
-        content: Text('Resumed where you left off (line ${idx + 1})'),
-        action: SnackBarAction(label: 'Start over', onPressed: _restartScene),
-        duration: const Duration(seconds: 6),
+        content: Text('Resumed at line ${idx + 1}'),
+        behavior: SnackBarBehavior.floating,
+        margin: const EdgeInsets.fromLTRB(16, 0, 16, 24),
+        duration: const Duration(seconds: 3),
       ));
+    _toastTimer?.cancel();
+    _toastTimer = Timer(const Duration(seconds: 3), () {
+      // Not `mounted`-guarded on the messenger: it outlives this screen, and
+      // hiding a snackbar that already went away is a no-op.
+      messenger.hideCurrentSnackBar();
+    });
   }
 
   @override
@@ -496,6 +511,7 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
     _dlog.log(LogCategory.rehearsal, 'Rehearsal ended');
     _silenceTimer?.cancel();
     _matchConfirmTimer?.cancel();
+    _toastTimer?.cancel();
     _ttsPrefetch.clear();
     _micLevel.dispose();
     _recognizedText.dispose();
@@ -1568,6 +1584,9 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
   /// completion): stop keeping the screen awake, record the session in
   /// history, drop the resume checkpoint, and offer to save recordings.
   void _completeScene(List<ScriptLine> dialogueLines) {
+    // Clear any lingering toast so it can't sit on top of the summary.
+    _toastTimer?.cancel();
+    if (mounted) ScaffoldMessenger.of(context).hideCurrentSnackBar();
     ref.read(rehearsalStateProvider.notifier).state =
         RehearsalState.sceneComplete;
     WakelockPlus.disable(); // Allow screen to sleep at scene end
