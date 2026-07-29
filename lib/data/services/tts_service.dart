@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/foundation.dart';
@@ -36,6 +37,7 @@ class TtsService {
 
   final FlutterTts _systemTts = FlutterTts();
   final AudioPlayer _audioPlayer = AudioPlayer();
+  StreamSubscription? _playerStateSub;
   bool _initialized = false;
   TtsEngine _activeEngine = TtsEngine.kokoroMlx;
 
@@ -177,7 +179,7 @@ class TtsService {
     // 'completed' events during the next line's Kokoro synthesis, causing lines
     // to be skipped. Instead, completion is fired from _speakWithKokoroMlx after
     // play() returns, guarded by a generation counter.
-    _audioPlayer.playerStateStream.listen((state) {
+    _playerStateSub = _audioPlayer.playerStateStream.listen((state) {
       if (state.processingState == ProcessingState.completed) {
         DebugLogService.instance.log(LogCategory.tts,
             'audioPlayer stream completed (gen=$_speakGen, speaking=$_isSpeaking) — ignored, using gen counter');
@@ -754,6 +756,7 @@ class TtsService {
 
   /// Clean up resources.
   void dispose() {
+    _playerStateSub?.cancel();
     _audioPlayer.dispose();
   }
 }

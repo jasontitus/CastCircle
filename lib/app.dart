@@ -289,7 +289,8 @@ class _AnalyticsRouteObserver extends NavigatorObserver {
 
   @override
   void didPop(Route route, Route? previousRoute) {
-    if (previousRoute != null) _logScreen(previousRoute);
+    // Log the route being left (popped), not the one we return to.
+    _logScreen(route);
   }
 
   @override

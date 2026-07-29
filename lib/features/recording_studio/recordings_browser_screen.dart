@@ -30,6 +30,7 @@ class RecordingsBrowserScreen extends ConsumerStatefulWidget {
 class _RecordingsBrowserScreenState
     extends ConsumerState<RecordingsBrowserScreen> {
   final AudioPlayer _player = AudioPlayer();
+  StreamSubscription? _playerSub;
   String? _playingLineId;
   String? _filterCharacter; // null = show all
 
@@ -44,7 +45,7 @@ class _RecordingsBrowserScreenState
   @override
   void initState() {
     super.initState();
-    _player.playerStateStream.listen((state) {
+    _playerSub = _player.playerStateStream.listen((state) {
       if (state.processingState == ProcessingState.completed) {
         if (mounted) setState(() => _playingLineId = null);
       }
@@ -53,6 +54,7 @@ class _RecordingsBrowserScreenState
 
   @override
   void dispose() {
+    _playerSub?.cancel();
     _player.dispose();
     super.dispose();
   }
@@ -69,10 +71,13 @@ class _RecordingsBrowserScreenState
       );
     }
 
+    // Build a fast lookup map: O(n+m) instead of the prior O(n*m).
+    final linesById = {for (final l in script.lines) l.id: l};
+
     // Build list of recorded lines with their recordings
     final recordedEntries = <_RecordedLine>[];
     for (final entry in recordings.entries) {
-      final line = script.lines.where((l) => l.id == entry.key).firstOrNull;
+      final line = linesById[entry.key];
       if (line != null) {
         if (_filterCharacter == null || line.character == _filterCharacter) {
           recordedEntries.add(

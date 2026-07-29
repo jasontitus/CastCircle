@@ -67,6 +67,7 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
   final SttVocabularyService _sttVocab = SttVocabularyService.instance;
   String? _activeAdapter; // per-actor or per-production LoRA adapter path
   final GlobalKey _currentLineKey = GlobalKey();
+  StreamSubscription? _playerSub;
 
   final bool _autoPlay = true; // auto-advance through other characters' lines
   // Live STT state. ValueNotifiers, not setState fields, for the same reason
@@ -157,7 +158,7 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
     });
 
     // Listen for playback completion to auto-advance (real recordings only)
-    _player.playerStateStream.listen((state) {
+    _playerSub = _player.playerStateStream.listen((state) {
       if (state.processingState == ProcessingState.completed &&
           _autoPlay &&
           mounted) {
@@ -501,6 +502,7 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
     _matchScore.dispose();
     _showMatchFeedback.dispose();
     _scrollController.dispose();
+    _playerSub?.cancel();
     _player.dispose();
     // Clear the completion handler so the singleton TtsService doesn't retain
     // this disposed State (and its ref) until the next rehearsal.

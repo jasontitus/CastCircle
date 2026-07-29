@@ -41,6 +41,7 @@ class RecordingStudioScreen extends ConsumerStatefulWidget {
 class _RecordingStudioScreenState extends ConsumerState<RecordingStudioScreen> {
   AudioRecorder? _recorder;
   AudioPlayer? _player;
+  StreamSubscription? _playerSub;
   RecordingStatus _status = RecordingStatus.idle;
   int _currentLineIdx = 0;
   String? _currentRecordingPath;
@@ -71,7 +72,7 @@ class _RecordingStudioScreenState extends ConsumerState<RecordingStudioScreen> {
     try {
       _recorder = AudioRecorder();
       _player = AudioPlayer();
-      _player!.playerStateStream.listen((state) {
+      _playerSub = _player!.playerStateStream.listen((state) {
         if (state.processingState == ProcessingState.completed) {
           if (mounted) setState(() => _status = RecordingStatus.recorded);
         }
@@ -103,6 +104,7 @@ class _RecordingStudioScreenState extends ConsumerState<RecordingStudioScreen> {
     } else {
       recorder?.dispose();
     }
+    _playerSub?.cancel();
     _player?.dispose();
     super.dispose();
   }
