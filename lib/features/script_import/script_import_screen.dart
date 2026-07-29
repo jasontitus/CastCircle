@@ -16,6 +16,7 @@ import '../../data/services/supabase_service.dart';
 import '../../data/services/voice_config_service.dart';
 import '../../providers/production_providers.dart';
 import 'ocr_review_screen.dart';
+import '../../core/toast.dart';
 
 class ScriptImportScreen extends ConsumerStatefulWidget {
   const ScriptImportScreen({super.key});
@@ -529,7 +530,7 @@ class _ScriptImportScreenState extends ConsumerState<ScriptImportScreen> {
       DebugLogService.instance.logError(
           LogCategory.general, 'Accepting imported script failed', e, stack);
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+      ScaffoldMessenger.of(context).showAutoToast(SnackBar(
         content: Text("Couldn't save the imported script — it has NOT been "
             'added to this production. $e'),
         duration: const Duration(seconds: 8),
@@ -629,7 +630,7 @@ class _ScriptImportScreenState extends ConsumerState<ScriptImportScreen> {
         // is silently missing scenes — warn now, not at rehearsal.
         final failed = service.lastImportFailedPages;
         if (failed > 0) {
-          ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          ScaffoldMessenger.of(context).showAutoToast(SnackBar(
             content: Text('$failed page(s) couldn\'t be read — parts of the '
                 'script may be missing. Check the preview against the PDF.'),
             duration: const Duration(seconds: 8),

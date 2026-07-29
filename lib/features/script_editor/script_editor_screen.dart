@@ -18,6 +18,7 @@ import '../../data/services/supabase_service.dart';
 import '../../providers/production_providers.dart';
 import '../script_import/pdf_page_view.dart';
 import 'validation_panel.dart';
+import '../../core/toast.dart';
 
 class ScriptEditorScreen extends ConsumerStatefulWidget {
   const ScriptEditorScreen({super.key});
@@ -158,7 +159,7 @@ class _ScriptEditorScreenState extends ConsumerState<ScriptEditorScreen> {
             onPressed: () async {
               await persistScript(ref);
               if (context.mounted) {
-                ScaffoldMessenger.of(context).showSnackBar(
+                ScaffoldMessenger.of(context).showAutoToast(
                   const SnackBar(
                     content: Text('Script synced to cloud'),
                     duration: Duration(seconds: 1),
@@ -1176,13 +1177,13 @@ class _ScriptEditorScreenState extends ConsumerState<ScriptEditorScreen> {
     try {
       await pushScriptToCloud(ref);
       if (context.mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
+        ScaffoldMessenger.of(context).showAutoToast(
           const SnackBar(content: Text('Script pushed to cloud')),
         );
       }
     } catch (e) {
       if (context.mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
+        ScaffoldMessenger.of(context).showAutoToast(
           SnackBar(content: Text('Cloud sync failed: $e')),
         );
       }
@@ -1241,7 +1242,7 @@ class _ScriptEditorScreenState extends ConsumerState<ScriptEditorScreen> {
       );
     } catch (e) {
       if (!context.mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
+      ScaffoldMessenger.of(context).showAutoToast(
         SnackBar(content: Text('Export failed: $e')),
       );
     }

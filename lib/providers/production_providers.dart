@@ -24,6 +24,7 @@ import '../data/services/supabase_service.dart';
 import '../data/services/recording_sync_service.dart';
 import '../data/services/sync_queue.dart';
 import '../main.dart';
+import '../core/toast.dart';
 
 /// Maximum size (in bytes) for a SharedPreferences script backup.
 const _maxBackupBytes = 5 * 1024 * 1024; // 5 MB
@@ -291,7 +292,7 @@ Future<void> persistScript(WidgetRef ref) async {
       'until the next successful save',
       e,
     );
-    rootScaffoldMessengerKey.currentState?.showSnackBar(const SnackBar(
+    rootScaffoldMessengerKey.currentState?.showAutoToast(const SnackBar(
       content: Text("Couldn't sync script changes to the cast — check your "
           'connection. Your edits are saved on this device and will push on '
           'the next save.'),
@@ -338,7 +339,7 @@ Future<void> _runScriptSave(WidgetRef ref) async {
   } catch (e) {
     DebugLogService.instance
         .logError(LogCategory.error, 'Script autosave failed', e);
-    rootScaffoldMessengerKey.currentState?.showSnackBar(const SnackBar(
+    rootScaffoldMessengerKey.currentState?.showAutoToast(const SnackBar(
       content: Text("Couldn't save script changes — they're still on screen; "
           'try again or check your connection.'),
       duration: Duration(seconds: 6),
@@ -411,7 +412,7 @@ void launchRecordingSync(WidgetRef ref, String productionId) {
   // A recording the queue abandons after all retries never reaches castmates —
   // that must be loud, not just a debug-log line.
   SyncQueue.instance.onGaveUp = (job, error) {
-    rootScaffoldMessengerKey.currentState?.showSnackBar(SnackBar(
+    rootScaffoldMessengerKey.currentState?.showAutoToast(SnackBar(
       content: Text(
           'Upload failed for a "${job.characterName}" recording — castmates '
           "won't hear it. Check your connection and re-record the line."),

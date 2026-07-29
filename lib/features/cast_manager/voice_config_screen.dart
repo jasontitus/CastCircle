@@ -10,6 +10,7 @@ import '../../data/services/supabase_service.dart';
 import '../../data/services/tts_service.dart';
 import '../../data/services/voice_config_service.dart';
 import '../../providers/production_providers.dart';
+import '../../core/toast.dart';
 
 /// Screen for configuring production voice preset and per-character overrides.
 class VoiceConfigScreen extends ConsumerStatefulWidget {
@@ -347,7 +348,7 @@ class _VoiceConfigScreenState extends ConsumerState<VoiceConfigScreen> {
     if (!tts.isKokoroLoaded) {
       ScaffoldMessenger.of(
         context,
-      ).showSnackBar(const SnackBar(content: Text('Kokoro model not loaded')));
+      ).showAutoToast(const SnackBar(content: Text('Kokoro model not loaded')));
       return;
     }
 
@@ -362,7 +363,7 @@ class _VoiceConfigScreenState extends ConsumerState<VoiceConfigScreen> {
       if (mounted) {
         ScaffoldMessenger.of(
           context,
-        ).showSnackBar(const SnackBar(content: Text('Preview failed')));
+        ).showAutoToast(const SnackBar(content: Text('Preview failed')));
       }
     }
   }

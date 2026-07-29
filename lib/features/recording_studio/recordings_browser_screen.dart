@@ -17,6 +17,7 @@ import '../../data/services/audio_level_service.dart';
 import '../../data/services/playback_session.dart';
 import '../../data/services/supabase_service.dart';
 import '../../providers/production_providers.dart';
+import '../../core/toast.dart';
 
 /// Browse all recordings for the current production, grouped by character.
 class RecordingsBrowserScreen extends ConsumerStatefulWidget {
@@ -505,7 +506,7 @@ class _RecordingsBrowserScreenState
       dlog.logError(LogCategory.error,
           'Delete: could not remove recording row ${recording.id}', e);
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        ScaffoldMessenger.of(context).showAutoToast(SnackBar(
           content: Text("Couldn't delete that recording: $e"),
           duration: const Duration(seconds: 6),
         ));
@@ -521,7 +522,7 @@ class _RecordingsBrowserScreenState
       if (cloud == _CloudDelete.failed)
         'the cloud copy could not be removed, so castmates may still hear it',
     ];
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+    ScaffoldMessenger.of(context).showAutoToast(SnackBar(
       content: Text(problems.isEmpty
           ? 'Recording deleted'
           : 'Recording removed here, but ${problems.join(', and ')}.'),
@@ -626,7 +627,7 @@ class _RecordingsBrowserScreenState
         'Play: file NOT FOUND for ${recording.scriptLineId.substring(0, 8)}',
       );
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
+        ScaffoldMessenger.of(context).showAutoToast(
           SnackBar(
             content: Text(
               'Recording file not found (${p.basename(recording.localPath)})',
@@ -646,7 +647,7 @@ class _RecordingsBrowserScreenState
     if (size < 100) {
       dlog.log(LogCategory.error, 'Play: file empty (${size}B)');
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
+        ScaffoldMessenger.of(context).showAutoToast(
           const SnackBar(content: Text('Recording file is empty')),
         );
       }
@@ -671,7 +672,7 @@ class _RecordingsBrowserScreenState
         setState(() => _playingLineId = null);
         ScaffoldMessenger.of(
           context,
-        ).showSnackBar(SnackBar(content: Text('Playback error: $e')));
+        ).showAutoToast(SnackBar(content: Text('Playback error: $e')));
       }
     }
   }

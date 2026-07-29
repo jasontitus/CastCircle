@@ -12,6 +12,7 @@ import '../../main.dart' show rootScaffoldMessengerKey;
 import '../models/script_models.dart';
 import 'debug_log_service.dart';
 import 'supabase_service.dart';
+import '../../core/toast.dart';
 
 /// Abstraction over the cloud calls used by [RecordingSyncService] so the
 /// sync logic can be tested without a live Supabase backend.
@@ -475,7 +476,7 @@ class RecordingSyncService {
   /// SnackBar must never take down a sync; the failure is always logged first.
   void _tellUser(String message) {
     try {
-      rootScaffoldMessengerKey.currentState?.showSnackBar(SnackBar(
+      rootScaffoldMessengerKey.currentState?.showAutoToast(SnackBar(
         content: Text(message),
         duration: const Duration(seconds: 8),
       ));

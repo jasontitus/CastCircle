@@ -13,6 +13,7 @@ import '../../data/services/supabase_service.dart';
 import '../../data/services/tts_service.dart';
 import '../../main.dart';
 import '../auth/auth_screen.dart';
+import '../../core/toast.dart';
 
 // Settings providers
 final jumpBackLinesProvider = StateProvider<int>(
@@ -341,7 +342,7 @@ class SettingsScreen extends ConsumerWidget {
         DebugLogService.instance
             .logError(LogCategory.error, 'Sign-out failed', e);
         if (context.mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          ScaffoldMessenger.of(context).showAutoToast(SnackBar(
             content: Text('Signed out on this device, but the server '
                 "couldn't be reached ($e). Sign in again to be sure the "
                 'session is closed.'),

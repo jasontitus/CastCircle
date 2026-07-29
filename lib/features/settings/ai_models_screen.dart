@@ -8,6 +8,7 @@ import '../../data/services/analytics_service.dart';
 import '../../data/services/model_download_service.dart';
 import '../../data/services/model_manager.dart';
 import '../../data/services/tts_service.dart';
+import '../../core/toast.dart';
 
 /// Screen for managing on-device AI model downloads.
 class AiModelsScreen extends StatefulWidget {
@@ -85,7 +86,7 @@ class _AiModelsScreenState extends State<AiModelsScreen> {
           _onnxDownloading = false;
           _onnxReady = true;
         });
-        ScaffoldMessenger.of(context).showSnackBar(
+        ScaffoldMessenger.of(context).showAutoToast(
           const SnackBar(content: Text('Kokoro AI voices ready!')),
         );
       }
@@ -95,7 +96,7 @@ class _AiModelsScreenState extends State<AiModelsScreen> {
           _onnxDownloading = false;
           _onnxError = e.toString();
         });
-        ScaffoldMessenger.of(context).showSnackBar(
+        ScaffoldMessenger.of(context).showAutoToast(
           SnackBar(
             content: Text('Download failed: $e'),
             backgroundColor: Colors.red,
@@ -112,7 +113,7 @@ class _AiModelsScreenState extends State<AiModelsScreen> {
       setState(() => _onnxReady = false);
       ScaffoldMessenger.of(
         context,
-      ).showSnackBar(const SnackBar(content: Text('Kokoro model deleted')));
+      ).showAutoToast(const SnackBar(content: Text('Kokoro model deleted')));
     }
   }
 
@@ -317,7 +318,7 @@ class _AiModelsScreenState extends State<AiModelsScreen> {
     if (!mounted) return;
     final state = _service.getState(model.id);
     if (state.status == ModelStatus.error) {
-      ScaffoldMessenger.of(context).showSnackBar(
+      ScaffoldMessenger.of(context).showAutoToast(
         SnackBar(
           content: Text('Download failed: ${state.errorMessage}'),
           backgroundColor: Colors.red,
@@ -331,6 +332,6 @@ class _AiModelsScreenState extends State<AiModelsScreen> {
     if (!mounted) return;
     ScaffoldMessenger.of(
       context,
-    ).showSnackBar(SnackBar(content: Text('${model.name} deleted')));
+    ).showAutoToast(SnackBar(content: Text('${model.name} deleted')));
   }
 }

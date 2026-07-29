@@ -11,6 +11,7 @@ import '../../data/services/debug_log_service.dart';
 import '../../data/services/supabase_service.dart';
 import '../../main.dart';
 import '../../providers/production_providers.dart';
+import '../../core/toast.dart';
 
 /// Auth state provider — tracks whether user is signed in.
 final authStateProvider = StateProvider<bool>((ref) {
@@ -393,7 +394,7 @@ class _AuthScreenState extends ConsumerState<AuthScreen> {
       await SupabaseService.instance.client.auth
           .resend(type: OtpType.signup, email: email);
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
+        ScaffoldMessenger.of(context).showAutoToast(
           SnackBar(content: Text('Confirmation email re-sent to $email')),
         );
       }

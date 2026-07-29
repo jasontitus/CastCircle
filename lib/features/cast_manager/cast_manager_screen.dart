@@ -21,6 +21,7 @@ import '../../data/services/deep_link_service.dart';
 import '../../data/services/supabase_service.dart';
 import '../../data/services/voice_config_service.dart';
 import '../../providers/production_providers.dart';
+import '../../core/toast.dart';
 
 class CastManagerScreen extends ConsumerStatefulWidget {
   const CastManagerScreen({super.key});
@@ -213,7 +214,7 @@ class _CastManagerScreenState extends ConsumerState<CastManagerScreen> {
                     tooltip: 'Copy code',
                     onPressed: () {
                       Clipboard.setData(ClipboardData(text: joinCode));
-                      ScaffoldMessenger.of(context).showSnackBar(
+                      ScaffoldMessenger.of(context).showAutoToast(
                         const SnackBar(
                           content: Text('Join code copied'),
                           duration: Duration(seconds: 1),
@@ -651,7 +652,7 @@ class _CastManagerScreenState extends ConsumerState<CastManagerScreen> {
                         DebugLogService.instance.logError(
                             LogCategory.general, 'Contact pick failed', e);
                         if (!mounted) return;
-                        ScaffoldMessenger.of(context).showSnackBar(
+                        ScaffoldMessenger.of(context).showAutoToast(
                           const SnackBar(
                             content: Text(
                                 "Couldn't open your contacts — check that "
@@ -739,7 +740,7 @@ class _CastManagerScreenState extends ConsumerState<CastManagerScreen> {
 
                       if (!cloudInviteOk) {
                         if (mounted) {
-                          ScaffoldMessenger.of(context).showSnackBar(
+                          ScaffoldMessenger.of(context).showAutoToast(
                             const SnackBar(
                               content: Text(
                                   "Couldn't create the cloud invitation — "
@@ -790,7 +791,7 @@ class _CastManagerScreenState extends ConsumerState<CastManagerScreen> {
             'Unassign failed for "$who" (${member.characterName})',
             e);
         if (!mounted) return;
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        ScaffoldMessenger.of(context).showAutoToast(SnackBar(
           content: Text("Couldn't remove $who from the shared cast — they'd "
               'reappear on the next sync. Check your connection, or ask the '
               'organizer to remove them.'),
@@ -903,7 +904,7 @@ class _CastManagerScreenState extends ConsumerState<CastManagerScreen> {
               onTap: () {
                 Navigator.pop(ctx);
                 Clipboard.setData(ClipboardData(text: joinCode));
-                ScaffoldMessenger.of(context).showSnackBar(
+                ScaffoldMessenger.of(context).showAutoToast(
                   const SnackBar(
                     content: Text('Join code copied'),
                     duration: Duration(seconds: 1),

@@ -9,6 +9,7 @@ import '../../data/services/debug_log_service.dart';
 import '../../data/services/supabase_service.dart';
 import '../../data/services/voice_config_service.dart';
 import '../../providers/production_providers.dart';
+import '../../core/toast.dart';
 
 const _localeOptions = {
   null: 'Production Default',
@@ -610,7 +611,7 @@ class _CharacterManagerScreenState
         e,
       );
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
+      ScaffoldMessenger.of(context).showAutoToast(
         SnackBar(
           content: Text(
             'Renamed the script lines, but $newName\'s voice, dialect and '
@@ -673,7 +674,7 @@ class _CharacterManagerScreenState
         e,
       );
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
+      ScaffoldMessenger.of(context).showAutoToast(
         SnackBar(
           content: Text(
             'Renamed the script lines, but the actor assigned to $oldName '
@@ -687,7 +688,7 @@ class _CharacterManagerScreenState
 
     if (failures.isEmpty) return;
     if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
+    ScaffoldMessenger.of(context).showAutoToast(
       SnackBar(
         content: Text(
           'Couldn\'t update the cloud cast for ${failures.join(', ')} — the '

@@ -21,6 +21,7 @@ import '../../data/services/playback_session.dart';
 import '../../providers/production_providers.dart';
 import '../../features/settings/settings_screen.dart';
 import '../../main.dart' show rootScaffoldMessengerKey;
+import '../../core/toast.dart';
 
 /// Recording state for the studio.
 enum RecordingStatus {
@@ -127,7 +128,7 @@ class _RecordingStudioScreenState extends ConsumerState<RecordingStudioScreen> {
             'Studio: take lost on close — recorder returned '
             '${path == null ? 'no file' : 'no character/notifier'} '
             'for line=${line.id}');
-        rootScaffoldMessengerKey.currentState?.showSnackBar(const SnackBar(
+        rootScaffoldMessengerKey.currentState?.showAutoToast(const SnackBar(
           content: Text('The recording in progress was lost when the studio '
               'closed — please record that line again.'),
           duration: Duration(seconds: 6),
@@ -142,14 +143,14 @@ class _RecordingStudioScreenState extends ConsumerState<RecordingStudioScreen> {
         productionId: productionId,
         durationMs: durationMs,
       );
-      rootScaffoldMessengerKey.currentState?.showSnackBar(SnackBar(
+      rootScaffoldMessengerKey.currentState?.showAutoToast(SnackBar(
         content: Text('Saved the take for ${character.toUpperCase()} that was '
             'still recording when you left the studio.'),
       ));
     } catch (e) {
       DebugLogService.instance.logError(LogCategory.error,
           'Studio: saving the in-progress take on close failed', e);
-      rootScaffoldMessengerKey.currentState?.showSnackBar(SnackBar(
+      rootScaffoldMessengerKey.currentState?.showAutoToast(SnackBar(
         content: Text("Couldn't save the recording that was in progress: $e"),
         duration: const Duration(seconds: 6),
       ));
@@ -554,7 +555,7 @@ class _RecordingStudioScreenState extends ConsumerState<RecordingStudioScreen> {
     final hasPermission = await _recorder!.hasPermission();
     if (!hasPermission) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
+        ScaffoldMessenger.of(context).showAutoToast(
           const SnackBar(content: Text('Microphone permission required')),
         );
       }
@@ -584,7 +585,7 @@ class _RecordingStudioScreenState extends ConsumerState<RecordingStudioScreen> {
       DebugLogService.instance
           .logError(LogCategory.error, 'Studio: recorder.start failed', e);
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
+        ScaffoldMessenger.of(context).showAutoToast(
           SnackBar(content: Text("Couldn't start recording: $e")),
         );
       }
@@ -633,7 +634,7 @@ class _RecordingStudioScreenState extends ConsumerState<RecordingStudioScreen> {
       // Nothing was saved — say so instead of staying stuck on "recording".
       DebugLogService.instance.logError(
           LogCategory.error, 'Studio: recorder.stop returned no file');
-      rootScaffoldMessengerKey.currentState?.showSnackBar(const SnackBar(
+      rootScaffoldMessengerKey.currentState?.showAutoToast(const SnackBar(
         content: Text('Recording failed — nothing was saved. Try again.'),
       ));
       if (mounted) setState(() => _status = RecordingStatus.idle);
@@ -647,7 +648,7 @@ class _RecordingStudioScreenState extends ConsumerState<RecordingStudioScreen> {
     if (character == null || notifier == null) {
       DebugLogService.instance.logError(LogCategory.error,
           'Studio: no character selected — take at $path not registered');
-      rootScaffoldMessengerKey.currentState?.showSnackBar(const SnackBar(
+      rootScaffoldMessengerKey.currentState?.showAutoToast(const SnackBar(
         content: Text("Couldn't save the recording — no character selected."),
       ));
       if (mounted) setState(() => _status = RecordingStatus.idle);
@@ -668,7 +669,7 @@ class _RecordingStudioScreenState extends ConsumerState<RecordingStudioScreen> {
           LogCategory.error, 'Studio: saving the take failed for ${line.id}', e);
       // The app-wide messenger, not this screen's: the failure has to be seen
       // even when the user has already navigated away.
-      rootScaffoldMessengerKey.currentState?.showSnackBar(SnackBar(
+      rootScaffoldMessengerKey.currentState?.showAutoToast(SnackBar(
         content: Text("Couldn't save that take: $e"),
         duration: const Duration(seconds: 6),
       ));
@@ -699,7 +700,7 @@ class _RecordingStudioScreenState extends ConsumerState<RecordingStudioScreen> {
       await _player!.play();
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
+        ScaffoldMessenger.of(context).showAutoToast(
           SnackBar(content: Text('Playback error: $e')),
         );
       }

@@ -33,6 +33,7 @@ import '../../data/services/playback_session.dart';
 import '../../providers/production_providers.dart';
 import '../../features/settings/settings_screen.dart';
 import 'rehearsal_history_screen.dart';
+import '../../core/toast.dart';
 
 /// Rehearsal state machine.
 enum RehearsalState {
@@ -130,6 +131,8 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
   Timer? _progressSaveTimer;
   /// Force-dismisses the resume toast (see _showResumeSnackBar).
   Timer? _toastTimer;
+  /// One 'first result' log per line (see onResult).
+  bool _loggedFirstResultForLine = false;
   ProviderSubscription<int>? _progressSub;
   // Cached while the screen is mounted so the debounce timer, app-lifecycle
   // callback, and dispose() can persist progress WITHOUT touching `ref` after
@@ -327,7 +330,7 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
           '(Settings → AI Models)';
     }
     if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+    ScaffoldMessenger.of(context).showAutoToast(SnackBar(
       content: Text('Using system voices — $reason.'),
       duration: const Duration(seconds: 6),
     ));
@@ -347,7 +350,7 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
       _sttInitFailed = true;
       _dlog.logError(LogCategory.stt,
           'Rehearsal: STT init failed — line matching disabled this session');
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+      ScaffoldMessenger.of(context).showAutoToast(const SnackBar(
         content: Text('Speech recognition unavailable — your lines won\'t be '
             'matched automatically. Check microphone & speech recognition '
             'permissions in Settings, then restart rehearsal.'),
@@ -474,7 +477,7 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
     final messenger = ScaffoldMessenger.of(context);
     messenger
       ..hideCurrentSnackBar()
-      ..showSnackBar(SnackBar(
+      ..showAutoToast(SnackBar(
         content: Text('Resumed at line ${idx + 1}'),
         behavior: SnackBarBehavior.floating,
         margin: const EdgeInsets.fromLTRB(16, 0, 16, 24),
@@ -1700,7 +1703,7 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
         'Orphaned recordings: $orphaned/${recIds.length} shared recordings have '
         'line IDs not in this script — they will NOT play (script version mismatch)');
     if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
+      ScaffoldMessenger.of(context).showAutoToast(
         SnackBar(
           duration: const Duration(seconds: 6),
           content: Text(
@@ -1901,7 +1904,7 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
       _dlog.log(LogCategory.rehearsal, 'STT not available, manual advance');
       if (!_sttUnavailableNoticeShown) {
         _sttUnavailableNoticeShown = true;
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+        ScaffoldMessenger.of(context).showAutoToast(const SnackBar(
           content: Text('Speech recognition isn\'t available — tap the '
               'forward arrow to advance past your lines.'),
           duration: Duration(seconds: 6),
@@ -1916,6 +1919,7 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
     _currentAttemptCount++;
     _matchConfirmed = false;
     _lastRecognizedRaw = '';
+    _loggedFirstResultForLine = false;
     _micLevel.value = 0.0;
 
     // Build vocabulary hints: the expected line as a phrase + its individual
@@ -1984,6 +1988,17 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
             : recognized;
 
         final score = SttService.matchScore(line.text, corrected);
+        // Without this the debug log shows only "line started / line stopped",
+        // so a run where recognition silently produced nothing is
+        // indistinguishable from one where it produced the wrong words. Log
+        // the first result per line (proves the recognizer is alive) and then
+        // only meaningful score changes, to stay readable.
+        if (!_loggedFirstResultForLine) {
+          _loggedFirstResultForLine = true;
+          _dlog.log(LogCategory.stt,
+              'first result: heard="${corrected.length > 60 ? '${corrected.substring(0, 57)}...' : corrected}" '
+              'score=${(score * 100).toStringAsFixed(0)}% threshold=${(threshold * 100).toStringAsFixed(0)}%');
+        }
         // Notifiers, not setState: partial results arrive several times a
         // second and setState here rebuilt the whole screen — including the
         // ~145 offscreen list items cacheExtent: 10000 keeps alive — for what
@@ -2030,6 +2045,16 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
     _startCaptureForLine(line);
   }
 
+  /// Log how a line actually ended. "advanced with no recognition at all" is
+  /// the signature of a dead recognizer (Apple returning error 216 / "No
+  /// speech detected"), which reads to the actor as "it just sat there".
+  void _logLineOutcome(String how) {
+    _dlog.log(
+        LogCategory.stt,
+        'line ended ($how): '
+        '${_loggedFirstResultForLine ? 'score=${(_matchScore.value * 100).toStringAsFixed(0)}%' : 'NO recognition results at all'}');
+  }
+
   /// The actor finished their line and the match held — stop listening,
   /// learn from the attempt, and advance. Called from both the energy
   /// endpointing (mic silence) and the no-new-results confirm timer;
@@ -2040,6 +2065,7 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
       return;
     }
     _matchConfirmed = true;
+    _logLineOutcome('matched');
 
     _matchConfirmTimer?.cancel();
     _silenceTimer?.cancel();
@@ -2080,7 +2106,7 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
       final state = ref.read(rehearsalStateProvider);
       if (state != RehearsalState.listeningForMe) return;
 
-      debugPrint('Rehearsal: Silence timeout — auto-advancing');
+      _logLineOutcome('silence timeout');
       _stopCaptureForLine(line);
       _stt.stop();
 
@@ -2222,7 +2248,7 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
     try { _player.pause(); } catch (_) {}
     ref.read(rehearsalStateProvider.notifier).state = RehearsalState.paused;
     _dlog.log(LogCategory.rehearsal, 'Rehearsal paused: $reason');
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+    ScaffoldMessenger.of(context).showAutoToast(SnackBar(
       content: Text('$reason — rehearsal paused. Tap Resume to continue.'),
       duration: const Duration(seconds: 5),
     ));
@@ -2408,7 +2434,7 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
       _dlog.logError(
           LogCategory.error, 'Capture(Android): recording failed to start');
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
+        ScaffoldMessenger.of(context).showAutoToast(
           const SnackBar(
             content: Text(
                 "Couldn't record your line — check microphone permission in Settings."),
@@ -2441,7 +2467,7 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
         _dlog.logError(
             LogCategory.error, 'Capture: startRecording returned false');
         if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
+          ScaffoldMessenger.of(context).showAutoToast(
             const SnackBar(
               content: Text("Couldn't record your line — check microphone access."),
             ),
@@ -2451,7 +2477,7 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
     } catch (e) {
       _dlog.logError(LogCategory.error, 'Capture: start exception', e);
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
+        ScaffoldMessenger.of(context).showAutoToast(
           SnackBar(content: Text('Recording error: $e')),
         );
       }
@@ -2601,7 +2627,7 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
 
     _capturedAudio.clear();
     if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
+      ScaffoldMessenger.of(context).showAutoToast(
         SnackBar(
           content: Text('Saved $saved rehearsal recordings'),
           action: SnackBarAction(

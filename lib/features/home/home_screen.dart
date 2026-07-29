@@ -17,6 +17,7 @@ import '../../data/services/supabase_service.dart';
 import '../../features/script_editor/cloud_sync_dialog.dart';
 import '../../main.dart' show rootScaffoldMessengerKey;
 import '../../providers/production_providers.dart';
+import '../../core/toast.dart';
 
 /// FutureProvider that loads the saved character name for a production.
 final savedCharacterProvider =
@@ -276,7 +277,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
       // Only swap the on-screen script if we're still on this production.
       if (ref.read(currentProductionProvider)?.id != production.id) return;
       ref.read(currentScriptProvider.notifier).state = script;
-      messenger.showSnackBar(SnackBar(
+      messenger.showAutoToast(SnackBar(
         content: Text(
             'Loaded ${cloudLines.length} lines from cloud — reopen to rehearse'),
         duration: const Duration(seconds: 4),
@@ -337,7 +338,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
         'Script re-synced from cloud: ${cloudLines.length} lines '
         '(was ${local?.lines.length ?? 0})',
       );
-      messenger.showSnackBar(SnackBar(
+      messenger.showAutoToast(SnackBar(
         content: Text('Script updated from the cast (${cloudLines.length} lines)'),
         duration: const Duration(seconds: 3),
       ));
@@ -503,7 +504,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
           'Delete refused for "${production.title}" — cloud unavailable '
           '(initialized=${supa.isInitialized} signedIn=${supa.isSignedIn})');
       if (context.mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        ScaffoldMessenger.of(context).showAutoToast(SnackBar(
           content: Text(mine
               ? "Can't delete \"${production.title}\" while offline — it "
                   'would come back on the next sync. Try again when connected.'
@@ -528,7 +529,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
             '"${production.title}"',
             e);
         if (context.mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          ScaffoldMessenger.of(context).showAutoToast(SnackBar(
             content: Text(mine
                 ? 'Couldn\'t delete "${production.title}" from the cloud — '
                     'check your connection and try again. (Nothing was '
@@ -567,7 +568,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     }
 
     if (context.mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
+      ScaffoldMessenger.of(context).showAutoToast(
         SnackBar(
             content: Text(mine
                 ? 'Deleted "${production.title}" for the whole cast'
@@ -666,7 +667,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
         dlog.logError(LogCategory.error,
             '_submitProduction: background cloud create failed — invites for '
             '"$title" will not work until this heals', e);
-        rootScaffoldMessengerKey.currentState?.showSnackBar(SnackBar(
+        rootScaffoldMessengerKey.currentState?.showAutoToast(SnackBar(
           content: Text('"$title" was saved on this device but couldn\'t be '
               'created in the cloud — invites won\'t work yet. Check your '
               'connection.'),

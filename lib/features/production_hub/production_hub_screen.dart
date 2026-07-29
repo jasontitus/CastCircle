@@ -20,6 +20,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../../providers/production_providers.dart';
 import '../script_editor/cloud_sync_dialog.dart';
 import '../settings/settings_screen.dart';
+import '../../core/toast.dart';
 
 class ProductionHubScreen extends ConsumerStatefulWidget {
   const ProductionHubScreen({super.key});
@@ -743,7 +744,7 @@ class _ProductionHubScreenState extends ConsumerState<ProductionHubScreen> {
     try {
       await pushScriptToCloud(ref);
       if (context.mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
+        ScaffoldMessenger.of(context).showAutoToast(
           const SnackBar(
               content: Text('Script pushed to cloud'),
               duration: Duration(seconds: 2)),
@@ -751,7 +752,7 @@ class _ProductionHubScreenState extends ConsumerState<ProductionHubScreen> {
       }
     } catch (e) {
       if (context.mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
+        ScaffoldMessenger.of(context).showAutoToast(
           SnackBar(content: Text('Push failed: $e')),
         );
       }
@@ -766,7 +767,7 @@ class _ProductionHubScreenState extends ConsumerState<ProductionHubScreen> {
       final cloudLines = await fetchCloudScriptLines(production.id);
       if (cloudLines == null || cloudLines.isEmpty) {
         if (context.mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
+          ScaffoldMessenger.of(context).showAutoToast(
             const SnackBar(content: Text('No script in cloud')),
           );
         }
@@ -780,7 +781,7 @@ class _ProductionHubScreenState extends ConsumerState<ProductionHubScreen> {
           diffScriptLines(localScript.lines, cloudScript.lines)
               .every((diff) => diff.type == DiffType.unchanged)) {
         if (context.mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
+          ScaffoldMessenger.of(context).showAutoToast(
             const SnackBar(content: Text('Local script is already up to date')),
           );
         }
@@ -799,7 +800,7 @@ class _ProductionHubScreenState extends ConsumerState<ProductionHubScreen> {
 
       if (!shouldReplaceLocal) {
         if (context.mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
+          ScaffoldMessenger.of(context).showAutoToast(
             const SnackBar(content: Text('Kept local script')),
           );
         }
@@ -813,14 +814,14 @@ class _ProductionHubScreenState extends ConsumerState<ProductionHubScreen> {
       await persistScriptLocally(ref, production.id, cloudScript);
 
       if (context.mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
+        ScaffoldMessenger.of(context).showAutoToast(
           SnackBar(
               content: Text('Loaded ${cloudLines.length} lines from cloud')),
         );
       }
     } catch (e) {
       if (context.mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
+        ScaffoldMessenger.of(context).showAutoToast(
           SnackBar(content: Text('Sync failed: $e')),
         );
       }
@@ -869,7 +870,7 @@ class _ProductionHubScreenState extends ConsumerState<ProductionHubScreen> {
       );
     } catch (e) {
       if (!context.mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
+      ScaffoldMessenger.of(context).showAutoToast(
         SnackBar(content: Text('Export failed: $e')),
       );
     }

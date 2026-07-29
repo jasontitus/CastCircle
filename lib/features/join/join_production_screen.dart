@@ -11,6 +11,7 @@ import '../../data/services/deep_link_service.dart';
 import '../../data/services/supabase_service.dart';
 import '../../data/services/voice_config_service.dart';
 import '../../providers/production_providers.dart';
+import '../../core/toast.dart';
 
 class JoinProductionScreen extends ConsumerStatefulWidget {
   const JoinProductionScreen({super.key});
@@ -301,7 +302,7 @@ class _JoinProductionScreenState extends ConsumerState<JoinProductionScreen> {
       canPop: !_loading,
       onPopInvokedWithResult: (didPop, _) {
         if (didPop || !_loading) return;
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+        ScaffoldMessenger.of(context).showAutoToast(const SnackBar(
           content: Text('Still contacting the server — one moment.'),
           duration: Duration(seconds: 2),
         ));

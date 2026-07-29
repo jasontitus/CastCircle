@@ -8,6 +8,7 @@ import 'package:share_plus/share_plus.dart';
 
 import '../../data/services/debug_log_service.dart';
 import '../../data/services/supabase_service.dart';
+import '../../core/toast.dart';
 
 class DebugLogScreen extends StatefulWidget {
   const DebugLogScreen({super.key});
@@ -76,13 +77,13 @@ class _DebugLogScreenState extends State<DebugLogScreen> {
                 // need. Use the explicit "Clear log" (trash) action to clear.
                 if (mounted) {
                   setState(() {});
-                  ScaffoldMessenger.of(context).showSnackBar(
+                  ScaffoldMessenger.of(context).showAutoToast(
                     SnackBar(content: Text('Sent $label log (${entries.length} entries)')),
                   );
                 }
               } catch (e) {
                 if (mounted) {
-                  ScaffoldMessenger.of(context).showSnackBar(
+                  ScaffoldMessenger.of(context).showAutoToast(
                     SnackBar(content: Text('Send failed: $e')),
                   );
                 }
@@ -107,7 +108,7 @@ class _DebugLogScreenState extends State<DebugLogScreen> {
               final text = entries.map((e) => e.toLine()).join('\n');
               Clipboard.setData(ClipboardData(text: text));
               final label = _filter != null ? '${_filter!.tag} log' : 'full log';
-              ScaffoldMessenger.of(context).showSnackBar(
+              ScaffoldMessenger.of(context).showAutoToast(
                 SnackBar(content: Text('Copied $label (${entries.length} entries)')),
               );
             },

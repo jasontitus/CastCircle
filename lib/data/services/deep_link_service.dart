@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 
 import '../../main.dart' show rootScaffoldMessengerKey;
 import 'debug_log_service.dart';
+import '../../core/toast.dart';
 
 /// Data from an incoming invite deep link.
 class PendingJoin {
@@ -148,7 +149,7 @@ class DeepLinkService {
       );
       // On a cold start there is no messenger yet; the log above is then the
       // only record, and the join screen still lets them type the code.
-      rootScaffoldMessengerKey.currentState?.showSnackBar(const SnackBar(
+      rootScaffoldMessengerKey.currentState?.showAutoToast(const SnackBar(
         content: Text("That invite link isn't valid — ask your director for "
             'the 6-character join code.'),
         duration: Duration(seconds: 6),

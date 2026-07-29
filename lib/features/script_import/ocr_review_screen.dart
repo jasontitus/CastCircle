@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../../data/models/script_models.dart';
 import 'pdf_page_view.dart';
+import '../../core/toast.dart';
 
 /// Result returned from [OcrReviewScreen]: the (possibly edited) full line list
 /// with any removed lines dropped. The caller swaps this into the preview's
@@ -156,7 +157,7 @@ class _OcrReviewScreenState extends State<OcrReviewScreen> {
     });
     ScaffoldMessenger.of(context)
       ..hideCurrentSnackBar()
-      ..showSnackBar(const SnackBar(content: Text('Line updated')));
+      ..showAutoToast(const SnackBar(content: Text('Line updated')));
   }
 
   void _removeLine(ScriptLine line) {

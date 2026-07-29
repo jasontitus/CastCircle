@@ -14,6 +14,7 @@ import '../../data/services/debug_log_service.dart';
 import '../../data/services/deep_link_service.dart';
 import '../../data/services/supabase_service.dart';
 import '../../providers/production_providers.dart';
+import '../../core/toast.dart';
 
 /// Bulk cast setup: single scrollable form for assigning actors to characters.
 /// Fill in as many or as few as you want, then save.
@@ -307,7 +308,7 @@ class _BulkCastSetupScreenState extends ConsumerState<BulkCastSetupScreen> {
 
     final saved = _filledCount;
     if (saved == 0) {
-      ScaffoldMessenger.of(context).showSnackBar(
+      ScaffoldMessenger.of(context).showAutoToast(
         const SnackBar(
           content: Text('No actors to save (fill in at least one name)'),
         ),
@@ -316,7 +317,7 @@ class _BulkCastSetupScreenState extends ConsumerState<BulkCastSetupScreen> {
     }
 
     if (_failedCloudInvites.isNotEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+      ScaffoldMessenger.of(context).showAutoToast(SnackBar(
         content: Text('$saved actor(s) saved, but cloud invitations failed '
             'for: ${_failedCloudInvites.join(', ')}. Their join links won\'t '
             'work — re-save when back online.'),
@@ -325,7 +326,7 @@ class _BulkCastSetupScreenState extends ConsumerState<BulkCastSetupScreen> {
     } else {
       ScaffoldMessenger.of(
         context,
-      ).showSnackBar(SnackBar(content: Text('$saved actor(s) saved')));
+      ).showAutoToast(SnackBar(content: Text('$saved actor(s) saved')));
     }
 
     // Show invite links sheet so director can share individually
@@ -417,7 +418,7 @@ class _BulkCastSetupScreenState extends ConsumerState<BulkCastSetupScreen> {
                           tooltip: 'Copy invite',
                           onPressed: () {
                             Clipboard.setData(ClipboardData(text: inviteText));
-                            ScaffoldMessenger.of(context).showSnackBar(
+                            ScaffoldMessenger.of(context).showAutoToast(
                               SnackBar(
                                 content: Text('Invite for $actorName copied'),
                                 duration: const Duration(seconds: 1),
