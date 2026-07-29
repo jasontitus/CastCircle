@@ -68,7 +68,7 @@ const _screenNames = {
 GoRouter _buildRouter(Ref ref) => GoRouter(
   initialLocation: '/',
   observers: [
-    _AnalyticsRouteObserver(),
+    AnalyticsRouteObserver(),
   ],
   redirect: (context, state) {
     final authed = ref.read(authGatePassedProvider);
@@ -281,28 +281,52 @@ class _CastCircleAppState extends ConsumerState<CastCircleApp> {
 }
 
 /// Logs screen views to Firebase Analytics with human-readable names.
-class _AnalyticsRouteObserver extends NavigatorObserver {
+///
+/// `logScreenView` means "the user is now on this screen" — it sets the screen
+/// that subsequent events and engagement time are attributed to. So a pop logs
+/// the route being *returned to*, never the one being left: logging the popped
+/// route would count every page twice (once on push, once on pop) and leave
+/// attribution pointing at a screen the user already abandoned.
+///
+/// Only [PageRoute]s count. Dialogs and modal sheets push routes too, and
+/// without this filter closing one would re-log its host screen on every
+/// dismissal. Filtering on the route type rather than relying on dialog routes
+/// having a null `settings.name` keeps that true even if a dialog is ever given
+/// explicit `routeSettings`.
+class AnalyticsRouteObserver extends NavigatorObserver {
+  /// [logScreenView] is the sink for resolved screen names; it defaults to
+  /// Firebase and is overridden in tests, which is the only way to assert the
+  /// push/pop bookkeeping without a live Firebase instance.
+  AnalyticsRouteObserver({void Function(String screenName)? logScreenView})
+    : _logScreenView = logScreenView ?? _sendToFirebase;
+
+  final void Function(String screenName) _logScreenView;
+
+  static void _sendToFirebase(String screenName) {
+    if (!firebaseAvailable) return;
+    FirebaseAnalytics.instance.logScreenView(screenName: screenName);
+  }
+
   @override
   void didPush(Route route, Route? previousRoute) {
-    _logScreen(route);
+    if (route is PageRoute) _logScreen(route);
   }
 
   @override
   void didPop(Route route, Route? previousRoute) {
-    // Log the route being left (popped), not the one we return to.
-    _logScreen(route);
+    if (route is PageRoute && previousRoute is PageRoute) {
+      _logScreen(previousRoute);
+    }
   }
 
   @override
   void didReplace({Route? newRoute, Route? oldRoute}) {
-    if (newRoute != null) _logScreen(newRoute);
+    if (newRoute is PageRoute) _logScreen(newRoute);
   }
 
   void _logScreen(Route route) {
-    if (!firebaseAvailable) return;
     final path = route.settings.name;
     if (path == null) return;
-    final screenName = _screenNames[path] ?? path;
-    FirebaseAnalytics.instance.logScreenView(screenName: screenName);
+    _logScreenView(_screenNames[path] ?? path);
   }
 }
