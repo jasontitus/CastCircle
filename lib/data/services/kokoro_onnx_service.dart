@@ -1,8 +1,10 @@
 import 'dart:async';
+import 'dart:ffi';
 import 'dart:io';
 import 'dart:isolate';
 import 'dart:typed_data';
 
+import 'package:ffi/ffi.dart' as pkg_ffi;
 import 'package:path_provider/path_provider.dart';
 import 'package:sherpa_onnx/sherpa_onnx.dart' as sherpa;
 
@@ -17,6 +19,13 @@ import 'model_manager.dart';
 /// Exposes the same contract as the iOS KokoroMLX channel — synthesize(text,
 /// voice, speed) → WAV file path — so TtsService's playback, chunking, and
 /// prefetch logic is shared untouched.
+///
+/// Requests are queued HERE (one in the isolate at a time), not in the
+/// isolate's port, so stale work can be dropped: an [urgent] request (a line
+/// being spoken now) cancels older queued urgent requests outright and aborts
+/// whatever is currently generating via a native flag the generate callback
+/// polls — without this, restart/skip taps piled up full-length syntheses of
+/// lines nobody would hear (measured: 11 s of silence from two stale synths).
 class KokoroOnnxService {
   KokoroOnnxService._();
   static final instance = KokoroOnnxService._();
@@ -27,8 +36,15 @@ class KokoroOnnxService {
   SendPort? _toIsolate;
   StreamSubscription? _sub;
   Future<bool>? _starting;
-  final _pending = <int, Completer<String?>>{};
-  var _nextId = 0;
+
+  final _queue = <_Req>[];
+  _Req? _inFlight;
+  var _nextSeq = 0;
+
+  /// Native flag shared with the isolate's generate callback: any request
+  /// whose seq is below this value aborts. Process-wide memory — the only
+  /// way to signal an isolate that is blocked inside a native call.
+  final Pointer<Int32> _cancelBelow = pkg_ffi.calloc<Int32>();
 
   bool get isRunning => _toIsolate != null;
 
@@ -72,6 +88,7 @@ class KokoroOnnxService {
         dataDir: paths.dataDir,
         lexicon: paths.lexicon,
         tmpDir: tmpDir,
+        cancelBelowAddr: _cancelBelow.address,
       ));
     } catch (e) {
       _dlog.logError(LogCategory.tts, 'KokoroOnnx: isolate spawn failed', e);
@@ -88,15 +105,21 @@ class KokoroOnnxService {
         } else if (msg.containsKey('initError')) {
           _dlog.logError(LogCategory.tts, 'KokoroOnnx: ${msg['initError']}');
           if (!ready.isCompleted) ready.complete(false);
-        } else if (msg.containsKey('id')) {
-          final c = _pending.remove(msg['id']);
-          if (msg.containsKey('error')) {
-            _dlog.logError(
-                LogCategory.tts, 'KokoroOnnx synth failed: ${msg['error']}');
-            c?.complete(null);
-          } else {
-            c?.complete(msg['path'] as String?);
+        } else if (msg.containsKey('seq')) {
+          final req = _inFlight;
+          _inFlight = null;
+          if (req != null && req.seq == msg['seq']) {
+            if (msg.containsKey('error')) {
+              _dlog.logError(
+                  LogCategory.tts, 'KokoroOnnx synth failed: ${msg['error']}');
+              req.completer.complete(null);
+            } else if (msg['aborted'] == true) {
+              req.completer.complete(null);
+            } else {
+              req.completer.complete(msg['path'] as String?);
+            }
           }
+          _pump();
         }
       }
     });
@@ -109,23 +132,59 @@ class KokoroOnnxService {
       await stop();
     } else {
       _dlog.log(LogCategory.tts, 'KokoroOnnx: engine ready');
+      _pump();
     }
     return ok;
   }
 
-  /// Synthesize [text] to a 24 kHz WAV; returns its path, or null on failure.
-  /// Requests are processed sequentially in the isolate (one CPU-heavy
-  /// pipeline), so prefetch naturally queues behind live synthesis.
+  /// Synthesize [text] to a 24 kHz WAV; returns its path, or null on failure
+  /// or cancellation.
+  ///
+  /// [urgent] marks audio the actor is waiting on RIGHT NOW (a line being
+  /// spoken): it cancels older queued urgent requests and aborts the current
+  /// generation so it runs next. Prefetches are non-urgent: they queue behind
+  /// everything and are the natural casualty of an urgent arrival.
   Future<String?> synthesize(String text,
-      {required String voice, double speed = 1.0}) async {
+      {required String voice, double speed = 1.0, bool urgent = false}) {
+    if (_toIsolate == null && _starting == null) {
+      return Future.value(null);
+    }
+    final req = _Req(
+      seq: _nextSeq++,
+      text: text,
+      sid: voiceIds[voice] ?? voiceIds['af_heart']!,
+      speed: speed,
+      urgent: urgent,
+    );
+
+    if (urgent) {
+      // Older urgent requests are for lines nobody will hear — drop queued
+      // ones and abort the one mid-generate (urgent or prefetch alike; a
+      // dropped prefetch just re-synthesizes on demand later).
+      _queue.removeWhere((q) {
+        if (q.urgent) q.completer.complete(null);
+        return q.urgent;
+      });
+      _cancelBelow.value = req.seq;
+    }
+
+    _queue.add(req);
+    _pump();
+    return req.completer.future;
+  }
+
+  /// Send the next queued request if the isolate is idle.
+  void _pump() {
     final port = _toIsolate;
-    if (port == null) return null;
-    final sid = voiceIds[voice] ?? voiceIds['af_heart']!;
-    final id = _nextId++;
-    final c = Completer<String?>();
-    _pending[id] = c;
-    port.send({'id': id, 'text': text, 'sid': sid, 'speed': speed});
-    return c.future;
+    if (port == null || _inFlight != null || _queue.isEmpty) return;
+    final req = _queue.removeAt(0);
+    _inFlight = req;
+    port.send({
+      'seq': req.seq,
+      'text': req.text,
+      'sid': req.sid,
+      'speed': req.speed,
+    });
   }
 
   /// Tear down the isolate and fail any in-flight requests.
@@ -136,11 +195,31 @@ class KokoroOnnxService {
     _sub = null;
     _isolate?.kill(priority: Isolate.beforeNextEvent);
     _isolate = null;
-    for (final c in _pending.values) {
-      c.complete(null);
+    _inFlight?.completer.complete(null);
+    _inFlight = null;
+    for (final q in _queue) {
+      q.completer.complete(null);
     }
-    _pending.clear();
+    _queue.clear();
+    // _cancelBelow is intentionally never freed: the singleton lives for the
+    // process, and a freed pointer with a live isolate would be a use-after-free.
   }
+}
+
+class _Req {
+  _Req({
+    required this.seq,
+    required this.text,
+    required this.sid,
+    required this.speed,
+    required this.urgent,
+  });
+  final int seq;
+  final String text;
+  final int sid;
+  final double speed;
+  final bool urgent;
+  final completer = Completer<String?>();
 }
 
 class _IsolateArgs {
@@ -152,6 +231,7 @@ class _IsolateArgs {
     required this.dataDir,
     required this.lexicon,
     required this.tmpDir,
+    required this.cancelBelowAddr,
   });
   final SendPort sendPort;
   final String model;
@@ -160,11 +240,13 @@ class _IsolateArgs {
   final String dataDir;
   final String lexicon;
   final String tmpDir;
+  final int cancelBelowAddr;
 }
 
 Future<void> _isolateMain(_IsolateArgs args) async {
   final commands = ReceivePort();
   args.sendPort.send(commands.sendPort);
+  final cancelBelow = Pointer<Int32>.fromAddress(args.cancelBelowAddr);
 
   sherpa.OfflineTts tts;
   try {
@@ -199,24 +281,35 @@ Future<void> _isolateMain(_IsolateArgs args) async {
       commands.close();
       return;
     }
-    final id = msg['id'] as int;
+    final seq = msg['seq'] as int;
+    if (seq < cancelBelow.value) {
+      args.sendPort.send({'seq': seq, 'aborted': true});
+      continue;
+    }
     try {
-      final audio = tts.generate(
+      final audio = tts.generateWithCallback(
         text: msg['text'] as String,
         sid: msg['sid'] as int,
         speed: (msg['speed'] as num).toDouble(),
+        // Polled between generation chunks: 0 aborts. This is how a
+        // superseded line stops burning CPU mid-synthesis.
+        callback: (_) => seq < cancelBelow.value ? 0 : 1,
       );
+      if (seq < cancelBelow.value) {
+        args.sendPort.send({'seq': seq, 'aborted': true});
+        continue;
+      }
       if (audio.samples.isEmpty) {
-        args.sendPort.send({'id': id, 'error': 'empty audio'});
+        args.sendPort.send({'seq': seq, 'error': 'empty audio'});
         continue;
       }
       // Unique per call — prefetched paths stay valid while later lines
       // synthesize.
       final path = '${args.tmpDir}/kokoro_onnx_${fileSeq++}.wav';
       _writeWav(path, audio.samples, audio.sampleRate);
-      args.sendPort.send({'id': id, 'path': path});
+      args.sendPort.send({'seq': seq, 'path': path});
     } catch (e) {
-      args.sendPort.send({'id': id, 'error': '$e'});
+      args.sendPort.send({'seq': seq, 'error': '$e'});
     }
   }
 }

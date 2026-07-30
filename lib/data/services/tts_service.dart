@@ -522,11 +522,15 @@ class TtsService {
   /// Synthesize one chunk with whichever Kokoro engine is loaded, returning
   /// the audio file path (null on failure). The single seam between the
   /// platform engines — playback, chunking, and prefetch above are shared.
+  ///
+  /// [urgent] marks audio the actor is waiting on right now (live speak, not
+  /// prefetch): on the ONNX engine it cancels stale queued lines and aborts a
+  /// superseded generation mid-synthesis.
   Future<String?> _synthesizeChunk(String text,
-      {required String voice, required double speed}) {
+      {required String voice, required double speed, bool urgent = false}) {
     if (_activeEngine == TtsEngine.kokoroOnnx) {
       return KokoroOnnxService.instance
-          .synthesize(text, voice: voice, speed: speed);
+          .synthesize(text, voice: voice, speed: speed, urgent: urgent);
     }
     return _channel.invokeMethod<String>('synthesize', {
       'text': text,
@@ -572,7 +576,8 @@ class TtsService {
 
         final audioPath = usePrecomputed
             ? precomputedPaths[i]
-            : await _synthesizeChunk(chunks[i], voice: voice, speed: speed);
+            : await _synthesizeChunk(chunks[i],
+                voice: voice, speed: speed, urgent: true);
 
         if (audioPath == null || audioPath.isEmpty) {
           DebugLogService.instance.logError(LogCategory.tts,

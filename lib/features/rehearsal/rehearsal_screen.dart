@@ -95,12 +95,21 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
   bool _hasPromptedUpload = false; // only prompt once per session
   // Android: "download the live-matching model" tip, once per rehearsal
   bool _liveAsrNoticeShown = false;
+  // Android: whether live word-matching is driving the CURRENT line. A field
+  // (not a closure capture) because the recognizer can finish loading and
+  // attach mid-line — the silence endpointing must see the upgrade.
+  bool _liveMatchingActive = false;
 
-  // Prefetched Kokoro TTS audio: lineId → synthesized chunk file paths.
-  // Populated in the background while the actor speaks THEIR line so the next
-  // other-character line plays instantly. Pruned on use (.remove) and cleared
-  // on dispose / scene change.
-  final Map<String, List<String>> _ttsPrefetch = {};
+  // Prefetched Kokoro TTS audio: lineId → future of synthesized chunk paths.
+  // Populated in the background while the actor speaks THEIR line and while
+  // the previous line plays, so the next other-character line starts
+  // instantly. The map holds FUTURES, inserted before synthesis begins:
+  // when playback wants a line whose prefetch is still in flight it awaits
+  // that same synthesis instead of starting a duplicate (measured on-device:
+  // the completed-results version lost the race by 100 ms and synthesized the
+  // line twice back-to-back). Pruned on use (.remove), on failure (null
+  // result), and cleared on dispose / scene change.
+  final Map<String, Future<List<String>?>> _ttsPrefetch = {};
 
   // Debounce rapid taps to prevent stack overflow from reentrancy
   bool _jumpBackInProgress = false;
@@ -1661,6 +1670,7 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
       return;
     }
 
+    // Already prefetched or in flight — never start a duplicate synthesis.
     if (_ttsPrefetch.containsKey(line.id)) return;
 
     // Same voice resolution as _playOtherLine.
@@ -1675,14 +1685,21 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
         ? ref.read(fastModeSpeedProvider)
         : ref.read(playbackSpeedProvider);
     _tts.setCharacterSpeed(voiceCharacter, speed);
-    try {
-      final paths =
-          await _tts.prepareKokoro(line.text, character: voiceCharacter);
-      if (paths != null) _ttsPrefetch[line.id] = paths;
-    } catch (e) {
+    final future = _tts
+        .prepareKokoro(line.text, character: voiceCharacter)
+        .catchError((Object e) {
       // Best-effort — fall back to on-demand synthesis at playback, but log
       // it: silent prefetch failures show up as latency complaints.
       _dlog.log(LogCategory.tts, 'Kokoro prefetch failed for ${line.id}: $e');
+      return null;
+    });
+    // In the map BEFORE completion, so playback awaits in-flight synthesis.
+    _ttsPrefetch[line.id] = future;
+    final paths = await future;
+    // Failed/cancelled — drop the entry so playback synthesizes on demand
+    // (identical-key check: the entry may have been consumed or replaced).
+    if (paths == null && identical(_ttsPrefetch[line.id], future)) {
+      _ttsPrefetch.remove(line.id);
     }
   }
 
@@ -1811,12 +1828,18 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
     _tts.setCharacterSpeed(voiceCharacter, speed);
     _dlog.log(LogCategory.tts,
         'Fast mode: ${ref.read(fastModeEnabledProvider)}, speed=$speed for $voiceCharacter');
-    if (_ttsPrefetch.containsKey(line.id)) {
-      // Audio was synthesized in the background while the actor spoke — play
-      // it immediately instead of synthesizing on demand.
+    // Prefetched (or prefetch in flight — await the same synthesis rather
+    // than duplicating it). A null result means the prefetch failed or was
+    // cancelled; speak() then synthesizes on demand.
+    final prefetched = await _ttsPrefetch.remove(line.id);
+    if (!mounted ||
+        ref.read(rehearsalStateProvider) != RehearsalState.playingOther) {
+      return; // advanced/paused while awaiting the prefetch
+    }
+    if (prefetched != null) {
+      _dlog.log(LogCategory.tts, 'Kokoro: playing prefetched audio');
       await _tts.speak(line.text,
-          character: voiceCharacter,
-          precomputedPaths: _ttsPrefetch.remove(line.id));
+          character: voiceCharacter, precomputedPaths: prefetched);
     } else {
       await _tts.speak(line.text, character: voiceCharacter);
     }
@@ -2443,13 +2466,31 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
     _lastRecognizedRaw = '';
     _loggedFirstResultForLine = false;
 
-    // Instant when already running; one-time model load otherwise.
+    // Instant when already running (warmed at rehearsal start). When it's
+    // still loading — e.g. resuming straight into the actor's line — do NOT
+    // hold the mic hostage: start capturing after a short grace and attach
+    // matching mid-line when the recognizer arrives (words spoken before then
+    // aren't matched, but the recording is complete and the silence timers
+    // still advance). Blocking here cost 8.7 s of dead mic in the field.
     final liveAsr = LiveAsrService.instance;
-    final liveMatching = await liveAsr.ensureStarted();
+    bool? asrStarted; // null = still loading
+    final asrFuture = liveAsr.ensureStarted().then((ok) => asrStarted = ok);
+    if (!liveAsr.isRunning) {
+      await Future.any([
+        asrFuture,
+        Future.delayed(const Duration(milliseconds: 250)),
+      ]);
+    } else {
+      asrStarted = true;
+    }
     if (!mounted) return;
+    final liveMatching = asrStarted == true;
+    _liveMatchingActive = liveMatching;
 
     // Say once per rehearsal why lines don't match live — and how to get it.
-    if (!liveMatching && !_liveAsrNoticeShown) {
+    // Only when the engine reported it CAN'T start (model missing) — not
+    // while it's merely still loading.
+    if (asrStarted == false && !_liveAsrNoticeShown) {
       _liveAsrNoticeShown = true;
       ScaffoldMessenger.of(context).showAutoToast(SnackBar(
         content: const Text('Download "Live Line Matching" and rehearsal '
@@ -2488,17 +2529,33 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
       if (ref.read(rehearsalStateProvider) != RehearsalState.listeningForMe) {
         return;
       }
-      if (liveMatching && _matchScore.value < threshold) return;
+      if (_liveMatchingActive && _matchScore.value < threshold) return;
       if (silence >=
           Duration(milliseconds: ref.read(rehearsalAdvanceSilenceMsProvider))) {
         _confirmLineMatch(line);
       }
     };
 
-    if (liveMatching) {
+    void attachMatching() {
       liveAsr.onPartial = (text) => _handleRecognizedForLine(line, text);
       SttChannel.instance.onPcm = liveAsr.feedPcm;
       liveAsr.startUtterance();
+    }
+
+    if (liveMatching) {
+      attachMatching();
+    } else if (asrStarted == null) {
+      // Still loading — upgrade this line to live matching when it's ready,
+      // if the actor is still on it and the mic is still capturing.
+      unawaited(asrFuture.then((_) {
+        if (asrStarted != true || !mounted || !_isCapturingAudio) return;
+        if (ref.read(rehearsalStateProvider) != RehearsalState.listeningForMe) {
+          return;
+        }
+        _dlog.log(LogCategory.stt, 'LiveASR: attached mid-line');
+        _liveMatchingActive = true;
+        attachMatching();
+      }));
     }
 
     final dir = await getTemporaryDirectory();

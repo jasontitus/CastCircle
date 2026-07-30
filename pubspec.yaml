@@ -40,6 +40,11 @@ dependencies:
   # docs/ANDROID_LIVE_MATCHING.md. The app owns the mic and fans PCM out to the
   # recording and to this recognizer.
   sherpa_onnx: ^1.13.4
+  # Direct dep (already transitive via sherpa_onnx): the Kokoro synthesis
+  # isolate shares a native cancel flag with the main isolate so a superseded
+  # line can abort mid-generate (isolates share no Dart memory; FFI memory is
+  # process-wide).
+  ffi: ^2.1.0
 
   # PDF rendering (for OCR pipeline)
   pdfrx: ^2.2.24

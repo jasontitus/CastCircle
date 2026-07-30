@@ -15,6 +15,19 @@
 > utterance through the full isolate pipeline, simultaneous with .m4a capture
 > (`integration_test/android_live_matching_test.dart`).
 
+## Autonomous test harness
+
+`scripts/phone-harness.sh` runs the full rehearsal loop on a connected device
+or emulator with no human in the loop — it sideloads both model packs (from
+`.asr-eval/`, git-ignored; re-stage from the release assets if absent), grants
+the mic, sets volume, and prints PROBE metrics: TTS pipeline latency per line
+and mic→recognizer match scores. On a real phone the round trip is acoustic
+(speaker → air → mic); on an emulator, whose virtual mic can't hear its own
+speaker, the harness detects the silent capture and injects PCM directly
+(validates decoding/matching, not the mic). Emulator note: give the AVD
+6 GB RAM (`hw.ramSize = 6144`) — at the default 1.5 GB the Kokoro session
+swaps and every metric is garbage.
+
 ## The problem
 
 On iOS, rehearsal does two things at once with the microphone: `SFSpeechRecognizer`

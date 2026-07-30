@@ -59,6 +59,24 @@ void main() {
     expect(both.whereType<String>().length, 2, reason: 'queued synth failed');
     print('PROBE: queued pair OK');
 
+    // Urgent supersedes stale: a long line mid-generate is aborted when an
+    // urgent one arrives (restart/skip hammering must not pile up synthesis).
+    final tCancel = Stopwatch()..start();
+    final stale = svc.synthesize(
+        'It is a truth universally acknowledged that a single man in '
+        'possession of a good fortune must be in want of a wife, however '
+        'little known the feelings or views of such a man may be.',
+        voice: 'af_heart',
+        urgent: true);
+    await Future.delayed(const Duration(milliseconds: 400)); // let it start
+    final urgent = await svc.synthesize('The line the actor is waiting on.',
+        voice: 'am_adam', urgent: true);
+    tCancel.stop();
+    expect(urgent, isNotNull, reason: 'urgent synthesis failed');
+    expect(await stale, isNull, reason: 'stale urgent line must be aborted');
+    print('PROBE: urgent superseded stale in '
+        '${(tCancel.elapsedMilliseconds / 1000).toStringAsFixed(1)}s');
+
     await svc.stop();
     print('PROBE: ALL OK');
   }, timeout: const Timeout(Duration(minutes: 15)));
