@@ -28,7 +28,18 @@ import 'package:castcircle/data/services/model_download_service.dart';
 import 'package:castcircle/data/services/model_manager.dart';
 import 'package:castcircle/data/services/stt_channel.dart';
 import 'package:castcircle/data/services/stt_service.dart';
+import 'package:castcircle/data/services/tts_service.dart';
 import 'package:path_provider/path_provider.dart';
+
+// A long multi-sentence line (416 chars — the field case that sat silent for
+// 15 s): playback may begin once the FIRST chunk is synthesized.
+const _longLine =
+    'Certainly there are such people, but I hope I am not one of them. '
+    'I confess I cannot boast of ever having seen such a woman in all my '
+    'acquaintance. I never saw such capacity, and taste, and application, '
+    'and elegance, as you describe united in one person. I am no longer '
+    'surprised at your knowing only six accomplished women, Mr Darcy. '
+    'I rather wonder now at your knowing any at all in the whole world.';
 
 // A P&P exchange: alternating computer lines and "my" (DARCY) lines.
 const _otherLines = [
@@ -129,6 +140,26 @@ void main() {
     }
     expect(latencies.sublist(1).every((ms) => ms < 1500), true,
         reason: 'prefetched lines must start fast, got $latencies');
+
+    // ── Part 1b: long-line chunk streaming through TtsService ──
+    // Time-to-first-audio is set by the FIRST chunk future; the rest
+    // synthesize during playback.
+    expect(await TtsService.instance.tryLoadKokoro(), true,
+        reason: 'TtsService must pick up the ONNX engine');
+    final tLong = Stopwatch()..start();
+    final chunkFutures = TtsService.instance.prepareKokoro(_longLine)!;
+    final firstMs = await chunkFutures.first
+        .then((p) => p == null ? -1 : tLong.elapsedMilliseconds);
+    await Future.wait(chunkFutures);
+    final allMs = tLong.elapsedMilliseconds;
+    print('PROBE: longLine chunks=${chunkFutures.length} '
+        'firstChunk=${firstMs}ms allChunks=${allMs}ms');
+    expect(firstMs, greaterThan(0), reason: 'first chunk must synthesize');
+    expect(chunkFutures.length, greaterThan(1),
+        reason: 'long line must be split for streaming');
+    expect(firstMs, lessThan(allMs ~/ 2),
+        reason: 'playback must be able to start well before the whole line '
+            'is synthesized');
 
     // ── Part 2: acoustic round trip (speaker → air → mic → recognizer) ──
     await SttChannel.instance.initialize();

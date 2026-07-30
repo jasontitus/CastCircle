@@ -100,16 +100,17 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
   // attach mid-line — the silence endpointing must see the upgrade.
   bool _liveMatchingActive = false;
 
-  // Prefetched Kokoro TTS audio: lineId → future of synthesized chunk paths.
+  // Prefetched Kokoro TTS audio: lineId → per-CHUNK synthesis futures.
   // Populated in the background while the actor speaks THEIR line and while
   // the previous line plays, so the next other-character line starts
-  // instantly. The map holds FUTURES, inserted before synthesis begins:
-  // when playback wants a line whose prefetch is still in flight it awaits
-  // that same synthesis instead of starting a duplicate (measured on-device:
-  // the completed-results version lost the race by 100 ms and synthesized the
-  // line twice back-to-back). Pruned on use (.remove), on failure (null
-  // result), and cleared on dispose / scene change.
-  final Map<String, Future<List<String>?>> _ttsPrefetch = {};
+  // instantly. Futures (inserted before synthesis begins) rather than
+  // results, for two measured reasons: playback of a line whose prefetch is
+  // in flight awaits the same synthesis instead of duplicating it (the
+  // results version lost that race by 100 ms), and speak() starts playing
+  // chunk 0 the moment it resolves instead of waiting for the whole line
+  // (a 416-char line used to sit silent for 15 s). Pruned on use (.remove)
+  // and cleared on dispose / scene change.
+  final Map<String, List<Future<String?>>> _ttsPrefetch = {};
 
   // Debounce rapid taps to prevent stack overflow from reentrancy
   bool _jumpBackInProgress = false;
@@ -550,11 +551,13 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
     _tts.stop(reason: 'dispose');
     _stt.stop();
     if (Platform.isAndroid) {
-      // Free the live recognizer's native memory between rehearsals; it
-      // restarts on demand (ensureStarted) next session.
+      // Detach callbacks but keep the recognizer engine WARM: stopping it
+      // here orphaned the in-flight load of the next rehearsal (scene switch
+      // = dispose + immediate restart), which then ran its first lines with
+      // live matching dead. The isolate holds ~150 MB and reloads in ~8 s —
+      // keeping it resident across rehearsals is the better trade.
       SttChannel.instance.onPcm = null;
       LiveAsrService.instance.onPartial = null;
-      LiveAsrService.instance.stop();
     }
     _mediaControl.deactivate();
     // Note: the production-level recording subscription is owned by the
@@ -1685,22 +1688,13 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
         ? ref.read(fastModeSpeedProvider)
         : ref.read(playbackSpeedProvider);
     _tts.setCharacterSpeed(voiceCharacter, speed);
-    final future = _tts
-        .prepareKokoro(line.text, character: voiceCharacter)
-        .catchError((Object e) {
-      // Best-effort — fall back to on-demand synthesis at playback, but log
-      // it: silent prefetch failures show up as latency complaints.
-      _dlog.log(LogCategory.tts, 'Kokoro prefetch failed for ${line.id}: $e');
-      return null;
-    });
-    // In the map BEFORE completion, so playback awaits in-flight synthesis.
-    _ttsPrefetch[line.id] = future;
-    final paths = await future;
-    // Failed/cancelled — drop the entry so playback synthesizes on demand
-    // (identical-key check: the entry may have been consumed or replaced).
-    if (paths == null && identical(_ttsPrefetch[line.id], future)) {
-      _ttsPrefetch.remove(line.id);
-    }
+    // Per-chunk futures, in the map BEFORE any synthesis completes, so
+    // playback consumes in-flight work chunk by chunk. speak() handles a
+    // chunk future resolving null (failed/cancelled prefetch) by
+    // re-synthesizing that chunk on demand.
+    final chunkFutures =
+        _tts.prepareKokoro(line.text, character: voiceCharacter);
+    if (chunkFutures != null) _ttsPrefetch[line.id] = chunkFutures;
   }
 
   /// Play another character's line.
@@ -1828,18 +1822,14 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
     _tts.setCharacterSpeed(voiceCharacter, speed);
     _dlog.log(LogCategory.tts,
         'Fast mode: ${ref.read(fastModeEnabledProvider)}, speed=$speed for $voiceCharacter');
-    // Prefetched (or prefetch in flight — await the same synthesis rather
-    // than duplicating it). A null result means the prefetch failed or was
-    // cancelled; speak() then synthesizes on demand.
-    final prefetched = await _ttsPrefetch.remove(line.id);
-    if (!mounted ||
-        ref.read(rehearsalStateProvider) != RehearsalState.playingOther) {
-      return; // advanced/paused while awaiting the prefetch
-    }
+    // Prefetched (possibly still in flight) — hand the chunk futures to
+    // speak(), which starts playback on the first resolved chunk and
+    // re-synthesizes any chunk whose prefetch failed or was cancelled.
+    final prefetched = _ttsPrefetch.remove(line.id);
     if (prefetched != null) {
       _dlog.log(LogCategory.tts, 'Kokoro: playing prefetched audio');
       await _tts.speak(line.text,
-          character: voiceCharacter, precomputedPaths: prefetched);
+          character: voiceCharacter, precomputedChunks: prefetched);
     } else {
       await _tts.speak(line.text, character: voiceCharacter);
     }
@@ -2103,13 +2093,37 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
       final confirmMs =
           score >= _fullLineMatchThreshold ? _fastConfirmMs : 1200;
       _matchConfirmTimer = Timer(Duration(milliseconds: confirmMs), () {
-        _confirmLineMatch(line);
+        _confirmIfActorQuiet(line);
       });
     } else {
       // Score dropped below threshold (e.g., new words recognized that
       // don't match) — cancel pending advance
       _matchConfirmTimer?.cancel();
     }
+  }
+
+  /// Confirm the match only once the actor has actually stopped talking.
+  ///
+  /// The confirm timer fires after N ms of no NEW recognition results — but
+  /// "no new results" is not "done speaking": when the actor hits words the
+  /// recognizer can't transcribe (OCR-garbled text, mumbled names) partials
+  /// stop changing while speech continues, and the timer used to cut the
+  /// actor off mid-line. If the mic still hears speech, re-check shortly
+  /// instead of confirming; the energy endpointing (onSilence) still advances
+  /// the moment the actor goes genuinely quiet.
+  void _confirmIfActorQuiet(ScriptLine line) {
+    if (!mounted || _matchConfirmed) return;
+    if (ref.read(rehearsalStateProvider) != RehearsalState.listeningForMe) {
+      return;
+    }
+    if (_stt.inputLevel >= SttService.silenceThreshold) {
+      _matchConfirmTimer?.cancel();
+      _matchConfirmTimer = Timer(const Duration(milliseconds: 300), () {
+        _confirmIfActorQuiet(line);
+      });
+      return;
+    }
+    _confirmLineMatch(line);
   }
 
   /// Log how a line actually ended. "advanced with no recognition at all" is

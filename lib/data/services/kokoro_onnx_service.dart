@@ -62,14 +62,26 @@ class KokoroOnnxService {
     'bm_daniel': 24, 'bm_fable': 25, 'bm_george': 26, 'bm_lewis': 27,
   };
 
+  // Incremented by stop(); a start that began before the stop must not
+  // resurrect state afterwards.
+  var _epoch = 0;
+
   /// Spawn the synthesis isolate if the model is downloaded. Safe to call
   /// repeatedly; concurrent calls share one startup.
   Future<bool> ensureStarted() {
     if (_toIsolate != null) return Future.value(true);
-    return _starting ??= _start().whenComplete(() => _starting = null);
+    if (_starting != null) return _starting!;
+    late final Future<bool> f;
+    f = _start().whenComplete(() {
+      // Only clear our own registration — stop() may have already replaced
+      // it with a fresh start that must not be wiped by this doomed one.
+      if (identical(_starting, f)) _starting = null;
+    });
+    return _starting = f;
   }
 
   Future<bool> _start() async {
+    final epoch = _epoch;
     final paths = await ModelManager.instance.getKokoroPaths();
     if (paths == null) {
       _dlog.log(LogCategory.tts, 'KokoroOnnx: model not downloaded');
@@ -79,8 +91,9 @@ class KokoroOnnxService {
 
     final fromIsolate = ReceivePort();
     final ready = Completer<bool>();
+    late final Isolate spawned;
     try {
-      _isolate = await Isolate.spawn(_isolateMain, _IsolateArgs(
+      spawned = await Isolate.spawn(_isolateMain, _IsolateArgs(
         sendPort: fromIsolate.sendPort,
         model: paths.model,
         voices: paths.voices,
@@ -95,8 +108,16 @@ class KokoroOnnxService {
       fromIsolate.close();
       return false;
     }
+    if (epoch != _epoch) {
+      // stop() ran while we were loading — this instance is orphaned.
+      spawned.kill(priority: Isolate.immediate);
+      fromIsolate.close();
+      return false;
+    }
+    _isolate = spawned;
 
     _sub = fromIsolate.listen((msg) {
+      if (epoch != _epoch) return; // stopped since — ignore everything
       if (msg is SendPort) {
         _toIsolate = msg;
       } else if (msg is Map) {
@@ -127,6 +148,7 @@ class KokoroOnnxService {
     // Model load reads ~180 MB from disk — allow a slow first open.
     final ok = await ready.future
         .timeout(const Duration(seconds: 60), onTimeout: () => false);
+    if (epoch != _epoch) return false; // stopped while loading
     if (!ok) {
       _dlog.logError(LogCategory.tts, 'KokoroOnnx: engine failed to start');
       await stop();
@@ -189,6 +211,8 @@ class KokoroOnnxService {
 
   /// Tear down the isolate and fail any in-flight requests.
   Future<void> stop() async {
+    _epoch++;
+    _starting = null;
     _toIsolate?.send(const {'cmd': 'dispose'});
     _toIsolate = null;
     await _sub?.cancel();
