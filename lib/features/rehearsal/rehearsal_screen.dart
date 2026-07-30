@@ -2428,11 +2428,16 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
     // Say once per rehearsal why lines don't match live — and how to get it.
     if (!liveMatching && !_liveAsrNoticeShown) {
       _liveAsrNoticeShown = true;
-      ScaffoldMessenger.of(context).showAutoToast(const SnackBar(
-        content: Text('Tip: download "Live Line Matching" in Settings → '
-            'AI Models and rehearsal will follow your lines as you '
-            'speak them.'),
-        duration: Duration(seconds: 6),
+      ScaffoldMessenger.of(context).showAutoToast(SnackBar(
+        content: const Text('Download "Live Line Matching" and rehearsal '
+            'will follow your lines as you speak them.'),
+        duration: const Duration(seconds: 8),
+        action: SnackBarAction(
+          label: 'Download',
+          onPressed: () {
+            if (mounted) context.push('/ai-models');
+          },
+        ),
       ));
     }
 

@@ -92,7 +92,10 @@ class ModelManager {
   /// Android: checks ONNX Kokoro (via ModelManager).
   Future<bool> isAllReady() async {
     if (Platform.isAndroid) {
-      return isKokoroReady();
+      // Voices AND the live line-matching ASR — the production hub's download
+      // prompt/banner stays up until rehearsal has its full experience.
+      return await isKokoroReady() &&
+          await ModelDownloadService.instance.isLiveAsrReady();
     }
     return ModelDownloadService.instance.isKokoroReady();
   }

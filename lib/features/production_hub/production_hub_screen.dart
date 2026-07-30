@@ -124,12 +124,19 @@ class _ProductionHubScreenState extends ConsumerState<ProductionHubScreen> {
       context: context,
       builder: (ctx) => AlertDialog(
         icon: const Icon(Icons.smart_toy, size: 48),
-        title: const Text('Download AI Voices'),
-        content: const Text(
-          'CastCircle uses on-device AI for natural-sounding voices during '
-          'rehearsal. Download the voice models now (~340 MB, one-time) '
-          'for the best experience.\n\n'
-          'Without them, rehearsal audio won\'t be available.',
+        title: const Text('Download AI Models'),
+        content: Text(
+          Platform.isAndroid
+              ? 'CastCircle uses on-device AI for natural-sounding voices and '
+                  'to follow your lines as you speak during rehearsal. '
+                  'Download the models now (one-time) for the best '
+                  'experience.\n\n'
+                  'Without them, rehearsal audio and live line matching '
+                  'won\'t be available.'
+              : 'CastCircle uses on-device AI for natural-sounding voices '
+                  'during rehearsal. Download the voice models now (~180 MB, '
+                  'one-time) for the best experience.\n\n'
+                  'Without them, rehearsal audio won\'t be available.',
         ),
         actions: [
           TextButton(
@@ -217,7 +224,7 @@ class _ProductionHubScreenState extends ConsumerState<ProductionHubScreen> {
                         color: theme.colorScheme.onTertiaryContainer),
                     const SizedBox(width: 12),
                     Expanded(
-                      child: Text('AI voices not downloaded — tap to download',
+                      child: Text('AI models not downloaded — tap to download',
                           style: theme.textTheme.bodySmall?.copyWith(
                               color:
                                   theme.colorScheme.onTertiaryContainer)),

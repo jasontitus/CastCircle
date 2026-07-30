@@ -14,6 +14,7 @@ import '../../data/services/recording_sync_service.dart';
 import '../../data/models/production_models.dart';
 import '../../data/models/script_models.dart';
 import '../../data/services/supabase_service.dart';
+import '../../features/onboarding/model_setup_screen.dart';
 import '../../features/script_editor/cloud_sync_dialog.dart';
 import '../../main.dart' show rootScaffoldMessengerKey;
 import '../../providers/production_providers.dart';
@@ -53,6 +54,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     // device (reinstall / new device used to show an empty home forever).
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted) unawaited(restoreCloudProductions(ref));
+      // New-user flow: one skippable "download all the AI models" step the
+      // first time home is reached with models missing.
+      if (mounted) unawaited(ModelSetupScreen.maybeOffer(context));
     });
   }
 

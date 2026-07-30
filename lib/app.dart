@@ -26,6 +26,7 @@ import 'features/recording_studio/recording_studio_screen.dart';
 import 'features/recording_studio/recordings_browser_screen.dart';
 import 'features/rehearsal/rehearsal_history_screen.dart';
 import 'features/rehearsal/rehearsal_screen.dart';
+import 'features/onboarding/model_setup_screen.dart';
 import 'features/settings/ai_models_screen.dart';
 import 'features/settings/settings_screen.dart';
 import 'features/settings/kokoro_debug_screen.dart';
@@ -62,6 +63,7 @@ const _screenNames = {
   '/history': 'History',
   '/settings': 'Settings',
   '/ai-models': 'AI Models',
+  '/setup-models': 'AI Setup',
   '/debug-log': 'Debug Log',
 };
 
@@ -167,6 +169,11 @@ GoRouter _buildRouter(Ref ref) => GoRouter(
       name: '/ai-models',
       path: '/ai-models',
       builder: (context, state) => const AiModelsScreen(),
+    ),
+    GoRoute(
+      name: '/setup-models',
+      path: '/setup-models',
+      builder: (context, state) => const ModelSetupScreen(),
     ),
     GoRoute(
       name: '/kokoro-debug',
