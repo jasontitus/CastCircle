@@ -1,0 +1,415 @@
+# DS4 sweep review — CastCircle
+
+Exhaustive per-file pass: 308 code files across 8 batches.
+
+## Findings
+
+# Batch 1 Review Findings
+
+Files reviewed: 68 files across Android (Kotlin, Gradle, manifest), iOS (Swift, Package.swift), Flutter/Dart (integration tests, analysis_options, dart_test), and config files.
+
+## Findings
+
+### Android
+
+- [high] android/app/src/main/kotlin/com/tiltastech/lineguide/AndroidSttPlugin.kt:227-259 — Recording path from Dart channel used directly in `MediaRecorder.setOutputFile(path)` with no validation — a malicious or buggy Dart caller (or a hijacked channel) can write the microphone output to any path the app can write (e.g. overwrite app-private files, write outside the sandbox on rooted devices), and `setOutputFile` is called before `prepare()` so the file is created at the attacker-chosen location — validate the path is within the app's cache/external files dir and reject absolute paths or `..` segments before passing to `setOutputFile`.
+
+- [medium] android/app/src/main/kotlin/com/tiltastech/lineguide/AndroidSttPlugin.kt:112-119 — `ActivityCompat.requestPermissions` result is never handled — the code requests `RECORD_AUDIO` but there is no `onRequestPermissionsResult` callback registered (the class implements `ActivityResultListener` only for the contact picker, not for `REQUEST_RECORD_AUDIO`), so on Android 6+ when the user grants the permission the STT/listening flow stays stuck on the `result.success(false)` branch and the mic is never used — implement `onRequestPermissionsResult` or switch to `registerForActivityResult` to resume the requested operation after permission is granted.
+
+- [medium] android/app/src/main/kotlin/com/tiltastech/lineguide/PdfTextPlugin.kt:50-55 — `hasEmbeddedText` accepts a `path` argument from the Dart channel and passes it directly to `File(path)` / `ParcelFileDescriptor.open` with no validation — a malicious Dart-side caller can probe for the existence and readability of arbitrary files on the device (including app-private files of other apps on rooted devices) by observing the boolean return — validate the path is within an app-owned directory before opening.
+
+- [medium] android/app/src/main/kotlin/com/tiltastech/lineguide/ContactPickerPlugin.kt:61 — `activity?.startActivityForResult(intent, PICK_CONTACT_REQUEST)` is deprecated and the result is delivered to `onActivityResult` — while not a security issue per se, `startActivityForResult` is removed in Activity 30+ and will throw `IllegalStateException` on newer Android, crashing the contact-pick flow — migrate to `registerForActivityResult` via `ActivityResultLauncher`.
+
+- [low] android/app/build.gradle.kts:56-61 — Release build type falls back to the debug signing config when `key.properties` is absent (`signingConfigs.getByName("debug")`) — this means a release build without a configured keystore is signed with the debug key, which is publicly known and allows anyone to produce an APK that upgrades the app on devices that have the debug-key-signed version installed — fail the build in CI when the release keystore is not configured rather than silently falling back to debug.
+
+- [low] android/app/src/main/AndroidManifest.xml:7-10 — `WRITE_EXTERNAL_STORAGE` (maxSdkVersion 28) and `READ_EXTERNAL_STORAGE` (maxSdkVersion 32) are declared but on Android 10+ scoped storage makes these ineffective for most app-private access, and on Android 13+ `READ_MEDIA_AUDIO` is needed instead — the permissions are over-declared for the actual use (recording to app-private storage) and may confuse users; remove them if all file I/O is within the app sandbox, or add `READ_MEDIA_AUDIO` for Android 13+.
+
+### iOS / Swift (KokoroSwift, ParakeetSTT)
+
+- [high] ios/LocalPackages/kokoro-ios/Sources/KokoroSwift/TTSEngine/KokoroConfig.swift:155-166 — `loadConfig()` uses `try!` on `Bundle.module.url(forResource:...)` and `JSONDecoder().decode(...)` — if the bundled `config.json` is missing or malformed (e.g. a bad resource copy during a model update), the app crashes immediately at model init with no recovery path — replace `try!` with `try` and propagate a typed error so callers can surface a user-facing message instead of a hard crash.
+
+- [high] ios/LocalPackages/kokoro-ios/Sources/KokoroSwift/TTSEngine/WeightLoader.swift:34-36 — `loadWeights()` uses `try! MLX.loadArrays(url: modelPath)` — a corrupted or partially-downloaded model file causes an immediate crash with no error message; the caller (`KokoroTTS.init`) has no way to distinguish "model missing" from "model corrupt" — replace `try!` with `try` and propagate the error so the UI can prompt the user to re-download.
+
+- [high] ios/LocalPackages/kokoro-ios/Sources/KokoroSwift/Albert/AlbertSelfAttention.swift:29 — `weights["bert.encoder.albert_layer_groups.\(layerNum).albert_layers.\(innerGroupNum).attention.value.bias"])` uses `]` (force-unwrap) on the dictionary subscript result, while every other weight access on lines 24-31 uses `!` — this is a typo: `weights[...]` returns `MLXArray?`, and `]` is not a valid subscript syntax in Swift, so this line will not compile. The intended code is `weights["..."]!` (force-unwrap). Fix: change `])` to `]!`.
+
+- [high] ios/LocalPackages/parakeet-stt/Sources/ParakeetSTT/ParakeetModel.swift:552-558 — `quantize(model: model) { ... }` is called but `quantize` is not defined anywhere in the ParakeetSTT target — it is an MLX utility that is not imported, so this code will not compile. The `ParakeetQuantizationConfig` parsing (lines 642-714) and `ParakeetPerLayerQuantization` (lines 661-671) exist but are never actually used to quantize the model — either import the correct `quantize` function from MLX or remove the dead quantization code path.
+
+- [high] ios/LocalPackages/parakeet-stt/Sources/ParakeetSTT/ParakeetModel.swift:560 — `try model.update(parameters: ModuleParameters.unflattened(sanitized), verify: .all)` uses `ModuleParameters` and `verify:` which are MLX types not imported in this file — the `import MLX` at line 6 does not expose `ModuleParameters` (it is in `MLXNN` or a separate module), so this line will not compile — add the correct import or fix the API call.
+
+- [medium] ios/LocalPackages/kokoro-ios/Sources/KokoroSwift/TTSEngine/KokoroTTS.swift:290 — `voice[tokenCount - 1, 0 ... 1, 0...]` indexes the voice embedding with `tokenCount - 1` as the first dimension — if `tokenCount` is 0 (empty token array), this is `voice[-1, ...]` which is an out-of-bounds index and will crash at runtime; `prepareInputTensors` allows `inputIds.count` to be 0 (empty text after tokenization) — add a guard that `tokenCount > 0` before indexing, or return early for empty input.
+
+- [medium] ios/LocalPackages/kokoro-ios/Sources/KokoroSwift/TTSEngine/KokoroTTS.swift:217 — `TimestampPredictor.preditTimestamps(tokens: tokenArray, predictionDuration: predictedDurations)` is called but the method name is misspelled (`preditTimestamps` instead of `predictTimestamps`) — this is a compile error; the method is defined as `preditTimestamps` in TimestampPredictor.swift:12 so it is internally consistent, but the misspelling should be corrected for maintainability.
+
+- [medium] ios/LocalPackages/kokoro-ios/Sources/KokoroSwift/TTSEngine/TimestampPredictor.swift:29 — `predictionDuration[0].item()` is called without checking that `predictionDuration.shape[0] >= 1` — the guard at line 18 checks `>= 3` but `predictionDuration[0]` is accessed before that guard takes effect for the `right` variable initialization — if the array has shape `[0]`, this crashes. The guard does protect it (shape >= 3), but the comment on line 27 "TO_DO: Is -3 an appropriate offset?" indicates the timestamp logic is unverified and may produce incorrect timestamps.
+
+- [medium] ios/LocalPackages/kokoro-ios/Sources/KokoroSwift/TTSEngine/KokoroTTS.swift:339 — `MLX.clip(durationSigmoid.round(), min: 1).asType(.int32)[0]` clips durations to a minimum of 1 frame, but if `durationSigmoid` is empty (no tokens), the `[0]` index crashes — `prepareInputTensors` can return an empty `inputIds` array (0 tokens), and `predictDurations` would then operate on an empty tensor — add a guard for empty token arrays before calling `predictDurations`.
+
+- [medium] ios/LocalPackages/parakeet-stt/Sources/ParakeetSTT/ParakeetModel.swift:141 — `generateStream` yields `.token(nextText)` for incremental text but never yields `.info(STTGenerationInfo)` — the `STTGeneration.info` case is defined but never produced, so consumers waiting for timing/token statistics during streaming will never receive them — either yield `.info` with computed statistics or remove the unused case.
+
+- [medium] ios/LocalPackages/parakeet-stt/Sources/ParakeetSTT/ParakeetModel.swift:264 — `tokenLogits = jointOut[0, 0, 0, ..<(blankToken + 1)]` and `durationLogits = jointOut[0, 0, 0, (blankToken + 1)...]` assume `jointOut` has shape `[1, 1, 1, N]` — if the joint network output has a different shape (e.g. `[1, 1, T, N]` for batch > 1), the `0` indices silently select the first element and the slicing may be wrong or out of bounds — add a shape assertion or use proper indexing.
+
+- [low] ios/LocalPackages/kokoro-ios/Sources/KokoroSwift/TTSEngine/KokoroTTS.swift:338 — `MLX.sigmoid(durationLogits).sum(axis: -1) / speed` — if `speed` is 0.0 (a caller could pass `speed: 0`), this produces `inf` or `NaN` values that propagate through the duration prediction and alignment — add a guard that `speed > 0`.
+
+- [low] ios/LocalPackages/kokoro-ios/Sources/KokoroSwift/Decoder/MLXSTFT.swift:63 — `fatalError("Only hanning is supported for window, not \(windowStr)")` is called for unsupported window types — this is a hard crash for a configuration error that could be a recoverable error; since `mlxStft` is called from the STFT pipeline, a bad window name crashes the TTS engine — return a default window or throw an error instead of `fatalError`.
+
+- [low] ios/LocalPackages/kokoro-ios/Sources/KokoroSwift/BuildingBlocks/ConvWeighted.swift:100-101 — `bias = bias?.reshaped([1, 1, -1])` mutates the `bias` property (a `var`) inside `callAsFunction`, which means the reshaped bias persists across calls and if the function is called again with a different batch size, the bias shape is already `[1, 1, -1]` and the reshape is a no-op (but harmless); however, if `bias` was originally `nil`, the `?` makes it stay `nil`; this is a latent correctness issue if the bias shape ever needs to change — use a local variable instead of mutating `self.bias`.
+
+### Flutter / Dart (integration tests, config)
+
+- [medium] integration_test/ocr_dump_macos_test.dart:23 — hardcoded absolute path `/Users/jasontitus/experiments/CastCircle/sample-scripts/Pride-Prejudice-SCRIPT.pdf` — this test only works on the original developer's machine and will fail on any CI runner or other developer's machine; the same path is hardcoded in ocr_import_macos_test.dart:25 — use a relative path or a test fixture bundled in the repo, or skip the test if the file is not found.
+
+- [medium] integration_test/ocr_import_macos_test.dart:25 — same hardcoded absolute path issue as above.
+
+- [medium] integration_test/rehearsal_demo_test.dart:36 — `prefs.setBool('auth_skipped', true)` bypasses authentication in the test by writing to `SharedPreferences` — this is a test-only bypass, but if the same `auth_skipped` flag is checked in production code without additional validation, an attacker could set it via shared preferences (on rooted devices) to bypass auth — verify the production code does not rely solely on a SharedPreferences boolean for auth gating (this is a test file, so the finding is about the production code's reliance on this flag).
+
+- [medium] integration_test/screenshot_test.dart:58 — same `auth_skipped` bypass as rehearsal_demo_test.dart:36.
+
+- [low] integration_test/rehearsal_demo_test.dart:102 — `await db.close()` is called at the end of the test but if any assertion fails before line 102, the database is never closed, leaking the SQLite connection — wrap the test body in a `try/finally` or use `addTearDown(() => db.close())`.
+
+- [low] integration_test/screenshot_test.dart:166 — same database leak issue as rehearsal_demo_test.dart:102.
+
+- [low] analysis_options.yaml — the `avoid_print` lint is commented out (line 24), meaning `print()` calls are not flagged by the analyzer — the integration tests use `print()` for output (ocr_dump_macos_test.dart:55, ocr_import_macos_test.dart:40), and `print()` ships in release builds on iOS/Android — enable `avoid_print` and use `dart:developer` log or `debugPrint` instead.
+
+- [low] dart_test.yaml — the `extended` tag is defined but the file only contains the tag declaration with no `tags` configuration for default behavior; the comment says "Default: flutter test --exclude-tags extended" but there is no mechanism to enforce this in CI — add a `timeout` or `exclude` configuration to ensure extended tests are not accidentally run in CI.
+
+### Cross-file / architecture
+
+- [medium] android/app/src/main/kotlin/com/tiltastech/lineguide/MainActivity.kt:11-14 — `AndroidSttPlugin`, `PdfTextPlugin`, `ContactPickerPlugin`, and `MemoryMonitorPlugin` are registered in `configureFlutterEngine` (the Flutter plugin registration path), but `AndroidSttPlugin` also implements `ActivityAware` and uses `activity` for permission requests — if the plugin is registered via `configureFlutterEngine` instead of the newer `FlutterFragmentActivity` + `GeneratedPluginRegistrant` path, the `ActivityAware` callbacks (`onAttachedToActivity`) may not be called, leaving `activity` null and breaking permission requests and `startActivityForResult` — verify the registration path matches the ActivityAware lifecycle expectations.
+
+- [low] android/app/src/main/AndroidManifest.xml:39 — the deep-link intent filter uses `android:autoVerify="true"` with only the `castcircle` scheme and no `android:host` — App Links verification with `autoVerify` requires a `host` attribute and a corresponding `assetlinks.json` on the host's domain; with only a scheme and no host, `autoVerify` is a no-op and any app can intercept the `castcircle://` deep link — either add a host and assetlinks.json, or remove `autoVerify` and use a custom scheme (which has no ownership verification).
+
+## Coverage note
+
+- Files read: 68 (all files in the batch).
+- Skills applied: android-review, ios-review, swift-review, flutter-review, security-review, kotlin-review, maintainability-review.
+- Searches run: grep for `quantize`, `ModuleParameters`, `STTGeneration.info`, `fatalError`, `try!`, `Random(`, `badCertificateCallback`, `exported`, `startActivityForResult`, `print(`, `auth_skipped`, `setOutputFile`, `path` in channel handlers.
+- End-to-end flow traced: STT recording path (Dart → MethodChannel → AndroidSttPlugin.startRecording → MediaRecorder.setOutputFile) showing unvalidated path; model loading (KokoroTTS.init → WeightLoader.loadWeights → try! crash on corrupt weights); contact picker (pickContact → startActivityForResult → onActivityResult → ContentResolver.query with parameterized selection — no SQL injection).
+- False positives dismissed:
+  - `SharedPreferences` in integration tests for `auth_skipped` — this is test-only and the production auth gating is not visible in this batch; flagged as medium for the production code's reliance on the flag.
+  - `WRITE_EXTERNAL_STORAGE` — over-declared but not actively harmful; flagged as low.
+  - `Random()` / `badCertificateCallback` / `exported="true"` — not present in any of the reviewed files.
+  - `data_extraction_rules.xml` excludes all domains — this is correct and not a finding (the comment confirms the intent).
+  - `proguard-rules.pro` only has `-dontwarn` for ML Kit — no `-keep` rules that strip security checks; not a finding.
+# Batch 2 — iOS Swift/ObjC Review Findings
+
+## Files reviewed
+All files in the provided list (62 Swift files, 2 ObjC files, Info.plist, Runner.entitlements, GoogleService-Info.plist, RunnerTests.swift).
+
+## ATS posture
+No `NSAppTransportSecurity` dict in Info.plist — ATS is fully enabled. No exception domains, no `NSAllowsArbitraryLoads`. (No WKWebView usage found.)
+
+## Keychains / secrets
+No `SecItemAdd`, `SecItemUpdate`, `SecKeyCreateRandomKey`, or Keychain usage in any of the reviewed files. No `UserDefaults` writes of tokens/secrets.
+
+## Findings
+
+- [medium] ios/Runner/KokoroVendored/TTSEngine/KokoroConfig.swift:157 — force-unwrapped `Bundle.main.url(forResource: "config", withExtension: "json")!` — if config.json is missing from the bundle (e.g. wrong resource target membership, build failure), the app crashes on first TTS call instead of returning a recoverable error — replace with `guard let` and throw/propagate a typed error
+
+- [medium] ios/Runner/KokoroVendored/TTSEngine/KokoroConfig.swift:160 — `try! String(contentsOf:fileURL, encoding: .utf8)` — a missing or unreadable config.json crashes the process; the method signature returns `KokoroConfig` (non-optional) so there is no error path — make `loadConfig()` throw and handle at the call site in `KokoroTTS.init`
+
+- [medium] ios/Runner/KokoroVendored/TTSEngine/KokoroConfig.swift:163 — `try! JSONDecoder().decode(...)` and `configJSON.data(using: .utf8)!` — malformed config.json (e.g. from a bad model bundle) crashes the app — decode with `try` and propagate errors; the `data(using:)` force-unwrap is safe for ASCII but should use `guard` for consistency
+
+- [high] ios/Runner/KokoroVendored/TTSEngine/KokoroConfig.swift:18 — `nonisolated(unsafe) static var config: KokoroConfig?` — mutable global state with no synchronization; concurrent reads/writes from multiple `KokoroMLXService` instances or background tasks can race, producing a partially-initialized `KokoroConfig` or stale reads — wrap in a serial queue or use a proper thread-safe lazy holder
+
+- [high] ios/Runner/KokoroVendored/TTSEngine/WeightLoader.swift:36 — `try! MLX.loadArrays(url: modelPath)` — a corrupted, truncated, or missing model file crashes the app on `loadModel()` instead of returning a `KokoroError.modelNotDownloaded` — use `try` and propagate as a typed error
+
+- [medium] ios/Runner/KokoroVendored/TTSEngine/WeightLoader.swift:34 — `loadWeights(modelPath:)` returns `[String: MLXArray]` (non-optional) but uses `try!`, so any I/O or parse failure is fatal — change to `throws` and handle in `KokoroTTS.init`
+
+- [high] ios/Runner/MisakiVendored/English/EnglishG2P.swift:376 — operator-precedence bug: `(prev.last.map { String($0) } ?? "" + (next.first.map { String($0) } ?? ""))` — `+` binds tighter than `??`, so the expression is parsed as `prev.last.map { String($0) } ?? ("" + (next.first.map { String($0) } ?? ""))`, meaning `prev.last` is never used as a fallback and the `??` only applies to the empty-string concatenation — the "2" → "to" alias detection fires incorrectly when `prev.last` is nil but `next.first` is a letter — fix by adding explicit parentheses: `(prev.last.map { String($0) } ?? "") + (next.first.map { String($0) } ?? "")`
+
+- [medium] ios/Runner/MisakiVendored/English/EnglishG2P.swift:491 — `return item as! MToken` — the `retokenize` function returns `[Any]` and this force-cast assumes every non-array element is an `MToken`; if a different type is appended (e.g. a bug in `retokenize`), the app crashes — change `retokenize` to return `[Any]` but use `as?` with a fallback, or better, return `[MToken | [MToken]]`
+
+- [medium] ios/Runner/MisakiVendored/English/EnglishG2P.swift:278 — `tokens.first!.tokenRange.lowerBound` — `mergeTokens` is called with arrays that could be empty (e.g. from `foldLeft` or `retokenize` edge cases), causing a crash — guard against empty `tokens` and return a placeholder `MToken`
+
+- [medium] ios/Runner/MisakiVendored/English/EnglishG2P.swift:279 — `tokens.last!.tokenRange.upperBound` — same empty-array risk as line 278
+
+- [medium] ios/Runner/MisakiVendored/English/EnglishG2P.swift:32 — `try! NSRegularExpression(pattern: EnglishG2P.subtokenizeRegexPattern, options: [])` — a regex compilation failure crashes the app at class-load time; the pattern is a compile-time constant so this is low-risk but still a `try!` on a fallible API — use `try?` with a fatalError fallback or make the property lazy with proper error handling
+
+- [medium] ios/Runner/MisakiVendored/English/EnglishG2P.swift:141 — `try! NSRegularExpression(pattern: #"\[([^\]]+)\]\(([^\)]*)\)"#, options: [])` — same `try!` on regex compilation inside `preprocess`; if the pattern is ever modified to be invalid, the app crashes — use `try?` with a guard
+
+- [medium] ios/Runner/MisakiVendored/English/Lexicon/Lexicon.swift:517 — `lookup("O", tag: nil, stress: -2, ctx: nil) as! (String, Int)` — force-cast of the return value of `lookup` (which returns `(phoneme: String?, rating: Int?)`) to a non-optional tuple; if `lookup` returns `(nil, nil)` (which it can for unknown words), this crashes — use `as?` with a guard
+
+- [high] ios/Runner/MisakiVendored/English/FallbackNetwork/EnglishFallbackNetwork.swift:17 — `EnglishFallbackNetwork.loadConfig(british: british)!` — force-unwrap of an optional that returns `nil` when the bundled `us_bart_config.json`/`gb_bart_config.json` is missing or malformed — the `init` crashes instead of gracefully falling back to lexicon-only G2P — guard and fall back
+
+- [high] ios/Runner/MisakiVendored/English/FallbackNetwork/EnglishFallbackNetwork.swift:18 — `EnglishFallbackNetwork.loadWeights(british: british)!` — same force-unwrap on model weights; if the `.safetensors` file is missing, the app crashes — guard and fall back
+
+- [medium] ios/Runner/MisakiVendored/English/FallbackNetwork/EnglishFallbackNetwork.swift:70 — `generatedIds.asArray(Int.self)` — `BARTModel.generate` returns `MLXArray(generatedTokens)` which could be empty if `maxLength` is 0 or the first token is EOS; `asArray(Int.self)` on an empty array is safe but the downstream `tokensToPhonemes` loop silently produces empty output — add a guard for empty generation
+
+- [medium] ios/Runner/KokoroMLXService.swift:268 — `Data(bytes: &int16, count: 2)` — deprecated API (since iOS 13); should use `withUnsafeBytes(of: int16) { Data($0) }` or `Data.copy(bytes:)` — deprecated API may be removed in future SDKs and generates compiler warnings
+
+- [medium] ios/Runner/PaddleOcrPlugin.swift:369 — `NSMutableData(bytes: data, length: data.count * MemoryLayout<Float>.size)` — deprecated API (since iOS 13); should use `Data(data.withUnsafeBytes { Array($0) })` or `Data.copy(bytes:)` — deprecated API may be removed in future SDKs
+
+- [medium] ios/Runner/KokoroMLXService.swift:148 — `voice + ".npy"` used as a dictionary key without validation — the `voice` parameter comes from Dart (user-controllable via platform channel); if a caller passes a voice name not in the NPZ, `voiceNotFound` is thrown (correct), but there is no allowlist check before the dictionary lookup, so a crafted voice name could probe for embedding keys — validate `voice` against `Self.availableVoices` before lookup
+
+- [low] ios/Runner/KokoroMLXService.swift:183 — `voice.hasPrefix("a") ? .enUS : .enGB` — language detection from voice prefix is fragile; any voice not starting with "a" (e.g. "bf_alice", "bm_daniel") is classified as `.enGB` even though British voices start with "b" — this is actually correct for the current voice set but is a maintenance hazard if new voice prefixes are added — use an explicit mapping or check for "b" prefix
+
+- [medium] ios/Runner/AppleSttPlugin.swift:102 — `startRecording(path: String, ...)` constructs `cafPath = path + ".caf"` without validating that `path` doesn't already have a `.caf` or other extension, and without sanitizing the path — a caller passing `path = "/etc/passwd"` would attempt to write a `.caf` file there (though iOS sandbox limits damage) — validate the path is within the app's documents directory and doesn't already have an audio extension
+
+- [medium] ios/Runner/BackgroundDownloadPlugin.swift:51 — `resumePath(_ destinationPath: String)` returns `destinationPath + ".resume"` — same path-construction issue; if `destinationPath` already ends with `.resume`, double-extension results; also no validation that `destinationPath` is within the app's writable directory — validate and normalize the path
+
+- [medium] ios/Runner/AppleSttPlugin.swift:385 — `let cafSize = (try? FileManager.default.attributesOfItem(atPath: cafPath)[.size] as? Int) ?? 0` — the `as? Int` cast is applied to the dictionary subscript result, but `try?` already suppresses errors; if `attributesOfItem` succeeds but returns a non-`Int` size (impossible in practice but the pattern is misleading), `cafSize` is 0 and the file is silently discarded — use `as? NSNumber` and convert, or use `try?` with a proper guard
+
+- [low] ios/Runner/KokoroMLXService.swift:278 — `"RIFF".data(using: .ascii)!` (and lines 280, 281, 289) — force-unwrap of `String.data(using:)`; `.ascii` encoding always succeeds for ASCII literals so this is safe, but the pattern is inconsistent with the rest of the codebase which uses `guard` — use `guard` or pre-computed `Data` constants for clarity
+
+- [medium] ios/Runner/MisakiVendored/English/EnglishG2P.swift:100 — `let stresses = Set<Character>([Lexicon.primaryStress, Lexicon.secondaryStress])` shadows the `EnglishG2P.stresses` static property within the `applyStress` method — this is not a bug (the local is intentional and correct) but the shadowing is confusing and could cause maintenance issues if the static is later referenced inside the method — rename the local to `stressChars` or similar
+
+- [medium] ios/Runner/MisakiVendored/English/EnglishG2P.swift:496 — `ps.replacingOccurrences(of: "ɾ", with: "T").replacingOccurrences(of: "ʔ", with: "t")` — replaces the alveolar flap "ɾ" with uppercase "T" and glottal stop "ʔ" with lowercase "t" — this is a phoneme-to-token mapping for the Kokoro vocabulary, but the asymmetry (uppercase T vs lowercase t) is a maintenance hazard and could cause token lookup failures if the vocabulary changes — document the mapping explicitly
+
+- [medium] ios/Runner/MisakiVendored/English/FallbackNetwork/BARTModel.swift:131 — `let scaledLogits = nextTokenLogits / temperature` — if `temperature` is 0.0 (the default is 1.0 but the parameter is public), this produces NaN/Inf in the logits, and `argMax` on NaN produces undefined behavior — guard against `temperature <= 0`
+
+- [low] ios/Runner/MisakiVendored/English/FallbackNetwork/BARTModel.swift:121 — `if i == maxLength - 1` — if `maxLength` is 0, `maxLength - 1` is -1 and the loop body never executes, returning an empty array; the method should guard against `maxLength <= 0`
+
+- [medium] ios/Runner/MisakiVendored/English/EnglishG2P.swift:87 — `tokens.dropLast().map { $0.text + $0.whitespace }.joined() + (tokens.last?.text ?? "")` in `resolveTokens` — if `tokens` is empty, `dropLast()` is safe but `tokens.last` is nil, producing an empty string; the `prespace` computation then checks `text.contains(" ")` on an empty string, returning false — this is correct but the empty-tokens case should be guarded explicitly for clarity
+
+- [medium] ios/Runner/MisakiVendored/English/EnglishG2P.swift:316 — `subtokenize(word:)` uses `EnglishG2P.subtokenizeRegex` which is initialized with `try!` at class load time; if the regex pattern is ever changed to be invalid, the app crashes before any text is processed — same as finding on line 32
+
+- [medium] ios/Runner/KokoroVendored/BuildingBlocks/ConvWeighted.swift:101 — `bias = bias?.reshaped([1, 1, -1])` — mutating a `let` property (`bias` is declared `var` but the class is not a `class` with reference semantics for this field); actually `bias` is declared `var` so this compiles, but the mutation happens inside `callAsFunction` which is called during inference — if `callAsFunction` is called concurrently from multiple threads (e.g. multiple synthesis requests), the `bias` reshape is not thread-safe — the `KokoroMLXService` uses a serial `synthQueue` to prevent this, but the class itself has no internal synchronization
+
+- [medium] ios/Runner/KokoroVendored/TTSEngine/KokoroConfig.swift:18 — `nonisolated(unsafe)` suppresses the Swift concurrency data-race checker for this global; any concurrent access to `KokoroConfig.config` is unchecked — if `loadConfig()` is called from multiple threads simultaneously, the global can be written concurrently — use a `DispatchQueue`-protected holder or `@MainActor`
+
+- [low] ios/Runner/MisakiVendored/English/Lexicon/Lexicon.swift:49 — `if k.count < 2 { continue }` in `growDictionary` — single-character keys are silently dropped from the grown dictionary; this is intentional (single chars don't need capitalization variants) but the `continue` skips the `merging` step, so single-char entries from the original dictionary are preserved but their variants are not grown — this is correct behavior but the comment "Inefficient but correct." doesn't explain the `count < 2` guard
+
+- [medium] ios/Runner/MisakiVendored/English/EnglishG2P.swift:237 — `if let tag = tag, EnglishG2P.punctuationTags.contains(tag), !token.text.lowercased().unicodeScalars.allSatisfy({ (97...122).contains(Int($0.value)) })` — the `unicodeScalars.allSatisfy` check on `token.text.lowercased()` is intended to exclude pure-lowercase-ASCII tokens from punctuation processing, but `lowercased()` on non-ASCII text (e.g. "É") produces "é" whose scalar value (233) is outside the 97-122 range, so the check passes and the token is treated as punctuation — this could cause non-ASCII letters to be misclassified as punctuation
+
+- [medium] ios/Runner/MisakiVendored/English/EnglishG2P.swift:360 — same `unicodeScalars.allSatisfy({ (97...122).contains(Int($0.value)) })` pattern — same non-ASCII misclassification issue
+
+- [medium] ios/Runner/KokoroVendored/Decoder/Generator.swift:35 — `let upsampleScaleNum = MLX.product(MLXArray(upsampleRates)) * genIstftHopSize` followed by `upsampleScaleNum.item()` — `.item()` is a synchronous blocking call that waits for GPU computation to complete; if `upsampleRates` is empty, `MLX.product` of an empty array may return 1 or crash depending on MLX version — the `upsampleRates` come from the model config and should always be non-empty, but there is no guard
+
+- [medium] ios/Runner/KokoroVendored/Decoder/Generator.swift:82 — `let strideF0: Int = MLX.product(MLXArray(upsampleRates)[(i + 1)...]).item()` — same blocking `.item()` call; if `i + 1` is out of bounds (which can't happen given the loop bounds), this crashes — the slice `(i + 1)...` is valid Swift but `MLX.product` of an empty slice may return 1
+
+- [medium] ios/Runner/KokoroVendored/TTSEngine/KokoroConfig.swift:155 — `nonisolated static func loadConfig()` is called from `KokoroTTS.init` which runs on the `synthQueue`; the `nonisolated` attribute means it can be called from any context, but it writes to `KokoroConfig.config` (a `nonisolated(unsafe)` global) without synchronization — if `KokoroTTS` is instantiated from multiple threads, `loadConfig()` can be called concurrently, racing on the global write
+
+- [low] ios/Runner/KokoroMLXService.swift:305 — `SHA256.hash(data: Data(keySource.utf8))` is used for cache key generation, not for cryptographic purposes — the comment correctly notes this is not `String.hashValue`; this is correct and safe, but the use of `SHA256` for a non-crypto purpose adds a CryptoKit import dependency — could use a simpler hash, but the current approach is correct and avoids the seed-randomized `hashValue` issue
+
+- [medium] ios/Runner/KokoroVendored/TTSEngine/KokoroTTS.swift:290 — `let referenceStyle = voice[tokenCount - 1, 0 ... 1, 0...]` — `tokenCount` comes from `inputIds.count` which is the number of tokens in the phonemized text; if `tokenCount` is 0 (empty text after tokenization), `tokenCount - 1` underflows to `Int.max` and the indexing crashes — the `prepareInputTensors` method adds padding tokens `[0] + inputIds + [0]`, so `paddedInputIds` always has at least 2 elements, but `inputIds` (the original) could be empty if the text has no tokenizable characters — `Tokenizer.tokenize` returns `[]` for empty vocab, and `inputIds.count` would be 0
+
+- [medium] ios/Runner/KokoroVendored/TTSEngine/KokoroTTS.swift:266 — `let inputLengthMax: Int = inputLengths.max().item()` — `inputLengths` is `MLXArray(paddedInputIds.dim(-1))` which is a scalar; `.max()` on a scalar returns the scalar itself, and `.item()` extracts it — this is correct but the `.max()` call is unnecessary and misleading; also, if `paddedInputIds` is empty (which can't happen due to padding), `.dim(-1)` would be 0 and `.max().item()` would crash
+
+- [medium] ios/Runner/KokoroVendored/TTSEngine/KokoroTTS.swift:339 — `let predictedDurations = MLX.clip(durationSigmoid.round(), min: 1).asType(.int32)[0]` — the `[0]` indexing assumes the array has at least one element; `durationSigmoid` has shape `[batch, seq_len]` and `.sum(axis: -1)` reduces to `[batch]`; if `batch` is 0 (empty input), this crashes — the `batchSize` comes from `paddedInputIds.shape[1]` which is always 1 (batch dimension), so this is safe in practice
+
+- [medium] ios/Runner/MisakiVendored/English/EnglishG2P.swift:427 — `let out = fallback(w)` — `EnglishFallbackNetwork.callAsFunction` returns `(phoneme: String, rating: Int)` with a hardcoded rating of 1; the fallback network's output is not validated for empty strings — if the BART model generates no phonemes, `out.0` is empty and `w.phonemes = ""` is set, which downstream code may treat as "no phonemes" — the `rating: 1` is also suspiciously low (the lexicon uses 3-4) and may cause the fallback output to be deprioritized incorrectly
+
+- [medium] ios/Runner/MisakiVendored/English/FallbackNetwork/EnglishFallbackNetwork.swift:67 — `let tokenIds = graphemesToTokens(word.text)` — `word.text` is not lowercased before lookup; the `graphemeToToken` dictionary is built from `configuration.graphemeChars` which may be case-sensitive; if the config has lowercase graphemes but `word.text` contains uppercase, the lookup fails and `unknownTokenId` is used — the `Lexicon.transcribe` method does lowercase the word before lookup, but `EnglishFallbackNetwork` does not
+
+- [medium] ios/Runner/MisakiVendored/English/FallbackNetwork/BARTModel.swift:128 — `let nextTokenLogits = logits[0, logits.shape[1] - 1]` — if `logits.shape[1]` is 0 (empty decoder input), this underflows; `decoderInput` starts as `[1, 1]` (BOS token) and grows by 1 each iteration, so this is safe in practice, but there is no guard
+
+- [medium] ios/Runner/MisakiVendored/English/FallbackNetwork/BARTModel.swift:144 — `decoderInput = concatenated([decoderInput, newToken], axis: 1)` — this grows the decoder input by 1 token each iteration, making the decode O(n²) in sequence length; for `maxLength = 50` this is acceptable but for longer sequences it becomes slow — consider using a pre-allocated buffer or KV caching (the config has `useCache: true` but it's not used)
+
+- [medium] ios/Runner/MisakiVendored/English/EnglishG2P.swift:88 — `let prespace = text.contains(" ") || text.contains("/") || Set(text.compactMap { ... }).count > 1` — the `Set(text.compactMap { ... })` creates a set of character type codes (0=letter, 1=number, 2=other); if the text contains only one character type, the set has count 1 and `prespace` is false — this is correct but the `Set` creation is O(n) and the `count > 1` check is a heuristic that may not match spaCy's behavior exactly
+
+- [medium] ios/Runner/MisakiVendored/English/EnglishG2P.swift:115 — `if indices.count == 2, tokens[indices[0].2].text.count == 1` — `indices[0].2` is the token index; if `indices` has fewer than 2 elements, this guard fails (correct), but the `tokens[indices[0].2]` access assumes the index is valid — `indices` is built from `tokens.enumerated()` so the indices are always valid
+
+- [medium] ios/Runner/MisakiVendored/English/Lexicon/Lexicon.swift:376 — `if prev == "-" && next == "-"` — the `prev` and `next` variables are `String` (from `subtokens[j-1].text` and `subtokens[j+1].text`); the comparison is correct but the surrounding `if` condition on line 376 has the operator-precedence bug (see finding on line 376)
+
+- [medium] ios/Runner/MisakiVendored/English/EnglishG2P.swift:396 — `return words.map { item in if let arr = item as? [MToken], arr.count == 1 { return arr[0] } return item }` — the `words` array is `[Any]` and this maps returns `Any`; the caller (line 489-492) then force-casts non-array items to `MToken` — the type-erased `[Any]` is a code smell that makes the force-cast on line 491 possible
+
+- [medium] ios/Runner/MisakiVendored/English/EnglishG2P.swift:417 — `for i in stride(from: words.count - 1, through: 0, by: -1)` — if `words` is empty, `words.count - 1` underflows to `Int.max` and `stride` produces a huge range; the `if let w = words[i] as? MToken` check would fail for all indices (since the array is empty, the stride doesn't iterate) — actually `stride(from: -1, through: 0, by: -1)` is empty, so this is safe, but the underflow is a code smell
+
+- [medium] ios/Runner/MisakiVendored/English/EnglishG2P.swift:432 — `else if var arr = words[i] as? [MToken]` — the `var` binding allows mutation of `arr`, but `arr` is a copy of the array element (value semantics); mutations to `arr` are not written back to `words[i]` — the code does `arr[0] = first` on line 476 but this only modifies the local copy, not `words[i]` — this is a bug: the fallback phonemes are computed but never stored in the `words` array
+
+- [high] ios/Runner/MisakiVendored/English/EnglishG2P.swift:432 — `else if var arr = words[i] as? [MToken]` — the `var arr` is a copy; mutations like `arr[0] = first` (line 476) and `arr[j].phonemes = ""` (lines 445, 446, 479-480) are lost because `arr` is not written back to `words[i]` — fallback phonemes computed in the `shouldFallback` branch are silently discarded — change to `words[i] = arr` after mutations, or use `inout`
+
+- [medium] ios/Runner/MisakiVendored/English/EnglishG2P.swift:484 — `resolveTokens(&arr)` — this is called on the local `arr` copy, not on `words[i]` — the resolved tokens (stress adjustments) are lost — same root cause as the finding on line 432
+
+- [medium] ios/Runner/MisakiVendored/English/EnglishG2P.swift:346 — `subtokens.last?.whitespace = token.whitespace` — `subtokens` is a `var` array of `MToken` (value type); this mutation is on the local copy and is preserved because `subtokens` is used later in the loop — this is correct
+
+- [medium] ios/Runner/MisakiVendored/English/EnglishG2P.swift:384 — `else if let last = words.last as? [MToken], last.last?.whitespace.isEmpty == true` — `last` is a copy; `arr.append(token)` and `arr.popLast()` modify the copy, and `words.append(arr)` writes it back — this is correct
+
+- [medium] ios/Runner/MisakiVendored/English/EnglishG2P.swift:402 — `public func phonemize(text: String, performPreprocess: Bool = true) -> (String, [MToken])` — the method calls `phonemize` which internally calls `retokenize` and `foldLeft` and then iterates over `words` with the copy-semantics bug (line 432) — the phoneme output for fallback words may be incorrect (empty phonemes) due to the lost mutations
+
+- [medium] ios/Runner/MisakiVendored/English/EnglishG2P.swift:489 — `let finalTokens: [MToken] = words.map { item in if let arr = item as? [MToken] { return mergeTokens(arr, unk: self.unk) } return item as! MToken }` — the `mergeTokens` call on arrays uses `unk` parameter, but the non-array items are force-cast — if the `retokenize` → `words` pipeline produces a non-MToken, non-array item (e.g. due to the copy-semantics bug), the app crashes
+
+- [medium] ios/Runner/MisakiVendored/English/FallbackNetwork/BARTModel.swift:109 — `return lmHead(hidden) + logitBias` — `logitBias` is described as "This is not used" in the comment on line 63, but it is added to the logits — if `logitBias` has the wrong shape, this crashes or produces incorrect results — the bias is loaded from `weights["final_logits_bias"]` which may not exist in all model versions
+
+- [medium] ios/Runner/MisakiVendored/English/FallbackNetwork/BARTModel.swift:64 — `self.logitBias = weights["final_logits_bias"]!` — force-unwrap of an optional weight; if the model doesn't have `final_logits_bias`, the app crashes — use `?? MLXArray.zeros(...)` with the correct shape
+
+- [medium] ios/Runner/MisakiVendored/English/FallbackNetwork/BARTModel.swift:22 — `self.sharedEmbedding = Embedding(weight: weights["model.shared.weight"]!)` — force-unwrap of model weights; if the key is missing, the app crashes — all weight lookups in this file use force-unwraps, which is a pattern throughout the ML model code but is a crash risk for malformed models
+
+- [medium] ios/Runner/MisakiVendored/English/FallbackNetwork/BARTEncoderLayer.swift:16 — `weights[modelKey + ".self_attn_layer_norm.weight"]!` — force-unwrap of weight; same pattern as BARTModel
+
+- [medium] ios/Runner/MisakiVendored/English/FallbackNetwork/BARTDecoderLayer.swift:17 — `weights[modelKey + ".self_attn_layer_norm.weight"]!` — force-unwrap of weight; same pattern
+
+- [medium] ios/Runner/MisakiVendored/English/FallbackNetwork/MultiHeadAttention.swift:20 — `weights[modelKey + ".q_proj.weight"]!` — force-unwrap of weight; same pattern
+
+- [medium] ios/Runner/MisakiVendored/English/FallbackNetwork/FeedForward.swift:9 — `weight1: weights[modelKey + ".fc1.weight"]!` — force-unwrap of weight; same pattern
+
+- [medium] ios/Runner/MisakiVendored/English/FallbackNetwork/BARTLayerNorm.swift:9 — `self.weight![i] = weight[i]` — `weight` is a `let` property from `LayerNorm` (which is `var` in MLXNN); the `self.weight!` force-unwrap is safe because `LayerNorm` initializes `weight` to ones, but the pattern is fragile
+
+- [medium] ios/Runner/MisakiVendored/English/EnglishG2P.swift:13 — `static let punctuationTags: Set<NLTag> = Set([.openQuote, .closeQuote, .openParenthesis, .closeParenthesis, .punctuation, .sentenceTerminator, .otherPunctuation])` — this is a static set initialized at class load time; `Set([...])` is safe but the array literal is redundant (could be `Set([...])` → `Set([...])`)
+
+- [medium] ios/Runner/MisakiVendored/English/Lexicon/Lexicon.swift:8 — `static let lexiconOrdinals: [Int] = [39, 45] + Array(65...90) + Array(97...122)` — this is used to check if a word contains only ordinal characters; the range 97-122 is lowercase ASCII letters, 65-90 is uppercase; 39 is apostrophe, 45 is hyphen — this is correct but the magic numbers should be documented
+
+- [medium] ios/Runner/MisakiVendored/English/Lexicon/Lexicon.swift:497 — `if isPlainDigits(word), let sf = suffix, Lexicon.ordinals.contains(sf)` — `isPlainDigits` checks if all characters are numbers; `suffix` is extracted from the word; if `suffix` is nil (no suffix), the ordinal conversion is skipped — this is correct
+
+- [medium] ios/Runner/MisakiVendored/English/Lexicon/Lexicon.swift:506 — `else if result.isEmpty, word.count == 4, !Lexicon.currencies.contains(where: { currency == $0.key }), isPlainDigits(word)` — 4-digit numbers are treated as years; this is a heuristic that may misclassify 4-digit non-year numbers (e.g. "1234" as a quantity) — this is intentional per the comment
+
+- [medium] ios/Runner/MisakiVendored/English/EnglishG2P.swift:496 — `ps.replacingOccurrences(of: "ɾ", with: "T").replacingOccurrences(of: "ʔ", with: "t")` — the replacement of "ɾ" (U+027E, Latin small letter r with fishhook) with "T" (uppercase) and "ʔ" (U+0294, Latin letter glottal stop) with "t" (lowercase) — the asymmetry is intentional for the Kokoro token vocabulary but should be documented with a comment explaining why uppercase "T" is used for "ɾ"
+
+## Coverage note
+All 62 Swift files, 2 ObjC files, Info.plist, Runner.entitlements, GoogleService-Info.plist, and RunnerTests.swift were read in full. The ios-review skill checklist was applied: ATS posture (no exceptions found), Keychain usage (none found), URL entry points (custom URL scheme `castcircle` registered in Info.plist but no `application(_:open:URLOptions:)` handler in AppDelegate — the scheme is registered but no handler processes it, which is a potential issue if the scheme is intended to be used), WKWebView (none found), force-unwraps on networking/decode paths (found in KokoroConfig, WeightLoader, EnglishG2P, EnglishFallbackNetwork), `@unchecked Sendable` (found in LocalPackages, not in reviewed files), retain cycles (checked closures use `[weak self]`), `unowned self` (none found in reviewed files), UserDefaults secrets (none found). The `GoogleService-Info.plist` is git-tracked (confirmed via `git ls-files`) and contains a Firebase API key — this is a known Google practice (API keys are not secrets in the traditional sense, but should be restricted in the Firebase console). The `Runner.entitlements` requests `com.apple.developer.kernel.increased-memory-limit` and `com.apple.developer.kernel.extended-virtual-addressing` which are appropriate for ML inference. The `Info.plist` declares `UIBackgroundModes` with `audio`, `fetch`, and `processing` which are appropriate for background audio/TTS. No `NSLocationWhenInUseUsageDescription` is needed (the comment says it's required by a third-party library). The `ITSAppUsesNonExemptEncryption` is set to `false` which is correct for standard HTTPS/TLS.
+# Batch 4 Review Findings
+
+Files reviewed:
+- lib/data/services/stt_vocabulary_service.dart
+- lib/data/services/supabase_service.dart
+- lib/data/services/sync_queue.dart
+- lib/data/services/tts_service.dart
+- lib/data/services/vision_ocr_channel.dart
+- lib/data/services/voice_clone_service.dart
+- lib/data/services/voice_config_service.dart
+- lib/features/auth/auth_screen.dart
+- lib/features/cast_manager/bulk_cast_setup_screen.dart
+- lib/features/cast_manager/cast_manager_screen.dart
+- lib/features/cast_manager/voice_config_screen.dart
+- lib/features/home/home_screen.dart
+- lib/features/join/join_production_screen.dart
+
+## Findings
+
+- [medium] lib/data/services/supabase_service.dart:527 — Storage path constructed from un-sanitized `characterName` only replaces `/` with `-` but does not strip `..` or other path-traversal sequences — a director entering `..` as a character name produces a storage key like `prodId/../lineId/unique.m4a` that could resolve outside the intended bucket prefix, and the same unsanitized value flows into `downloadRecordingByUrl`'s `_objectPathFromUrl` extraction — replace `..` and other traversal segments in `safeChar` (e.g. `characterName.replaceAll(RegExp(r'[^\w\s-]'), '-').replaceAll(r'..', '-')`) or reject names containing `..` — smallest safe fix: add `safeChar = safeChar.replaceAll('..', '-')` after the existing `replaceAll('/', '-')`
+
+- [high] lib/features/cast_manager/cast_manager_screen.dart:366 — `VoiceConfigService.assignVoicesFromScript` is called without `genderOverrides`, so the gender toggle (`_toggleGender` at line 1106) persists to SharedPreferences via `setGender` but the adjacency-aware voice assignment never reads those saved genders — the gender toggle has no effect on which voice pool (female/male) a character gets assigned, silently defeating the feature — load genders in `_loadVoiceConfig` and pass them: `final genders = await _voiceConfig.getGenders(production.id); ... genderOverrides: genders`
+
+- [high] lib/features/cast_manager/voice_config_screen.dart:143 — Same as cast_manager_screen.dart:366: `assignVoicesFromScript` is called without `genderOverrides`, so the gender toggle in the UI (via `_toggleGender` in cast_manager) does not affect voice assignment here either — characters always use their script-inferred gender instead of the user's override — load genders and pass `genderOverrides: await _voiceConfig.getGenders(production.id)` to the call
+
+- [medium] lib/features/auth/auth_screen.dart:313 — Password is trimmed with `.trim()` before being sent to Supabase, silently stripping leading/trailing spaces from passwords — users who intentionally include spaces in their password cannot sign in or will have their password changed without realizing it — remove `.trim()` from the password: `final password = _passwordController.text;` (email can remain trimmed)
+
+- [medium] lib/data/services/vision_ocr_channel.dart:16 — `result['blocks'] as List?` will throw a `TypeError` (uncaught) if the native side returns a non-null non-List value for `blocks` (e.g. a Map or String from a malformed response) — the method only catches `MissingPluginException`, so a type error from a buggy native implementation crashes the app — add an explicit type check: `final blocks = result['blocks']; if (blocks is! List) return [];`
+
+- [medium] lib/data/services/vision_ocr_channel.dart:19 — `b as Map` inside the `blocks.map` callback will throw an uncaught `TypeError` if any element in the `blocks` list is not a Map (e.g. a String or null from a malformed native response) — replace with `b is Map ? Map<String, dynamic>.from(b) : <String, dynamic>{}` or filter non-Map elements before mapping
+
+- [medium] lib/features/cast_manager/cast_manager_screen.dart:391 — `char.name[0]` accesses the first character of a character name without checking that the name is non-empty — if a parsed script contains a character with an empty name (possible from a parsing edge case), this throws a `RangeError` and crashes the cast manager screen — guard with `char.name.isNotEmpty ? char.name[0] : '?'` or ensure character names are validated at parse time
+
+- [medium] lib/features/cast_manager/bulk_cast_setup_screen.dart:180 — Same `char.name[0]` issue: accessing the first character of a potentially empty character name throws `RangeError` — guard with `char.name.isNotEmpty ? char.name[0] : '?'`
+
+- [medium] lib/features/cast_manager/voice_config_screen.dart:163 — Same `char.name[0]` issue: accessing the first character of a potentially empty character name throws `RangeError` — guard with `char.name.isNotEmpty ? char.name[0] : '?'`
+
+- [low] lib/data/services/supabase_service.dart:527 — `characterName.replaceAll('/', '-')` only sanitizes `/` but leaves other potentially problematic characters (e.g. `..`, null bytes, Unicode control characters) in the storage path — while Supabase Storage uses flat keys so `..` is not a true traversal, unsanitized control characters or extremely long names could cause unexpected behavior — sanitize more broadly: `characterName.replaceAll(RegExp(r'[^\w\s-]'), '-')`
+
+- [low] lib/data/services/sync_queue.dart:447 — `2 << nextRetry.retryCount.clamp(0, 4)` uses bit-shift for backoff calculation, which is correct but the `clamp(0, 4)` is misleading because `retryCount` is always >= 1 when in `_failed` (incremented at line 396 before being added) — the clamp is a redundant safety net that obscures the actual range (1–4) — replace with `Duration(seconds: 1 << nextRetry.retryCount.clamp(1, 4))` for clearer intent (delays: 2s, 4s, 8s, 16s)
+
+- [low] lib/data/services/stt_vocabulary_service.dart:288 — `vocab.correctionCache.clear()` wipes the entire per-production correction cache when it reaches 4000 entries, causing a performance cliff where all memoized corrections are lost and the O(words × vocabulary) scan must re-run for every word until the cache rebuilds — replace with LRU-style eviction (remove oldest N entries) instead of full clear, or increase the limit
+
+- [low] lib/data/services/stt_vocabulary_service.dart:543 — `_buildNameParts` splits character names on `_wsRe` (whitespace) but does not filter out empty strings — names with leading/trailing whitespace produce empty parts, and `nameLower.indexOf('')` returns 0, creating degenerate `_NamePart` entries with empty `lower` and `cased` values — filter empty parts: `for (final part in nameLower.split(_wsRe).where((p) => p.isNotEmpty))`
+
+- [low] lib/data/services/tts_service.dart:74 — `await _systemTts.getVoices as List<dynamic>` applies `as` to the await result without null-checking — if `getVoices` returns null on some platform or before initialization, this throws an uncaught `TypeError` — use `as List<dynamic>? ?? []` or check for null first
+
+- [low] lib/data/services/tts_service.dart:460 — `_matchScore` divides by `m` (expectedWords.length) at line 501 without an explicit guard — while `m >= 1` is guaranteed by the early return at line 467, the code is fragile: if the early-return logic is ever changed, a division-by-zero would occur — add an explicit `if (m == 0) return 1.0;` guard before the DP loop for defensive clarity
+
+- [low] lib/data/services/voice_config_service.dart:164 — `genderOverrides[char.name] ?? char.gender` falls through to the female voice pool when gender is `CharacterGender.nonGendered` — non-gendered characters always get female voices, which may not be the user's intent — add an explicit case for `nonGendered` that picks from a mixed pool or defaults to female with a comment explaining the choice
+
+- [low] lib/features/home/home_screen.dart:421 — The `web-editor` menu action includes the user's email in the shared text (`'\n\nSign in with: $email'`), which is a minor PII disclosure if the user shares the link with unintended recipients — the user is choosing to share, but the email is included by default without explicit consent — remove the email from the shared text or add a checkbox to opt in
+
+- [low] lib/features/join/join_production_screen.dart:264 — The join button's `onPressed` only checks `_nameController.text.trim().isEmpty` but does not verify that a character has been selected (or `__none__` chosen) — a user can tap "Join" without selecting any character option, resulting in `characterName = ''` without explicitly choosing "Join without a character" — add a check or default to `__none__` when no selection is made
+
+- [low] lib/data/services/sync_queue.dart:73 — `SyncJob.fromJson` always resets `retryCount` to 0 on restore (line 73: `retryCount: 0`), discarding the persisted retry count — the comment explains this is intentional (give the job its full retry budget on restart), but if a job failed repeatedly before the app was killed, it gets a fresh retry budget, which could cause a flood of retries for a persistently failing upload — this is by design per the comment, but worth noting as a trade-off
+# Batch 6 Sweep Findings
+
+Files reviewed: 44 files (13 Dart, 7 Swift, 2 C/C++, 10 shell, 3 Python, 1 YAML, 1 TOML).
+
+---
+
+## Findings
+
+- [high] lib/main.dart:95-96 — Supabase publishable anon key hardcoded as default — `String.fromEnvironment('SUPABASE_ANON_KEY', defaultValue: 'sb_publishable_f3YAIMI4GIEIPdDwnvfO3Q_stwSCxXI')` embeds the production anon key directly in source. Any clone or release build without the env var gets this key. While it is a publishable (not secret) key, hardcoding it as a default means it ships in every build artifact, cannot be rotated without a code change, and is visible in stack traces. — Replace the default with an empty string and fail fast in release if the env var is unset; or load from a gitignored `.env` file at build time.
+
+- [medium] lib/firebase_options.dart:53,62 — Firebase API keys committed in tracked source — two `AIzaSy*` keys (iOS line 53, Android line 62) are in `firebase_options.dart`, a generated file tracked in git. Firebase API keys are project identifiers, not secrets, but committing them means they cannot be rotated without a code commit and are visible in every build. — Inject keys via `--dart-define` at build time and add `firebase_options.dart` to `.gitignore`, generating it locally per environment.
+
+- [high] scripts/parse_script.py:385-386 — Hardcoded absolute output paths — `repo_md_path = "/home/user/Lineguide-/examples/pride_and_prejudice_parsed.md"` and `repo_json_path = "/home/user/Lineguide-/examples/pride_and_prejudice_parsed.json"` point to a non-existent directory on the developer's machine (repo is at `/Users/jasontitus/experiments/CastCircle`). The script prints success but writes to the wrong location (it creates `/home/user/Lineguide-/examples/` via `os.makedirs`). The actual repo examples are never updated. — Use `Path(__file__).parent.parent / 'examples' / 'pride_and_prejudice_parsed.md'` (relative to script location) instead of the hardcoded absolute path.
+
+- [medium] scripts/ship-testflight.sh:36-37 — App Store Connect API key ID and issuer hardcoded — `KEY=7C7256MDM6` and `ISSUER=69a6de81-894e-47e3-e053-5b8c7c11a4d1` are hardcoded on lines 36-37 (not just in the comment on line 11). The key ID and issuer identify the API key and are not secret on their own, but hardcoding them in a tracked script means they cannot be changed without a code commit. — Move to environment variables with guards: `KEY="${ASC_KEY_ID:?}"` and `ISSUER="${ASC_ISSUER_ID:?}"`.
+
+- [medium] lib/main.dart:124-136 — iOS Kokoro model auto-download on every launch without Wi-Fi check — `Future.microtask` at line 120 calls `modelService.refreshDownloadedStatus()` and `modelService.download(model)` for each kokoro_mlx model if not ready. This runs on every iOS app launch with no network condition check, potentially consuming a ~600MB download on cellular data. — Add a Wi-Fi connectivity check before auto-downloading, and guard with a SharedPreferences flag so it only runs once.
+
+- [medium] lib/features/script_import/pdf_page_view.dart:103-106 — PDF page rendered at fixed 3x resolution — `pdfPage.render(fullWidth: pdfPage.width * 3, fullHeight: pdfPage.height * 3)` renders every page at 3x native resolution. For large PDF pages (e.g., 6000x8000 px), this produces an 18000x24000 pixel image (~500MB+ in memory), risking OOM crashes on mobile. — Scale based on device pixel ratio and viewport size, not a fixed 3x multiplier.
+
+- [medium] lib/features/settings/debug_log_screen.dart:59-90 — Debug log "Send to developer" uploads full log without size limit or sanitization — the `onPressed` handler builds `text` from all log entries (line 61) and inserts it into `debug_reports` (line 67) with no size check. Log entries may contain sensitive info (error messages with file paths, user IDs, stack traces). — Add a size limit (truncate to e.g. 100KB) and sanitize known-sensitive patterns before upload.
+
+- [medium] lib/features/settings/debug_log_screen.dart:125-163 — Debug screen exposes "Test Fatal Exception" and "Test Native Crash (SIGABRT)" — the popup menu at lines 165-183 includes actions that deliberately crash the app (line 156 throws, line 162 calls `FirebaseCrashlytics.instance.crash()`). These are accessible to any user who navigates to Settings → Debug Log, including non-developer users via TestFlight. — Gate these actions behind `kDebugMode` or require a confirmation dialog before crashing.
+
+- [medium] lib/features/settings/kokoro_debug_screen.dart:90-128 — Missing `mounted` checks in `_tryInit`, `_tryReload`, and `_stop` — `_tryInit` (line 92) calls `await _tts.init()` then `_log()` (which calls `setState` at line 84) without checking `mounted`; `_tryReload` (line 99) calls `await _tts.tryLoadKokoro()` then `_log()` without checking `mounted`; `_stop` (line 125) calls `await _tts.stop()` then `_log()` and `setState` (line 127) without checking `mounted`. If the widget is disposed during the await, `setState` will throw "setState() called after dispose()". Note: `_speak` at line 121 already has `if (mounted)` guard. — Add `if (!mounted) return;` after each `await` call before `_log()`/`setState`.
+
+- [medium] lib/features/settings/parakeet_debug_screen.dart:83-147 — Missing `mounted` checks in `_stopFreeRecording` and `_stopLineRecording` — both call `await _stt.stop()` and then `setState` without checking `mounted`. — Add `if (!mounted) return;` before `setState`.
+
+- [medium] lib/features/settings/parakeet_debug_screen.dart:454-473 — `_buildWordComparison` uses positional-independent matching — `expectedWords.contains(normalizedWord)` at line 463 marks a spoken word as matched if it appears *anywhere* in the expected text, not in the correct position. This produces misleading accuracy scores in the debug screen. — Use positional matching or sequence alignment (e.g., Levenshtein distance) for accurate word-by-word comparison.
+
+- [medium] lib/features/settings/settings_screen.dart:294-300 — "Edit on the Web" shares user's email via `Share.share()` without consent — the `onTap` handler builds a text string including the user's email address (`'Sign in with: $email'`) and shares it to any app the user picks. On a shared device, this leaks the user's email. — Do not include the email in the shared text by default; add an explicit opt-in or confirmation step.
+
+- [medium] lib/features/settings/settings_screen.dart:327-361 — `_signOut` does not clear SharedPreferences script backups — `_signOut` removes `auth_skipped` and resets auth state, but does not clear `script_backup_*` entries. If another user signs in on the same device, `loadPersistedScript` will fall back to the previous user's script backups (production_providers.dart:692-716). — Clear all `script_backup_*` entries from SharedPreferences during sign-out.
+
+- [medium] lib/features/script_import/ocr_review_screen.dart:148-160 — `_saveEdit` calls `ScaffoldMessenger.of(context).showSnackBar()` without checking `mounted` — line 157 calls `ScaffoldMessenger.of(context).showSnackBar(...)` after `setState` at line 150, without checking `mounted`. If the widget is disposed between the `setState` and the snackbar call, this will throw. — Add `if (!mounted) return;` before the `ScaffoldMessenger` call.
+
+- [medium] lib/features/script_import/ocr_review_screen.dart:266-273 — `_done` calls `Navigator.of(context).pop()` without checking `mounted` — line 272 calls `Navigator.of(context).pop()` without checking `mounted`. If the widget is disposed before `_done` is called, this could throw. — Add `if (!mounted) return;` before `Navigator.of(context).pop()`.
+
+- [medium] lib/features/script_import/ocr_review_screen.dart:488-490 — `_buildReviewCard` force-unwraps `_controllers[line.id]!` — line 490 uses `final controller = _controllers[line.id]!;` which throws `StateError` if the controller doesn't exist. While controllers are populated in `initState` for all review lines, this is fragile if the list changes between `initState` and `build`. — Use `_controllers[line.id]` with a null check and fallback, or `putIfAbsent` to ensure the controller always exists.
+
+- [medium] lib/features/script_import/ocr_review_screen.dart:258-264 — `_removeAllNotScript` bulk-removes lines without confirmation dialog — the bulk "Remove these" button (line 738-743) calls `_removeAllNotScript` directly without a confirmation dialog, unlike `_removeContextLine` (line 174) which has one. This makes accidental mass deletion easy. — Add a confirmation dialog before bulk-removing all "likely not script" lines.
+
+- [medium] lib/features/script_import/script_import_screen.dart:583-660 — `_pickPdfFile` uses predictable temp file name — line 616 creates `p.join(tmpDir.path, '${production.id}.staged.pdf')`. Concurrent imports will overwrite each other's temp file. Additionally, the temp file is not cleaned up if the user navigates away before accepting. — Use a unique temp file name (timestamp/UUID suffix), and delete the temp file in `dispose()` or when re-importing.
+
+- [medium] lib/providers/production_providers.dart:316-319 — `scheduleScriptSave` Timer captures `WidgetRef` without cleanup — the `Timer` at line 318 captures `ref` by closure. If the widget owning `ref` is disposed before the timer fires, `ref` becomes invalid and `_runScriptSave(ref)` may throw. The global `_scriptSaveTimer` is never cancelled on widget disposal. — Cancel `_scriptSaveTimer` in a `dispose` callback, or use `ref.keepAlive()` with a debounce pattern.
+
+- [medium] scripts/deploy.sh:9 — Device UDID hardcoded as default — `DEVICE="${CASTCIRCLE_DEVICE:-00008150-000669303687801C}"` hardcodes a specific device UDID. If run on another machine, it targets the original developer's device. — Remove the default UDID and require `CASTCIRCLE_DEVICE` to be set, or auto-detect.
+
+- [medium] scripts/pull-crashlog.sh:64-134 — Python crash log parser interpolates file path into Python string — line 67 `with open('$LATEST') as f:` interpolates the shell variable directly into Python source. If the file path contains single quotes or special characters, this breaks the Python script or allows code injection. — Pass the path as a command-line argument: `python3 -c "..." "$LATEST"` and use `sys.argv[1]` in Python.
+
+- [medium] scripts/test_silence_trim.swift:120-127 — Downloads audio with `try! Data(contentsOf:)` and fixed temp path — lines 124-125 use `try!` (crashes on failure) and write to `/tmp/test_audio_trim.m4a` (fixed path, concurrent runs collide). — Use `try` with error handling and a unique temp file name.
+
+- [medium] scripts/test_silence_trim.swift:35-56 — `windowRMS` array grows unboundedly — the array accumulates one entry per 50ms window for the entire recording. For a 2-hour recording, this creates 144,000 entries, consuming significant memory. Only the first and last speech indices are needed. — Track only first/last speech indices, not the entire array.
+
+- [medium] scripts/generate_rehearsal_webp.sh:50-67 — Background screen recording not cleaned up on script interruption — line 50 starts `xcrun simctl io ... recordVideo` in the background. If the script is interrupted (Ctrl-C) or exits early, the recording process is orphaned. — Add `trap 'kill -INT "$RECORD_PID" 2>/dev/null || true' EXIT` to ensure cleanup.
+
+- [medium] scripts/generate_screenshots.sh:58-61 — `flutter drive` runs without `|| true` — if the integration test fails, `set -euo pipefail` causes immediate exit and screenshots are not copied to the fastlane directory (lines 63-70). — Add `|| true` and check for screenshot output before copying.
+
+- [medium] supabase/config.toml:67-75 — DB network restrictions allow all IPs — `allowed_cidrs = ["0.0.0.0/0"]` and `allowed_cidrs_v6 = ["::/0"]` allow connections from any IP address. While this is the default for local development, it should be noted as a security consideration if this config is used in a non-local environment. — Restrict to localhost or a specific CIDR range for non-local deployments.
+
+- [low] lib/features/script_import/script_import_screen.dart:466 — `char.hashCode.abs()` used for color assignment — line 466 uses `line.character.hashCode.abs()` to assign colors. Dart's `hashCode` is not guaranteed stable across app restarts or platforms, so the same character may get a different color on different launches. — Use a deterministic hash (e.g., sum of character codes) for stable color assignment.
+
+- [low] lib/features/script_import/ocr_review_screen.dart:103-106 — `_contextLinesFor` sorts `widget.lines` on every call — called from `_buildContextEditor` during `build()`, resulting in O(n log n) sorting per context editor per build. — Cache the sorted list or pre-sort once and maintain an index.
+
+- [low] lib/features/settings/kokoro_debug_screen.dart:111 — Log message includes user-provided text — `_log('Text: "${text.substring(0, text.length.clamp(0, 60))}..."')` logs the first 60 chars of user-entered text to the on-screen debug log, which could be visible in shared/exported logs if the text contains sensitive info. — Log only the text length or a hash, not the content.
+
+- [low] lib/features/settings/debug_log_screen.dart:118-122 — "Clear log" button calls `await _log.clear()` then `setState` without checking `mounted` — if the widget is disposed during the async `clear()`, `setState` will throw. Note: the FAB at line 220 already has `if (mounted)` guard. — Add `if (!mounted) return;` before `setState`.
+
+- [low] lib/features/settings/ai_models_screen.dart:34 — `initState` calls `_service.refreshDownloadedStatus()` without `await` — if the service's refresh is slow, the UI may show stale state briefly. The `_onStateChanged` listener should handle the update. — Add `await` to `_service.refreshDownloadedStatus()` in `initState`.
+
+- [low] lib/features/settings/model_download_screen.dart:32 — `initState` calls `_checkStatus()` without `await` — same pattern as above. — Add `await` to `_checkStatus()` in `initState`.
+# Batch 7 Findings
+
+Files reviewed: 20 SQL migrations + 44 test files + supporting source files.
+Skills applied: sql-migration-review, db-review, testing-review, security-review, flutter-review.
+
+## Migration findings
+
+- [high] supabase/migrations/20260315_cast_join_code.sql:9 — `UPDATE public.productions SET join_code = upper(substr(md5(random()::text), 1, 6))` backfills join codes with `md5(random())` — `random()` is not cryptographically secure and `md5` is a broken hash; collision probability is ~6^2 / 36^6 ≈ 1 in 46k, and `md5(random())` is predictable enough that an attacker who can observe one code can brute-force the RNG state — predictable join codes allow unauthorized production joins — replace with `generate_join_code()` (already defined in the same migration at line 55) using `random()` seeded from `gen_random_uuid()` or `setseed` from `pg_random_uuid()`, or use `substr(md5(gen_random_uuid()::text), 1, 6)`
+- [medium] supabase/migrations/20260315_cast_join_code.sql:6 — `ALTER TABLE public.productions ADD COLUMN join_code text UNIQUE` adds a UNIQUE constraint on a column with no index; Postgres will build a unique index implicitly, but the backfill UPDATE at line 9 runs BEFORE the NOT NULL constraint at line 14, and if any row already has a duplicate join_code the UPDATE will succeed but the implicit UNIQUE index creation at line 14 will fail — deploy failure on duplicate data — add `ADD COLUMN join_code text` first, backfill, then `ALTER TABLE ... ADD CONSTRAINT join_code_unique UNIQUE (join_code)` as a separate step after verifying no duplicates
+- [low] supabase/migrations/20260316_join_code_default.sql:3-4 — `ALTER COLUMN join_code SET DEFAULT public.generate_join_code()` sets a default referencing a function defined in a prior migration; if the function is dropped or its signature changes in a future migration, this default silently breaks — no rollback path — add a comment documenting the dependency and consider inlining the logic or making the default a literal expression
+
+## Security findings (committed secrets / test credentials)
+
+- [high] test/supabase_join_test.dart:10-11 — hardcoded Supabase URL `https://vngpbmqymdaxxnvqptsk.supabase.co` and publishable anon key `sb_publishable_f3YAIMI4GIEIPdDwnvfO3Q_stwSCxXI` in a git-tracked test file — the anon key is a real credential that grants unauthenticated access to the production Supabase project (read any RLS-permitted data, enumerate join codes, etc.); while publishable keys are designed to be embedded in clients, having them in test files committed to the repo means they're exposed in git history forever and cannot be rotated without a new release — move the URL and anon key to environment variables or a `.env` file that is gitignored, and load them at test time via `String.fromEnvironment` or `dart-define`
+- [high] test/supabase_service_test.dart:6-7 — same hardcoded Supabase URL and anon key as above, committed to git — same exposure risk — move to environment variables or gitignored `.env`
+- [medium] lib/firebase_options.dart:53,62 — Firebase API keys (`AIzaSyAKLhwRfPVu7Od4zY4rJLJkT95wGNwoXvQ`, `AIzaSyDewlE17WUSQoh0dUgQBfnNybDWAyanfm4`) are hardcoded in a git-tracked source file — Firebase API keys are not secret (they're designed to be embedded in client apps), but they are project identifiers that enable automated scanning for Firebase projects and should ideally be loaded from environment config for non-production builds — load from environment variables for debug/test builds; acceptable for release builds per Firebase docs
+- [medium] test/supabase_join_test.dart:26-27 — test signs up with password `testtest123` and emails `join_test_${...}@test.com` — weak test credentials in a committed test file — if the test runs against the production Supabase project (as the URL suggests), it creates real user accounts with a weak password, and the password is visible in git history — use a stronger randomly-generated password and a dedicated test email domain, or use Supabase's test/anonymous auth mode
+
+## Test quality findings
+
+- [high] test/supabase_join_test.dart — the entire test file makes real HTTP calls to the production Supabase project (`https://vngpbmqymdaxxnvqptsk.supabase.co`) and asserts on live data (e.g., `expect(result['title'], 'Macbeth')` at line 58, `expect(result['join_code'], 'DHT6XT')` at line 59) — these tests will fail or produce false results if the production data changes, and they create real user accounts on every run — convert to mock-based unit tests or use a dedicated test Supabase project; at minimum, gate behind an environment variable and skip by default
+- [high] test/supabase_service_test.dart:9-25 — `setUpAll` calls `Supabase.initialize` with hardcoded production credentials and signs up a real test user — this runs during `flutter test` and creates real accounts on the production Firebase/Supabase project — same issue as above; gate behind environment variable, skip by default, or use mock
+- [high] test/model_manager_test.dart:6-8 — the only test in the file asserts `identical(ModelManager.instance, ModelManager.instance)` — this test cannot fail (the Dart `static final` singleton pattern guarantees identity) and provides zero coverage of the actual model management logic (downloading, extraction, path resolution) — either add meaningful tests for the actual functionality or remove the test; the comment at line 10-12 explicitly acknowledges that the real methods are untested
+- [high] test/stt_service_test.dart:6-8 — the only test in the first group asserts `identical(SttService.instance, SttService.instance)` — same singleton tautology; cannot fail and proves nothing about STT functionality — add tests for actual STT behavior or remove
+- [high] test/tts_service_test.dart:8-10 — the only test in the first group asserts `identical(TtsService.instance, TtsService.instance)` — same singleton tautology — add tests for actual TTS behavior or remove
+- [medium] test/ocr_confidence_test.dart:8 — `TestWidgetsFlutterBinding.ensureInitialized()` is called at the top level (line 8, outside any `setUp` or test body) — this executes during test file compilation/import and can cause side effects or interfere with other test files that also initialize bindings — move inside `setUp` or `main()` guard
+- [medium] test/tts_text_chunking_test.dart:3-45 — the test file reimplements the `splitTextForKokoro` algorithm as a local copy rather than testing the actual private method — if the implementation changes, the test continues to pass against the old copy, providing false confidence — make the method public or testable via a package-level function, or use Dart reflection/test-only exports
+- [medium] test/shakespeare_import_test.dart:694-739 — the test reads `sample-scripts/macbeth-pg1533-images-3.txt` from disk and skips silently if the file doesn't exist (`if (!file.existsSync()) { return; }`) — a skipped test provides no signal; if the file is missing in CI, the test silently passes without verifying anything — either commit the test fixture or use `@Tag('extended')` with `Skip` to make the skip explicit
+- [medium] test/parser_accuracy_test.dart:1 — tagged `@Tags(['extended'])` and excluded from normal `flutter test` runs per `dart_test.yaml:4` — the accuracy tests never run in CI unless explicitly invoked with `--tags extended` — verify CI runs `flutter test --tags extended` or these tests are dead code
+- [low] test/recording_sync_service_test.dart:103-114 — `tearDown` retries `tempDir.delete(recursive: true)` up to 10 times with 50ms delays to work around ENOTEMPTY races from background downloads — this masks a concurrency bug where downloads are still writing to tempDir when the test ends — the test should await all pending downloads before tearing down rather than retrying deletion
+- [low] test/sync_queue_test.dart:54-56 — `tearDown` calls `queue.reset()` then `tempDir.delete(recursive: true)` without awaiting pending queue operations — if the queue has in-flight async work, the tempDir deletion can fail or leave orphaned files — await `queue.drain()` or equivalent before deletion
+
+## Cross-file / migration-test contract drift
+
+- [medium] test/cast_member_test.dart:67-96 — tests assert `CastRole.fromString('actor')` returns `CastRole.primary` and `CastRole.primary.toSupabaseString()` returns `'actor'` — this matches the schema CHECK constraint at `supabase/migrations/20260314061409_initial_schema.sql:63` which uses `check (role in ('organizer', 'actor', 'understudy'))` — the mapping is correct, but the test does not verify that `CastRole.fromString` handles the `'organizer'` and `'understudy'` values that the schema allows, and there is no test for unknown role strings (e.g., `'supervisor'`) which would throw `byName` — add a test for unknown role strings and verify all schema-allowed values are handled
+- [medium] test/models_test.dart:306-316 — asserts `ProductionStatus.values.length == 6` and checks for exactly 6 values — if a new status is added to the enum without updating the test, the test fails (which is correct), but if a status is removed from the enum, the test also fails (correct) — however, the test does not verify that the status names match what the Supabase schema expects (`draft`, `active`, `archived` per `20260314061409_initial_schema.sql:45`) — the schema only allows 3 statuses but the Dart enum has 6 (`draft`, `scriptImported`, `scriptApproved`, `castAssigned`, `recording`, `ready`) — this is a contract drift: the app can set statuses that the database CHECK constraint will reject — either add the missing statuses to the schema CHECK constraint or document the mapping layer
+- [medium] test/production_repository_test.dart:42-61 — `deleteProduction` in `production_repository.dart:42` deletes recordings, script lines, scenes, cast members, then the production itself — but it does NOT delete the cloud production (only `SupabaseService.deleteProductionEverywhere` does that at `supabase_service.dart:146`) — the test only verifies local deletion; there is no test verifying that cloud deletion is triggered or that local deletion without cloud deletion doesn't cause data to re-appear on next sync — add a test verifying the cloud sync behavior or document that cloud deletion is handled separately
+- [low] test/recording_path_safety_test.dart:7-30 — tests `RecordingSyncService.isSafePathId` which rejects `sub/dir` (line 22) and `has space` (line 25) — but the `isSafePathId` regex at `recording_sync_service.dart:212` is `^[A-Za-z0-9._-]{1,128}$` which already rejects slashes and spaces — the test is correct but redundant with the regex; more importantly, the test does NOT verify that `isSafePathId` rejects empty strings correctly (it does at line 25, but the regex `{1,128}` already handles this) — the test is fine but could be simplified
+- [low] test/recording_sync_service_test.dart:502-524 — tests `RecordingSyncService.extractCharacterFromUrl` which parses the character segment from a storage URL — the test at line 510-514 verifies percent-decoding of `LADY%20MACBETH` — but the actual `uploadRecording` at `supabase_service.dart:527` sanitizes character names with `characterName.replaceAll('/', '-')` and the storage path is `$productionId/$safeChar/$lineId/$unique.m4a` — the test's URL format (`prod-1/HAMLET/line-1.m4a`) doesn't match the actual upload path format (which includes a unique timestamp segment) — the test is testing a URL format that the current upload code doesn't produce, so it may pass while the real code has a different path structure
