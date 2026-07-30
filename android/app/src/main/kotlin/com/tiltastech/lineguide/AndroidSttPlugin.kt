@@ -98,7 +98,20 @@ class AndroidSttPlugin : FlutterPlugin, MethodChannel.MethodCallHandler, Activit
         when (call.method) {
             "initialize" -> {
                 locale = call.argument<String>("locale") ?: "en-US"
-                val available = SpeechRecognizer.isRecognitionAvailable(context!!)
+                val ctx = context!!
+                // Ask for the mic NOW (rehearsal start, while the opening
+                // lines play) — deferring to the first line capture put the
+                // permission dialog in the middle of the actor's turn and the
+                // capture had already failed by the time they answered.
+                if (ContextCompat.checkSelfPermission(ctx, Manifest.permission.RECORD_AUDIO)
+                    != PackageManager.PERMISSION_GRANTED) {
+                    activity?.let {
+                        ActivityCompat.requestPermissions(
+                            it, arrayOf(Manifest.permission.RECORD_AUDIO), REQUEST_RECORD_AUDIO
+                        )
+                    }
+                }
+                val available = SpeechRecognizer.isRecognitionAvailable(ctx)
                 result.success(available)
             }
             "listen" -> startListening(call, result)

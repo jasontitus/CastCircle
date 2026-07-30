@@ -348,6 +348,12 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
   ) async {
     final sttOk = await _stt.init(locale: locale);
     if (!mounted) return;
+    // Android: warm the on-device recognizer NOW, while the opening lines
+    // play — a lazy start on the actor's first line cost 11 s (model load
+    // competing with TTS synthesis) with the mic dead the whole time.
+    if (Platform.isAndroid) {
+      unawaited(LiveAsrService.instance.ensureStarted());
+    }
     if (!sttOk && !Platform.isAndroid) {
       // The core feature (line matching) is dead without STT — say so instead
       // of leaving the actor wondering why nothing reacts to their voice.
@@ -1813,6 +1819,23 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
           precomputedPaths: _ttsPrefetch.remove(line.id));
     } else {
       await _tts.speak(line.text, character: voiceCharacter);
+    }
+    // speak() has finished SYNTHESIZING (playback continues via the player),
+    // so the TTS engine is idle — synthesize the next other-character line
+    // now. Without this, back-to-back computer lines each pay full synthesis
+    // latency before any audio starts: ~a line-length of silence on Android,
+    // where synthesis is ~real-time (RTF 0.9). Prefetching only while the
+    // actor speaks (the isMyLine branch) never covers consecutive TTS lines.
+    if (mounted && ref.read(rehearsalStateProvider) == RehearsalState.playingOther) {
+      final script = ref.read(currentScriptProvider);
+      final scene = ref.read(selectedSceneProvider);
+      final myCharacter = ref.read(rehearsalCharacterProvider);
+      final mode = ref.read(rehearsalModeProvider);
+      if (script != null && scene != null) {
+        final dialogueLines = _getRehearsalLines(script, scene, myCharacter);
+        _prefetchLineAudio(_nextOtherLine(dialogueLines,
+            ref.read(currentLineIndexProvider), myCharacter, mode));
+      }
     }
     // Completion handled by TTS completion handler
   }

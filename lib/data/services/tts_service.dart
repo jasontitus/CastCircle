@@ -395,7 +395,9 @@ class TtsService {
     // Try Kokoro MLX first (iOS only)
     if (_kokoroLoaded) {
       final gen = _speakGen;
-      dlog.log(LogCategory.tts, 'Kokoro MLX speak: "$preview" (char=$character, gen=$gen)');
+      dlog.log(LogCategory.tts,
+          'Kokoro ${_activeEngine == TtsEngine.kokoroOnnx ? 'ONNX' : 'MLX'} '
+          'speak: "$preview" (char=$character, gen=$gen)');
       final spoke = await _speakWithKokoroMlx(text,
           character: character, precomputedPaths: precomputedPaths);
       if (spoke) return;
