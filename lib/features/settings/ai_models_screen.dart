@@ -136,11 +136,15 @@ class _AiModelsScreenState extends State<AiModelsScreen> {
             const Divider(),
 
             // Platform-specific model tiles
-            if (Platform.isAndroid)
-              _buildOnnxKokoroTile(context)
-            else
+            if (Platform.isAndroid) ...[
+              _buildOnnxKokoroTile(context),
+              _buildLiveAsrTile(context),
+            ] else
+              // live_asr powers Android live matching only (Apple platforms
+              // use the OS recognizer) — don't offer a dead download.
               ...ModelDownloadService.availableModels
-                  .where((m) => m.subdir != 'parakeet_stt')
+                  .where((m) =>
+                      m.subdir != 'parakeet_stt' && m.subdir != 'live_asr')
                   .map((model) => _buildModelTile(context, model)),
 
             const Divider(),
@@ -236,6 +240,88 @@ class _AiModelsScreenState extends State<AiModelsScreen> {
               tooltip: 'Download',
               onPressed: _downloadOnnxKokoro,
             ),
+    );
+  }
+
+  /// Android: one tile for the live line-matching ASR model group (encoder +
+  /// decoder + joiner + tokens). Grouped because the pieces are useless
+  /// individually — a single Download fetches all four, progress is weighted
+  /// by size, and Delete removes them together.
+  Widget _buildLiveAsrTile(BuildContext context) {
+    final models = ModelDownloadService.availableModels
+        .where((m) => m.subdir == 'live_asr')
+        .toList();
+    final states = {for (final m in models) m: _service.getState(m.id)};
+    final allDone =
+        states.values.every((s) => s.status == ModelStatus.downloaded);
+    final downloading =
+        states.values.any((s) => s.status == ModelStatus.downloading);
+    final error = states.values
+        .map((s) => s.errorMessage)
+        .whereType<String>()
+        .firstOrNull;
+    final totalBytes = models.fold<int>(0, (a, m) => a + m.sizeBytes);
+    var progress = 0.0;
+    states.forEach((m, s) {
+      final part = s.status == ModelStatus.downloaded ? 1.0 : s.progress;
+      progress += part * m.sizeBytes / totalBytes;
+    });
+
+    return ListTile(
+      leading: Icon(
+        Icons.graphic_eq,
+        color: allDone ? Colors.green : Theme.of(context).colorScheme.primary,
+      ),
+      title: const Text('Live Line Matching'),
+      subtitle: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(allDone
+              ? 'Installed — rehearsal follows your lines as you speak. '
+                  'Speech model: Kroko-ASR community (CC BY-SA).'
+              : 'On-device speech recognition so rehearsal follows your '
+                  'lines as you speak (~68 MB download). '
+                  'Speech model: Kroko-ASR community (CC BY-SA).'),
+          if (downloading)
+            Padding(
+              padding: const EdgeInsets.only(top: 8),
+              child: LinearProgressIndicator(value: progress),
+            ),
+          if (error != null)
+            Padding(
+              padding: const EdgeInsets.only(top: 4),
+              child: Text(
+                error,
+                style: const TextStyle(color: Colors.red, fontSize: 12),
+              ),
+            ),
+        ],
+      ),
+      trailing: downloading
+          ? const SizedBox(
+              width: 24,
+              height: 24,
+              child: CircularProgressIndicator(strokeWidth: 2),
+            )
+          : allDone
+              ? PopupMenuButton<String>(
+                  icon: const Icon(Icons.check_circle, color: Colors.green),
+                  onSelected: (value) async {
+                    if (value == 'delete') {
+                      for (final m in models) {
+                        await _service.delete(m.id);
+                      }
+                    }
+                  },
+                  itemBuilder: (context) => [
+                    const PopupMenuItem(value: 'delete', child: Text('Delete')),
+                  ],
+                )
+              : IconButton(
+                  icon: const Icon(Icons.download),
+                  tooltip: 'Download',
+                  onPressed: () => _service.downloadLiveAsr(),
+                ),
     );
   }
 

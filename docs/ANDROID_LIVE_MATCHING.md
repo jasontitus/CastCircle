@@ -1,5 +1,20 @@
 # Android live line-matching
 
+> **Status (2026-07-30): implemented** — option 2 below. One native
+> `AudioRecord` (16 kHz mono) in `AndroidSttPlugin` fans out to an AAC/.m4a
+> encoder (`MediaCodec`+`MediaMuxer`, same channel contract as before), to Dart
+> as `onPcm` chunks, and to peak-level events. `LiveAsrService` runs a
+> sherpa-onnx streaming Zipformer (Kroko-ASR community English model, CC-BY-SA,
+> chosen by measured head-to-head — see
+> `integration_test/asr_streaming_macos_test.dart`) in a background isolate and
+> feeds the same matching pipeline iOS uses
+> (`_handleRecognizedForLine`). Model files (~68 MB) download on demand via
+> Settings → AI Models with pinned sizes + SHA-256. Without the model the old
+> record-only silence-advance behavior remains, with a once-per-rehearsal tip.
+> Verified on a Galaxy A35: word-perfect transcript of the bundled test
+> utterance through the full isolate pipeline, simultaneous with .m4a capture
+> (`integration_test/android_live_matching_test.dart`).
+
 ## The problem
 
 On iOS, rehearsal does two things at once with the microphone: `SFSpeechRecognizer`

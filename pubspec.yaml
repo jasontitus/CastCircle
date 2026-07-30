@@ -1,7 +1,7 @@
 name: castcircle
 description: "CastCircle - Help actors learn their lines"
 publish_to: 'none'
-version: 0.1.1+111
+version: 0.1.1+112
 
 environment:
   sdk: ^3.11.0
@@ -35,6 +35,11 @@ dependencies:
   # leaves it in .record, which makes just_audio play silently.
   audio_session: ^0.2.3
   record: ^5.2.1
+  # On-device streaming ASR (Zipformer transducer) for live line matching where
+  # the platform recognizer can't share the mic (Android) — see
+  # docs/ANDROID_LIVE_MATCHING.md. The app owns the mic and fans PCM out to the
+  # recording and to this recognizer.
+  sherpa_onnx: ^1.13.4
 
   # PDF rendering (for OCR pipeline)
   pdfrx: ^2.2.24

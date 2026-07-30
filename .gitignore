@@ -61,3 +61,4 @@ Gemfile.lock
 # committed (all pre-1929 editions). Sources: docs/ocr-test-set.md
 sample-scripts/*.pdf
 android/.kotlin/
+.asr-eval/

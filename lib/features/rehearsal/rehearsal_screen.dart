@@ -20,6 +20,8 @@ import '../../data/models/rehearsal_models.dart';
 import '../../data/models/voice_preset.dart';
 import '../../data/services/tts_service.dart';
 import '../../data/services/stt_service.dart';
+import '../../data/services/stt_channel.dart';
+import '../../data/services/live_asr_service.dart';
 import '../../data/services/debug_log_service.dart';
 import '../../data/services/stt_adaptation_service.dart';
 import '../../data/services/stt_vocabulary_service.dart';
@@ -91,6 +93,8 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
   final Map<String, _CapturedLine> _capturedAudio = {};
   bool _isCapturingAudio = false;
   bool _hasPromptedUpload = false; // only prompt once per session
+  // Android: "download the live-matching model" tip, once per rehearsal
+  bool _liveAsrNoticeShown = false;
 
   // Prefetched Kokoro TTS audio: lineId → synthesized chunk file paths.
   // Populated in the background while the actor speaks THEIR line so the next
@@ -530,6 +534,13 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
     _stt.onAudioRouteLost = null;
     _tts.stop(reason: 'dispose');
     _stt.stop();
+    if (Platform.isAndroid) {
+      // Free the live recognizer's native memory between rehearsals; it
+      // restarts on demand (ensureStarted) next session.
+      SttChannel.instance.onPcm = null;
+      LiveAsrService.instance.onPartial = null;
+      LiveAsrService.instance.stop();
+    }
     _mediaControl.deactivate();
     // Note: the production-level recording subscription is owned by the
     // home screen (set up when the production is opened) — do not tear
@@ -1925,8 +1936,6 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
     // Build vocabulary hints: the expected line as a phrase + its individual
     // words. Keep hints focused — flooding with script-wide vocabulary
     // (character names, etc.) dilutes the signal and confuses the recognizer.
-    final production = ref.read(currentProductionProvider);
-    final myCharacter = ref.read(rehearsalCharacterProvider);
     final cleanLine = line.text.replaceAll(RegExp("[^\\w\\s']"), '');
     final wordHints = cleanLine.split(RegExp(r'\s+'))
         .where((w) => w.length > 1)
@@ -1968,68 +1977,7 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
 
     await _stt.listen(
       continuous: true,
-      onResult: (recognized) {
-        if (!mounted) return;
-        // Ignore stale results if we've moved past this line
-        if (ref.read(rehearsalStateProvider) != RehearsalState.listeningForMe) return;
-
-        // Reset silence timer on each new result
-        _resetSilenceTimer(line);
-        _lastRecognizedRaw = recognized;
-
-        // Apply vocabulary correction before scoring
-        final corrected = production != null
-            ? _sttVocab.correct(
-                recognized: recognized,
-                expectedText: line.text,
-                productionId: production.id,
-                actorId: myCharacter,
-              )
-            : recognized;
-
-        final score = SttService.matchScore(line.text, corrected);
-        // Without this the debug log shows only "line started / line stopped",
-        // so a run where recognition silently produced nothing is
-        // indistinguishable from one where it produced the wrong words. Log
-        // the first result per line (proves the recognizer is alive) and then
-        // only meaningful score changes, to stay readable.
-        if (!_loggedFirstResultForLine) {
-          _loggedFirstResultForLine = true;
-          _dlog.log(LogCategory.stt,
-              'first result: heard="${corrected.length > 60 ? '${corrected.substring(0, 57)}...' : corrected}" '
-              'score=${(score * 100).toStringAsFixed(0)}% threshold=${(threshold * 100).toStringAsFixed(0)}%');
-        }
-        // Notifiers, not setState: partial results arrive several times a
-        // second and setState here rebuilt the whole screen — including the
-        // ~145 offscreen list items cacheExtent: 10000 keeps alive — for what
-        // is really a two-widget update.
-        _recognizedText.value = corrected;
-        _matchScore.value = score;
-        _showMatchFeedback.value = corrected.isNotEmpty;
-
-        if (score > _currentBestScore) _currentBestScore = score;
-
-        // Auto-advance once the match exceeds threshold, after the actor stops.
-        // A confirmation timer fires only if no new STT results arrive for a
-        // window after the score crosses the threshold. When coverage is
-        // near-complete the actor has clearly finished the whole line, so use a
-        // short window for a fast response; a partial-but-over-threshold score
-        // (still mid long line) keeps the longer 1.2s window so we don't cut a
-        // multi-sentence line short. (Energy endpointing above also advances on
-        // mic-silence.)
-        if (score >= threshold) {
-          _matchConfirmTimer?.cancel();
-          final confirmMs =
-              score >= _fullLineMatchThreshold ? _fastConfirmMs : 1200;
-          _matchConfirmTimer = Timer(Duration(milliseconds: confirmMs), () {
-            _confirmLineMatch(line);
-          });
-        } else {
-          // Score dropped below threshold (e.g., new words recognized that
-          // don't match) — cancel pending advance
-          _matchConfirmTimer?.cancel();
-        }
-      },
+      onResult: (recognized) => _handleRecognizedForLine(line, recognized),
       onDone: () {
         if (!mounted) return;
         // Listening ended but no match — stay on this line, let user retry or skip
@@ -2043,6 +1991,79 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
 
     // Start audio capture AFTER listen() — the audio engine must be running
     _startCaptureForLine(line);
+  }
+
+  /// Shared per-result matching pipeline: vocabulary correction → score →
+  /// UI notifiers → threshold/confirm-timer advance. Fed by the platform
+  /// recognizer on iOS/macOS ([SttService.listen]) and by the on-device
+  /// streaming recognizer on Android ([LiveAsrService.onPartial]) — both
+  /// deliver cumulative transcripts of the current utterance.
+  void _handleRecognizedForLine(ScriptLine line, String recognized) {
+    if (!mounted) return;
+    // Ignore stale results if we've moved past this line
+    if (ref.read(rehearsalStateProvider) != RehearsalState.listeningForMe) {
+      return;
+    }
+    final threshold = ref.read(matchThresholdProvider) / 100.0;
+    final production = ref.read(currentProductionProvider);
+    final myCharacter = ref.read(rehearsalCharacterProvider);
+
+    // Reset silence timer on each new result
+    _resetSilenceTimer(line);
+    _lastRecognizedRaw = recognized;
+
+    // Apply vocabulary correction before scoring
+    final corrected = production != null
+        ? _sttVocab.correct(
+            recognized: recognized,
+            expectedText: line.text,
+            productionId: production.id,
+            actorId: myCharacter,
+          )
+        : recognized;
+
+    final score = SttService.matchScore(line.text, corrected);
+    // Without this the debug log shows only "line started / line stopped",
+    // so a run where recognition silently produced nothing is
+    // indistinguishable from one where it produced the wrong words. Log
+    // the first result per line (proves the recognizer is alive) and then
+    // only meaningful score changes, to stay readable.
+    if (!_loggedFirstResultForLine) {
+      _loggedFirstResultForLine = true;
+      _dlog.log(LogCategory.stt,
+          'first result: heard="${corrected.length > 60 ? '${corrected.substring(0, 57)}...' : corrected}" '
+          'score=${(score * 100).toStringAsFixed(0)}% threshold=${(threshold * 100).toStringAsFixed(0)}%');
+    }
+    // Notifiers, not setState: partial results arrive several times a
+    // second and setState here rebuilt the whole screen — including the
+    // ~145 offscreen list items cacheExtent: 10000 keeps alive — for what
+    // is really a two-widget update.
+    _recognizedText.value = corrected;
+    _matchScore.value = score;
+    _showMatchFeedback.value = corrected.isNotEmpty;
+
+    if (score > _currentBestScore) _currentBestScore = score;
+
+    // Auto-advance once the match exceeds threshold, after the actor stops.
+    // A confirmation timer fires only if no new STT results arrive for a
+    // window after the score crosses the threshold. When coverage is
+    // near-complete the actor has clearly finished the whole line, so use a
+    // short window for a fast response; a partial-but-over-threshold score
+    // (still mid long line) keeps the longer 1.2s window so we don't cut a
+    // multi-sentence line short. (Energy endpointing also advances on
+    // mic-silence.)
+    if (score >= threshold) {
+      _matchConfirmTimer?.cancel();
+      final confirmMs =
+          score >= _fullLineMatchThreshold ? _fastConfirmMs : 1200;
+      _matchConfirmTimer = Timer(Duration(milliseconds: confirmMs), () {
+        _confirmLineMatch(line);
+      });
+    } else {
+      // Score dropped below threshold (e.g., new words recognized that
+      // don't match) — cancel pending advance
+      _matchConfirmTimer?.cancel();
+    }
   }
 
   /// Log how a line actually ended. "advanced with no recognition at all" is
@@ -2383,19 +2404,41 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
 
   // ── Rehearsal Audio Capture ──────────────────────────
 
-  /// Android record-only path for the actor's line (see [_startListeningForMyLine]).
-  /// Captures audio via MediaRecorder and advances on mic-silence — Android
-  /// can't run SpeechRecognizer and the recorder on the mic simultaneously.
+  /// Android path for the actor's line (see [_startListeningForMyLine]).
+  ///
+  /// The app owns the mic (the platform recognizer won't share it): one native
+  /// AudioRecord captures the line to .m4a AND streams PCM up here, where the
+  /// on-device recognizer ([LiveAsrService]) produces partial transcripts for
+  /// the same live word-matching iOS gets. When the ASR model isn't
+  /// downloaded, degrades to the old record-only behavior: advance once the
+  /// actor has spoken and gone quiet.
   Future<void> _startRecordOnlyCapture(ScriptLine line) async {
     _currentAttemptCount++;
     _matchConfirmed = false;
     _matchScore.value = 0.0;
     _micLevel.value = 0.0;
-    _lastRecognizedRaw = ''; // no recognizer on Android — nothing to learn from
+    _lastRecognizedRaw = '';
+    _loggedFirstResultForLine = false;
+
+    // Instant when already running; one-time model load otherwise.
+    final liveAsr = LiveAsrService.instance;
+    final liveMatching = await liveAsr.ensureStarted();
+    if (!mounted) return;
+
+    // Say once per rehearsal why lines don't match live — and how to get it.
+    if (!liveMatching && !_liveAsrNoticeShown) {
+      _liveAsrNoticeShown = true;
+      ScaffoldMessenger.of(context).showAutoToast(const SnackBar(
+        content: Text('Tip: download "Live Line Matching" in Settings → '
+            'AI Models and rehearsal will follow your lines as you '
+            'speak them.'),
+        duration: Duration(seconds: 6),
+      ));
+    }
 
     // Mic level for the listening indicator. While the actor is audibly
     // speaking, push the hard-cap silence timer back so a long line isn't cut
-    // off (nothing else resets it without a recognizer producing results).
+    // off even when recognition produces nothing.
     _stt.onLevel = (level) {
       if (!mounted) return;
       if (ref.read(rehearsalStateProvider) != RehearsalState.listeningForMe) {
@@ -2407,23 +2450,34 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
       }
     };
 
-    // Endpoint on silence: once the actor has spoken and then gone quiet for the
-    // tunable pause window, advance (no word-matching available on Android).
+    // Endpoint on silence. With live matching this mirrors iOS: advance only
+    // once the match score has crossed the threshold AND the actor has gone
+    // quiet. Without it (model not downloaded), speech-then-quiet is all the
+    // signal there is.
+    final threshold = ref.read(matchThresholdProvider) / 100.0;
     _stt.onSilence = (silence) {
       if (!mounted) return;
       if (ref.read(rehearsalStateProvider) != RehearsalState.listeningForMe) {
         return;
       }
+      if (liveMatching && _matchScore.value < threshold) return;
       if (silence >=
           Duration(milliseconds: ref.read(rehearsalAdvanceSilenceMsProvider))) {
         _confirmLineMatch(line);
       }
     };
 
+    if (liveMatching) {
+      liveAsr.onPartial = (text) => _handleRecognizedForLine(line, text);
+      SttChannel.instance.onPcm = liveAsr.feedPcm;
+      liveAsr.startUtterance();
+    }
+
     final dir = await getTemporaryDirectory();
     final path = p.join(dir.path, 'rehearsal_${line.id}.m4a');
     _dlog.log(LogCategory.rehearsal,
-        'Capture(Android): starting for ${line.id.substring(0, 8)}...');
+        'Capture(Android): starting for ${line.id.substring(0, 8)}... '
+        '(live matching: $liveMatching)');
     final started = await _stt.startLineCapture(path);
     if (started) {
       _isCapturingAudio = true;
@@ -2490,6 +2544,14 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
       return;
     }
     _isCapturingAudio = false;
+
+    // Android live matching: stop feeding the recognizer and flush the
+    // utterance. Any final words it emits are dropped by the stale-line guard
+    // in _handleRecognizedForLine once the state moves on — harmless.
+    if (Platform.isAndroid) {
+      SttChannel.instance.onPcm = null;
+      LiveAsrService.instance.endUtterance();
+    }
 
     try {
       _dlog.log(LogCategory.rehearsal, 'Capture: stopping...');

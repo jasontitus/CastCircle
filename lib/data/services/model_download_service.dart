@@ -147,6 +147,70 @@ class ModelDownloadService {
       filename: 'voices.npz',
       subdir: 'kokoro_mlx',
     ),
+    // ── Live line-matching ASR (streaming Zipformer transducer) ──
+    // Kroko-ASR community English model (CC-BY-SA, attribution in Settings →
+    // About) converted for sherpa-onnx. Chosen over icefall en-20M by a
+    // measured head-to-head on synthesized rehearsal lines (86% vs 66% word
+    // match; en-20M also truncates utterance starts) — see
+    // integration_test/asr_streaming_macos_test.dart. HF `main` is mutable, so
+    // sizes/hashes are pinned: a silent upstream change fails verification
+    // instead of feeding the recognizer unknown bytes.
+    AiModel(
+      id: 'live_asr_encoder',
+      name: 'Live Matching — Encoder',
+      description: 'Streaming speech encoder for live line matching',
+      sizeLabel: '~70 MB',
+      sizeBytes: 70092599,
+      exactSizeBytes: 70092599,
+      sha256:
+          'd4881c57449d581e0770fd53fa66c2fdc6cd167d92ece7c715e603defc96d9d4',
+      downloadUrl:
+          'https://huggingface.co/csukuangfj/sherpa-onnx-streaming-zipformer-en-kroko-2025-08-06/resolve/main/encoder.onnx',
+      filename: 'encoder.onnx',
+      subdir: 'live_asr',
+    ),
+    AiModel(
+      id: 'live_asr_decoder',
+      name: 'Live Matching — Decoder',
+      description: 'Streaming speech decoder for live line matching',
+      sizeLabel: '~618 KB',
+      sizeBytes: 617488,
+      exactSizeBytes: 617488,
+      sha256:
+          '455ba38466fce8d5a57e7db68a323b684079ca4d9e1dd93a740d9b2429aae3b1',
+      downloadUrl:
+          'https://huggingface.co/csukuangfj/sherpa-onnx-streaming-zipformer-en-kroko-2025-08-06/resolve/main/decoder.onnx',
+      filename: 'decoder.onnx',
+      subdir: 'live_asr',
+    ),
+    AiModel(
+      id: 'live_asr_joiner',
+      name: 'Live Matching — Joiner',
+      description: 'Streaming speech joiner for live line matching',
+      sizeLabel: '~337 KB',
+      sizeBytes: 336817,
+      exactSizeBytes: 336817,
+      sha256:
+          'd406f616736350e2a7df3e39398b78eb2fc1a2ca6973a19d3853fa3227e25b52',
+      downloadUrl:
+          'https://huggingface.co/csukuangfj/sherpa-onnx-streaming-zipformer-en-kroko-2025-08-06/resolve/main/joiner.onnx',
+      filename: 'joiner.onnx',
+      subdir: 'live_asr',
+    ),
+    AiModel(
+      id: 'live_asr_tokens',
+      name: 'Live Matching — Tokens',
+      description: 'Token vocabulary for live line matching',
+      sizeLabel: '~6 KB',
+      sizeBytes: 6310,
+      exactSizeBytes: 6310,
+      sha256:
+          '396dbeb5f4858875690716084f54e90d339679d0ba3e6b5b584f3d7589254d2d',
+      downloadUrl:
+          'https://huggingface.co/csukuangfj/sherpa-onnx-streaming-zipformer-en-kroko-2025-08-06/resolve/main/tokens.txt',
+      filename: 'tokens.txt',
+      subdir: 'live_asr',
+    ),
     AiModel(
       id: 'parakeet_model',
       name: 'Parakeet STT Model',
@@ -377,6 +441,25 @@ class ModelDownloadService {
   /// Whether all Parakeet STT files are downloaded AND usable.
   Future<bool> isParakeetReady() => _groupReady('parakeet_stt', 'Parakeet');
 
+  /// Whether all live-matching ASR files are downloaded AND usable.
+  Future<bool> isLiveAsrReady() => _groupReady('live_asr', 'Live ASR');
+
+  /// Path to the live-matching ASR model directory, or null if not ready.
+  Future<String?> getLiveAsrModelDir() async {
+    if (!await isLiveAsrReady()) return null;
+    final appDir = await getApplicationDocumentsDirectory();
+    return p.join(appDir.path, 'models', 'live_asr');
+  }
+
+  /// Download every live-matching ASR file that isn't already good.
+  Future<void> downloadLiveAsr() async {
+    for (final m in availableModels) {
+      if (m.subdir != 'live_asr') continue;
+      if (fileProblem(m, File(await _filePath(m))) == null) continue;
+      await download(m);
+    }
+  }
+
   /// Shared readiness check over every model in [subdir] — same [fileProblem]
   /// the Settings tiles use, so the two can never disagree.
   Future<bool> _groupReady(String subdir, String label) async {
@@ -458,14 +541,24 @@ class ModelDownloadService {
             'starting ${model.id} without a space preflight');
       }
 
-      // Start native background download
-      await _channel.invokeMethod('startDownload', {
-        'modelId': model.id,
-        'url': model.downloadUrl,
-        'destinationPath': outPath,
-      });
-
-      debugPrint('ModelDownload: started background download for ${model.id}');
+      // Start native background download. Android has no native downloader
+      // (the channel is a stub that errors) — fall back to a Dart-side
+      // streamed download there; verification is identical either way.
+      try {
+        await _channel.invokeMethod('startDownload', {
+          'modelId': model.id,
+          'url': model.downloadUrl,
+          'destinationPath': outPath,
+        });
+        debugPrint(
+            'ModelDownload: started background download for ${model.id}');
+      } on PlatformException catch (e) {
+        if (e.code != 'UNAVAILABLE' || !_dartDownloadable(model)) rethrow;
+        await _dartDownload(model, outPath);
+      } on MissingPluginException {
+        if (!_dartDownloadable(model)) rethrow;
+        await _dartDownload(model, outPath);
+      }
     } catch (e) {
       _states[model.id] = ModelDownloadState(
         status: ModelStatus.error,
@@ -473,6 +566,83 @@ class ModelDownloadService {
       );
       _notify();
       debugPrint('ModelDownload: ${model.id} failed to start: $e');
+    }
+  }
+
+  /// Whether [model] may use the Dart fallback when the native downloader is
+  /// unavailable (i.e. on Android). Only the ASR files: letting the fallback
+  /// serve everything would turn the Kokoro/Parakeet Settings tiles on
+  /// Android into multi-GB downloads of MLX models Android can't run.
+  static bool _dartDownloadable(AiModel model) => model.subdir == 'live_asr';
+
+  /// Dart-side streamed download for platforms without a native downloader
+  /// (Android). Runs in-process, so it doesn't survive app termination — fine
+  /// for the ~70 MB ASR files; the multi-GB MLX models are Apple-only anyway.
+  /// Feeds the same states and the same post-download verification as the
+  /// native path.
+  Future<void> _dartDownload(AiModel model, String outPath) async {
+    debugPrint('ModelDownload: Dart fallback download for ${model.id}');
+    final tmpFile = File('$outPath.tmp');
+    final client = HttpClient();
+    try {
+      final req = await client.getUrl(Uri.parse(model.downloadUrl));
+      final res = await req.close();
+      if (res.statusCode != 200) {
+        throw HttpException('HTTP ${res.statusCode} for ${model.downloadUrl}');
+      }
+      final total = res.contentLength > 0 ? res.contentLength : model.sizeBytes;
+      final sink = tmpFile.openWrite();
+      var received = 0;
+      var lastNotified = 0;
+      try {
+        await for (final chunk in res) {
+          sink.add(chunk);
+          received += chunk.length;
+          // Throttle UI updates to every ~1 MB.
+          if (total > 0 && received - lastNotified > 1024 * 1024) {
+            lastNotified = received;
+            _states[model.id] = ModelDownloadState(
+              status: ModelStatus.downloading,
+              progress: (received / total).clamp(0.0, 0.99),
+            );
+            _notify();
+          }
+        }
+        await sink.flush();
+      } finally {
+        await sink.close();
+      }
+      await tmpFile.rename(outPath);
+
+      final problem = await _verifyDownload(model);
+      if (problem != null) {
+        _states[model.id] = ModelDownloadState(
+          status: ModelStatus.error,
+          errorMessage: 'Downloaded file failed verification ($problem) '
+              '— it was discarded, please download again',
+        );
+        _dlog.log(LogCategory.error,
+            'ModelDownload: ${model.id} FAILED verification — $problem');
+      } else {
+        _states[model.id] = const ModelDownloadState(
+          status: ModelStatus.downloaded,
+          progress: 1.0,
+        );
+      }
+      _notify();
+    } catch (e) {
+      try {
+        if (tmpFile.existsSync()) await tmpFile.delete();
+      } catch (_) {}
+      _states[model.id] = ModelDownloadState(
+        status: ModelStatus.error,
+        errorMessage: e.toString(),
+      );
+      _notify();
+      _dlog.log(
+          LogCategory.error, 'ModelDownload: ${model.id} Dart download failed: $e');
+    } finally {
+      client.close();
     }
   }
 

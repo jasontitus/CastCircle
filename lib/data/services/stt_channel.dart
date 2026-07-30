@@ -31,6 +31,13 @@ class SttChannel {
   /// Survives across listen sessions — set once by the consumer.
   void Function(double level)? onLevel;
 
+  /// Called with raw 16 kHz mono 16-bit LE PCM chunks (~100 ms each) while a
+  /// recording is in progress. Android only: the native side owns the mic and
+  /// fans the audio out so an on-device recognizer can run off the same tap
+  /// (see docs/ANDROID_LIVE_MATCHING.md). Null when nobody is listening —
+  /// chunks are simply dropped.
+  void Function(Uint8List pcm)? onPcm;
+
   /// Called when the OS audio session is interrupted (phone call, Siri,
   /// alarm) or the input route is lost (headphones unplugged). `began` is
   /// true at interruption start, false when it ends.
@@ -140,6 +147,9 @@ class SttChannel {
       case 'onLevel':
         final level = (call.arguments as num?)?.toDouble() ?? 0.0;
         onLevel?.call(level);
+      case 'onPcm':
+        final pcm = call.arguments;
+        if (pcm is Uint8List) onPcm?.call(pcm);
       case 'onAudioInterruption':
         final args = call.arguments as Map? ?? {};
         final began = args['began'] as bool? ?? true;
