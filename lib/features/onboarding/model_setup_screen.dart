@@ -54,7 +54,7 @@ class _ModelSetupScreenState extends State<ModelSetupScreen> {
   late final _Item _voices = _Item(
     'AI voices',
     'Your castmates’ lines read in natural voices',
-    Platform.isAndroid ? '~600 MB' : '~180 MB',
+    '~180 MB',
   );
   final _Item? _matching = Platform.isAndroid
       ? _Item(

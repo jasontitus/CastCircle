@@ -194,8 +194,8 @@ class _AiModelsScreenState extends State<AiModelsScreen> {
         children: [
           Text(
             _onnxReady
-                ? 'Installed — 54 high-quality voices'
-                : 'On-device neural TTS (~600 MB download)',
+                ? 'Installed — 28 high-quality English voices'
+                : 'On-device neural TTS (~180 MB download)',
           ),
           if (_onnxDownloading)
             Padding(

@@ -19,8 +19,14 @@ void main() {
     });
 
     test('TtsEngine enum has expected values', () {
-      expect(TtsEngine.values, containsAll([TtsEngine.kokoroMlx, TtsEngine.system]));
-      expect(TtsEngine.values.length, 2);
+      expect(
+          TtsEngine.values,
+          containsAll([
+            TtsEngine.kokoroMlx,
+            TtsEngine.kokoroOnnx,
+            TtsEngine.system,
+          ]));
+      expect(TtsEngine.values.length, 3);
     });
   });
 

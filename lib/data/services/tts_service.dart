@@ -8,7 +8,7 @@ import 'package:flutter_tts/flutter_tts.dart';
 import 'package:just_audio/just_audio.dart';
 
 import 'debug_log_service.dart';
-import 'model_manager.dart';
+import 'kokoro_onnx_service.dart' show KokoroOnnxService;
 import 'perf_service.dart';
 import 'playback_session.dart';
 
@@ -16,6 +16,10 @@ import 'playback_session.dart';
 enum TtsEngine {
   /// Kokoro on-device neural TTS via MLX (iOS, highest quality).
   kokoroMlx,
+
+  /// Kokoro on-device neural TTS via sherpa-onnx (Android — fp16 pack,
+  /// synthesized in a background isolate; see KokoroOnnxService).
+  kokoroOnnx,
 
   /// System TTS (fallback when Kokoro model not loaded).
   system,
@@ -103,6 +107,14 @@ class TtsService {
       return true;
     }
 
+    // Android: sherpa-onnx engine
+    if (Platform.isAndroid && await KokoroOnnxService.instance.ensureStarted()) {
+      _kokoroLoaded = true;
+      _activeEngine = TtsEngine.kokoroOnnx;
+      dlog.log(LogCategory.tts, 'Kokoro ONNX loaded successfully (post-download)');
+      return true;
+    }
+
     dlog.log(LogCategory.tts, 'Kokoro still not available after download');
     return false;
   }
@@ -129,15 +141,21 @@ class TtsService {
   Future<void> init() async {
     if (_initialized) return;
 
-    // Try to load Kokoro MLX model on device
+    // Try to load Kokoro on device: MLX on Apple platforms, sherpa-onnx on
+    // Android.
     final dlog = DebugLogService.instance;
     _kokoroLoaded = await _initKokoroMlx();
     if (_kokoroLoaded) {
       _activeEngine = TtsEngine.kokoroMlx;
       dlog.log(LogCategory.tts, 'Kokoro MLX loaded successfully');
+    } else if (Platform.isAndroid &&
+        await KokoroOnnxService.instance.ensureStarted()) {
+      _kokoroLoaded = true;
+      _activeEngine = TtsEngine.kokoroOnnx;
+      dlog.log(LogCategory.tts, 'Kokoro ONNX loaded successfully');
     } else {
       _activeEngine = TtsEngine.system;
-      dlog.log(LogCategory.tts, 'Kokoro MLX not available — system TTS fallback');
+      dlog.log(LogCategory.tts, 'Kokoro not available — system TTS fallback');
     }
 
     // Initialize system TTS as fallback (language updated per-session in setLocale)
@@ -499,6 +517,22 @@ class TtsService {
 
   /// Synthesize and play audio using on-device Kokoro MLX.
   /// Returns true if successful. Splits long text into chunks automatically.
+  /// Synthesize one chunk with whichever Kokoro engine is loaded, returning
+  /// the audio file path (null on failure). The single seam between the
+  /// platform engines — playback, chunking, and prefetch above are shared.
+  Future<String?> _synthesizeChunk(String text,
+      {required String voice, required double speed}) {
+    if (_activeEngine == TtsEngine.kokoroOnnx) {
+      return KokoroOnnxService.instance
+          .synthesize(text, voice: voice, speed: speed);
+    }
+    return _channel.invokeMethod<String>('synthesize', {
+      'text': text,
+      'voice': voice,
+      'speed': speed,
+    });
+  }
+
   Future<bool> _speakWithKokoroMlx(String text,
       {String? character, List<String>? precomputedPaths}) async {
     final gen = _speakGen; // capture for stale-check after async gaps
@@ -536,11 +570,7 @@ class TtsService {
 
         final audioPath = usePrecomputed
             ? precomputedPaths[i]
-            : await _channel.invokeMethod<String>('synthesize', {
-                'text': chunks[i],
-                'voice': voice,
-                'speed': speed,
-              });
+            : await _synthesizeChunk(chunks[i], voice: voice, speed: speed);
 
         if (audioPath == null || audioPath.isEmpty) {
           DebugLogService.instance.logError(LogCategory.tts,
@@ -649,11 +679,8 @@ class TtsService {
     final paths = <String>[];
     try {
       for (final chunk in chunks) {
-        final audioPath = await _channel.invokeMethod<String>('synthesize', {
-          'text': chunk,
-          'voice': voice,
-          'speed': speed,
-        });
+        final audioPath =
+            await _synthesizeChunk(chunk, voice: voice, speed: speed);
         if (audioPath == null || audioPath.isEmpty) return null;
         paths.add(audioPath);
       }

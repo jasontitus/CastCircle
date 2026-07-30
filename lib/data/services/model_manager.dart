@@ -1,6 +1,8 @@
 import 'dart:io';
 
 import 'package:archive/archive_io.dart';
+// ignore: depend_on_referenced_packages
+import 'package:crypto/crypto.dart' as crypto;
 import 'package:flutter/foundation.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:path/path.dart' as p;
@@ -30,9 +32,21 @@ class ModelManager {
 
   // ── URLs ──────────────────────────────────────────────
 
+  // Our own release asset (supply-chain: immutable tag + pinned hash), not
+  // the k2-fsa fp32 original: weight-only fp16 conversion halves the download
+  // (182 MB vs 349 MB) with verified-identical output (log-spectral corr
+  // 0.998, same speed — see integration_test/tts_kokoro_compare_macos_test.dart)
+  // and drops the zh-only jieba dict/lexicons the app never uses.
   static const _kokoroArchiveUrl =
-      'https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/kokoro-multi-lang-v1_0.tar.bz2';
-  static const _kokoroModelName = 'kokoro-multi-lang-v1_0';
+      'https://github.com/jasontitus/CastCircle/releases/download/kokoro-en-fp16-v1/kokoro-en-fp16-v1_0.tar.bz2';
+  static const _kokoroArchiveSha256 =
+      '4cafe1c49bf4b0a7f9c2fab9f2b010b05544dde2b28b66e3211e832308a1a1f9';
+  static const _kokoroModelName = 'kokoro-en-fp16-v1_0';
+  static const _kokoroModelFile = 'model.fp16.onnx';
+
+  /// Superseded model dirs reclaimed on the next download/readiness check —
+  /// the old fp32 pack is 600 MB of dead disk once the fp16 pack is in use.
+  static const _legacyKokoroDirs = ['kokoro-multi-lang-v1_0'];
 
 
   // ── Kokoro TTS ─────────────────────────────────────────
@@ -41,40 +55,69 @@ class ModelManager {
   Future<bool> isKokoroReady() async {
     final dir = await modelsDir;
     final modelDir = p.join(dir, _kokoroModelName);
-    return await File(p.join(modelDir, 'model.onnx')).exists() &&
+    return await File(p.join(modelDir, _kokoroModelFile)).exists() &&
         await File(p.join(modelDir, 'voices.bin')).exists() &&
-        await File(p.join(modelDir, 'tokens.txt')).exists();
+        await File(p.join(modelDir, 'tokens.txt')).exists() &&
+        await File(p.join(modelDir, 'lexicon-us-en.txt')).exists();
   }
 
   /// Get paths to Kokoro model files. Returns null if not downloaded.
-  Future<({String model, String voices, String tokens, String dataDir})?>
-      getKokoroPaths() async {
+  /// [lexicon] is the comma-separated list sherpa expects.
+  Future<
+      ({
+        String model,
+        String voices,
+        String tokens,
+        String dataDir,
+        String lexicon,
+      })?> getKokoroPaths() async {
     if (!await isKokoroReady()) return null;
     final dir = await modelsDir;
     final modelDir = p.join(dir, _kokoroModelName);
     return (
-      model: p.join(modelDir, 'model.onnx'),
+      model: p.join(modelDir, _kokoroModelFile),
       voices: p.join(modelDir, 'voices.bin'),
       tokens: p.join(modelDir, 'tokens.txt'),
       dataDir: p.join(modelDir, 'espeak-ng-data'),
+      lexicon: '${p.join(modelDir, 'lexicon-us-en.txt')},'
+          '${p.join(modelDir, 'lexicon-gb-en.txt')}',
     );
+  }
+
+  /// Delete superseded model dirs (best-effort, silent when absent).
+  Future<void> _reclaimLegacyKokoro() async {
+    final dir = await modelsDir;
+    for (final name in _legacyKokoroDirs) {
+      final d = Directory(p.join(dir, name));
+      if (await d.exists()) {
+        try {
+          await d.delete(recursive: true);
+          debugPrint('ModelManager: reclaimed legacy model dir $name');
+        } catch (e) {
+          debugPrint('ModelManager: could not delete legacy $name: $e');
+        }
+      }
+    }
   }
 
   /// Download and extract Kokoro TTS model archive.
   Future<void> downloadKokoro({
     void Function(String file, double progress)? onProgress,
   }) async {
+    // Free the superseded fp32 pack first — 600 MB, and preflight headroom
+    // for the new download.
+    await _reclaimLegacyKokoro();
     if (await isKokoroReady()) {
       onProgress?.call('kokoro', 1.0);
       return;
     }
     final dir = await modelsDir;
-    onProgress?.call('kokoro-multi-lang-v1_0.tar.bz2', 0);
+    onProgress?.call('$_kokoroModelName.tar.bz2', 0);
     await _downloadAndExtractArchive(
       _kokoroArchiveUrl,
       dir,
-      (progress) =>
-          onProgress?.call('kokoro-multi-lang-v1_0.tar.bz2', progress),
+      (progress) => onProgress?.call('$_kokoroModelName.tar.bz2', progress),
+      expectedSha256: _kokoroArchiveSha256,
     );
   }
 
@@ -130,8 +173,9 @@ class ModelManager {
   Future<void> _downloadAndExtractArchive(
     String url,
     String destDir,
-    void Function(double progress)? onProgress,
-  ) async {
+    void Function(double progress)? onProgress, {
+    String? expectedSha256,
+  }) async {
     final tmpDir = await getTemporaryDirectory();
     final archiveName = p.basename(Uri.parse(url).path);
     final archivePath = p.join(tmpDir.path, archiveName);
@@ -153,6 +197,21 @@ class ModelManager {
     debugPrint('Archive downloaded: ${(archiveSize / 1024 / 1024).toStringAsFixed(1)} MB');
     if (archiveSize < 1000) {
       throw Exception('Archive too small ($archiveSize bytes) — download likely failed');
+    }
+
+    // Integrity: these bytes get extracted and fed straight into native
+    // inference code — a truncated or tampered archive must fail HERE, not
+    // manifest as a mysterious crash later.
+    if (expectedSha256 != null) {
+      final digest = await crypto.sha256.bind(archiveFile.openRead()).first;
+      final actual = digest.toString().toLowerCase();
+      if (actual != expectedSha256.toLowerCase()) {
+        try {
+          await archiveFile.delete();
+        } catch (_) {}
+        throw Exception('Archive failed verification (sha256 $actual != '
+            'expected $expectedSha256) — it was discarded, please try again');
+      }
     }
 
     // Extract in a separate isolate using streaming I/O
