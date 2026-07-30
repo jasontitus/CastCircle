@@ -9,9 +9,6 @@ class MainActivity : FlutterActivity() {
 
         // Register custom platform channel plugins
         flutterEngine.plugins.add(AndroidSttPlugin())
-        // TEMPORARY feasibility probe for Android live matching — remove once
-        // the EXTRA_AUDIO_SOURCE question is answered (see AudioSourcePlugin).
-        flutterEngine.plugins.add(AudioSourcePlugin())
         flutterEngine.plugins.add(PdfTextPlugin())
         flutterEngine.plugins.add(ContactPickerPlugin())
         flutterEngine.plugins.add(MemoryMonitorPlugin())
