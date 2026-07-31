@@ -101,6 +101,65 @@ ELIZABETH. So you say.
     expect(refrains, 3);
   });
 
+  test('unpunctuated song refrain clustered in one scene is kept', () {
+    // Musicals repeat lyric lines with no terminal punctuation — exactly
+    // header-shaped, except they cluster in one number instead of recurring
+    // across the whole document. The spread requirement must protect them.
+    final filler = List.generate(
+        40, (i) => 'ENSEMBLE. Business line number $i to pad the scene out.');
+    final withSong = '''
+ACT I
+
+${filler.take(20).join('\n\n')}
+
+VELMA. And now the number you have all been waiting for
+
+All that jazz
+
+All that jazz
+
+All that jazz
+
+ROXIE. She always closes with it.
+
+${filler.skip(20).join('\n\n')}
+''';
+    final parser = ScriptParser();
+    final script = parser.parse(withSong, title: 'test');
+    final all = script.lines.map((l) => l.text).join('\n');
+    expect('All that jazz'.allMatches(all).length >= 3, true,
+        reason: 'clustered refrain must not be stripped as a header');
+  });
+
+  test('repeated catchphrase with OCR-dropped punctuation is kept', () {
+    // "JANE. I love you" x3 with lost periods matches every header shape
+    // rule — the cue-line exclusion must protect it, even spread across
+    // the document.
+    final filler = List.generate(
+        30, (i) => 'ELIZABETH. Padding line $i so the spread test is real.');
+    final withCatchphrase = '''
+ACT I
+
+JANE. I always speak what I think
+
+${filler.take(10).join('\n\n')}
+
+JANE. I always speak what I think
+
+${filler.skip(10).take(10).join('\n\n')}
+
+JANE. I always speak what I think
+
+${filler.skip(20).join('\n\n')}
+''';
+    final parser = ScriptParser();
+    final script = parser.parse(withCatchphrase, title: 'test');
+    final janeLines = script.lines
+        .where((l) => l.text.contains('I always speak what I think'))
+        .length;
+    expect(janeLines, 3);
+  });
+
   test('a title matching a character name is never treated as a header', () {
     const macbethish = '''
 MACBETH
