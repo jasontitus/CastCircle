@@ -96,16 +96,36 @@ class _OcrReviewScreenState extends State<OcrReviewScreen> {
   /// flagged — the context the user wants to clean up, since OCR errors cluster
   /// and often span more than the one flagged line. Flagged neighbours are
   /// skipped because they already have their own editable card.
+  // Memoized current-order view: _contextLinesFor runs once per flagged
+  // card inside build, and rebuilding + sorting the whole list per card was
+  // O(n²·log n) per frame with hundreds of flagged OCR lines. Invalidated
+  // whenever _removedIds changes (all mutations go through _markRemoved).
+  List<ScriptLine>? _orderedCache;
+  Map<String, int>? _orderedIndexCache;
+
+  void _markRemoved(String id) {
+    _removedIds.add(id);
+    _orderedCache = null;
+    _orderedIndexCache = null;
+  }
+
+  List<ScriptLine> get _orderedCurrentLines => _orderedCache ??= (widget.lines
+      .where((l) => !_removedIds.contains(l.id))
+      .toList()
+    ..sort((a, b) => a.orderIndex.compareTo(b.orderIndex)));
+
+  Map<String, int> get _orderedIndexById => _orderedIndexCache ??= {
+        for (var i = 0; i < _orderedCurrentLines.length; i++)
+          _orderedCurrentLines[i].id: i,
+      };
+
   List<ScriptLine> _contextLinesFor(ScriptLine flagged, {int span = 3}) {
     // Work over the CURRENT (non-removed) lines so the window follows deletions.
     // If we used the original list, lines deleted near one flagged item would
     // still occupy slots in a nearby flagged item's window and hide its real
     // neighbours — exactly the "didn't show the line" bug.
-    final ordered = widget.lines
-        .where((l) => !_removedIds.contains(l.id))
-        .toList()
-      ..sort((a, b) => a.orderIndex.compareTo(b.orderIndex));
-    final idx = ordered.indexWhere((l) => l.id == flagged.id);
+    final ordered = _orderedCurrentLines;
+    final idx = _orderedIndexById[flagged.id] ?? -1;
     if (idx < 0) return const [];
     final out = <ScriptLine>[];
     for (var i = idx - span; i <= idx + span; i++) {
@@ -161,7 +181,7 @@ class _OcrReviewScreenState extends State<OcrReviewScreen> {
   }
 
   void _removeLine(ScriptLine line) {
-    setState(() => _removedIds.add(line.id));
+    setState(() => _markRemoved(line.id));
   }
 
   /// Confirm + remove a nearby (context) line. Unlike the flagged line's own
@@ -196,7 +216,7 @@ class _OcrReviewScreenState extends State<OcrReviewScreen> {
       ),
     );
     if (confirmed == true) {
-      setState(() => _removedIds.add(l.id));
+      setState(() => _markRemoved(l.id));
     }
   }
 
@@ -259,7 +279,7 @@ class _OcrReviewScreenState extends State<OcrReviewScreen> {
   void _removeAllNotScript() {
     setState(() {
       for (final line in _notScriptLines) {
-        _removedIds.add(line.id);
+        _markRemoved(line.id);
       }
     });
   }

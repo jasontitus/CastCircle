@@ -347,24 +347,30 @@ class SttService {
       return 0.0;
     }
 
-    // LCS with fuzzy word matching (edit distance ≤ 1 counts as match)
+    // LCS with fuzzy word matching (edit distance ≤ 1 counts as match).
+    // Two rows, not a full (m+1)x(n+1) matrix: this runs on the MAIN isolate
+    // for every recognition partial — several times a second while the actor
+    // speaks — and the full-matrix version allocated a list-of-lists each
+    // call.
     final m = expectedWords.length;
     final n = spokenWords.length;
-    final dp = List.generate(m + 1, (_) => List.filled(n + 1, 0));
+    var prev = List<int>.filled(n + 1, 0);
+    var cur = List<int>.filled(n + 1, 0);
 
     for (var i = 1; i <= m; i++) {
       for (var j = 1; j <= n; j++) {
         if (_wordsMatch(expectedWords[i - 1], spokenWords[j - 1])) {
-          dp[i][j] = dp[i - 1][j - 1] + 1;
+          cur[j] = prev[j - 1] + 1;
         } else {
-          dp[i][j] = dp[i - 1][j] > dp[i][j - 1]
-              ? dp[i - 1][j]
-              : dp[i][j - 1];
+          cur[j] = prev[j] > cur[j - 1] ? prev[j] : cur[j - 1];
         }
       }
+      final t = prev;
+      prev = cur;
+      cur = t..fillRange(0, n + 1, 0);
     }
 
-    return dp[m][n] / m;
+    return prev[n] / m;
   }
 
   /// Check if two words match — exact or within edit distance 1.

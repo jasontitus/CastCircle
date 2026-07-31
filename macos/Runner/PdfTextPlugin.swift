@@ -65,15 +65,18 @@ class PdfTextPlugin: NSObject {
             }
 
             let pageCount = document.pageCount
-            var fullText = ""
+            // Collect then join once: += on a growing String re-copies the
+            // whole accumulated text per page (O(n^2) over a long PDF).
+            var pageTexts: [String] = []
+            pageTexts.reserveCapacity(pageCount)
 
             for i in 0..<pageCount {
                 guard let page = document.page(at: i) else { continue }
                 if let pageText = page.string {
-                    fullText += pageText
-                    fullText += "\n"
+                    pageTexts.append(pageText)
                 }
             }
+            let fullText = pageTexts.joined(separator: "\n")
 
             DispatchQueue.main.async {
                 if fullText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {

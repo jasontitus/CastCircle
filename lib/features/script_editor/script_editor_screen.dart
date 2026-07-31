@@ -34,6 +34,28 @@ class _ScriptEditorScreenState extends ConsumerState<ScriptEditorScreen> {
   bool _showLowConfidenceOnly = false;
   ScriptLine? _selectedLine; // for tablet master-detail
 
+  /// Detail-panel text controller, owned here and re-targeted only when the
+  /// selected line changes. Creating one inside _buildDetailPanel leaked a
+  /// controller per rebuild AND wiped the user's in-progress edit on every
+  /// rebuild.
+  TextEditingController? _detailController;
+  String? _detailControllerLineId;
+
+  TextEditingController _detailControllerFor(ScriptLine line) {
+    if (_detailControllerLineId != line.id) {
+      _detailController?.dispose();
+      _detailController = TextEditingController(text: line.text);
+      _detailControllerLineId = line.id;
+    }
+    return _detailController!;
+  }
+
+  @override
+  void dispose() {
+    _detailController?.dispose();
+    super.dispose();
+  }
+
   /// Deterministic fallback path to the imported PDF, resolved from the current
   /// app Documents directory. The `scriptPath` stored on the production is an
   /// absolute path that can go stale across reinstalls (iOS rewrites the
@@ -426,7 +448,7 @@ class _ScriptEditorScreenState extends ConsumerState<ScriptEditorScreen> {
     final production = ref.read(currentProductionProvider);
     final pdfPath = _effectivePdfPath(production);
     final hasPdf = pdfPath != null && line.sourcePage != null && File(pdfPath).existsSync();
-    final textController = TextEditingController(text: line.text);
+    final textController = _detailControllerFor(line);
 
     return Padding(
       padding: const EdgeInsets.all(16),
@@ -516,39 +538,34 @@ class _ScriptEditorScreenState extends ConsumerState<ScriptEditorScreen> {
   }
 
   List<ScriptLine> _filteredLines(ParsedScript script) {
-    var lines = script.lines.toList();
-
-    if (!_showDirections) {
-      lines = lines
-          .where((l) => l.lineType != LineType.stageDirection)
-          .toList();
-    }
-
-    if (_showLowConfidenceOnly) {
-      lines = lines
-          .where((l) => l.ocrConfidence != null && l.ocrConfidence! < 0.85)
-          .toList();
-      return lines;
-    }
-
-    if (_selectedCharacter != null) {
-      lines = lines
-          .where((l) =>
-              l.lineType == LineType.header ||
-              l.isForCharacter(_selectedCharacter!) ||
-              l.lineType == LineType.stageDirection)
-          .toList();
-
-      // Trim headers and stage directions that appear before the character's
-      // first actual line so the view starts at relevant content.
-      final firstCharIndex =
-          lines.indexWhere((l) => l.isForCharacter(_selectedCharacter!));
-      if (firstCharIndex > 0) {
-        lines = lines.sublist(firstCharIndex);
+    // Single pass (runs per build over the whole script) — the staged
+    // .where().toList() version materialized up to five intermediate lists.
+    final char = _selectedCharacter;
+    final out = <ScriptLine>[];
+    var firstCharIndex = -1;
+    for (final l in script.lines) {
+      if (!_showDirections && l.lineType == LineType.stageDirection) continue;
+      if (_showLowConfidenceOnly) {
+        if (l.ocrConfidence != null && l.ocrConfidence! < 0.85) out.add(l);
+        continue;
       }
+      if (char != null) {
+        final isChars = l.isForCharacter(char);
+        if (!isChars &&
+            l.lineType != LineType.header &&
+            l.lineType != LineType.stageDirection) {
+          continue;
+        }
+        if (isChars && firstCharIndex < 0) firstCharIndex = out.length;
+      }
+      out.add(l);
     }
-
-    return lines;
+    // Trim headers and stage directions that appear before the character's
+    // first actual line so the view starts at relevant content.
+    if (char != null && !_showLowConfidenceOnly && firstCharIndex > 0) {
+      return out.sublist(firstCharIndex);
+    }
+    return out;
   }
 
   void _reorderLines(ParsedScript script, List<ScriptLine> filteredLines,
@@ -768,6 +785,9 @@ class _ScriptEditorScreenState extends ConsumerState<ScriptEditorScreen> {
         line.sourcePage != null &&
         File(pdfPath).existsSync();
 
+    // Sheet-scoped controllers: disposed when the sheet closes —
+    // they used to leak one pair per opened edit sheet for the whole
+    // editing session.
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
@@ -960,7 +980,10 @@ class _ScriptEditorScreenState extends ConsumerState<ScriptEditorScreen> {
           ),
         );
       },
-    );
+    ).whenComplete(() {
+      textController.dispose();
+      newCharController.dispose();
+    });
   }
 
   IconData _lineTypeIcon(LineType type) {

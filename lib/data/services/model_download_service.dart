@@ -685,12 +685,18 @@ class ModelDownloadService {
   }
 
   /// Full path where a model file will be saved.
+  // Cached once — the documents dir never changes during a run, and
+  // resolving it is a platform-channel round trip that used to repeat per
+  // model on every status refresh.
+  String? _docsPath;
+
   Future<String> _filePath(AiModel model) async {
-    final appDir = await getApplicationDocumentsDirectory();
+    final docs =
+        _docsPath ??= (await getApplicationDocumentsDirectory()).path;
     if (model.subdir.isNotEmpty) {
-      return p.join(appDir.path, 'models', model.subdir, model.filename);
+      return p.join(docs, 'models', model.subdir, model.filename);
     }
-    return p.join(appDir.path, 'models', model.filename);
+    return p.join(docs, 'models', model.filename);
   }
 
   Future<Directory> _kokoroDir() async {

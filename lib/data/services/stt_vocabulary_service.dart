@@ -1,6 +1,7 @@
 import 'package:flutter/foundation.dart'; // also re-exports Int32List
 
 import '../models/script_models.dart';
+import 'stt_service.dart';
 
 // Hoisted out of the correction hot path: `RegExp(...)` compiles the pattern
 // on every construction, and these ran once per word (sometimes once per
@@ -352,19 +353,23 @@ class SttVocabularyService {
       for (final w in expWords) w.toLowerCase().replaceAll(_nonWordRe, '')
     ];
 
-    // Build LCS alignment matrix
+    // Build LCS alignment matrix. Backtracking needs the whole matrix, so
+    // it can't be two-row — but one flat Int32List replaces the
+    // list-of-lists (this also runs per recognition partial on the main
+    // isolate).
     final m = recWords.length;
     final n = expWords.length;
-    final dp = List.generate(m + 1, (_) => List.filled(n + 1, 0));
+    final w = n + 1;
+    final dp = Int32List((m + 1) * w);
 
     for (var i = 1; i <= m; i++) {
       for (var j = 1; j <= n; j++) {
         if (_editDistanceAtMost(recNorm[i - 1], expNorm[j - 1], 2) <= 2) {
-          dp[i][j] = dp[i - 1][j - 1] + 1;
+          dp[i * w + j] = dp[(i - 1) * w + (j - 1)] + 1;
         } else {
-          dp[i][j] = dp[i - 1][j] > dp[i][j - 1]
-              ? dp[i - 1][j]
-              : dp[i][j - 1];
+          final up = dp[(i - 1) * w + j];
+          final left = dp[i * w + (j - 1)];
+          dp[i * w + j] = up > left ? up : left;
         }
       }
     }
@@ -382,7 +387,7 @@ class SttVocabularyService {
         }
         i--;
         j--;
-      } else if (dp[i - 1][j] > dp[i][j - 1]) {
+      } else if (dp[(i - 1) * w + j] > dp[i * w + (j - 1)]) {
         i--; // recognized word not in expected — keep as-is
       } else {
         j--; // expected word not in recognized — skip
@@ -456,50 +461,13 @@ class SttVocabularyService {
     }
   }
 
-  /// Match score — delegates to SttService.matchScore (LCS-based).
-  static double _matchScore(String expected, String spoken) {
-    // Import would create a circular dependency, so inline the call
-    // via the same static method. Keep in sync with SttService.matchScore.
-    final normalizedExpected = expected
-        .toLowerCase()
-        .replaceAll(RegExp(r'[^\w\s]'), '')
-        .trim();
-    if (normalizedExpected.isEmpty) return 1.0;
-
-    final expectedWords = normalizedExpected.split(RegExp(r'\s+'));
-    final spokenWords = spoken
-        .toLowerCase()
-        .replaceAll(RegExp(r'[^\w\s]'), '')
-        .trim()
-        .split(RegExp(r'\s+'));
-
-    if (spokenWords.isEmpty || (spokenWords.length == 1 && spokenWords[0].isEmpty)) {
-      return 0.0;
-    }
-
-    // LCS with fuzzy word matching (edit distance ≤ 1)
-    final m = expectedWords.length;
-    final n = spokenWords.length;
-    final dp = List.generate(m + 1, (_) => List.filled(n + 1, 0));
-
-    for (var i = 1; i <= m; i++) {
-      for (var j = 1; j <= n; j++) {
-        final ew = expectedWords[i - 1];
-        final sw = spokenWords[j - 1];
-        if (ew == sw ||
-            ((ew.length - sw.length).abs() <= 1 &&
-                _editDistanceAtMost(ew, sw, 1) <= 1)) {
-          dp[i][j] = dp[i - 1][j - 1] + 1;
-        } else {
-          dp[i][j] = dp[i - 1][j] > dp[i][j - 1]
-              ? dp[i - 1][j]
-              : dp[i][j - 1];
-        }
-      }
-    }
-
-    return dp[m][n] / m;
-  }
+  /// Match score — delegates to SttService.matchScore. There never was a
+  /// real import cycle (neither file imports the other); the previous
+  /// hand-inlined copy allocated a full DP matrix per call — on the main
+  /// isolate, several times a second during rehearsal — and had already
+  /// drifted from the original it claimed to stay in sync with.
+  static double _matchScore(String expected, String spoken) =>
+      SttService.matchScore(expected, spoken);
 
   List<String> _tokenize(String text) {
     return text

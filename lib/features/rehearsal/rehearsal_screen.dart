@@ -932,6 +932,15 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
     String? myCharacter,
     RehearsalState rehearsalState,
   ) {
+    // Hoisted out of itemBuilder: with cacheExtent forcing ~145 rows built,
+    // a per-row indexWhere over the cast was O(rows × characters) per frame.
+    final script = ref.read(currentScriptProvider);
+    final charIndexByName = <String, int>{
+      if (script != null)
+        for (var i = 0; i < script.characters.length; i++)
+          script.characters[i].name: i,
+    };
+
     final list = ListView.builder(
       controller: _scrollController,
       padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
@@ -953,8 +962,7 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
         final colorLookupName = line.multiCharacters.isNotEmpty
             ? line.multiCharacters.first
             : line.character;
-        final charIdx =
-            script.characters.indexWhere((c) => c.name == colorLookupName);
+        final charIdx = charIndexByName[colorLookupName] ?? -1;
         final color = charIdx >= 0
             ? AppTheme.colorForCharacter(charIdx)
             : Colors.grey;

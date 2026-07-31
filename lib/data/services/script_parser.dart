@@ -1047,47 +1047,78 @@ class ScriptParser {
   }
 
   /// Detect character cue at start of line.
-  ({String character, String dialogue})? _detectCharacterCue(String line) {
+  /// Compiled cue patterns per character, rebuilt only when the character
+  /// set or format changes. _detectCharacterCue runs for EVERY text line —
+  /// recompiling ~5 regexes per character per line was ~10^5 compilations
+  /// on a full-length import.
+  List<({String char, RegExp dot, RegExp colonEmpty, RegExp colonInline,
+      RegExp? ownLine, RegExp? flexible})>? _cuePatterns;
+  int _cuePatternsCharCount = -1;
+  ScriptFormat? _cuePatternsFormat;
+
+  List<({String char, RegExp dot, RegExp colonEmpty, RegExp colonInline,
+      RegExp? ownLine, RegExp? flexible})> _buildCuePatterns() {
     final sorted = knownCharacters.toList()
       ..sort((a, b) => b.length.compareTo(a.length));
-
     final caseSensitive = _format != ScriptFormat.titleCase;
+    return [
+      for (final char in sorted)
+        (() {
+          final escaped = RegExp.escape(char);
+          final tokens = char
+              .split(RegExp(r'[.\s]+'))
+              .where((t) => t.isNotEmpty)
+              .toList();
+          return (
+            char: char,
+            dot: RegExp('^$escaped\\.\\s+(.*)', caseSensitive: caseSensitive),
+            colonEmpty: RegExp('^$escaped(?:\\s*\\([^)]*\\))?\\s*:\$',
+                caseSensitive: caseSensitive),
+            colonInline: RegExp('^$escaped(?:\\s*\\([^)]*\\))?\\s*:\\s+(.*)',
+                caseSensitive: caseSensitive),
+            ownLine: _format == ScriptFormat.nameOnOwnLine
+                ? RegExp('^$escaped\\.?\$')
+                : null,
+            flexible: tokens.length < 2
+                ? null
+                : RegExp(
+                    '^${tokens.map(RegExp.escape).join(r'[.,:]?\s*')}\\s*[.:]\\s+(.*)',
+                    caseSensitive: caseSensitive),
+          );
+        })(),
+    ];
+  }
 
-    for (final char in sorted) {
-      final escaped = RegExp.escape(char);
+  ({String character, String dialogue})? _detectCharacterCue(String line) {
+    if (_cuePatterns == null ||
+        _cuePatternsCharCount != knownCharacters.length ||
+        _cuePatternsFormat != _format) {
+      _cuePatterns = _buildCuePatterns();
+      _cuePatternsCharCount = knownCharacters.length;
+      _cuePatternsFormat = _format;
+    }
+    final patterns = _cuePatterns!;
+
+    for (final p in patterns) {
       // Standard match: "NAME. dialogue..."
-      final pattern = RegExp(
-        '^$escaped\\.\\s+(.*)',
-        caseSensitive: caseSensitive,
-      );
-      final match = pattern.firstMatch(line);
+      final match = p.dot.firstMatch(line);
       if (match != null) {
-        return (character: char, dialogue: match.group(1)!);
+        return (character: p.char, dialogue: match.group(1)!);
       }
 
       // "NAME:" or "NAME (aside):" — colon format (Cyrano etc.)
-      final colonMatch = RegExp(
-        '^$escaped(?:\\s*\\([^)]*\\))?\\s*:\$',
-        caseSensitive: caseSensitive,
-      ).firstMatch(line);
-      if (colonMatch != null) {
-        return (character: char, dialogue: '');
+      if (p.colonEmpty.hasMatch(line)) {
+        return (character: p.char, dialogue: '');
       }
       // "NAME: dialogue..." — colon with inline dialogue
-      final colonInline = RegExp(
-        '^$escaped(?:\\s*\\([^)]*\\))?\\s*:\\s+(.*)',
-        caseSensitive: caseSensitive,
-      ).firstMatch(line);
+      final colonInline = p.colonInline.firstMatch(line);
       if (colonInline != null) {
-        return (character: char, dialogue: colonInline.group(1)!);
+        return (character: p.char, dialogue: colonInline.group(1)!);
       }
 
       // Name-on-own-line: "NAME." or "NAME" with nothing after
-      if (_format == ScriptFormat.nameOnOwnLine) {
-        final ownLine = RegExp('^$escaped\\.?\$');
-        if (ownLine.hasMatch(line)) {
-          return (character: char, dialogue: '');
-        }
+      if (p.ownLine != null && p.ownLine!.hasMatch(line)) {
+        return (character: p.char, dialogue: '');
       }
     }
 
@@ -1097,19 +1128,12 @@ class ScriptParser {
     // [.,:] variants and missing spaces between the name's tokens, but keep
     // the trailing cue separator strict ('.' or ':' + space) so dialogue that
     // merely STARTS with a name ("MARY, come here…") is never consumed.
-    for (final char in sorted) {
-      final tokens = char
-          .split(RegExp(r'[.\s]+'))
-          .where((t) => t.isNotEmpty)
-          .toList();
-      if (tokens.length < 2) continue; // single tokens: exact pass covers them
-      final flexible = tokens.map(RegExp.escape).join(r'[.,:]?\s*');
-      final match = RegExp(
-        '^$flexible\\s*[.:]\\s+(.*)',
-        caseSensitive: caseSensitive,
-      ).firstMatch(line);
+    for (final p in patterns) {
+      final flexible = p.flexible;
+      if (flexible == null) continue; // single tokens: exact pass covers them
+      final match = flexible.firstMatch(line);
       if (match != null) {
-        return (character: char, dialogue: match.group(1)!);
+        return (character: p.char, dialogue: match.group(1)!);
       }
     }
     return null;
