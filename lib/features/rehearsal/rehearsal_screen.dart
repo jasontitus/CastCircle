@@ -148,6 +148,9 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
   Timer? _toastTimer;
   /// One 'first result' log per line (see onResult).
   bool _loggedFirstResultForLine = false;
+  // When listening for the current line began — used to sanity-check a
+  // high match score against physically-possible reading speed.
+  DateTime _listeningStartedAt = DateTime.now();
   ProviderSubscription<int>? _progressSub;
   // Cached while the screen is mounted so the debounce timer, app-lifecycle
   // callback, and dispose() can persist progress WITHOUT touching `ref` after
@@ -1978,6 +1981,7 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
     _matchConfirmed = false;
     _lastRecognizedRaw = '';
     _loggedFirstResultForLine = false;
+    _listeningStartedAt = DateTime.now();
     _micLevel.value = 0.0;
 
     // Build vocabulary hints: the expected line as a phrase + its individual
@@ -2127,13 +2131,17 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
   /// "no new results" is not "done speaking": when the actor hits words the
   /// recognizer can't transcribe (OCR-garbled text, mumbled names) partials
   /// stop changing while speech continues, and the timer used to cut the
-  /// actor off mid-line. And a single instantaneous mic reading is not
-  /// enough either: the recognizer can predictively complete the whole line
-  /// from its contextual hint (100% score mid-read) and the one sample can
-  /// land in a comma-breath (field case: a line advanced 1.3 s after its
-  /// first partial, 3.8 s into a longer read). Require SUSTAINED quiet —
-  /// several consecutive quiet samples — before confirming; any speech
-  /// resets the streak.
+  /// actor off mid-line. Worse, the recognizer can predictively complete the
+  /// whole line from its contextual hint — 100% score mid-read (field case:
+  /// 1.3 s after the first partial, 3.8 s into a longer line) — and a single
+  /// mic sample can land in a comma-breath.
+  ///
+  /// The tiebreaker is TIME PLAUSIBILITY: a real read of an N-word line
+  /// cannot finish faster than a fast reader speaks (~200 ms/word). When the
+  /// elapsed time makes the match physically possible, confirm on the first
+  /// quiet sample — the snappy path, which is nearly every line. Only a
+  /// too-fast "match" (necessarily hint completion) pays for sustained quiet
+  /// (~450 ms), so a breath can't end a line the actor can't have finished.
   int _quietStreak = 0;
 
   void _confirmIfActorQuiet(ScriptLine line) {
@@ -2149,10 +2157,14 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
       });
       return;
     }
+
+    final wordCount = line.text.split(RegExp(r'\s+')).length;
+    final minPlausible = Duration(milliseconds: 200 * wordCount);
+    final plausible =
+        DateTime.now().difference(_listeningStartedAt) >= minPlausible;
+
     _quietStreak++;
-    if (_quietStreak < 3) {
-      // ~450 ms of continuous quiet total — longer than a breath, far
-      // shorter than the silence-timeout fallback.
+    if (!plausible && _quietStreak < 3) {
       _matchConfirmTimer?.cancel();
       _matchConfirmTimer = Timer(const Duration(milliseconds: 150), () {
         _confirmIfActorQuiet(line);
@@ -2524,6 +2536,7 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
     _micLevel.value = 0.0;
     _lastRecognizedRaw = '';
     _loggedFirstResultForLine = false;
+    _listeningStartedAt = DateTime.now();
 
     // Instant when already running (warmed at rehearsal start). When it's
     // still loading — e.g. resuming straight into the actor's line — do NOT
