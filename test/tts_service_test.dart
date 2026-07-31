@@ -30,6 +30,38 @@ void main() {
     });
   });
 
+  group('TtsService.expandAbbreviations', () {
+    test('expands the title abbreviations that pepper period scripts', () {
+      expect(
+        TtsService.expandAbbreviations('Mr. Darcy and Mrs. Bennet met Dr. Long'),
+        'Mister Darcy and Missus Bennet met Doctor Long',
+      );
+    });
+
+    test('removes the false sentence boundary inside a line', () {
+      // The period after "Mr" must be GONE so neither our splitter nor
+      // Kokoro's internal one pauses after it.
+      final out = TtsService.expandAbbreviations(
+          'Your Mr. Darcy is so high and conceited.');
+      expect(out.contains('Mr.'), false);
+      expect(out, 'Your Mister Darcy is so high and conceited.');
+    });
+
+    test('leaves ordinary words containing the letters alone', () {
+      expect(TtsService.expandAbbreviations('Milk St is a street'),
+          'Milk St is a street'); // no period → untouched
+      expect(TtsService.expandAbbreviations('The mist rolled in.'),
+          'The mist rolled in.');
+      expect(TtsService.expandAbbreviations('He grimaced. Mrs. Hill smiled.'),
+          'He grimaced. Missus Hill smiled.');
+    });
+
+    test('does not touch lowercase or sentence-final ordinary periods', () {
+      expect(TtsService.expandAbbreviations('I will visit the dr. tomorrow'),
+          'I will visit the dr. tomorrow'); // lowercase → left alone
+    });
+  });
+
   group('TtsService.stripStageDirections', () {
     test('removes a closed parenthetical', () {
       expect(TtsService.stripStageDirections('(crossing) Hello there.'),

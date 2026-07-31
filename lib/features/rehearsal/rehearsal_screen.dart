@@ -256,6 +256,9 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
         _onOtherLineFinished();
       }
     });
+    // Pipelining anchor: the moment a line's audio starts playing, queue
+    // synthesis for the upcoming lines so it overlaps the playback.
+    _tts.onPlaybackStarted = _prefetchUpcomingOtherLines;
 
     // A phone call / Siri / unplugged headphones kills the audio engine and
     // (on the playback path) never delivers a completion — the state machine
@@ -560,6 +563,7 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
     // Clear the completion handler so the singleton TtsService doesn't retain
     // this disposed State (and its ref) until the next rehearsal.
     _tts.setCompletionHandler(() {});
+    _tts.onPlaybackStarted = null;
     _stt.onAudioInterruption = null;
     _stt.onAudioRouteLost = null;
     _tts.stop(reason: 'dispose');
@@ -1847,24 +1851,43 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
     } else {
       await _tts.speak(line.text, character: voiceCharacter);
     }
-    // speak() has finished SYNTHESIZING (playback continues via the player),
-    // so the TTS engine is idle — synthesize the next other-character line
-    // now. Without this, back-to-back computer lines each pay full synthesis
-    // latency before any audio starts: ~a line-length of silence on Android,
-    // where synthesis is ~real-time (RTF 0.9). Prefetching only while the
-    // actor speaks (the isMyLine branch) never covers consecutive TTS lines.
-    if (mounted && ref.read(rehearsalStateProvider) == RehearsalState.playingOther) {
-      final script = ref.read(currentScriptProvider);
-      final scene = ref.read(selectedSceneProvider);
-      final myCharacter = ref.read(rehearsalCharacterProvider);
-      final mode = ref.read(rehearsalModeProvider);
-      if (script != null && scene != null) {
-        final dialogueLines = _getRehearsalLines(script, scene, myCharacter);
-        _prefetchLineAudio(_nextOtherLine(dialogueLines,
-            ref.read(currentLineIndexProvider), myCharacter, mode));
+    // Safety net only — the real prefetch trigger is onPlaybackStarted
+    // (speak() returns after playback COMPLETES, far too late to overlap).
+    _prefetchUpcomingOtherLines();
+    // Completion handled by TTS completion handler
+  }
+
+  /// Queue synthesis for the next TWO other-character lines. Called from
+  /// [TtsService.onPlaybackStarted] — the moment a line's audio starts — so
+  /// their synthesis genuinely overlaps this line's playback. That anchor is
+  /// what makes playthrough flow on Android, where synthesis is ~real-time
+  /// (RTF 0.9): hooked "after speak returned" it fired at playback END and
+  /// back-to-back TTS lines each sat silent for 6-10 s despite "prefetching".
+  /// Two deep because one-deep only breaks even at real-time synthesis; the
+  /// future-map dedupe makes repeat calls free.
+  void _prefetchUpcomingOtherLines() {
+    if (!mounted) return;
+    final state = ref.read(rehearsalStateProvider);
+    if (state != RehearsalState.playingOther &&
+        state != RehearsalState.listeningForMe) {
+      return;
+    }
+    final script = ref.read(currentScriptProvider);
+    final scene = ref.read(selectedSceneProvider);
+    final myCharacter = ref.read(rehearsalCharacterProvider);
+    final mode = ref.read(rehearsalModeProvider);
+    if (script == null || scene == null) return;
+    final dialogueLines = _getRehearsalLines(script, scene, myCharacter);
+    final currentIdx = ref.read(currentLineIndexProvider);
+    final next = _nextOtherLine(dialogueLines, currentIdx, myCharacter, mode);
+    _prefetchLineAudio(next);
+    if (next != null) {
+      final nextIdx = dialogueLines.indexOf(next);
+      if (nextIdx >= 0) {
+        _prefetchLineAudio(
+            _nextOtherLine(dialogueLines, nextIdx, myCharacter, mode));
       }
     }
-    // Completion handled by TTS completion handler
   }
 
   /// Called when another character's line finishes playing.
