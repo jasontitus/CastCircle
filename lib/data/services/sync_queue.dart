@@ -217,13 +217,16 @@ class SyncQueue {
             .whereType<SyncJob>()),
       ];
       var kept = 0;
+      // Set-index the live jobs once instead of scanning both lists per
+      // restored job (quadratic at startup as the queue grows).
+      final queuedKeys = {
+        for (final j in _pending) '${j.productionId}/${j.lineId}',
+        for (final j in _failed) '${j.productionId}/${j.lineId}',
+      };
       for (final job in restored) {
         if (!File(job.localPath).existsSync()) continue;
-        final alreadyQueued = _pending.any((j) =>
-                j.productionId == job.productionId && j.lineId == job.lineId) ||
-            _failed.any((j) =>
-                j.productionId == job.productionId && j.lineId == job.lineId);
-        if (alreadyQueued) continue; // live job is newer — it wins
+        final key = '${job.productionId}/${job.lineId}';
+        if (!queuedKeys.add(key)) continue; // live job is newer — it wins
         _pending.add(job);
         kept++;
       }

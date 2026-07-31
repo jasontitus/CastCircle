@@ -510,6 +510,19 @@ class SupabaseService {
 
   // ── Recordings ────────────────────────────────────────
 
+  /// Both ids come from our own row data, but a forged or corrupt sync row
+  /// could carry `../` and walk the storage key outside the production's
+  /// prefix — refuse anything that isn't a plain UUID.
+  static final _uuidRe = RegExp(
+      r'^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$');
+
+  static String _requireUuid(String value, String what) {
+    if (!_uuidRe.hasMatch(value)) {
+      throw ArgumentError('$what is not a UUID: "$value"');
+    }
+    return value;
+  }
+
   /// Upload a recorded line to Supabase Storage.
   /// Path: recordings/{productionId}/{characterName}/{lineId}.m4a
   Future<String> uploadRecording({
@@ -524,6 +537,8 @@ class SupabaseService {
     // INSERT (allowed); download resolves the exact object from the stored URL,
     // so the key shape doesn't matter to playback. (Old per-take objects orphan
     // harmlessly — the recordings row keeps only the latest URL.)
+    _requireUuid(productionId, 'productionId');
+    _requireUuid(lineId, 'lineId');
     final safeChar = characterName.replaceAll('/', '-');
     final unique =
         '${DateTime.now().millisecondsSinceEpoch}${Random().nextInt(1000)}';
@@ -552,6 +567,8 @@ class SupabaseService {
     required String lineId,
     required Uint8List bytes,
   }) async {
+    _requireUuid(productionId, 'productionId');
+    _requireUuid(lineId, 'lineId');
     final safeChar = characterName.replaceAll('/', '-');
     final unique =
         '${DateTime.now().millisecondsSinceEpoch}${Random().nextInt(1000)}';

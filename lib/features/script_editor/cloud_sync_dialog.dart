@@ -14,32 +14,39 @@ class LineDiff {
 }
 
 /// Compare local and cloud script lines to produce a diff summary.
+///
+/// Keyed by line id (stable across the cast since build 96) rather than
+/// position: the old index-to-index comparison made a single inserted line
+/// report every subsequent line as "changed", which both misled the user and
+/// made the dialog O(all lines differ) on any insertion.
 List<LineDiff> diffScriptLines(List<ScriptLine> local, List<ScriptLine> cloud) {
   final diffs = <LineDiff>[];
+  final localById = {for (final l in local) l.id: l};
+  final matchedLocalIds = <String>{};
 
-  // Build lookup by (character + text) for matching — order_index may differ
-  // but we do a sequential comparison to detect reordering as changes
-  final maxLen =
-      local.length > cloud.length ? local.length : cloud.length;
-
-  for (var i = 0; i < maxLen; i++) {
-    final loc = i < local.length ? local[i] : null;
-    final cld = i < cloud.length ? cloud[i] : null;
-
-    if (loc == null && cld != null) {
+  // Cloud order drives the display: matched lines compare content by id;
+  // cloud lines with no local counterpart are additions.
+  for (final cld in cloud) {
+    final loc = localById[cld.id];
+    if (loc == null) {
       diffs.add(LineDiff(type: DiffType.added, cloud: cld));
-    } else if (cld == null && loc != null) {
+      continue;
+    }
+    matchedLocalIds.add(loc.id);
+    final same = loc.character == cld.character &&
+        loc.text == cld.text &&
+        loc.lineType == cld.lineType &&
+        loc.stageDirection == cld.stageDirection;
+    diffs.add(LineDiff(
+        type: same ? DiffType.unchanged : DiffType.changed,
+        local: loc,
+        cloud: cld));
+  }
+
+  // Local lines absent from the cloud version are removals.
+  for (final loc in local) {
+    if (!matchedLocalIds.contains(loc.id)) {
       diffs.add(LineDiff(type: DiffType.removed, local: loc));
-    } else if (loc != null && cld != null) {
-      final same = loc.character == cld.character &&
-          loc.text == cld.text &&
-          loc.lineType == cld.lineType &&
-          loc.stageDirection == cld.stageDirection;
-      if (same) {
-        diffs.add(LineDiff(type: DiffType.unchanged, local: loc, cloud: cld));
-      } else {
-        diffs.add(LineDiff(type: DiffType.changed, local: loc, cloud: cld));
-      }
     }
   }
 

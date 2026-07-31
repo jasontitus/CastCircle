@@ -160,25 +160,39 @@ class OcrConfidenceService {
   }
 
   /// Fold Latin diacritics: speáks → speaks (OCR adds spurious accents).
+  /// Runs for every word of every OCR'd line — allocate nothing in the
+  /// (overwhelmingly common) no-diacritic case instead of splitting the
+  /// string into a per-character list.
   static String stripDiacritics(String s) {
-    final sb = StringBuffer();
-    for (final ch in s.split('')) {
-      sb.write(_diacriticMap[ch] ?? ch);
+    StringBuffer? sb; // created only once a diacritic is actually found
+    for (var i = 0; i < s.length; i++) {
+      final mapped = _diacriticMap[s[i]];
+      if (mapped != null) {
+        sb ??= StringBuffer(s.substring(0, i));
+        sb.write(mapped);
+      } else {
+        sb?.write(s[i]);
+      }
     }
-    return sb.toString();
+    return sb?.toString() ?? s;
   }
 
-  bool _isValidWord(String word) {
-    final stripped = stripDiacritics(word);
-    final low = stripped.toLowerCase();
-    if (_whitelist.contains(low)) return true;
-    if (_theatricalVocab.contains(low)) return true;
-    final results = _checker!.checkBuilder<bool>(
-      stripped,
-      builder: (w, isCorrect) => isCorrect,
-    );
-    return results != null && results.isNotEmpty && results.first;
-  }
+  /// Scripts repeat vocabulary heavily — memoise so the spell-checker runs
+  /// once per distinct word per import, not once per occurrence.
+  final _wordValidCache = <String, bool>{};
+
+  bool _isValidWord(String word) =>
+      _wordValidCache.putIfAbsent(word, () {
+        final stripped = stripDiacritics(word);
+        final low = stripped.toLowerCase();
+        if (_whitelist.contains(low)) return true;
+        if (_theatricalVocab.contains(low)) return true;
+        final results = _checker!.checkBuilder<bool>(
+          stripped,
+          builder: (w, isCorrect) => isCorrect,
+        );
+        return results != null && results.isNotEmpty && results.first;
+      });
 
   /// Score a single line of text.
   /// Returns 0.0 (all misspelled) to 1.0 (all correct).

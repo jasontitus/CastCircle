@@ -99,8 +99,15 @@ class KokoroMLXService {
             throw KokoroError.voicesNotDownloaded
         }
 
-        // Load TTS engine
-        ttsEngine = KokoroTTS(modelPath: modelURL)
+        // Load TTS engine. A corrupt/truncated weights file used to `try!`
+        // crash here on EVERY launch; now the bad file is deleted so the
+        // AI-models screen offers the download again.
+        do {
+            ttsEngine = try KokoroTTS(modelPath: modelURL)
+        } catch {
+            try? FileManager.default.removeItem(at: modelURL)
+            throw KokoroError.modelCorrupt(String(describing: error))
+        }
 
         // Load voice embeddings from NPZ file
         voices = NpyzReader.read(fileFromPath: voicesURL) ?? [:]
@@ -258,17 +265,15 @@ class KokoroMLXService {
         let dir = url.deletingLastPathComponent()
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
 
-        // Convert Float32 samples to Int16 PCM
-        let pcmData = samples.withUnsafeBufferPointer { buffer -> Data in
-            var data = Data()
-            data.reserveCapacity(buffer.count * 2)
-            for sample in buffer {
-                let clamped = max(-1.0, min(1.0, sample))
-                var int16 = Int16(clamped * Float(Int16.max))
-                data.append(Data(bytes: &int16, count: 2))
-            }
-            return data
+        // Convert Float32 samples to Int16 PCM. One contiguous buffer + one
+        // Data init — the previous per-sample `Data(bytes:&int16,count:2)`
+        // append made ~120k heap allocations per 5 s clip on the TTS path.
+        var pcm = [Int16](repeating: 0, count: samples.count)
+        for (i, sample) in samples.enumerated() {
+            let clamped = max(-1.0, min(1.0, sample))
+            pcm[i] = Int16(clamped * Float(Int16.max))
         }
+        let pcmData = pcm.withUnsafeBufferPointer { Data(buffer: $0) }
 
         // Build WAV header + data
         var wav = Data()
@@ -353,6 +358,7 @@ class KokoroMLXService {
 enum KokoroError: LocalizedError {
     case modelNotLoaded
     case modelNotDownloaded
+    case modelCorrupt(String)
     case voicesNotDownloaded
     case voiceNotFound(String)
     case emptyAudio
@@ -363,6 +369,7 @@ enum KokoroError: LocalizedError {
         switch self {
         case .modelNotLoaded: return "Kokoro model not loaded. Call loadModel() first."
         case .modelNotDownloaded: return "Kokoro model file not found. Download kokoro-v1_0.safetensors first."
+        case .modelCorrupt(let e): return "Kokoro model file was corrupt and has been removed — re-download it in Settings → AI Models. (\(e))"
         case .voicesNotDownloaded: return "Voice embeddings file not found. Download voices.npz first."
         case .voiceNotFound(let v): return "Voice '\(v)' not found in voice embeddings."
         case .emptyAudio: return "No audio generated for the given text."

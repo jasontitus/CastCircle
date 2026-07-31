@@ -594,22 +594,36 @@ class _RecordingsBrowserScreenState
     final resolved = p.join(docsDir.path, 'recordings', filename);
     if (File(resolved).existsSync()) return resolved;
 
-    // Try recording cache (downloaded from cloud)
-    final cacheDir = p.join(docsDir.path, 'recording_cache');
-    final cacheFile = Directory(cacheDir).existsSync()
-        ? Directory(cacheDir)
-              .listSync(recursive: true)
-              .whereType<File>()
-              .where(
-                (f) =>
-                    p.basename(f.path) == filename ||
-                    f.path.contains(recording.scriptLineId),
-              )
-              .firstOrNull
-        : null;
-    if (cacheFile != null) return cacheFile.path;
+    // Try recording cache (downloaded from cloud). The directory tree is
+    // walked ONCE per screen and searched in memory — this fallback runs per
+    // unresolved recording, and a synchronous recursive listSync on every
+    // call janked the browser when many rows needed it.
+    final cachePath = (await _cachedRecordingPaths(docsDir.path)).firstWhere(
+      (path) =>
+          p.basename(path) == filename ||
+          path.contains(recording.scriptLineId),
+      orElse: () => '',
+    );
+    if (cachePath.isNotEmpty) return cachePath;
 
     return null;
+  }
+
+  List<String>? _recordingCachePaths;
+
+  /// All file paths under recording_cache, listed once and reused for every
+  /// fallback resolution this screen performs.
+  Future<List<String>> _cachedRecordingPaths(String docsPath) async {
+    final cached = _recordingCachePaths;
+    if (cached != null) return cached;
+    final dir = Directory(p.join(docsPath, 'recording_cache'));
+    if (!dir.existsSync()) return _recordingCachePaths = const [];
+    final paths = await dir
+        .list(recursive: true)
+        .where((e) => e is File)
+        .map((e) => e.path)
+        .toList();
+    return _recordingCachePaths = paths;
   }
 
   Future<void> _playRecording(Recording recording, String lineId) async {

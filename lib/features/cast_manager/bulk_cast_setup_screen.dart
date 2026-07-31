@@ -178,7 +178,7 @@ class _BulkCastSetupScreenState extends ConsumerState<BulkCastSetupScreen> {
                   backgroundColor: color,
                   radius: 14,
                   child: Text(
-                    char.name[0],
+                    char.name.isEmpty ? '?' : char.name[0],
                     style: const TextStyle(
                       color: Colors.white,
                       fontWeight: FontWeight.bold,

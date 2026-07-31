@@ -305,10 +305,13 @@ void main() {
 
       final diffs = diffScriptLines(local, cloud);
 
-      expect(diffs.length, 3);
+      // Id-keyed: line 3 (local-only) is a removal and line 4 (cloud-only) an
+      // addition — the old positional diff misreported C→D as a "change".
+      expect(diffs.length, 4);
       expect(diffs[0].type, DiffType.unchanged);
       expect(diffs[1].type, DiffType.changed);
-      expect(diffs[2].type, DiffType.changed); // position-based: C→D is a change
+      expect(diffs[2].type, DiffType.added);
+      expect(diffs[3].type, DiffType.removed);
     });
   });
 
@@ -784,12 +787,12 @@ void main() {
 
       final diffs = diffScriptLines(local, cloud);
 
-      expect(diffs.length, 3);
-      // First two positions are "changed" (different content at same index)
-      expect(diffs[0].type, DiffType.changed);
-      expect(diffs[1].type, DiffType.changed);
-      // Third position is "added" (only in cloud)
-      expect(diffs[2].type, DiffType.added);
+      // Id-keyed: no ids overlap, so everything in cloud is an addition and
+      // everything local a removal (the positional diff called overlapping
+      // indices "changed", conflating unrelated lines).
+      expect(diffs.length, 5);
+      expect(diffs.take(3).every((d) => d.type == DiffType.added), true);
+      expect(diffs.skip(3).every((d) => d.type == DiffType.removed), true);
     });
 
     test('lines with only whitespace differences count as changed', () {

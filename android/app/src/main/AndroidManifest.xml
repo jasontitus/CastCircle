@@ -35,8 +35,13 @@
                 <action android:name="android.intent.action.MAIN"/>
                 <category android:name="android.intent.category.LAUNCHER"/>
             </intent-filter>
-            <!-- Deep linking: castcircle://join?code=X&char=Y&name=Z -->
-            <intent-filter android:autoVerify="true">
+            <!-- Deep linking: castcircle://join?code=X&char=Y&name=Z
+                 No autoVerify: App Links verification only applies to
+                 https hosts with assetlinks.json — on a custom scheme it is a
+                 no-op that falsely suggests the link is verified. Any app can
+                 claim a custom scheme, so deep-link input stays untrusted
+                 (join codes are validated server-side). -->
+            <intent-filter>
                 <action android:name="android.intent.action.VIEW"/>
                 <category android:name="android.intent.category.DEFAULT"/>
                 <category android:name="android.intent.category.BROWSABLE"/>

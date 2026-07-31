@@ -24,6 +24,7 @@ class _VoiceConfigScreenState extends ConsumerState<VoiceConfigScreen> {
   final _voiceConfig = VoiceConfigService.instance;
   VoicePreset _currentPreset = VoicePresets.modernAmerican;
   Map<String, CharacterVoiceConfig> _overrides = {};
+  Map<String, CharacterGender> _genderOverrides = {};
   bool _loading = true;
 
   @override
@@ -38,9 +39,14 @@ class _VoiceConfigScreenState extends ConsumerState<VoiceConfigScreen> {
 
     final preset = await _voiceConfig.getPreset(production.id);
     final overrides = await _voiceConfig.getOverrides(production.id);
+    // Saved gender toggles too — without them the voice shown here diverged
+    // from the voice rehearsal actually plays (rehearsal passes them).
+    final genders = await _voiceConfig.getGenders(production.id);
+    if (!mounted) return;
     setState(() {
       _currentPreset = preset;
       _overrides = overrides;
+      _genderOverrides = genders;
       _loading = false;
     });
   }
@@ -96,9 +102,23 @@ class _VoiceConfigScreenState extends ConsumerState<VoiceConfigScreen> {
                     ),
                   ),
                   const SizedBox(height: 8),
-                  ...script.characters.map(
-                    (char) => _buildCharacterTile(char, production.id, script),
-                  ),
+                  // Assignment computed ONCE for all tiles (it walks every
+                  // script line), with gender overrides so the shown voice
+                  // matches rehearsal playback.
+                  ...(() {
+                    final autoAssignment =
+                        VoiceConfigService.assignVoicesFromScript(
+                      lines: script.lines,
+                      characters: script.characters,
+                      femaleVoices: _currentPreset.femaleVoices,
+                      maleVoices: _currentPreset.maleVoices,
+                      genderOverrides: _genderOverrides,
+                    );
+                    return script.characters.map(
+                      (char) => _buildCharacterTile(
+                          char, production.id, script, autoAssignment),
+                    );
+                  })(),
                   const SizedBox(height: 32),
                 ],
               ),
@@ -136,17 +156,10 @@ class _VoiceConfigScreenState extends ConsumerState<VoiceConfigScreen> {
     ScriptCharacter char,
     String productionId,
     ParsedScript script,
+    Map<String, String> autoAssignment,
   ) {
     final override = _overrides[char.name];
     final hasOverride = override != null;
-
-    // Adjacency-aware voice assignment
-    final autoAssignment = VoiceConfigService.assignVoicesFromScript(
-      lines: script.lines,
-      characters: script.characters,
-      femaleVoices: _currentPreset.femaleVoices,
-      maleVoices: _currentPreset.maleVoices,
-    );
     final presetVoice = autoAssignment[char.name] ?? 'af_heart';
     final activeVoice = hasOverride ? override.voiceId : presetVoice;
     final activeSpeed = hasOverride
@@ -161,7 +174,7 @@ class _VoiceConfigScreenState extends ConsumerState<VoiceConfigScreen> {
             : Colors.grey,
         radius: 18,
         child: Text(
-          char.name[0],
+          char.name.isEmpty ? '?' : char.name[0],
           style: const TextStyle(color: Colors.white, fontSize: 14),
         ),
       ),

@@ -373,7 +373,9 @@ final public class EnglishG2P {
         } else if j > 0 && j < subtokens.count - 1 && token.text == "2" {
           let prev = subtokens[j - 1].text
           let next = subtokens[j + 1].text
-          if (prev.last.map { String($0) } ?? "" + (next.first.map { String($0) } ?? "")).allSatisfy({ $0.isLetter }) ||
+          // Parenthesised deliberately: `a ?? "" + b` parses as `a ?? ("" + b)`,
+          // which never looked at `next` when `prev.last` existed.
+          if ((prev.last.map { String($0) } ?? "") + (next.first.map { String($0) } ?? "")).allSatisfy({ $0.isLetter }) ||
              (prev == "-" && next == "-") {
             token.`_`.alias = "to"
           }

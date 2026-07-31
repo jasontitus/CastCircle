@@ -63,9 +63,10 @@ public final class KokoroTTS {
   /// - Parameters:
   ///   - modelPath: URL to the directory containing model weights
   ///   - g2p: Grapheme-to-phoneme processor type (default: Misaki)
-  public init(modelPath: URL, g2p: G2P = .misaki) {
-    // Load and sanitize model weights
-    let sanitizedWeights = WeightLoader.loadWeights(modelPath: modelPath)
+  public init(modelPath: URL, g2p: G2P = .misaki) throws {
+    // Load and sanitize model weights (throws on a corrupt/truncated file —
+    // the caller deletes it and surfaces re-download instead of crash-looping)
+    let sanitizedWeights = try WeightLoader.loadWeights(modelPath: modelPath)
     let config = KokoroConfig.loadConfig()
     
     // Initialize BERT model for phoneme encoding

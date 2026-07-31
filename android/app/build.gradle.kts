@@ -54,10 +54,16 @@ android {
 
     buildTypes {
         release {
+            // Never fall back to the debug key: a debug-signed "release" is
+            // uninstallable over the Play build and silently unshippable.
             signingConfig = if (keystorePropertiesFile.exists()) {
                 signingConfigs.getByName("release")
             } else {
-                signingConfigs.getByName("debug")
+                throw GradleException(
+                    "android/key.properties is missing — release builds must be " +
+                    "signed with the release keystore (see docs/RELEASING.md). " +
+                    "Use a debug build for local work."
+                )
             }
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),

@@ -405,18 +405,15 @@ class _ProductionHubScreenState extends ConsumerState<ProductionHubScreen> {
         final scene = scenes[index];
         final isMyScene =
             myCharacter != null && scene.characters.contains(myCharacter);
-        final myLineCount = myCharacter != null
-            ? script
-                .linesInScene(scene)
-                .where((l) =>
-                    l.lineType == LineType.dialogue &&
-                    l.isForCharacter(myCharacter))
-                .length
-            : 0;
-        final totalDialogue = script
+        // One pass per row — linesInScene walks the whole script.
+        final sceneDialogue = script
             .linesInScene(scene)
             .where((l) => l.lineType == LineType.dialogue)
-            .length;
+            .toList();
+        final myLineCount = myCharacter != null
+            ? sceneDialogue.where((l) => l.isForCharacter(myCharacter)).length
+            : 0;
+        final totalDialogue = sceneDialogue.length;
 
         return Card(
           margin: const EdgeInsets.only(bottom: 12),

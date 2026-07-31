@@ -34,6 +34,7 @@ class _CastManagerScreenState extends ConsumerState<CastManagerScreen> {
   final _voiceConfig = VoiceConfigService.instance;
   VoicePreset _currentPreset = VoicePresets.modernAmerican;
   Map<String, CharacterVoiceConfig> _voiceOverrides = {};
+  Map<String, CharacterGender> _genderOverrides = {};
 
   @override
   void initState() {
@@ -84,17 +85,18 @@ class _CastManagerScreenState extends ConsumerState<CastManagerScreen> {
       // Remove local-only records that have a matching cloud record
       // for the same character (stale duplicates from before sync)
       final localMembers = ref.read(castMembersProvider);
+      // Index once — per-local .any() over the cloud list is quadratic.
+      final cloudKeys = {
+        for (final cm in cloudMembers)
+          '${cm['character_name']}/'
+              '${CastRole.fromString(cm['role'] as String? ?? 'actor')}',
+      };
       for (final local in localMembers) {
         if (cloudIds.contains(local.id)) continue; // it's the cloud record
         if (local.role == CastRole.organizer) continue; // keep organizer
-        // If there's a cloud record for the same character+role, remove the local duplicate
-        final hasCloudVersion = cloudMembers.any(
-          (cm) =>
-              cm['character_name'] == local.characterName &&
-              CastRole.fromString(cm['role'] as String? ?? 'actor') ==
-                  local.role,
-        );
-        if (hasCloudVersion) {
+        // If there's a cloud record for the same character+role, remove the
+        // local duplicate.
+        if (cloudKeys.contains('${local.characterName}/${local.role}')) {
           await notifier.remove(local.id);
         }
       }
@@ -107,10 +109,14 @@ class _CastManagerScreenState extends ConsumerState<CastManagerScreen> {
   Future<void> _loadVoiceConfig(String productionId) async {
     final preset = await _voiceConfig.getPreset(productionId);
     final overrides = await _voiceConfig.getOverrides(productionId);
+    // Saved gender toggles too — without them the voice shown here diverged
+    // from the voice rehearsal actually plays (rehearsal passes them).
+    final genders = await _voiceConfig.getGenders(productionId);
     if (mounted) {
       setState(() {
         _currentPreset = preset;
         _voiceOverrides = overrides;
+        _genderOverrides = genders;
       });
     }
   }
@@ -133,6 +139,18 @@ class _CastManagerScreenState extends ConsumerState<CastManagerScreen> {
     final joinedCount = castMembers
         .where((m) => m.hasJoined && m.role != CastRole.organizer)
         .length;
+
+    // Adjacency-aware voice assignment, ONCE per build — this walks every
+    // script line, and it used to run inside each character card's builder
+    // (N full script passes per rebuild). Gender overrides included so the
+    // voice shown here matches what rehearsal actually plays.
+    final autoAssignment = VoiceConfigService.assignVoicesFromScript(
+      lines: script.lines,
+      characters: script.characters,
+      femaleVoices: _currentPreset.femaleVoices,
+      maleVoices: _currentPreset.maleVoices,
+      genderOverrides: _genderOverrides,
+    );
     final totalRecordedLines = recordings.length;
     final totalLines = script.lines
         .where((l) => l.lineType == LineType.dialogue)
@@ -341,6 +359,7 @@ class _CastManagerScreenState extends ConsumerState<CastManagerScreen> {
                     recordProgress,
                     recordedCount,
                     charLines.length,
+                    autoAssignment,
                   );
                 },
               ),
@@ -360,16 +379,9 @@ class _CastManagerScreenState extends ConsumerState<CastManagerScreen> {
     double recordProgress,
     int recordedCount,
     int totalLines,
+    Map<String, String> autoAssignment,
   ) {
-    final script = ref.read(currentScriptProvider)!;
     final override = _voiceOverrides[char.name];
-    // Adjacency-aware voice assignment
-    final autoAssignment = VoiceConfigService.assignVoicesFromScript(
-      lines: script.lines,
-      characters: script.characters,
-      femaleVoices: _currentPreset.femaleVoices,
-      maleVoices: _currentPreset.maleVoices,
-    );
     final presetVoice = autoAssignment[char.name] ?? 'af_heart';
     final activeVoice = override?.voiceId ?? presetVoice;
     final activeSpeed = override?.speed ?? _currentPreset.defaultSpeed;
@@ -389,7 +401,7 @@ class _CastManagerScreenState extends ConsumerState<CastManagerScreen> {
                   backgroundColor: color,
                   radius: 20,
                   child: Text(
-                    char.name[0],
+                    char.name.isEmpty ? '?' : char.name[0],
                     style: const TextStyle(
                       color: Colors.white,
                       fontWeight: FontWeight.bold,
@@ -1119,6 +1131,9 @@ class _CastManagerScreenState extends ConsumerState<CastManagerScreen> {
         newGender,
       );
     }
+    // Keep the in-memory overrides in step so this build's voice assignment
+    // reflects the toggle immediately.
+    _genderOverrides[char.name] = newGender;
 
     final script = ref.read(currentScriptProvider);
     if (script != null) {
