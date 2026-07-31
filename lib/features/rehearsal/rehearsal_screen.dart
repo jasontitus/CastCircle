@@ -2110,6 +2110,7 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
       _matchConfirmTimer?.cancel();
       final confirmMs =
           score >= _fullLineMatchThreshold ? _fastConfirmMs : 1200;
+      _quietStreak = 0; // fresh evidence of speech — restart the quiet count
       _matchConfirmTimer = Timer(Duration(milliseconds: confirmMs), () {
         _confirmIfActorQuiet(line);
       });
@@ -2126,17 +2127,34 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
   /// "no new results" is not "done speaking": when the actor hits words the
   /// recognizer can't transcribe (OCR-garbled text, mumbled names) partials
   /// stop changing while speech continues, and the timer used to cut the
-  /// actor off mid-line. If the mic still hears speech, re-check shortly
-  /// instead of confirming; the energy endpointing (onSilence) still advances
-  /// the moment the actor goes genuinely quiet.
+  /// actor off mid-line. And a single instantaneous mic reading is not
+  /// enough either: the recognizer can predictively complete the whole line
+  /// from its contextual hint (100% score mid-read) and the one sample can
+  /// land in a comma-breath (field case: a line advanced 1.3 s after its
+  /// first partial, 3.8 s into a longer read). Require SUSTAINED quiet —
+  /// several consecutive quiet samples — before confirming; any speech
+  /// resets the streak.
+  int _quietStreak = 0;
+
   void _confirmIfActorQuiet(ScriptLine line) {
     if (!mounted || _matchConfirmed) return;
     if (ref.read(rehearsalStateProvider) != RehearsalState.listeningForMe) {
       return;
     }
     if (_stt.inputLevel >= SttService.silenceThreshold) {
+      _quietStreak = 0;
       _matchConfirmTimer?.cancel();
       _matchConfirmTimer = Timer(const Duration(milliseconds: 300), () {
+        _confirmIfActorQuiet(line);
+      });
+      return;
+    }
+    _quietStreak++;
+    if (_quietStreak < 3) {
+      // ~450 ms of continuous quiet total — longer than a breath, far
+      // shorter than the silence-timeout fallback.
+      _matchConfirmTimer?.cancel();
+      _matchConfirmTimer = Timer(const Duration(milliseconds: 150), () {
         _confirmIfActorQuiet(line);
       });
       return;
