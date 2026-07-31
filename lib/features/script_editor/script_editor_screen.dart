@@ -114,6 +114,10 @@ class _ScriptEditorScreenState extends ConsumerState<ScriptEditorScreen> {
 
     final filteredLines = _filteredLines(script);
 
+    final lowOcrCount = script.lines
+        .where((l) => l.ocrConfidence != null && l.ocrConfidence! < 0.85)
+        .length;
+
     return Scaffold(
       appBar: AppBar(
         title: Text(script.title),
@@ -268,14 +272,12 @@ class _ScriptEditorScreenState extends ConsumerState<ScriptEditorScreen> {
                       setState(() { _selectedCharacter = null; _showLowConfidenceOnly = false; }),
                 ),
                 const SizedBox(width: 8),
-                if (script.lines.any((l) => l.ocrConfidence != null && l.ocrConfidence! < 0.85))
+                if (lowOcrCount > 0)
                   Padding(
                     padding: const EdgeInsets.only(right: 8),
                     child: FilterChip(
                       avatar: Icon(Icons.warning_amber_rounded, size: 16, color: Colors.amber.shade700),
-                      label: Text(
-                        'Low OCR (${script.lines.where((l) => l.ocrConfidence != null && l.ocrConfidence! < 0.85).length})',
-                      ),
+                      label: Text('Low OCR ($lowOcrCount)'),
                       selected: _showLowConfidenceOnly,
                       selectedColor: Colors.amber.shade100,
                       onSelected: (_) => setState(() {

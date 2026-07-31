@@ -1,4 +1,5 @@
 import Foundation
+import Accelerate
 import AVFoundation
 import CryptoKit
 import UIKit
@@ -269,14 +270,18 @@ class KokoroMLXService {
         // Data init — the previous per-sample `Data(bytes:&int16,count:2)`
         // append made ~120k heap allocations per 5 s clip on the TTS path.
         var pcm = [Int16](repeating: 0, count: samples.count)
-        for (i, sample) in samples.enumerated() {
-            let clamped = max(-1.0, min(1.0, sample))
-            pcm[i] = Int16(clamped * Float(Int16.max))
-        }
+        var lo: Float = -1.0
+        var hi: Float = 1.0
+        var scale = Float(Int16.max)
+        var scaled = [Float](repeating: 0, count: samples.count)
+        vDSP_vclip(samples, 1, &lo, &hi, &scaled, 1, vDSP_Length(samples.count))
+        vDSP_vsmul(scaled, 1, &scale, &scaled, 1, vDSP_Length(samples.count))
+        vDSP_vfix16(scaled, 1, &pcm, 1, vDSP_Length(samples.count))
         let pcmData = pcm.withUnsafeBufferPointer { Data(buffer: $0) }
 
         // Build WAV header + data
         var wav = Data()
+        wav.reserveCapacity(44 + pcmData.count)
         let dataSize = UInt32(pcmData.count)
         let fileSize = UInt32(36 + pcmData.count)
 
@@ -333,12 +338,15 @@ class KokoroMLXService {
                 return (url, values.contentModificationDate ?? .distantPast, values.fileSize ?? 0)
             }
             let maxBytes = 200 * 1024 * 1024
+            // Prune below the cap so launches near the limit don't each pay
+            // a removal pass (hysteresis).
+            let lowWater = 150 * 1024 * 1024
             var total = entries.reduce(0) { $0 + $1.size }
             guard total > maxBytes else { return }
             entries.sort { $0.date < $1.date } // oldest first
             var removed = 0
             for entry in entries {
-                if total <= maxBytes { break }
+                if total <= lowWater { break }
                 try? fm.removeItem(at: entry.url)
                 total -= entry.size
                 removed += 1

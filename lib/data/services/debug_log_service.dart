@@ -218,6 +218,9 @@ class DebugLogService {
     return {};
   }
 
+  /// Total entry count — cheap dirty-check for UI refresh timers.
+  int get entryCount => _entries.length;
+
   /// Get entries filtered by category.
   List<LogEntry> entriesForCategory(LogCategory? category) {
     if (category == null) return List.unmodifiable(_entries);

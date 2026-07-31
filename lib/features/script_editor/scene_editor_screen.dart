@@ -38,6 +38,13 @@ class _SceneEditorScreenState extends ConsumerState<SceneEditorScreen> {
       );
     }
 
+    // Hoisted: every scene card renders a chip per character, and an
+    // indexWhere per chip made this O(scenes x chips x characters).
+    final charIndexByName = {
+      for (var i = 0; i < script.characters.length; i++)
+        script.characters[i].name: i,
+    };
+
     return Scaffold(
       appBar: AppBar(
         title: Text('Scenes (${script.scenes.length})'),
@@ -113,9 +120,7 @@ class _SceneEditorScreenState extends ConsumerState<SceneEditorScreen> {
                       spacing: 4,
                       runSpacing: 4,
                       children: scene.characters.map((name) {
-                        final charIdx = script.characters.indexWhere(
-                          (c) => c.name == name,
-                        );
+                        final charIdx = charIndexByName[name] ?? -1;
                         final color = charIdx >= 0
                             ? AppTheme.colorForCharacter(charIdx)
                             : Colors.grey;
