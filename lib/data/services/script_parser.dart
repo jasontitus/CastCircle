@@ -47,7 +47,15 @@ class ScriptParser {
   /// P&P's 1189 lines ended with "Pride and Prejudice" glued on, which makes
   /// them impossible for an actor to match, so rehearsal sat on them until the
   /// silence timeout.
-  String? _titleHeader;
+  final Set<String> _titleHeaders = {};
+
+  /// Original-case scrub patterns for headers GLUED INTO a line: when a
+  /// speech crosses a page break, OCR can emit "…Miss Elizabeth Bennet.
+  /// Pride and Prejudice 47" as ONE line, which the standalone check above
+  /// can never catch. Patterns match the header's exact printed casing (so
+  /// dialogue that legitimately says "pride and prejudice" in lowercase is
+  /// untouched) with optional adjacent page numbers.
+  final List<RegExp> _headerScrubPatterns = [];
 
   static String _normalizeForHeader(String s) => s
       .toLowerCase()
@@ -128,7 +136,7 @@ class ScriptParser {
     // them into individual characters
     _detectMultiCharacterNames();
 
-    _titleHeader = _detectTitleHeader(rawText, title);
+    _detectTitleHeaders(rawText, title);
 
     // Second pass: parse lines
     final lines = _parseLines(rawText);
@@ -182,19 +190,98 @@ class ScriptParser {
   /// name: in Shakespeare the title IS the lead ("Macbeth", "Hamlet"), whose
   /// cue lines normalize to the very same string, so stripping would delete
   /// every one of that character's speeches.
-  String? _detectTitleHeader(String rawText, String title) {
-    final normTitle = _normalizeForHeader(title);
-    if (normTitle.isEmpty) return null;
-    for (final c in knownCharacters) {
-      if (_normalizeForHeader(c) == normTitle) return null;
-      // Also guard the aliased/normalized form.
-      if (_normalizeForHeader(_normalizeCharacter(c)) == normTitle) return null;
+  /// Detect the script's RUNNING HEADERS from the text itself.
+  ///
+  /// Keying this to the production title was the original sin: productions
+  /// get named "test5", so "Pride and Prejudice" was never detected and the
+  /// header polluted lines throughout. A running header identifies itself:
+  /// the same short line repeating 3+ times standalone. Guards against
+  /// stripping real content:
+  ///   - never a known character name (Shakespeare's title IS the lead —
+  ///     "MACBETH" as a header would delete every cue);
+  ///   - 2+ words and 8+ chars (page numbers/short interjections excluded);
+  ///   - no terminal sentence punctuation (a repeated dialogue line or song
+  ///     refrain ends with . ! ? — headers don't);
+  ///   - not a stage direction, act/scene marker, or character cue.
+  /// The production [title] additionally seeds a candidate under the
+  /// original (looser) rules, preserving the old behavior when the names do
+  /// match. At most the 3 most frequent candidates are kept.
+  void _detectTitleHeaders(String rawText, String title) {
+    _titleHeaders.clear();
+    _headerScrubPatterns.clear();
+
+    bool isCharacterName(String norm) {
+      for (final c in knownCharacters) {
+        if (_normalizeForHeader(c) == norm) return true;
+        if (_normalizeForHeader(_normalizeCharacter(c)) == norm) return true;
+      }
+      return false;
     }
-    var standalone = 0;
+
+    // Count standalone occurrences of each plausible header line, keeping
+    // the first raw (original-case) form for the inline scrub pattern.
+    final counts = <String, int>{};
+    final rawForm = <String, String>{};
     for (final l in rawText.split('\n')) {
-      if (_normalizeForHeader(l) == normTitle) standalone++;
+      final t = l.trim();
+      if (t.isEmpty || t.length > 60) continue;
+      if (t.startsWith('(') || t.startsWith('[')) continue; // direction
+      if (RegExp(r'[.!?]$').hasMatch(t)) continue; // dialogue/refrain
+      if (RegExp(r'^(ACT|SCENE)\b', caseSensitive: false).hasMatch(t)) {
+        continue;
+      }
+      if (t.endsWith(':') || t.endsWith('.')) continue; // cue-ish
+      final norm = _normalizeForHeader(t);
+      if (norm.length < 8 || !norm.contains(' ')) continue;
+      counts[norm] = (counts[norm] ?? 0) + 1;
+      rawForm[norm] ??= t.replaceAll(RegExp(r'^\d+\s+|\s+\d+$'), '').trim();
     }
-    return standalone >= 3 ? normTitle : null;
+
+    final candidates = counts.entries
+        .where((e) => e.value >= 3 && !isCharacterName(e.key))
+        .toList()
+      ..sort((a, b) => b.value.compareTo(a.value));
+    for (final e in candidates.take(3)) {
+      _titleHeaders.add(e.key);
+    }
+
+    // Title-seeded path (original behavior): the production title, when it
+    // matches 3+ standalone lines and isn't a character.
+    final normTitle = _normalizeForHeader(title);
+    if (normTitle.isNotEmpty &&
+        !_titleHeaders.contains(normTitle) &&
+        !isCharacterName(normTitle)) {
+      var standalone = 0;
+      for (final l in rawText.split('\n')) {
+        if (_normalizeForHeader(l) == normTitle) standalone++;
+      }
+      if (standalone >= 3) {
+        _titleHeaders.add(normTitle);
+        rawForm[normTitle] ??= title;
+      }
+    }
+
+    // Inline scrub patterns: exact printed casing, flexible whitespace,
+    // optional page number on either side.
+    for (final norm in _titleHeaders) {
+      final raw = rawForm[norm];
+      if (raw == null || raw.isEmpty) continue;
+      final words = raw.split(RegExp(r'\s+')).map(RegExp.escape).join(r'\s+');
+      _headerScrubPatterns
+          .add(RegExp('(\\d{1,4}\\s+)?$words(\\s+\\d{1,4})?'));
+    }
+  }
+
+  /// Remove any glued-in running header from [line] (page-seam OCR joins).
+  String _stripInlineHeaders(String line) {
+    if (_headerScrubPatterns.isEmpty) return line;
+    var out = line;
+    for (final re in _headerScrubPatterns) {
+      out = out.replaceAll(re, ' ');
+    }
+    return out == line
+        ? line
+        : out.replaceAll(RegExp(r'\s+'), ' ').trim();
   }
 
   /// Infer gender from a character name using title prefixes.
@@ -869,8 +956,13 @@ class ScriptParser {
   bool _isNoise(String line) {
     final stripped = line.trim();
     if (stripped.isEmpty) return true;
-    if (_titleHeader != null && _normalizeForHeader(stripped) == _titleHeader) {
-      return true;
+    if (_titleHeaders.isNotEmpty) {
+      final norm = _normalizeForHeader(stripped);
+      if (_titleHeaders.contains(norm)) return true;
+      // "Pride and Prejudice 47" / "47 Pride and Prejudice"
+      final noPage =
+          norm.replaceAll(RegExp(r'^\d+ +| +\d+$'), '').trim();
+      if (_titleHeaders.contains(noPage)) return true;
     }
     for (final pattern in _noisePatterns) {
       if (pattern.hasMatch(stripped)) return true;
@@ -1114,7 +1206,7 @@ class ScriptParser {
     var pendingDirection = '';
 
     for (final rawLine in textLines) {
-      final line = rawLine.trim();
+      var line = rawLine.trim();
 
       // Finish (or keep accumulating) a multi-line parenthetical direction.
       if (pendingDirection.isNotEmpty) {
@@ -1192,6 +1284,10 @@ class ScriptParser {
         dialogueParts = [];
         continue;
       }
+
+      // Scrub any glued-in running header (page-seam OCR joins) BEFORE the
+      // noise check, so partially-header lines keep their real content.
+      line = _stripInlineHeaders(line);
 
       // Noise filter (after act/scene checks which look like noise)
       if (_isNoise(line)) continue;
