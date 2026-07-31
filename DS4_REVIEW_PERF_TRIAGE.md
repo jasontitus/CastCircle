@@ -85,6 +85,15 @@ STT scoring (several times per second while an actor speaks).
     `vDSP_rmsqv`.
 14. **`parakeet_debug_screen.dart:458-472`** — O(spoken × expected)
     `List.contains` inside `.map()` per live STT partial; hoist a `Set`.
+14a. **`script_editor_screen.dart:429,757` `TextEditingController` leaks**
+    (top-up B3) — controllers allocated per rebuilt detail-panel card and
+    per `_editLine` bottom sheet, never disposed; heap and listener lists
+    grow steadily through an editing session. Own the controller in State
+    (or dispose on sheet close via `.then`).
+14b. **`stt_adaptation_service.dart:197,210`** (top-up B2) — `addSample`
+    rebuilds the whole samples list via spread on every recorded line
+    (two sites); quadratic allocation churn across a session. Use a
+    growable list + `.add()` with an unmodifiable view.
 
 ## P2 — Import & cold-start paths (one-shot but user-blocking)
 
@@ -92,7 +101,11 @@ STT scoring (several times per second while an actor speaks).
     (~285k scalar ops/page) — vImage/vDSP bulk conversion. Same pipeline:
     **`PdfTextPlugin.swift:90`** (top-up A, [high]) builds full-document
     text via `fullText += pageText` per page — O(n²) on long PDFs; collect
-    and `joined()` once.
+    and `joined()` once. Same pattern in the macOS twin
+    (`macos/Runner/PdfTextPlugin.swift:68`, top-up B3). Also in import
+    (top-up B2): `script_import_service.dart:187` double pass over scored
+    lines, and `:452` per-page temp-dir lookup + synchronous delete inside
+    the OCR fallback page loop.
 16. **`main.dart:120-136`** sequential model downloads on first launch —
     parallelize with bounded concurrency; directly shortens time-to-usable
     for new users.
@@ -147,7 +160,9 @@ STT scoring (several times per second while an actor speaks).
 30. `pdf_page_view.dart` — verify offscreen page-texture eviction (potential
     OOM on very long PDFs).
 31. Shell/script lows: single-filtergraph ffmpeg in
-    `generate_rehearsal_webp.sh`; vDSP in `test_silence_trim.swift`.
+    `generate_rehearsal_webp.sh`; vDSP in `test_silence_trim.swift`;
+    four sequential full-text regex passes in `test_pdf_import.swift:72-96`
+    (top-up B3, dev script).
 
 ## Cross-cutting fix themes
 
@@ -167,8 +182,14 @@ additional files"; batch 1 claimed 48 of 58; batch 5 honestly recorded three
 partial reads; batch 7's unnamed remainder was test files. The top-up pass
 re-fed all 110 unevidenced files under the same engine config: batch A
 (92 vendored ML Swift) passed with 27 findings — including the P0 BART
-decoder cluster the original sweep missed — and batch B1 (6 Dart files)
-passed with 2. B2/B3 (12 remaining large Dart screens, including
-`rehearsal_screen.dart` and `script_editor_screen.dart` beyond the ranges
-batch 5 read) were in flight at commit time; follow-up commit will append
-their findings and close the audit.
+decoder cluster the original sweep missed — and batches B1/B2/B3 (18 large
+Dart/Swift files, including `rehearsal_screen.dart` and
+`script_editor_screen.dart` in full) passed with 2/7/5.
+
+**Audit closed.** Every fed file was re-reviewed in a passing batch. Five
+top-up files produced no finding line and are clean-by-omission per the
+prompt contract ("a file with no issue produces no line"):
+`stt_channel.dart`, `supabase_service.dart`, and the macOS
+`BackgroundDownloadPlugin/MemoryMonitorPlugin/VisionOcrPlugin` Swift
+plugins. Future sweeps will make per-file verdicts mandatory so
+clean-by-omission cannot hide a skip (see ds4_analyze README).
