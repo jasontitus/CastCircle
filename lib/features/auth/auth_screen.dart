@@ -410,6 +410,13 @@ class _AuthScreenState extends ConsumerState<AuthScreen> {
   }
 
   void _skipAuth() {
+    // Guest mode is a SUPPORTED product state (confirmed 2026-07-30): the
+    // whole local experience works without an account; an email/sign-in is
+    // required only to join or share productions, and every cloud entry
+    // point (join screen, share/sync paths) independently checks
+    // isSignedIn. The flag below is therefore a UX convenience, not a
+    // security boundary — a spuriously-restored flag grants nothing that
+    // tapping "skip" wouldn't.
     // Persist the skip choice so the user isn't asked again on next launch.
     ref.read(sharedPreferencesProvider).setBool('auth_skipped', true);
     ref.read(authStateProvider.notifier).state = true;
