@@ -116,6 +116,7 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
   // Debounce rapid taps to prevent stack overflow from reentrancy
   bool _jumpBackInProgress = false;
   bool _processingLine = false;
+  Timer? _deferredProcess;
 
   // Silence timeout — auto-advance when no new STT results for a while
   Timer? _silenceTimer;
@@ -545,6 +546,7 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
     // then persist the final position from the cached key/index (no `ref`).
     _progressSub?.close();
     _progressSaveTimer?.cancel();
+    _deferredProcess?.cancel();
     _persistProgress(_lastLineIndex);
     WakelockPlus.disable(); // Allow screen to sleep again
     _dlog.stopMemoryMonitoring();
@@ -1563,7 +1565,19 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
 
   /// Process the current line: play audio/TTS for others, or start listening for me.
   void _processCurrentLine() {
-    if (_processingLine) return;
+    if (_processingLine) {
+      // A LEGITIMATE advance can land inside the debounce window — an
+      // all-stage-direction line's completion arrives while the previous
+      // processCurrentLine is still within its 50 ms guard. Dropping the
+      // call silently hung the rehearsal (field: stuck dead after
+      // "(To audience: ...)" until the actor gave up). Defer instead of
+      // dropping; duplicates coalesce into one deferred run.
+      _deferredProcess ??= Timer(const Duration(milliseconds: 60), () {
+        _deferredProcess = null;
+        if (mounted) _processCurrentLine();
+      });
+      return;
+    }
     // Delayed callbacks (inter-line pacing, advance, jump-back) land here after
     // the user may have tapped Pause — honor it instead of resuming playback.
     if (ref.read(rehearsalStateProvider) == RehearsalState.paused) {
@@ -1887,14 +1901,19 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
     if (script == null || scene == null) return;
     final dialogueLines = _getRehearsalLines(script, scene, myCharacter);
     final currentIdx = ref.read(currentLineIndexProvider);
-    final next = _nextOtherLine(dialogueLines, currentIdx, myCharacter, mode);
-    _prefetchLineAudio(next);
-    if (next != null) {
+    // Read-through is wall-to-wall TTS and on-device synthesis runs near
+    // realtime (RTF ~0.9 on Android), so the pipe needs more lookahead to
+    // build a lead during long lines; with user lines interleaved a deep
+    // queue would mostly get cancelled, so keep it shallow there.
+    final depth = mode == RehearsalMode.readthrough ? 4 : 2;
+    var idx = currentIdx;
+    for (var n = 0; n < depth; n++) {
+      final next = _nextOtherLine(dialogueLines, idx, myCharacter, mode);
+      if (next == null) break;
+      _prefetchLineAudio(next);
       final nextIdx = dialogueLines.indexOf(next);
-      if (nextIdx >= 0) {
-        _prefetchLineAudio(
-            _nextOtherLine(dialogueLines, nextIdx, myCharacter, mode));
-      }
+      if (nextIdx < 0) break;
+      idx = nextIdx;
     }
   }
 

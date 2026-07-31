@@ -53,7 +53,14 @@ void main() {
 
   tearDown(() async {
     queue.reset();
-    await tempDir.delete(recursive: true);
+    try {
+      await tempDir.delete(recursive: true);
+    } on FileSystemException {
+      // A straggler async persist can re-create the file mid-delete
+      // (observed as "Directory not empty" under full-suite load).
+      await Future.delayed(const Duration(milliseconds: 200));
+      await tempDir.delete(recursive: true);
+    }
   });
 
   Future<String> makeAudioFile(String name) async {

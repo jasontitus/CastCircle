@@ -398,9 +398,16 @@ class TtsService {
     _usingSystemTts = false; // Reset — only set true if we actually use system TTS
 
     // The whole line was a stage direction — nothing to speak. Fire completion
-    // so the rehearsal flow still advances.
+    // so the rehearsal flow still advances — but NEVER synchronously: every
+    // other completion arrives from an async platform callback, and firing
+    // inside the caller's stack re-entered the rehearsal advance path while
+    // processCurrentLine was still on it (field: rehearsal hung dead on an
+    // all-direction line).
     if (text.isEmpty) {
-      _fireCompletion('emptyAfterStripDirections');
+      final gen = _speakGen;
+      Future.microtask(() {
+        if (gen == _speakGen) _fireCompletion('emptyAfterStripDirections');
+      });
       return;
     }
 

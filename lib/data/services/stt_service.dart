@@ -282,6 +282,18 @@ class SttService {
         .where((w) => w.isNotEmpty)
         .toList();
     if (spo.isEmpty) return false;
+    // Anchor: the transcript must actually END at the line's ending — one
+    // of the line's last two words must be among the last two heard words.
+    // Without this, lines ending in common words ("...as I sit by the
+    // fire") matched mid-sentence: "by"/"the" appear everywhere, so the
+    // 2-of-3-anywhere-in-the-window test below fired while the actor was
+    // still talking (field: cut off on the final line of a scene). If the
+    // recognizer never emits the final words, callers fall back to the
+    // long-silence path — a slower advance, never a cut-off.
+    final lastExp = exp.length <= 2 ? exp : exp.sublist(exp.length - 2);
+    final lastSpo = spo.length <= 2 ? spo : spo.sublist(spo.length - 2);
+    if (!lastSpo.any(lastExp.contains)) return false;
+
     final tail = exp.length <= 3 ? exp : exp.sublist(exp.length - 3);
     final window = spo.length <= 8 ? spo : spo.sublist(spo.length - 8);
     final hits = tail.where(window.contains).length;
