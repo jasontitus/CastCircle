@@ -93,57 +93,41 @@ final class TextEncoder {
   public func callAsFunction(_ x: MLXArray, inputLengths _: MLXArray, m: MLXArray) -> MLXArray {
     // Step 1: Convert token IDs to embeddings [batch, seq_len, embed_dim]
     var x = embedding(x)
-    
-    // Transpose to [batch, embed_dim, seq_len] for CNN processing
-    x = x.transposed(0, 2, 1)
-    
-    // Expand mask dimensions for broadcasting [batch, 1, seq_len]
-    let mask = m.expandedDimensions(axis: 1)
-    
-    // Apply mask to zero out padding positions
-    x = MLX.where(mask, 0.0, x)
 
-    // Step 2: Process through CNN blocks
+    // Masks for both layouts, computed once.
+    let mask = m.expandedDimensions(axis: 1)   // [batch, 1, seq] for channel-major
+    let maskT = m.expandedDimensions(axis: 2)  // [batch, seq, 1] for seq-major
+
+    // Apply mask to zero out padding positions
+    x = MLX.where(maskT, 0.0, x)
+
+    // Step 2: Process through CNN blocks. Every layer here operates in
+    // [batch, seq_len, channels]; the previous implementation swapped axes
+    // to and from channel-major around every conv/norm layer.
     for convBlock in cnn {
       for layer in convBlock {
-        // Handle convolutional and normalization layers
-        if layer is ConvWeighted || layer is LayerNormInference {
-          // Swap axes to [batch, seq_len, channels] for processing
-          x = MLX.swappedAxes(x, 2, 1)
-          
-          if let convWeighted = layer as? ConvWeighted {
-            x = convWeighted(x, conv: MLX.conv1d)
-          } else if let layer = layer as? LayerNormInference {
-            x = layer(x)
-          }
-          
-          // Swap back to [batch, channels, seq_len]
-          x = MLX.swappedAxes(x, 2, 1)
-          
-        // Handle activation layers
+        if let convWeighted = layer as? ConvWeighted {
+          x = convWeighted(x, conv: MLX.conv1d)
+          x = MLX.where(maskT, 0.0, x)
+        } else if let layer = layer as? LayerNormInference {
+          x = layer(x)
+          x = MLX.where(maskT, 0.0, x)
         } else if let layer = layer as? LeakyReLU {
+          // LeakyReLU(0) == 0, so already-masked rows stay zero — no re-mask.
           x = layer(x)
         } else {
           fatalError("Unsupported layer type")
         }
-        
-        // Reapply mask after each layer to maintain padding
-        x = MLX.where(mask, 0.0, x)
       }
     }
 
-    // Step 3: Process through bidirectional LSTM
-    // Transpose to [batch, seq_len, channels] for LSTM
-    x = MLX.swappedAxes(x, 2, 1)
+    // Step 3: Bidirectional LSTM (also seq-major input)
     let (lstmOutput, _) = lstm(x)
-    // Transpose back to [batch, channels, seq_len]
+    // Transpose back to [batch, channels, seq_len] for the caller
     x = MLX.swappedAxes(lstmOutput, 2, 1)
 
-    // Step 4: Ensure output has correct shape by padding if necessary
-    let xPad = MLX.zeros([x.shape[0], x.shape[1], mask.shape[mask.shape.count - 1]])
-    xPad._updateInternal(x)
-
-    // Apply final mask and return
-    return MLX.where(mask, 0.0, xPad)
+    // Apply final mask and return (the zeros-then-_updateInternal pad here
+    // was dead: _updateInternal replaced the freshly allocated buffer).
+    return MLX.where(mask, 0.0, x)
   }
 }
