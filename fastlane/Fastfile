@@ -5,16 +5,24 @@ default_platform(:ios)
 platform :android do
   desc "Build release AAB for Play Store"
   lane :build do
-    sh("cd ../.. && flutter build appbundle --release")
+    # fastlane sh runs from the fastlane/ dir; the repo root is one level up
+    # (the `cd ../..` this was copied with came from a repo where fastlane
+    # lived two levels deep — it overshot and found no pubspec.yaml).
+    sh("cd .. && flutter build appbundle --release")
   end
 
   desc "Build and upload to Play Store internal test track"
   lane :beta do
-    sh("cd ../.. && flutter build appbundle --release")
+    # fastlane sh runs from the fastlane/ dir; the repo root is one level up
+    # (the `cd ../..` this was copied with came from a repo where fastlane
+    # lived two levels deep — it overshot and found no pubspec.yaml).
+    sh("cd .. && flutter build appbundle --release")
 
     upload_to_play_store(
       track: "internal",
-      aab: "../build/app/outputs/bundle/release/app-release.aab",
+      # Unlike sh() (which runs in fastlane/), actions resolve paths from the
+      # repo root.
+      aab: "build/app/outputs/bundle/release/app-release.aab",
       json_key: play_store_key_path,
       skip_upload_metadata: true,
       skip_upload_changelogs: true,
