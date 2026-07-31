@@ -59,8 +59,20 @@ for i in $(seq 1 120); do
     $ADB shell cmd appops set $PKG RUN_ANY_IN_BACKGROUND allow 2>/dev/null
     $ADB shell media volume --stream 3 --set 13 2>/dev/null
     # Nested quotes: adb shell strips one layer before the device sh sees it.
-    $ADB shell run-as $PKG sh -c "'mkdir -p app_flutter/models/live_asr && cp -r /data/local/tmp/kpack app_flutter/models/kokoro-en-fp16-v1_0 && cp /data/local/tmp/kroko-min/* app_flutter/models/live_asr/'" \
-      && echo "provisioned (mic, volume, packs) at t=$((i*3))s"
+    # Retried with verification: the copy occasionally races the app's first
+    # run on emulators and drops files.
+    for attempt in 1 2 3; do
+      # Copy to a temp name, then mv (atomic within the fs) — the app's
+      # readiness checks are existence-based and must never see a
+      # half-copied model directory.
+      $ADB shell run-as $PKG sh -c "'mkdir -p app_flutter/models/live_asr && rm -rf app_flutter/models/.kpack-tmp && cp -r /data/local/tmp/kpack app_flutter/models/.kpack-tmp && mv app_flutter/models/.kpack-tmp app_flutter/models/kokoro-en-fp16-v1_0 2>/dev/null; cp /data/local/tmp/kroko-min/* app_flutter/models/live_asr/'"
+      COUNT=$($ADB shell run-as $PKG sh -c "'ls app_flutter/models/live_asr | wc -l'" | tr -d '[:space:]')
+      if [ "${COUNT:-0}" -ge 4 ]; then
+        echo "provisioned (mic, volume, packs) at t=$((i*3))s (attempt $attempt)"
+        break
+      fi
+      sleep 3
+    done
     break
   fi
   sleep 3
