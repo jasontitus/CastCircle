@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:io';
+import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -319,7 +320,17 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
     // turn to speak, not for TTS playback of other characters' lines.
     // Skip entirely in readthrough mode (no character, no STT needed).
     if (mode != RehearsalMode.readthrough) {
-      _initSttDeferred(production, myCharacter, script, locale);
+      // The recognizer listens to the ACTOR's speech, so it follows the
+      // DEVICE locale — never the production's dialect. A British-dialect
+      // P&P handed en-GB to SFSpeechRecognizer, which heard an American
+      // actor as "I feels your" / "Bennel" and starved endpointing of
+      // results. The dialect keeps shaping TTS voices above.
+      final device = ui.PlatformDispatcher.instance.locale;
+      final sttLocale =
+          device.languageCode == 'en' && device.countryCode != null
+              ? '${device.languageCode}-${device.countryCode}'
+              : 'en-US';
+      _initSttDeferred(production, myCharacter, script, sttLocale);
     }
   }
 
@@ -1985,12 +1996,19 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
 
     // Live mic level for the listening indicator (smoothed in SttService).
     // ValueNotifier, not setState: only the mic chip repaints per event.
+    // While the actor is audibly speaking, push the hard silence timer back —
+    // it is otherwise only reset by NEW recognition results, and a recognizer
+    // producing sparse partials (field case: one partial then nothing) let it
+    // fire mid-read and cut the actor off at 22-57% scores.
     _stt.onLevel = (level) {
       if (!mounted) return;
       if (ref.read(rehearsalStateProvider) != RehearsalState.listeningForMe) {
         return;
       }
       _micLevel.value = level;
+      if (level >= SttService.silenceThreshold) {
+        _resetSilenceTimer(line);
+      }
     };
 
     // Energy-based endpointing: once the match threshold is crossed,
@@ -2186,6 +2204,15 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
       if (!mounted) return;
       final state = ref.read(rehearsalStateProvider);
       if (state != RehearsalState.listeningForMe) return;
+
+      // Never time out an actor who is audibly mid-line — if level events
+      // stalled but the mic still hears speech, come back shortly instead.
+      if (_stt.inputLevel >= SttService.silenceThreshold) {
+        _silenceTimer = Timer(const Duration(milliseconds: 500), () {
+          if (mounted) _resetSilenceTimer(line);
+        });
+        return;
+      }
 
       _logLineOutcome('silence timeout');
       _stopCaptureForLine(line);
