@@ -447,11 +447,17 @@ class ModelDownloadService {
 
   /// Download every live-matching ASR file that isn't already good.
   Future<void> downloadLiveAsr() async {
+    // Concurrent within the group: the Dart-fallback path (Android) blocks
+    // per file, so sequentially the small decoder/joiner/tokens files queued
+    // behind the big encoder. Progress is bytes-weighted across per-file
+    // states, so the setup bar stays honest either way.
+    final needed = <AiModel>[];
     for (final m in availableModels) {
       if (m.subdir != 'live_asr') continue;
       if (fileProblem(m, File(await _filePath(m))) == null) continue;
-      await download(m);
+      needed.add(m);
     }
+    await Future.wait(needed.map(download));
   }
 
   /// Shared readiness check over every model in [subdir] — same [fileProblem]
