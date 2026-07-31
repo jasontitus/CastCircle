@@ -56,7 +56,7 @@ Notes: hardened runtime (`--options runtime`) + secure timestamp are required. `
 
 ### Signing (set up once — DONE 2026-06-22)
 - Upload keystore: `android/app/castcircle-upload.jks` (alias `upload`), password in `android/key.properties`. **Both git-ignored.** The password is the only copy — losing it means resetting the upload key in Play (fine for Play App Signing; fatal for sideloaded/Amazon builds).
-- `android/app/build.gradle.kts` already wires `key.properties` → `signingConfigs.release` → `buildTypes.release`. If `key.properties` is missing, the release build silently falls back to **debug** signing and Play rejects it — so the file MUST exist.
+- `android/app/build.gradle.kts` wires `key.properties` → `signingConfigs.release` → `buildTypes.release`. Since 2026-07-30 a release build **fails loudly** when `key.properties` is missing (it used to fall back silently to debug signing). Use a debug build for local work.
 - `storeFile` is relative to `android/app/`, not `android/`.
 - Upload key fingerprints (register with Play App Signing / Firebase if needed):
   - SHA-1 `22:F4:9D:A5:55:E5:BF:AB:44:A7:35:96:18:A4:F6:DE:0B:69:93:E9`
@@ -74,9 +74,22 @@ Fastlane lane (in `fastlane/Fastfile`, platform `:android`):
 cd fastlane && fastlane android beta      # build AAB + upload to internal track
 cd fastlane && fastlane android promote   # internal → production
 ```
-Needs the Play service-account JSON at `~/.google-play/play-store-key.json`.
+Needs the Play service-account JSON at `~/.google-play/play-store-key.json`
+(set up 2026-07-30, copied from the open-testimony project — same Play
+developer account).
 
-**First upload is manual** (the Play API can only upload to an app that already exists): in Play Console create the app `com.tiltastech.castcircle`, opt into **Play App Signing**, and upload the AAB to the **Internal testing** track once. After that, `ship-play.sh` / `fastlane android beta` automate every subsequent upload.
+Fastfile path gotchas (fixed 2026-07-30 — this repo keeps `fastlane/` at the
+repo ROOT, unlike where the file was copied from): `sh()` commands run inside
+`fastlane/` (so the build step is `cd ..`), while fastlane *actions* resolve
+relative paths from the repo root (so the `aab:` path has no `../` prefix).
+
+**First upload is manual — STILL PENDING as of 2026-07-30** (the Play API can
+only upload to an app that already exists; automated upload ends at
+`Package not found: com.tiltastech.castcircle`): in Play Console create the
+app `com.tiltastech.castcircle`, opt into **Play App Signing**, and upload the
+AAB to the **Internal testing** track once. After that, `ship-play.sh` /
+`fastlane android beta` automate every subsequent upload — the whole chain
+below that step (auth, signing, paths) is verified working.
 
 ---
 
