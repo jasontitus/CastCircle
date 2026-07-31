@@ -2025,10 +2025,7 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
         return;
       }
       if (_matchScore.value >= threshold &&
-          silence >=
-              Duration(
-                  milliseconds:
-                      ref.read(rehearsalAdvanceSilenceMsProvider))) {
+          silence >= _requiredAdvanceSilence(line)) {
         _confirmLineMatch(line);
       }
     };
@@ -2125,6 +2122,27 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
     }
   }
 
+  /// How long the actor must be quiet before an over-threshold score may
+  /// advance the line.
+  ///
+  /// The score alone cannot distinguish "finished (some words misheard)"
+  /// from "70-80% of the way through and pausing for effect" — and with a
+  /// healthy recognizer, scores routinely cross the threshold MID-line, so
+  /// the bare tunable window (default 500 ms) turned every acting pause
+  /// into an exit (field: advanced at 70% and 76% "every time"). The
+  /// discriminator is whether the transcript shows the actor REACHED THE
+  /// LINE'S ENDING:
+  ///   - ending heard → the normal snappy window;
+  ///   - ending not heard → they are mid-line until proven otherwise:
+  ///     require a long deliberate pause (they may have paraphrased the
+  ///     ending, so never wait forever).
+  Duration _requiredAdvanceSilence(ScriptLine line) {
+    final base = ref.read(rehearsalAdvanceSilenceMsProvider);
+    final tailHeard =
+        SttService.heardLineEnding(line.text, _recognizedText.value);
+    return Duration(milliseconds: tailHeard ? base : (base + 2000));
+  }
+
   /// Confirm the match only once the actor has actually stopped talking.
   ///
   /// The confirm timer fires after N ms of no NEW recognition results — but
@@ -2167,9 +2185,17 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
     final minPlausible = Duration(milliseconds: 200 * wordCount);
     final plausible =
         DateTime.now().difference(_listeningStartedAt) >= minPlausible;
+    final tailHeard =
+        SttService.heardLineEnding(line.text, _recognizedText.value);
+
+    // Quiet needed before confirming, in ~150 ms samples:
+    //   ending heard + plausible timing → first quiet sample (snappy);
+    //   ending heard but impossibly fast → hint completion, ~450 ms;
+    //   ending NOT heard → actor is likely mid-line, ~1.5 s.
+    final needed = tailHeard ? (plausible ? 1 : 3) : 10;
 
     _quietStreak++;
-    if (!plausible && _quietStreak < 3) {
+    if (_quietStreak < needed) {
       _matchConfirmTimer?.cancel();
       _matchConfirmTimer = Timer(const Duration(milliseconds: 150), () {
         _confirmIfActorQuiet(line);
@@ -2606,7 +2632,14 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
       if (ref.read(rehearsalStateProvider) != RehearsalState.listeningForMe) {
         return;
       }
-      if (_liveMatchingActive && _matchScore.value < threshold) return;
+      if (_liveMatchingActive) {
+        if (_matchScore.value < threshold) return;
+        // Same line-ending tier as iOS: a mid-line pause must not advance.
+        if (silence >= _requiredAdvanceSilence(line)) {
+          _confirmLineMatch(line);
+        }
+        return;
+      }
       if (silence >=
           Duration(milliseconds: ref.read(rehearsalAdvanceSilenceMsProvider))) {
         _confirmLineMatch(line);
