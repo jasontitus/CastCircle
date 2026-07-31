@@ -145,6 +145,30 @@ re-run batches and 7–8 after `DS4_REVIEW.md` assembles.
   (`home_screen.dart:421`, `settings_screen.dart:294-300`) — user-initiated,
   so mostly fine; consider showing the text before sending.
 
+## Performance findings (partial pass — batch 1 of 8 before the run was
+## stopped; findings in `.ds4-sweep-perf/batch-1.md`)
+
+All 15 hits are under `ios/LocalPackages/`.  7 target the DEAD `kokoro-ios`
+package (see item 9) — ignore those.  The 8 in `parakeet-stt` are LIVE STT
+hot-path code; verified verdicts:
+
+- **P-1 (real, the big one)** — `ParakeetModel.swift:263,347` (VERIFIED):
+  `eval(jointOut)` inside the per-frame `while t < maxLength` decode loops
+  (TDT + RNNT) forces a synchronous device round-trip per audio frame.  The
+  "1000× slower" claim is inflated, but the per-frame sync is real and is the
+  dominant structural cost of streaming STT decode.  Fix direction: batch
+  frames / defer evals.
+- **P-2 (real, easy win)** — `DSP.swift:76,250` (VERIFIED): the mel filterbank
+  is recomputed with a ~32k-iteration nested loop on every spectrogram call
+  (once per STT chunk).  Cache it per (nFft, nMels, sampleRate) config.
+- **P-3 (real, guard it)** — `ParakeetAlignment.swift:144-163` (VERIFIED
+  verbatim): O(n·m·chain) longest-contiguous-match over chunk overlaps.
+  Fine for small overlaps; add a window cap or switch to the existing LCS
+  fallback above a size threshold.
+- **P-4 (real, micro)** — per-sample Swift copy loops in the WAV writers
+  (`AudioUtils.swift:42,108,271`, VERIFIED): correct finding, sub-millisecond
+  impact; use memcpy when touching these files.
+
 ## Deflated / not actionable (documented so nobody re-litigates)
 
 - **"Will not compile" claims in `ios/LocalPackages/parakeet-stt`**
