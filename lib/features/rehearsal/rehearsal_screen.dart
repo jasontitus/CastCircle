@@ -148,6 +148,9 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
   Timer? _toastTimer;
   /// One 'first result' log per line (see onResult).
   bool _loggedFirstResultForLine = false;
+  // When listening for the current line began — used to sanity-check a
+  // high match score against physically-possible reading speed.
+  DateTime _listeningStartedAt = DateTime.now();
   ProviderSubscription<int>? _progressSub;
   // Cached while the screen is mounted so the debounce timer, app-lifecycle
   // callback, and dispose() can persist progress WITHOUT touching `ref` after
@@ -253,6 +256,9 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
         _onOtherLineFinished();
       }
     });
+    // Pipelining anchor: the moment a line's audio starts playing, queue
+    // synthesis for the upcoming lines so it overlaps the playback.
+    _tts.onPlaybackStarted = _prefetchUpcomingOtherLines;
 
     // A phone call / Siri / unplugged headphones kills the audio engine and
     // (on the playback path) never delivers a completion — the state machine
@@ -557,6 +563,7 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
     // Clear the completion handler so the singleton TtsService doesn't retain
     // this disposed State (and its ref) until the next rehearsal.
     _tts.setCompletionHandler(() {});
+    _tts.onPlaybackStarted = null;
     _stt.onAudioInterruption = null;
     _stt.onAudioRouteLost = null;
     _tts.stop(reason: 'dispose');
@@ -1844,24 +1851,43 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
     } else {
       await _tts.speak(line.text, character: voiceCharacter);
     }
-    // speak() has finished SYNTHESIZING (playback continues via the player),
-    // so the TTS engine is idle — synthesize the next other-character line
-    // now. Without this, back-to-back computer lines each pay full synthesis
-    // latency before any audio starts: ~a line-length of silence on Android,
-    // where synthesis is ~real-time (RTF 0.9). Prefetching only while the
-    // actor speaks (the isMyLine branch) never covers consecutive TTS lines.
-    if (mounted && ref.read(rehearsalStateProvider) == RehearsalState.playingOther) {
-      final script = ref.read(currentScriptProvider);
-      final scene = ref.read(selectedSceneProvider);
-      final myCharacter = ref.read(rehearsalCharacterProvider);
-      final mode = ref.read(rehearsalModeProvider);
-      if (script != null && scene != null) {
-        final dialogueLines = _getRehearsalLines(script, scene, myCharacter);
-        _prefetchLineAudio(_nextOtherLine(dialogueLines,
-            ref.read(currentLineIndexProvider), myCharacter, mode));
+    // Safety net only — the real prefetch trigger is onPlaybackStarted
+    // (speak() returns after playback COMPLETES, far too late to overlap).
+    _prefetchUpcomingOtherLines();
+    // Completion handled by TTS completion handler
+  }
+
+  /// Queue synthesis for the next TWO other-character lines. Called from
+  /// [TtsService.onPlaybackStarted] — the moment a line's audio starts — so
+  /// their synthesis genuinely overlaps this line's playback. That anchor is
+  /// what makes playthrough flow on Android, where synthesis is ~real-time
+  /// (RTF 0.9): hooked "after speak returned" it fired at playback END and
+  /// back-to-back TTS lines each sat silent for 6-10 s despite "prefetching".
+  /// Two deep because one-deep only breaks even at real-time synthesis; the
+  /// future-map dedupe makes repeat calls free.
+  void _prefetchUpcomingOtherLines() {
+    if (!mounted) return;
+    final state = ref.read(rehearsalStateProvider);
+    if (state != RehearsalState.playingOther &&
+        state != RehearsalState.listeningForMe) {
+      return;
+    }
+    final script = ref.read(currentScriptProvider);
+    final scene = ref.read(selectedSceneProvider);
+    final myCharacter = ref.read(rehearsalCharacterProvider);
+    final mode = ref.read(rehearsalModeProvider);
+    if (script == null || scene == null) return;
+    final dialogueLines = _getRehearsalLines(script, scene, myCharacter);
+    final currentIdx = ref.read(currentLineIndexProvider);
+    final next = _nextOtherLine(dialogueLines, currentIdx, myCharacter, mode);
+    _prefetchLineAudio(next);
+    if (next != null) {
+      final nextIdx = dialogueLines.indexOf(next);
+      if (nextIdx >= 0) {
+        _prefetchLineAudio(
+            _nextOtherLine(dialogueLines, nextIdx, myCharacter, mode));
       }
     }
-    // Completion handled by TTS completion handler
   }
 
   /// Called when another character's line finishes playing.
@@ -1978,6 +2004,7 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
     _matchConfirmed = false;
     _lastRecognizedRaw = '';
     _loggedFirstResultForLine = false;
+    _listeningStartedAt = DateTime.now();
     _micLevel.value = 0.0;
 
     // Build vocabulary hints: the expected line as a phrase + its individual
@@ -2021,10 +2048,7 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
         return;
       }
       if (_matchScore.value >= threshold &&
-          silence >=
-              Duration(
-                  milliseconds:
-                      ref.read(rehearsalAdvanceSilenceMsProvider))) {
+          silence >= _requiredAdvanceSilence(line)) {
         _confirmLineMatch(line);
       }
     };
@@ -2110,6 +2134,7 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
       _matchConfirmTimer?.cancel();
       final confirmMs =
           score >= _fullLineMatchThreshold ? _fastConfirmMs : 1200;
+      _quietStreak = 0; // fresh evidence of speech — restart the quiet count
       _matchConfirmTimer = Timer(Duration(milliseconds: confirmMs), () {
         _confirmIfActorQuiet(line);
       });
@@ -2120,23 +2145,82 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
     }
   }
 
+  /// How long the actor must be quiet before an over-threshold score may
+  /// advance the line.
+  ///
+  /// The score alone cannot distinguish "finished (some words misheard)"
+  /// from "70-80% of the way through and pausing for effect" — and with a
+  /// healthy recognizer, scores routinely cross the threshold MID-line, so
+  /// the bare tunable window (default 500 ms) turned every acting pause
+  /// into an exit (field: advanced at 70% and 76% "every time"). The
+  /// discriminator is whether the transcript shows the actor REACHED THE
+  /// LINE'S ENDING:
+  ///   - ending heard → the normal snappy window;
+  ///   - ending not heard → they are mid-line until proven otherwise:
+  ///     require a long deliberate pause (they may have paraphrased the
+  ///     ending, so never wait forever).
+  Duration _requiredAdvanceSilence(ScriptLine line) {
+    final base = ref.read(rehearsalAdvanceSilenceMsProvider);
+    final tailHeard =
+        SttService.heardLineEnding(line.text, _recognizedText.value);
+    return Duration(milliseconds: tailHeard ? base : (base + 2000));
+  }
+
   /// Confirm the match only once the actor has actually stopped talking.
   ///
   /// The confirm timer fires after N ms of no NEW recognition results — but
   /// "no new results" is not "done speaking": when the actor hits words the
   /// recognizer can't transcribe (OCR-garbled text, mumbled names) partials
   /// stop changing while speech continues, and the timer used to cut the
-  /// actor off mid-line. If the mic still hears speech, re-check shortly
-  /// instead of confirming; the energy endpointing (onSilence) still advances
-  /// the moment the actor goes genuinely quiet.
+  /// actor off mid-line. Worse, the recognizer can predictively complete the
+  /// whole line from its contextual hint — 100% score mid-read (field case:
+  /// 1.3 s after the first partial, 3.8 s into a longer line) — and a single
+  /// mic sample can land in a comma-breath.
+  ///
+  /// The tiebreaker is TIME PLAUSIBILITY: a real read of an N-word line
+  /// cannot finish faster than a fast reader speaks (~200 ms/word). When the
+  /// elapsed time makes the match physically possible, confirm on the first
+  /// quiet sample — the snappy path, which is nearly every line. Only a
+  /// too-fast "match" (necessarily hint completion) pays for sustained quiet
+  /// (~450 ms), so a breath can't end a line the actor can't have finished.
+  int _quietStreak = 0;
+
   void _confirmIfActorQuiet(ScriptLine line) {
     if (!mounted || _matchConfirmed) return;
     if (ref.read(rehearsalStateProvider) != RehearsalState.listeningForMe) {
       return;
     }
     if (_stt.inputLevel >= SttService.silenceThreshold) {
+      _quietStreak = 0;
       _matchConfirmTimer?.cancel();
       _matchConfirmTimer = Timer(const Duration(milliseconds: 300), () {
+        _confirmIfActorQuiet(line);
+      });
+      return;
+    }
+
+    // Stage directions aren't spoken (matchScore already excludes them), so
+    // they mustn't inflate the reading-time floor either — "(crossing to the
+    // window, softly)" would otherwise make a short line look under-read.
+    final spokenText = TtsService.stripStageDirections(line.text);
+    final wordCount =
+        spokenText.isEmpty ? 0 : spokenText.split(RegExp(r'\s+')).length;
+    final minPlausible = Duration(milliseconds: 200 * wordCount);
+    final plausible =
+        DateTime.now().difference(_listeningStartedAt) >= minPlausible;
+    final tailHeard =
+        SttService.heardLineEnding(line.text, _recognizedText.value);
+
+    // Quiet needed before confirming, in ~150 ms samples:
+    //   ending heard + plausible timing → first quiet sample (snappy);
+    //   ending heard but impossibly fast → hint completion, ~450 ms;
+    //   ending NOT heard → actor is likely mid-line, ~1.5 s.
+    final needed = tailHeard ? (plausible ? 1 : 3) : 10;
+
+    _quietStreak++;
+    if (_quietStreak < needed) {
+      _matchConfirmTimer?.cancel();
+      _matchConfirmTimer = Timer(const Duration(milliseconds: 150), () {
         _confirmIfActorQuiet(line);
       });
       return;
@@ -2506,6 +2590,7 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
     _micLevel.value = 0.0;
     _lastRecognizedRaw = '';
     _loggedFirstResultForLine = false;
+    _listeningStartedAt = DateTime.now();
 
     // Instant when already running (warmed at rehearsal start). When it's
     // still loading — e.g. resuming straight into the actor's line — do NOT
@@ -2570,7 +2655,14 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
       if (ref.read(rehearsalStateProvider) != RehearsalState.listeningForMe) {
         return;
       }
-      if (_liveMatchingActive && _matchScore.value < threshold) return;
+      if (_liveMatchingActive) {
+        if (_matchScore.value < threshold) return;
+        // Same line-ending tier as iOS: a mid-line pause must not advance.
+        if (silence >= _requiredAdvanceSilence(line)) {
+          _confirmLineMatch(line);
+        }
+        return;
+      }
       if (silence >=
           Duration(milliseconds: ref.read(rehearsalAdvanceSilenceMsProvider))) {
         _confirmLineMatch(line);

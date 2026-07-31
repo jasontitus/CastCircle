@@ -296,14 +296,47 @@ class SttService {
   /// Unlike simple set overlap, this respects word order — the user
   /// must say the words in roughly the right sequence to score well.
   /// Handles insertions, deletions, and STT adding extra words gracefully.
+  /// Strip stage directions the same way [matchScore] does.
+  static String _dialogueOnly(String expected) => expected
+      .replaceAll(RegExp(r'\([^)]*\)'), ' ')
+      .replaceAll(RegExp(r'\[[^\]]*\]'), ' ')
+      .replaceAll(RegExp(r'[(\[][^)\]]*$'), ' '); // unclosed (OCR-dropped close)
+
+  /// Whether the transcript shows the actor actually REACHED THE END of the
+  /// line: at least two of its last three dialogue words appear near the end
+  /// of what was heard (one suffices for one/two-word lines).
+  ///
+  /// This is the discriminator between "score is high because the actor is
+  /// most of the way through" and "score is high because they finished":
+  /// a 70%+ score mid-line plus a breath used to advance the line out from
+  /// under a slow, deliberate reader. Not reliable at 100%-via-hint-completion
+  /// (the recognizer writes the ending into the transcript unheard) — callers
+  /// combine this with the reading-time plausibility check for that case.
+  static bool heardLineEnding(String expected, String spoken) {
+    // Hyphens become spaces BEFORE normalizing: _normalize deletes them,
+    // gluing "good-humoured" into one token the recognizer (which emits
+    // "good humoured") could never produce.
+    final exp = _normalize(_dialogueOnly(expected).replaceAll('-', ' '))
+        .split(RegExp(r'\s+'))
+        .where((w) => w.isNotEmpty)
+        .toList();
+    if (exp.isEmpty) return true;
+    final spo = _normalize(spoken.replaceAll('-', ' '))
+        .split(RegExp(r'\s+'))
+        .where((w) => w.isNotEmpty)
+        .toList();
+    if (spo.isEmpty) return false;
+    final tail = exp.length <= 3 ? exp : exp.sublist(exp.length - 3);
+    final window = spo.length <= 8 ? spo : spo.sublist(spo.length - 8);
+    final hits = tail.where(window.contains).length;
+    return hits >= (tail.length <= 2 ? 1 : 2);
+  }
+
   static double matchScore(String expected, String spoken) {
     // Stage directions in parentheses/brackets aren't spoken by the actor, so
     // don't count them as expected words (otherwise "(crossing)" would make
     // "crossing" a word the actor is penalized for not saying).
-    final dialogueExpected = expected
-        .replaceAll(RegExp(r'\([^)]*\)'), ' ')
-        .replaceAll(RegExp(r'\[[^\]]*\]'), ' ')
-        .replaceAll(RegExp(r'[(\[][^)\]]*$'), ' '); // unclosed (OCR-dropped close)
+    final dialogueExpected = _dialogueOnly(expected);
     final normalizedExpected = _normalize(dialogueExpected);
     if (normalizedExpected.isEmpty) return 1.0;
 

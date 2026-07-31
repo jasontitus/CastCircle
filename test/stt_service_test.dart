@@ -128,4 +128,60 @@ void main() {
       );
     });
   });
+
+  group('SttService.heardLineEnding', () {
+    const line = 'He is just what a young man ought to be: '
+        'sensible, good-humoured, lively.';
+
+    test('true when the transcript reaches the closing words', () {
+      expect(
+        SttService.heardLineEnding(
+            line, 'what a young man ought to be sensible good humoured lively'),
+        true,
+      );
+    });
+
+    test('false when the actor is mid-line', () {
+      expect(
+        SttService.heardLineEnding(line, 'he is just what a young man'),
+        false,
+      );
+    });
+
+    test('false on an empty transcript', () {
+      expect(SttService.heardLineEnding(line, ''), false);
+    });
+
+    test('tolerates one misheard tail word', () {
+      // "lively" misheard, but "good-humoured" (2 of last 3) present.
+      expect(
+        SttService.heardLineEnding(
+            line, 'ought to be sensible good humoured lovely'),
+        true,
+      );
+    });
+
+    test('short lines need only one tail word', () {
+      expect(SttService.heardLineEnding('Oh?', 'oh'), true);
+      expect(SttService.heardLineEnding('Yes sir.', 'yes'), true);
+    });
+
+    test('ignores stage directions in the expected text', () {
+      expect(
+        SttService.heardLineEnding(
+            'I always speak what I think. (turning away)',
+            'i always speak what i think'),
+        true,
+      );
+    });
+
+    test('early words alone never count as the ending', () {
+      expect(
+        SttService.heardLineEnding(
+            'Your partner is the only handsome girl in the room',
+            'your partner is the'),
+        false,
+      );
+    });
+  });
 }

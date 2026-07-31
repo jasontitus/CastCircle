@@ -145,9 +145,10 @@ class KokoroOnnxService {
       }
     });
 
-    // Model load reads ~180 MB from disk — allow a slow first open.
+    // Model load reads ~180 MB from disk — allow a slow first open (cold
+    // flash on a low-end phone, or an emulator's qcow, can exceed a minute).
     final ok = await ready.future
-        .timeout(const Duration(seconds: 60), onTimeout: () => false);
+        .timeout(const Duration(seconds: 150), onTimeout: () => false);
     if (epoch != _epoch) return false; // stopped while loading
     if (!ok) {
       _dlog.logError(LogCategory.tts, 'KokoroOnnx: engine failed to start');

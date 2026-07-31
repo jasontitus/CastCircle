@@ -59,6 +59,16 @@ class TtsService {
   // Kokoro MLX state
   bool _kokoroLoaded = false;
 
+  /// Fired the moment a line's FIRST audio actually starts playing.
+  ///
+  /// This — not speak()'s return — is the pipelining anchor: speak() only
+  /// returns after playback COMPLETES, so a prefetch kicked "after speak"
+  /// starts exactly when the next line already needs its audio (measured on
+  /// Android playthrough: 6-10 s of silence between consecutive TTS lines
+  /// despite "prefetching"). The rehearsal screen prefetches upcoming lines
+  /// from here so their synthesis genuinely overlaps this line's playback.
+  void Function()? onPlaybackStarted;
+
   // Completion callback — guarded by generation counter to fire exactly once per speak()
   Function? _completionHandler;
   bool _isSpeaking = false;
@@ -372,8 +382,9 @@ class TtsService {
       {String? character, List<Future<String?>>? precomputedChunks}) async {
     if (!_initialized) await init();
     // Stage directions in parentheses/brackets are never spoken — strip them so
-    // the TTS reads only the dialogue.
-    text = stripStageDirections(text);
+    // the TTS reads only the dialogue. Abbreviations expand ("Mr." → "Mister")
+    // so their periods can't read as sentence ends — see expandAbbreviations.
+    text = expandAbbreviations(stripStageDirections(text));
     _currentTrace?.stop();
     _currentTrace = PerfService.instance.startTrace('tts_speak');
     _currentTrace?.putAttribute('engine', _kokoroLoaded ? 'kokoro' : 'system');
@@ -451,6 +462,39 @@ class TtsService {
 
   /// Split text into chunks at sentence boundaries for Kokoro's 510 token limit.
   /// Each chunk should be under ~300 characters to stay safely within the limit.
+  /// Expand spoken abbreviations before any sentence handling.
+  ///
+  /// "Mr. Bennet" carries a period that BOTH sentence splitters — ours below
+  /// and Kokoro's internal one — read as end-of-sentence, producing an
+  /// audible pause after every "Mr."/"Mrs." (and our splitter even peeled
+  /// "Mr." off as its own one-word chunk, multiplying per-chunk playback
+  /// gaps: the "slow playthrough" complaint). Expanding to the full word
+  /// removes the false boundary at every layer and pins the pronunciation.
+  @visibleForTesting
+  static String expandAbbreviations(String text) {
+    const expansions = {
+      'Mr': 'Mister',
+      'Mrs': 'Missus',
+      'Ms': 'Miz',
+      'Dr': 'Doctor',
+      'Prof': 'Professor',
+      'Rev': 'Reverend',
+      'Capt': 'Captain',
+      'Col': 'Colonel',
+      'Lt': 'Lieutenant',
+      'Sgt': 'Sergeant',
+      'Jr': 'Junior',
+      'Sr': 'Senior',
+      'St': 'Saint', // dialogue "St. James" — street addresses are rare in scripts
+    };
+    return text.replaceAllMapped(
+      // Word-boundary + period, case as written (titles are capitalized in
+      // scripts; leave lowercase "st." etc alone rather than guess).
+      RegExp(r'\b(' + expansions.keys.join('|') + r')\.'),
+      (m) => expansions[m[1]]!,
+    );
+  }
+
   static List<String> _splitTextForKokoro(String text) {
     // Synthesis is ~real-time on Android phones, so time-to-first-audio is
     // set by the FIRST chunk's length: peel off the opening sentence of any
@@ -632,6 +676,9 @@ class TtsService {
           await PlaybackSession.ensurePlayback();
           DebugLogService.instance.log(LogCategory.tts,
               'Kokoro playing audio (voice=$voice, chunks=${chunks.length})');
+          // The pipelining anchor: this line's audio is about to play, so
+          // upcoming lines can start synthesizing NOW (see onPlaybackStarted).
+          onPlaybackStarted?.call();
         }
 
         // Set up completion listener BEFORE play() to avoid race condition.
@@ -703,9 +750,9 @@ class TtsService {
   /// null when a chunk fails or its synthesis was cancelled.
   List<Future<String?>>? prepareKokoro(String text, {String? character}) {
     if (!_kokoroLoaded) return null;
-    // Strip stage directions identically to [speak] so the chunk counts (and
-    // thus the precomputedChunks) line up.
-    text = stripStageDirections(text);
+    // Strip + expand identically to [speak] so the chunk counts (and thus
+    // the precomputedChunks) line up.
+    text = expandAbbreviations(stripStageDirections(text));
     if (text.isEmpty) return null;
 
     final voice = (character != null && _characterVoices.containsKey(character))
