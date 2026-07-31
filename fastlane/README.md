@@ -13,6 +13,51 @@ For _fastlane_ installation instructions, see [Installing _fastlane_](https://do
 
 # Available Actions
 
+## Android
+
+### android build
+
+```sh
+[bundle exec] fastlane android build
+```
+
+Build release AAB for Play Store
+
+### android beta
+
+```sh
+[bundle exec] fastlane android beta
+```
+
+Build and upload to Play Store internal test track
+
+### android promote
+
+```sh
+[bundle exec] fastlane android promote
+```
+
+Promote internal to production
+
+### android metadata
+
+```sh
+[bundle exec] fastlane android metadata
+```
+
+Upload metadata and screenshots to Play Store
+
+### android metadata_only
+
+```sh
+[bundle exec] fastlane android metadata_only
+```
+
+Upload metadata only (no screenshots)
+
+----
+
+
 ## iOS
 
 ### ios beta
