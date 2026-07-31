@@ -274,15 +274,6 @@ class SettingsScreen extends ConsumerWidget {
               onTap: () => context.push('/kokoro-debug'),
             ),
             ListTile(
-              leading: const Icon(Icons.mic),
-              title: const Text('STT Debug'),
-              subtitle: const Text(
-                'Test speech recognition with vocabulary hints',
-              ),
-              trailing: const Icon(Icons.chevron_right),
-              onTap: () => context.push('/parakeet-debug'),
-            ),
-            ListTile(
               leading: const Icon(Icons.terminal),
               title: const Text('Debug Log'),
               subtitle: const Text(

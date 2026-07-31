@@ -10,16 +10,6 @@ void main() {
     test('isListening is false initially', () {
       expect(SttService.instance.isListening, false);
     });
-
-    test('isMlxReady is false before init', () {
-      expect(SttService.instance.isMlxReady, false);
-    });
-
-    test('SttEngine enum has expected values', () {
-      expect(SttEngine.values,
-          containsAll([SttEngine.mlx, SttEngine.apple]));
-      expect(SttEngine.values.length, 2);
-    });
   });
 
   group('SttService.mergeTranscripts', () {

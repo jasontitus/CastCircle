@@ -4,7 +4,6 @@ import UIKit
 @main
 @objc class AppDelegate: FlutterAppDelegate, FlutterImplicitEngineDelegate {
   private var kokoroPlugin: KokoroMLXPlugin?
-  private var mlxSttPlugin: MLXSttPlugin?
   private var appleSttPlugin: AppleSttPlugin?
   private var downloadPlugin: BackgroundDownloadPlugin?
   private var memoryMonitorPlugin: MemoryMonitorPlugin?
@@ -49,10 +48,7 @@ import UIKit
       downloadPlugin = BackgroundDownloadPlugin(messenger: downloadRegistrar.messenger())
     }
 
-    // Register STT platform channels
-    if let sttRegistrar = engineBridge.pluginRegistry.registrar(forPlugin: "MLXSttPlugin") {
-      mlxSttPlugin = MLXSttPlugin(messenger: sttRegistrar.messenger())
-    }
+    // Register STT platform channel
     if let appleSttRegistrar = engineBridge.pluginRegistry.registrar(forPlugin: "AppleSttPlugin") {
       appleSttPlugin = AppleSttPlugin(messenger: appleSttRegistrar.messenger())
     }
