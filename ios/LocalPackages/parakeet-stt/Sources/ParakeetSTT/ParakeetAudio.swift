@@ -1,6 +1,27 @@
 import Foundation
 import MLX
 
+/// The mel filterbank depends only on the preprocess config, which is fixed
+/// per model — cache it instead of rebuilding ~33k filter weights per chunk.
+private final class MelFilterCache: @unchecked Sendable {
+    private let lock = NSLock()
+    private var key: String?
+    private var filters: MLXArray?
+
+    func get(key k: String, make: () -> MLXArray) -> MLXArray {
+        lock.lock()
+        defer { lock.unlock() }
+        if k == key, let f = filters { return f }
+        let f = make()
+        MLX.eval(f)
+        key = k
+        filters = f
+        return f
+    }
+}
+
+private let melFilterCache = MelFilterCache()
+
 enum ParakeetAudio {
     static func logMelSpectrogram(
         _ audio: MLXArray,
@@ -33,13 +54,17 @@ enum ParakeetAudio {
         let power = MLX.abs(stftOutput).square().asType(originalDType)
         // NeMo's AudioToMelSpectrogramPreprocessor defaults to HTK mel scale.
         // Both Parakeet V2 and V3 were trained with NeMo, so use HTK here.
-        let filters = melFilters(
-            sampleRate: config.sampleRate,
-            nFft: config.nFft,
-            nMels: config.features,
-            norm: config.normalize,
-            melScale: .htk
-        )
+        let filterKey =
+            "\(config.sampleRate)-\(config.nFft)-\(config.features)-\(config.normalize)-htk"
+        let filters = melFilterCache.get(key: filterKey) {
+            melFilters(
+                sampleRate: config.sampleRate,
+                nFft: config.nFft,
+                nMels: config.features,
+                norm: config.normalize,
+                melScale: .htk
+            )
+        }
 
         var mel = MLX.matmul(power, filters.asType(power.dtype))
         mel = MLX.log(mel + MLXArray(1e-5, dtype: mel.dtype))

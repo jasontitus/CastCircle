@@ -39,8 +39,8 @@ public class AudioUtils {
 
         buffer.frameLength = frameCount
         let channelData = buffer.floatChannelData![0]
-        for i in 0 ..< Int(frameCount) {
-            channelData[i] = samples[i]
+        samples.withUnsafeBufferPointer { src in
+            channelData.update(from: src.baseAddress!, count: Int(frameCount))
         }
 
         let audioFile = try AVAudioFile(
@@ -105,8 +105,8 @@ func saveAudioArray(_ audio: MLXArray, sampleRate: Double, to url: URL) throws {
     buffer.frameLength = frameCount
 
     if let channelData = buffer.floatChannelData {
-        for i in 0 ..< samples.count {
-            channelData[0][i] = samples[i]
+        samples.withUnsafeBufferPointer { src in
+            channelData[0].update(from: src.baseAddress!, count: samples.count)
         }
     }
 

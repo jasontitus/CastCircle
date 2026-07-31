@@ -271,10 +271,9 @@ public final class KokoroTTS {
     textMask = textMask + 1 .> inputLengths
     textMask = textMask.expandedDimensions(axes: [0])
     
-    // Create attention mask (1 for valid positions, 0 for padding)
-    let swiftTextMask: [Bool] = textMask.asArray(Bool.self)
-    let swiftTextMaskInt = swiftTextMask.map { !$0 ? 1 : 0 }
-    let attentionMask = MLXArray(swiftTextMaskInt).reshaped(textMask.shape)
+    // Create attention mask (1 for valid positions, 0 for padding).
+    // Computed on-device; the mask only feeds float arithmetic downstream.
+    let attentionMask = MLX.logicalNot(textMask).asType(.int32)
 
     return (paddedInputIds, attentionMask, inputLengths, textMask, inputIds)
   }
@@ -350,21 +349,20 @@ public final class KokoroTTS {
   ///   - batchSize: Size of the input batch
   /// - Returns: Alignment matrix [batchSize × totalFrames]
   private func createAlignmentTarget(durations: MLXArray, batchSize: Int) -> MLXArray {
-    // Create indices array by repeating each index according to its duration
-    let indices = MLX.concatenated(
-      durations.enumerated().map { index, duration in
-        let frameCount: Int = duration.item()
-        return MLX.repeated(MLXArray([index]), count: frameCount)
-      }
-    )
+    // Pull all durations to the CPU in one transfer; the old per-phoneme and
+    // per-frame .item() calls each forced a full graph evaluation.
+    let frameCounts: [Int32] = durations.asArray(Int32.self)
+    let totalFrames = frameCounts.reduce(0) { $0 + Int($1) }
 
     // Create one-hot encoded alignment matrix
-    let totalFrames = indices.shape[0]
     var alignmentArray = [Float](repeating: 0.0, count: totalFrames * batchSize)
-    
-    for frame in 0 ..< totalFrames {
-      let phonemeIndex: Int = indices[frame].item()
-      alignmentArray[phonemeIndex * totalFrames + frame] = 1.0
+
+    var frame = 0
+    for (phonemeIndex, count) in frameCounts.enumerated() {
+      for _ in 0 ..< Int(count) {
+        alignmentArray[phonemeIndex * totalFrames + frame] = 1.0
+        frame += 1
+      }
     }
     
     let alignmentTarget = MLXArray(alignmentArray).reshaped([batchSize, totalFrames])

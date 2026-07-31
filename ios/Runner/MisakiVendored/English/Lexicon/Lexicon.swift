@@ -67,8 +67,7 @@ final class Lexicon {
   static func applyStress(_ phoneticString: String?, stress: Double?) -> String? {
     func restress(_ ps: String) -> String {
       let characters = Array(ps)
-      var indexedChars: [(Double, Character)] = characters.enumerated().map { (Double($0), $1) }
-      
+
       // Find stress positions and their corresponding vowel positions
       var stressToVowel: [Int: Int] = [:]
       for (i, char) in characters.enumerated() {
@@ -82,7 +81,12 @@ final class Lexicon {
           }
         }
       }
-      
+
+      // Nothing to move — skip the indexed rebuild and sort entirely
+      if stressToVowel.isEmpty { return ps }
+
+      var indexedChars: [(Double, Character)] = characters.enumerated().map { (Double($0), $1) }
+
       // Reposition stress markers
       for (stressIndex, vowelIndex) in stressToVowel {
         let stressChar = indexedChars[stressIndex].1

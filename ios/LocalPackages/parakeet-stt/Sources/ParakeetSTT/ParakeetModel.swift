@@ -263,8 +263,14 @@ public final class ParakeetModel: Module, STTGenerationModel {
                 eval(jointOut)
                 let tokenLogits = jointOut[0, 0, 0, ..<(blankToken + 1)]
                 let durationLogits = jointOut[0, 0, 0, (blankToken + 1)...]
-                let token = tokenLogits.argMax(axis: -1).item(Int.self)
-                let decision = durationLogits.argMax(axis: -1).item(Int.self)
+                // One GPU→CPU transfer for both argMax picks instead of two
+                // syncs per decoded frame.
+                let picks: [Int32] = MLX.stacked([
+                    tokenLogits.argMax(axis: -1),
+                    durationLogits.argMax(axis: -1),
+                ]).asArray(Int32.self)
+                let token = Int(picks[0])
+                let decision = Int(picks[1])
                 let step = ParakeetDecodingLogic.tdtStep(
                     predictedToken: token,
                     blankToken: blankToken,
@@ -406,7 +412,8 @@ public final class ParakeetModel: Module, STTGenerationModel {
             let pred = logits[b, ..<featLen, 0...]
             let bestTokens = pred.argMax(axis: 1)
 
-            let ids: [Int] = (0..<featLen).map { bestTokens[$0].item(Int.self) }
+            // Bulk transfer: one sync for the whole utterance, not one per frame
+            let ids: [Int] = bestTokens.asArray(Int32.self).prefix(featLen).map { Int($0) }
             let spans = ParakeetDecodingLogic.ctcSpans(bestTokens: ids, blankToken: blankToken)
             let hypothesis: [ParakeetAlignedToken] = spans.map { span in
                 let start = frameTimeSeconds(frameIndex: span.startFrame)
