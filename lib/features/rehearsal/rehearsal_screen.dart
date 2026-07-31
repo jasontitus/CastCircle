@@ -2158,7 +2158,12 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
       return;
     }
 
-    final wordCount = line.text.split(RegExp(r'\s+')).length;
+    // Stage directions aren't spoken (matchScore already excludes them), so
+    // they mustn't inflate the reading-time floor either — "(crossing to the
+    // window, softly)" would otherwise make a short line look under-read.
+    final spokenText = TtsService.stripStageDirections(line.text);
+    final wordCount =
+        spokenText.isEmpty ? 0 : spokenText.split(RegExp(r'\s+')).length;
     final minPlausible = Duration(milliseconds: 200 * wordCount);
     final plausible =
         DateTime.now().difference(_listeningStartedAt) >= minPlausible;
