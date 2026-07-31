@@ -184,12 +184,15 @@ class ScriptImportService {
         script.lines,
         characters: script.characters,
       );
-      final reviewCount = scoredLines
-          .where((l) => l.reviewStatus == OcrReviewStatus.review)
-          .length;
-      final notScriptCount = scoredLines
-          .where((l) => l.reviewStatus == OcrReviewStatus.likelyNotScript)
-          .length;
+      var reviewCount = 0;
+      var notScriptCount = 0;
+      for (final l in scoredLines) {
+        if (l.reviewStatus == OcrReviewStatus.review) {
+          reviewCount++;
+        } else if (l.reviewStatus == OcrReviewStatus.likelyNotScript) {
+          notScriptCount++;
+        }
+      }
       debugPrint(
         'OCR confidence: $reviewCount lines to review, '
         '$notScriptCount likely-not-script (of ${scoredLines.length})',
@@ -417,6 +420,9 @@ class ScriptImportService {
       final pageCount = doc.pages.length;
 
       final textRecognizer = TextRecognizer();
+      // One platform-channel round-trip, not one per page.
+      final tempDir = await getTemporaryDirectory();
+      final tempFile = File(p.join(tempDir.path, 'ocr_page.png'));
 
       try {
         for (var i = 1; i <= pageCount; i++) {
@@ -449,8 +455,6 @@ class ScriptImportService {
               continue;
             }
 
-            final tempDir = await getTemporaryDirectory();
-            final tempFile = File(p.join(tempDir.path, 'ocr_page_$i.png'));
             await tempFile.writeAsBytes(byteData.buffer.asUint8List());
 
             final inputImage = InputImage.fromFilePath(tempFile.path);
@@ -469,8 +473,6 @@ class ScriptImportService {
               rawLineIndex++;
             }
 
-            await tempFile.delete();
-
             debugPrint(
               'PDF OCR: Page $i/$pageCount done '
               '(${recognized.blocks.length} blocks)',
@@ -483,6 +485,12 @@ class ScriptImportService {
       } finally {
         textRecognizer.close();
         await doc.dispose();
+        // The single reused page image is deleted once, not per page.
+        if (tempFile.existsSync()) {
+          try {
+            await tempFile.delete();
+          } catch (_) {}
+        }
       }
     }
 
