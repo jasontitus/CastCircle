@@ -1,5 +1,6 @@
 import 'dart:io';
 import 'dart:isolate';
+import 'dart:math';
 import 'dart:ui' as ui;
 
 import 'package:flutter/foundation.dart';
@@ -343,7 +344,13 @@ class ScriptImportService {
     try {
       paddleResult = await PaddleOcrChannel.ocrPdf(pdfPath);
     } catch (e) {
-      debugPrint('PDF OCR: PaddleOCR failed ($e) — falling back');
+      // Loud, in the FIELD log: which engine actually ran decides OCR
+      // quality (Android has no Paddle plugin yet — every import there is
+      // the ML Kit fallback), and debugPrint never reaches debug reports.
+      DebugLogService.instance.log(
+          LogCategory.general,
+          'PDF OCR: PaddleOCR unavailable ($e) — falling back to '
+          '${Platform.isMacOS ? 'Vision' : 'ML Kit'}');
       paddleResult = null;
     }
 
@@ -428,9 +435,16 @@ class ScriptImportService {
         for (var i = 1; i <= pageCount; i++) {
           try {
             final page = doc.pages[i - 1];
+            // ML Kit accuracy depends heavily on input resolution: the old
+            // fixed 2x (~150 DPI on a letter page) misread the P&P scan at
+            // the character level ("chamtorlae" for "Charlotte"). Target the
+            // same ~long-side sweet spot the PaddleOCR plugin uses, clamped
+            // so huge pages don't blow the page bitmap up unboundedly.
+            final longSidePt = max(page.width, page.height);
+            final renderScale = (2600 / longSidePt).clamp(2.0, 4.0);
             final pdfImage = await page.render(
-              fullWidth: page.width * 2,
-              fullHeight: page.height * 2,
+              fullWidth: page.width * renderScale,
+              fullHeight: page.height * renderScale,
             );
             if (pdfImage == null) {
               debugPrint(
