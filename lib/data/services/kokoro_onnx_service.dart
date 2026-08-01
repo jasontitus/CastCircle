@@ -204,9 +204,14 @@ class KokoroOnnxService {
         return q.urgent;
       });
       _cancelBelow.value = req.seq;
+      // FRONT of the queue: the actor is waiting on this line RIGHT NOW.
+      // Appending put it behind stale prefetches (each a queue round-trip,
+      // and a session restart piles several up — field: 11.5 s before the
+      // first line of a new read-through started playing).
+      _queue.insert(0, req);
+    } else {
+      _queue.add(req);
     }
-
-    _queue.add(req);
     _pump();
 
     final path = await req.completer.future;
@@ -392,15 +397,28 @@ Future<void> _isolateMain(_IsolateArgs args) async {
       continue;
     }
     try {
+      // Track whether the abort actually TRUNCATED generation: the callback
+      // polls only between sherpa's internal chunks (~a sentence), so a
+      // cancel can land after the last poll — the audio is then complete
+      // and worth keeping even though the request is stale.
+      var abortedMidGeneration = false;
       final audio = tts.generateWithCallback(
         text: msg['text'] as String,
         sid: msg['sid'] as int,
         speed: (msg['speed'] as num).toDouble(),
         // Polled between generation chunks: 0 aborts. This is how a
         // superseded line stops burning CPU mid-synthesis.
-        callback: (_) => seq < cancelBelow.value ? 0 : 1,
+        callback: (_) {
+          if (seq < cancelBelow.value) {
+            abortedMidGeneration = true;
+            return 0;
+          }
+          return 1;
+        },
       );
-      if (seq < cancelBelow.value) {
+      if (abortedMidGeneration) {
+        // Truncated — never let a half-synthesized line escape (it would be
+        // adopted into the disk cache and play cut off forever).
         args.sendPort.send({'seq': seq, 'aborted': true});
         continue;
       }
@@ -408,6 +426,10 @@ Future<void> _isolateMain(_IsolateArgs args) async {
         args.sendPort.send({'seq': seq, 'error': 'empty audio'});
         continue;
       }
+      // NOTE: a stale-but-COMPLETE generation falls through on purpose: the
+      // service adopts finished WAVs into the disk cache, so a "wasted"
+      // prefetch from a closed session becomes the next session's instant
+      // cache hit instead of discarded work.
       // Unique per call — prefetched paths stay valid while later lines
       // synthesize.
       final path = '${args.tmpDir}/kokoro_onnx_${fileSeq++}.wav';
