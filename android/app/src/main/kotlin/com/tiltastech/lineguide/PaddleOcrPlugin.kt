@@ -187,7 +187,9 @@ class PaddleOcrPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
                             }
                         }
                         pages.add(mapOf("page" to i + 1, "lines" to lines))
-                        Log.i(TAG, "page ${i + 1}/$pageCount — ${lines.size} lines in ${System.currentTimeMillis() - t0}ms")
+                        Log.i(TAG, "page ${i + 1}/$pageCount — ${lines.size} lines in " +
+                            "${System.currentTimeMillis() - t0}ms " +
+                            "(det ${lastDetMs}ms, rec ${lastRecMs}ms)")
                     } catch (t: Throwable) {
                         Log.e(TAG, "page ${i + 1} failed", t)
                         failed++
@@ -223,9 +225,19 @@ class PaddleOcrPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
         return bmp
     }
 
+    // Per-page timing breakdown for the caller's log line. Measured on a
+    // Galaxy A35: detection ~420ms, recognition ~3.8s (88%) at ~95ms per
+    // text line. Recognition is COMPUTE-bound — batching crops through the
+    // model's dynamic batch dim was tried and gave no speedup while padding
+    // corrupted text (7/56 lines changed), so it was reverted. The real
+    // levers are fewer/smaller crops or a lighter rec model.
+    private var lastDetMs = 0L
+    private var lastRecMs = 0L
+
     private fun ocrImage(bmp: Bitmap): List<Map<String, Any>> {
         val det = detSession ?: return emptyList()
         val rec = recSession ?: return emptyList()
+        val tDet0 = System.currentTimeMillis()
         val origW = bmp.width
         val origH = bmp.height
         // 1. Detection: resize to multiples of 32 (≤ limit), normalize, run.
@@ -240,6 +252,8 @@ class PaddleOcrPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
         val mW = pShape[pShape.size - 1].toInt()
         // 2. Threshold + connected-component boxes in original coords.
         val boxes = detectBoxes(prob, mW, mH, origW, origH)
+        lastDetMs = System.currentTimeMillis() - tDet0
+        val tRec0 = System.currentTimeMillis()
         // 3. Recognize each box, sorted top-to-bottom (reading order).
         val lines = ArrayList<Map<String, Any>>()
         val fOrigW = max(origW, 1).toDouble()
@@ -259,6 +273,7 @@ class PaddleOcrPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
                 crop.recycle()
             }
         }
+        lastRecMs = System.currentTimeMillis() - tRec0
         return lines
     }
 
