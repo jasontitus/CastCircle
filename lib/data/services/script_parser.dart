@@ -145,6 +145,11 @@ class ScriptParser {
     // Second pass: parse lines
     final lines = _parseLines(rawText);
 
+    // A shift ANNOUNCED by a direction doesn't start the new scene — the
+    // arrival direction does. Must run before scene detection, which reads
+    // these tags.
+    _deferAnnouncedSceneShifts(lines);
+
     // Third pass: detect scenes from parsed lines
     final scenes = _detectScenes(lines);
 
@@ -1289,6 +1294,58 @@ class ScriptParser {
     return false;
   }
 
+  /// A direction that ANNOUNCES a transition rather than completing it:
+  /// "(Shift begins into First Ball.)". The script keeps playing the
+  /// outgoing scene across it — the new scene starts at the ARRIVAL
+  /// direction, "(The ball begins. ELIZABETH sits to one side…)".
+  static final _shiftAnnouncementRe = RegExp(
+    r'\b(?:shift|transition|change|crossfade)\s+(?:begins|starts|beginning)\b'
+    r'|\bbegins?\s+to\s+(?:shift|change)\b',
+    caseSensitive: false,
+  );
+
+  /// Move a scene boundary from an announced shift to the arrival direction
+  /// that completes it.
+  ///
+  /// Field report: rehearsing "ACT I, Scene 2" (the Ball) opened with MR.
+  /// BENNET's Longbourn line — the scan really does print
+  ///   (Shift begins into First Ball.)
+  ///   MR. BENNET. Yes, I fear that as I have actually paid the visit…
+  ///   (The ball begins. ELIZABETH sits to one side…)
+  /// so a line delivered DURING the shift was being swept into the new
+  /// scene. Only fires when an arrival direction follows within a few
+  /// lines; a lone announcement still starts its scene where it always did.
+  void _deferAnnouncedSceneShifts(List<ScriptLine> lines) {
+    const lookahead = 4;
+    for (var i = 1; i < lines.length; i++) {
+      final line = lines[i];
+      if (line.lineType != LineType.stageDirection) continue;
+      if (line.scene == lines[i - 1].scene) continue; // not a boundary
+      if (!_shiftAnnouncementRe.hasMatch(line.text)) continue;
+
+      // Only defer to a direction that names the SAME destination — the
+      // arrival that completes this shift ("into First Ball" → "The ball
+      // begins"). That keeps the change to moving a boundary a line or two
+      // later; it can never create or drop a scene.
+      final destination = _extractLocation(line.text);
+      if (destination.isEmpty) continue;
+      var arrival = -1;
+      for (var j = i + 1; j < lines.length && j <= i + lookahead; j++) {
+        if (lines[j].lineType != LineType.stageDirection) continue;
+        if (_extractLocation(lines[j].text) == destination) {
+          arrival = j;
+          break;
+        }
+      }
+      if (arrival < 0) continue; // no arrival — keep the existing boundary
+
+      final outgoing = lines[i - 1].scene;
+      for (var k = i; k < arrival; k++) {
+        lines[k] = lines[k].copyWith(scene: outgoing);
+      }
+    }
+  }
+
   /// Extract a location label from transition text.
   String _extractLocation(String text) {
     for (final loc in _locationPatterns) {
@@ -1584,11 +1641,16 @@ class ScriptParser {
         }
       }
 
-      // Find the transition stage direction for a description
+      // Find the transition stage direction for a description.
+      // Skip an announcement of the NEXT shift ("(Shift begins into First
+      // Ball.)"), which now sits at the tail of this scene — it names where
+      // the play is GOING, so using it would label this scene with the next
+      // scene's location.
       var description = '';
       for (final l in sceneLines) {
         if (l.lineType == LineType.stageDirection &&
-            _isSceneTransition(l.text)) {
+            _isSceneTransition(l.text) &&
+            !_shiftAnnouncementRe.hasMatch(l.text)) {
           description = l.text;
           break;
         }

@@ -88,4 +88,37 @@ void main() {
       checkPartition(script, f.uri.pathSegments.last);
     }
   });
+
+  test('an announced shift does not steal the outgoing scene\'s last line', () {
+    // The scan really prints:
+    //   (Shift begins into First Ball.)
+    //   MR. BENNET. Yes, I fear that as I have actually paid the visit…
+    //   (The ball begins. ELIZABETH sits to one side…)
+    // Mr. Bennet is finishing the Longbourn conversation DURING the shift,
+    // so rehearsing the Ball scene must not open with his line.
+    const text = '''
+MRS. BENNET. Now see what an excellent father you have girls.
+
+(Shift begins into First Ball.)
+
+MR. BENNET. Yes, I fear that as I have actually paid the visit we cannot escape the acquaintance now.
+
+(The ball begins. ELIZABETH sits to one side. DARCY and BINGLEY stand on the other.)
+
+BINGLEY. Come, Darcy, I hate to see you standing about by yourself.
+
+DARCY. You know how I detest it unless I am particularly acquainted with my partner.
+''';
+    final script = ScriptParser().parse(text, title: 'seam');
+    final ball = script.scenes.firstWhere((s) => s.location == 'Ball',
+        orElse: () => throw StateError('no Ball scene: '
+            '\${script.scenes.map((s) => s.sceneName).toList()}'));
+    final firstDialogue = script
+        .linesInScene(ball)
+        .firstWhere((l) => l.lineType == LineType.dialogue);
+    expect(firstDialogue.character, 'BINGLEY',
+        reason: 'the Ball scene must start at the arrival direction, not at '
+            'the announcement — got "\${firstDialogue.text}"');
+    checkPartition(script, 'seam');
+  });
 }
