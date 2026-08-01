@@ -143,26 +143,54 @@ class SupabaseService {
   /// RLS policy permits this; script lines, cast members, and recording
   /// metadata cascade via foreign keys. Throws if nothing was deleted
   /// (not the organizer, or already gone).
-  Future<void> deleteProductionEverywhere(String productionId) async {
+  /// Returns true when a cloud row was actually deleted, false when there
+  /// was no row visible to us at all (never pushed, or already gone) — the
+  /// caller may safely delete locally in both cases. Throws ONLY when the
+  /// cloud still holds a row it refused to delete, because deleting locally
+  /// then would boomerang on the next restore.
+  ///
+  /// The zero-rows case used to throw unconditionally, which made a
+  /// production that never reached the cloud impossible to delete at all
+  /// (field: "Cloud delete failed for 'test'" on every attempt).
+  Future<bool> deleteProductionEverywhere(String productionId) async {
     final deleted = await _client
         .from('productions')
         .delete()
         .eq('id', productionId)
         .select('id');
-    if (deleted.isEmpty) {
-      throw StateError(
-          'Cloud delete removed nothing — only the organizer can delete a '
-          'production (or it was already gone).');
+    if (deleted.isNotEmpty) {
+      _dlog.log(LogCategory.network,
+          'Deleted production $productionId from the cloud (cascade)');
+      return true;
     }
-    _dlog.log(LogCategory.network,
-        'Deleted production $productionId from the cloud (cascade)');
+    // Nothing deleted — is the row genuinely there (a refusal we must
+    // respect) or simply absent/invisible to us (safe to delete locally)?
+    final existing = await _client
+        .from('productions')
+        .select('id')
+        .eq('id', productionId)
+        .maybeSingle();
+    if (existing == null) {
+      _dlog.log(
+          LogCategory.network,
+          'No cloud row for production $productionId (never pushed or '
+          'already gone) — local delete is safe');
+      return false;
+    }
+    throw StateError(
+        'Cloud delete removed nothing — only the organizer can delete a '
+        'production.');
   }
 
   /// Leave a production: remove the signed-in user's own cast_members rows.
   /// The production itself is untouched. Throws if no membership row was
   /// removed (e.g. the "Members can leave" policy isn't deployed yet) so the
   /// caller doesn't do a local delete that boomerangs back on the next sync.
-  Future<void> leaveProduction(String productionId) async {
+  /// Returns true when a membership row was removed, false when there was
+  /// none to remove (already left, or never joined in the cloud) — safe to
+  /// drop locally either way. Throws only on a real error, so a
+  /// never-synced production can still be removed from the device.
+  Future<bool> leaveProduction(String productionId) async {
     final uid = currentUser?.id;
     if (uid == null) throw StateError('Not signed in');
     final deleted = await _client
@@ -172,10 +200,15 @@ class SupabaseService {
         .eq('user_id', uid)
         .select('id');
     if (deleted.isEmpty) {
-      throw StateError('Leave removed no membership rows');
+      _dlog.log(
+          LogCategory.network,
+          'No cloud membership row for production $productionId — local '
+          'removal is safe');
+      return false;
     }
     _dlog.log(LogCategory.network,
         'Left production $productionId (${deleted.length} membership row(s))');
+    return true;
   }
 
   // ── Voice Preset (cloud sync) ────────────────────────
