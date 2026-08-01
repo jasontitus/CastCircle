@@ -138,7 +138,7 @@ class ScriptParser {
 
     // Detect multi-character names (e.g., "ELIZABETH AND JANE") and split
     // them into individual characters
-    _detectMultiCharacterNames();
+    _detectMultiCharacterNames(rawText);
 
     _detectTitleHeaders(rawText, title);
 
@@ -786,9 +786,12 @@ class ScriptParser {
       if (nameCount > 2) continue; // Not a rare name — don't fuzzy match
       if (name.length < 4) continue;
 
-      // Scale threshold: short names (≤5 chars) need exact-minus-1,
-      // longer names allow up to 2 edits. Prevents MARY→DARCY.
-      final maxDist = name.length <= 5 ? 1 : 2;
+      // Scale threshold: short names (≤5 chars) need exact-minus-1, mid
+      // names allow 2 edits (prevents MARY→DARCY), and long names (≥8)
+      // allow 3 — "MKS BENNEE" → "MRS. BENNET" is 3 edits (field case from
+      // a scanned import). The rare-only / first-letter / merge-into-more-
+      // common guards all still apply.
+      final maxDist = name.length <= 5 ? 1 : (name.length >= 8 ? 3 : 2);
       String? best;
       var bestDist = maxDist + 1;
       var bestCount = -1;
@@ -909,7 +912,7 @@ class ScriptParser {
   /// Detect multi-character names in [knownCharacters] and populate
   /// [multiCharacterMap] with the split. Also adds the individual names
   /// to [knownCharacters] so they get proper voice/color assignments.
-  void _detectMultiCharacterNames() {
+  void _detectMultiCharacterNames(String rawText) {
     for (final name in knownCharacters.toList()) {
       final parts = _tryMultiCharacterSplit(name);
       if (parts != null && parts.length >= 2) {
@@ -918,8 +921,87 @@ class ScriptParser {
         for (final part in parts) {
           knownCharacters.add(part);
         }
+        continue;
+      }
+
+      // OCR sometimes eats a dual cue's separator outright
+      // ("ANNE/LADY CATHERINE." → "ANNEADYCATHERINE.", field case from a
+      // scanned import). Recover the split against the known cast — but
+      // only for RARE cues: a frequent cue spelled this way is a real
+      // name, not a corruption.
+      final glued = _tryGluedMultiCharacterSplit(name);
+      if (glued != null) {
+        final escaped = RegExp.escape(name);
+        final count = RegExp('^$escaped\\.\\s', multiLine: true)
+            .allMatches(rawText)
+            .length;
+        if (count <= 2) {
+          multiCharacterMap[name] = glued;
+          for (final part in glued) {
+            knownCharacters.add(part);
+          }
+        }
       }
     }
+  }
+
+  /// "ANNEADYCATHERINE" → [ANNE, LADY CATHERINE]: fires only when the glued
+  /// cue ENDS with a known long character name (≤1 edit after stripping
+  /// spaces/punctuation — the eaten separator often takes the next letter
+  /// with it) and the leftover prefix is a short plausible name.
+  List<String>? _tryGluedMultiCharacterSplit(String name) {
+    // Cue-corruption recovery only applies to all-caps cue names that are a
+    // single glued token: a separator eaten by OCR leaves NO space behind.
+    // Multi-word names ("A YOUNG MARQUIS", "ALL THE CADETS") are legitimate
+    // compositional cues — splitting those manufactured phantom characters
+    // across the Cyrano corpus.
+    if (name != name.toUpperCase()) return null;
+    if (name.contains(' ')) return null;
+    final s = name.replaceAll(RegExp(r'[^A-Z]'), '');
+    if (s.length < 10) return null;
+
+    for (final known in knownCharacters) {
+      if (known == name) continue;
+      final k = known.replaceAll(RegExp(r'[^A-Z]'), '');
+      // Suffix candidate must be long (multi-word names like LADY
+      // CATHERINE) and leave at least 3 chars of prefix.
+      if (k.length < 8 || k.length + 3 > s.length) continue;
+      // The suffix may have lost its leading letter to the eaten separator,
+      // so try both split points and keep the best: lowest edit distance,
+      // then a prefix that's already in the cast, then the longer prefix
+      // ("ANNE|[L]ADY CATHERINE" beats "ANN|[E]ADYCATHERINE" on a tie).
+      String? bestPrefix;
+      var bestDist = 2;
+      var bestPrefixKnown = false;
+      for (final win in [k.length, k.length - 1]) {
+        if (win + 3 > s.length) continue;
+        final suffix = s.substring(s.length - win);
+        final dist = _editDistance(suffix, k);
+        if (dist > 1) continue;
+        final prefix = s.substring(0, s.length - win);
+        if (prefix.length < 3 || _titlePrefixes.contains(prefix)) continue;
+        final prefixIsKnown = knownCharacters
+            .any((c) => c.replaceAll(RegExp(r'[^A-Z]'), '') == prefix);
+        final better = dist < bestDist ||
+            (dist == bestDist &&
+                ((prefixIsKnown && !bestPrefixKnown) ||
+                    (prefixIsKnown == bestPrefixKnown &&
+                        prefix.length > (bestPrefix?.length ?? 0))));
+        if (better) {
+          bestPrefix = prefix;
+          bestDist = dist;
+          bestPrefixKnown = prefixIsKnown;
+        }
+      }
+      if (bestPrefix != null) {
+        // Prefer the cast's spelling if the prefix is already a known name.
+        final prefixKnown = knownCharacters.firstWhere(
+            (c) => c.replaceAll(RegExp(r'[^A-Z]'), '') == bestPrefix,
+            orElse: () => bestPrefix!);
+        return [prefixKnown, known];
+      }
+    }
+    return null;
   }
 
   /// Try to split a character name into multiple individual characters.
