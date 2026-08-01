@@ -278,4 +278,67 @@ DARCY. And I about you.
       expect(elizLines.first.text, contains('wrong'));
     });
   });
+
+  group('OCR-garbled character cues (field cases, scanned P&P)', () {
+    late ScriptParser parser;
+
+    setUp(() {
+      parser = ScriptParser();
+    });
+
+    test('3-edit corruption of a long name merges into the real character',
+        () {
+      // ML Kit read one "MRS. BENNET." cue as "MKS BENNEE." — edit
+      // distance 3, which the old <=2 cap left as a phantom cast member.
+      const text = '''
+MRS. BENNET. My dear Mr. Bennet, have you heard?
+ELIZABETH. Heard what, Mama?
+MRS. BENNET. Netherfield Park is let at last!
+ELIZABETH. And who has taken it?
+MRS. BENNET. A young man of large fortune.
+MKS BENNEE. Oh, what a fine thing for our girls!
+''';
+      final result = parser.parse(text, title: 'PP');
+      expect(result.characters.map((c) => c.name), isNot(contains('MKS BENNEE')));
+      final mrsB = result.lines
+          .where((l) =>
+              l.lineType == LineType.dialogue && l.character == 'MRS. BENNET')
+          .toList();
+      expect(mrsB.any((l) => l.text.contains('fine thing')), true);
+    });
+
+    test('common long names within 3 edits never merge', () {
+      const text = '''
+MARIANNE. Sense must guide us.
+MARYANNE. And sensibility me.
+MARIANNE. We shall see.
+MARYANNE. Indeed we shall.
+MARIANNE. Then we agree.
+MARYANNE. For once.
+''';
+      final result = parser.parse(text, title: 'Safety');
+      final names = result.characters.map((c) => c.name).toSet();
+      expect(names, containsAll(['MARIANNE', 'MARYANNE']));
+    });
+
+    test('glued dual cue splits when OCR ate the separator', () {
+      // Vision read "ANNE/LADY CATHERINE." as "ANNEADYCATHERINE." (slash
+      // and the L gone) — recover the split from the known cast.
+      const text = '''
+LADY CATHERINE. Are the shades of Pemberley to be thus polluted?
+ELIZABETH. You have insulted me in every possible method.
+LADY CATHERINE. I take no leave of you.
+ELIZABETH. As you wish.
+ANNEADYCATHERINE. We are most seriously displeased!
+''';
+      final result = parser.parse(text, title: 'PP');
+      expect(result.characters.map((c) => c.name),
+          isNot(contains('ANNEADYCATHERINE')));
+      final glued = result.lines
+          .where((l) => l.text.contains('seriously displeased'))
+          .toList();
+      expect(glued.length, 1);
+      expect(glued.first.multiCharacters, containsAll(['ANNE', 'LADY CATHERINE']));
+    });
+  });
 }

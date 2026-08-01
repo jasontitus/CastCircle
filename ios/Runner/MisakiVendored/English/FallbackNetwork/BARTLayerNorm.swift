@@ -5,10 +5,10 @@ import MLXNN
 final class BARTLayerNorm : LayerNorm {
   public init(dimensions: Int, weight: MLXArray, bias: MLXArray) {
     super.init(dimensions: dimensions)
-    
-    for i in 0..<dimensions {
-      self.weight![i] = weight[i]
-      self.bias![i] = bias[i]
-    }
+
+    // Bulk tensor assignment — the previous per-element copy created two
+    // graph nodes per element per norm at model init.
+    self.weight!._updateInternal(weight)
+    self.bias!._updateInternal(bias)
   }
 }

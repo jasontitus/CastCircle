@@ -40,39 +40,6 @@ class KokoroMlxStubPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
 }
 
 /**
- * Stub plugin for MLX STT / Parakeet (com.lineguide/mlx_stt).
- *
- * Not available on Android. Returns graceful failures.
- */
-class MlxSttStubPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
-
-    private lateinit var channel: MethodChannel
-
-    override fun onAttachedToEngine(binding: FlutterPlugin.FlutterPluginBinding) {
-        channel = MethodChannel(binding.binaryMessenger, "com.lineguide/mlx_stt")
-        channel.setMethodCallHandler(this)
-    }
-
-    override fun onDetachedFromEngine(binding: FlutterPlugin.FlutterPluginBinding) {
-        channel.setMethodCallHandler(null)
-    }
-
-    override fun onMethodCall(call: MethodCall, result: MethodChannel.Result) {
-        when (call.method) {
-            "initialize" -> result.success(false)
-            "transcribe" -> result.error("UNAVAILABLE", "MLX STT not available on Android", null)
-            "transcribeStreaming" -> result.error("UNAVAILABLE", "MLX STT not available on Android", null)
-            "loadAdapter" -> result.success(false)
-            "unloadAdapter" -> result.success(null)
-            "isModelDownloaded" -> result.success(false)
-            "isReady" -> result.success(false)
-            "dispose" -> result.success(null)
-            else -> result.notImplemented()
-        }
-    }
-}
-
-/**
  * Stub plugin for media controls (com.lineguide/media_controls).
  *
  * Could be fully implemented with Android MediaSession later.

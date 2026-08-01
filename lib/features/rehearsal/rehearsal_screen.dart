@@ -116,6 +116,13 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
   // Debounce rapid taps to prevent stack overflow from reentrancy
   bool _jumpBackInProgress = false;
   bool _processingLine = false;
+  Timer? _deferredProcess;
+
+  /// One-time pre-roll at session start: synthesize the first few lines
+  /// BEFORE playback begins so the voice pipeline starts with a lead.
+  /// (done, total) chunk progress while waiting; null = not preparing.
+  bool _didPreRoll = false;
+  final ValueNotifier<(int, int)?> _preparingVoices = ValueNotifier(null);
 
   // Silence timeout — auto-advance when no new STT results for a while
   Timer? _silenceTimer;
@@ -545,6 +552,8 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
     // then persist the final position from the cached key/index (no `ref`).
     _progressSub?.close();
     _progressSaveTimer?.cancel();
+    _deferredProcess?.cancel();
+    _preparingVoices.dispose();
     _persistProgress(_lastLineIndex);
     WakelockPlus.disable(); // Allow screen to sleep again
     _dlog.stopMemoryMonitoring();
@@ -691,6 +700,38 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
               color: isMyLine
                   ? Theme.of(context).colorScheme.primary
                   : Colors.grey[600],
+            ),
+            // Session-start voice pre-roll progress (see _preRollVoices).
+            ValueListenableBuilder<(int, int)?>(
+              valueListenable: _preparingVoices,
+              builder: (context, prep, _) {
+                if (prep == null) return const SizedBox.shrink();
+                final (done, total) = prep;
+                return Container(
+                  width: double.infinity,
+                  color: Colors.grey[900],
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
+                  child: Row(
+                    children: [
+                      SizedBox(
+                        width: 16,
+                        height: 16,
+                        child: CircularProgressIndicator(
+                          strokeWidth: 2,
+                          value: total == 0 ? null : done / total,
+                          color: Theme.of(context).colorScheme.primary,
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      Text(
+                        'Preparing voices… $done of $total',
+                        style: TextStyle(color: Colors.grey[300], fontSize: 13),
+                      ),
+                    ],
+                  ),
+                );
+              },
             ),
             Expanded(
               child: isComplete
@@ -932,6 +973,15 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
     String? myCharacter,
     RehearsalState rehearsalState,
   ) {
+    // Hoisted out of itemBuilder: with cacheExtent forcing ~145 rows built,
+    // a per-row indexWhere over the cast was O(rows × characters) per frame.
+    final script = ref.read(currentScriptProvider);
+    final charIndexByName = <String, int>{
+      if (script != null)
+        for (var i = 0; i < script.characters.length; i++)
+          script.characters[i].name: i,
+    };
+
     final list = ListView.builder(
       controller: _scrollController,
       padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
@@ -953,8 +1003,7 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
         final colorLookupName = line.multiCharacters.isNotEmpty
             ? line.multiCharacters.first
             : line.character;
-        final charIdx =
-            script.characters.indexWhere((c) => c.name == colorLookupName);
+        final charIdx = charIndexByName[colorLookupName] ?? -1;
         final color = charIdx >= 0
             ? AppTheme.colorForCharacter(charIdx)
             : Colors.grey;
@@ -1555,7 +1604,19 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
 
   /// Process the current line: play audio/TTS for others, or start listening for me.
   void _processCurrentLine() {
-    if (_processingLine) return;
+    if (_processingLine) {
+      // A LEGITIMATE advance can land inside the debounce window — an
+      // all-stage-direction line's completion arrives while the previous
+      // processCurrentLine is still within its 50 ms guard. Dropping the
+      // call silently hung the rehearsal (field: stuck dead after
+      // "(To audience: ...)" until the actor gave up). Defer instead of
+      // dropping; duplicates coalesce into one deferred run.
+      _deferredProcess ??= Timer(const Duration(milliseconds: 60), () {
+        _deferredProcess = null;
+        if (mounted) _processCurrentLine();
+      });
+      return;
+    }
     // Delayed callbacks (inter-line pacing, advance, jump-back) land here after
     // the user may have tapped Pause — honor it instead of resuming playback.
     if (ref.read(rehearsalStateProvider) == RehearsalState.paused) {
@@ -1769,10 +1830,83 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
     _recognizedText.value = '';
   }
 
+  /// Session-start pre-roll: queue synthesis for the first few TTS lines and
+  /// WAIT (with visible progress) until they're ready before playback starts.
+  /// Fresh material synthesizes at ~realtime on Android, so starting blind
+  /// meant several seconds of unexplained dead air on the first line and no
+  /// pipeline lead. Cache hits resolve instantly, so a re-run skips the wait
+  /// (the banner only appears if readiness takes >300 ms).
+  Future<void> _preRollVoices(ScriptLine firstLine) async {
+    final script = ref.read(currentScriptProvider);
+    final scene = ref.read(selectedSceneProvider);
+    final myCharacter = ref.read(rehearsalCharacterProvider);
+    final mode = ref.read(rehearsalModeProvider);
+    if (script == null || scene == null) return;
+    final dialogueLines = _getRehearsalLines(script, scene, myCharacter);
+
+    // QUEUE the first line plus the next two TTS lines (primes the engine),
+    // but only WAIT for the first line plus the opening chunk of the second:
+    // that guarantees a gapless first transition without holding the start
+    // hostage to three full lines of ~realtime synthesis (field: "1 of 5"
+    // took noticeably longer than just starting used to).
+    _prefetchLineAudio(firstLine);
+    var idx = dialogueLines.indexOf(firstLine);
+    ScriptLine? secondLine;
+    for (var n = 0; n < 2 && idx >= 0; n++) {
+      final next = _nextOtherLine(dialogueLines, idx, myCharacter, mode);
+      if (next == null) break;
+      _prefetchLineAudio(next);
+      secondLine ??= next;
+      idx = dialogueLines.indexOf(next);
+    }
+
+    final futures = <Future<String?>>[
+      ...?_ttsPrefetch[firstLine.id],
+      if (secondLine != null &&
+          (_ttsPrefetch[secondLine.id]?.isNotEmpty ?? false))
+        _ttsPrefetch[secondLine.id]!.first,
+    ];
+    if (futures.isEmpty) return;
+
+    final total = futures.length;
+    var done = 0;
+    var finished = false;
+    // Only surface the banner if readiness actually takes a moment.
+    final showTimer = Timer(const Duration(milliseconds: 300), () {
+      if (!finished && mounted) _preparingVoices.value = (done, total);
+    });
+    for (final f in futures) {
+      f.whenComplete(() {
+        done++;
+        if (!finished && mounted && _preparingVoices.value != null) {
+          _preparingVoices.value = (done, total);
+        }
+      }).ignore();
+    }
+    try {
+      await Future.wait(futures.map((f) => f.catchError((_) => null)))
+          .timeout(const Duration(seconds: 30));
+    } catch (_) {
+      // Timeout or failure — start anyway; speak() re-synthesizes on demand.
+    }
+    finished = true;
+    showTimer.cancel();
+    if (mounted) _preparingVoices.value = null;
+  }
+
   Future<void> _playOtherLine(ScriptLine line) async {
     ref.read(rehearsalStateProvider.notifier).state =
         RehearsalState.playingOther;
     _clearMatchFeedback();
+
+    if (!_didPreRoll) {
+      _didPreRoll = true;
+      await _preRollVoices(line);
+      if (!mounted ||
+          ref.read(rehearsalStateProvider) != RehearsalState.playingOther) {
+        return; // closed or state changed while preparing
+      }
+    }
 
     _maybeWarnOrphanedRecordings();
 
@@ -1879,14 +2013,19 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
     if (script == null || scene == null) return;
     final dialogueLines = _getRehearsalLines(script, scene, myCharacter);
     final currentIdx = ref.read(currentLineIndexProvider);
-    final next = _nextOtherLine(dialogueLines, currentIdx, myCharacter, mode);
-    _prefetchLineAudio(next);
-    if (next != null) {
+    // Read-through is wall-to-wall TTS and on-device synthesis runs near
+    // realtime (RTF ~0.9 on Android), so the pipe needs more lookahead to
+    // build a lead during long lines; with user lines interleaved a deep
+    // queue would mostly get cancelled, so keep it shallow there.
+    final depth = mode == RehearsalMode.readthrough ? 4 : 2;
+    var idx = currentIdx;
+    for (var n = 0; n < depth; n++) {
+      final next = _nextOtherLine(dialogueLines, idx, myCharacter, mode);
+      if (next == null) break;
+      _prefetchLineAudio(next);
       final nextIdx = dialogueLines.indexOf(next);
-      if (nextIdx >= 0) {
-        _prefetchLineAudio(
-            _nextOtherLine(dialogueLines, nextIdx, myCharacter, mode));
-      }
+      if (nextIdx < 0) break;
+      idx = nextIdx;
     }
   }
 

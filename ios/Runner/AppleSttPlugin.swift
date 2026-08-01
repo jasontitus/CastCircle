@@ -6,6 +6,7 @@ import UIKit
 #endif
 import Speech
 import AVFoundation
+import Accelerate
 
 /// Native Apple SFSpeechRecognizer plugin with contextualStrings support.
 /// Provides real-time streaming STT with vocabulary hinting.
@@ -483,7 +484,9 @@ class AppleSttPlugin: NSObject {
         let sampleRate = 44100.0 // approximate; actual may vary
         let windowSamples = Int(sampleRate * 0.05) // 50ms
         var windowRMS: [Float] = []
-        var sampleBuffer: [Int16] = []
+        // Partial window carried across sample-buffer boundaries.
+        var carry: [Float] = []
+        carry.reserveCapacity(windowSamples)
 
         while let buffer = output.copyNextSampleBuffer() {
             guard let blockBuffer = CMSampleBufferGetDataBuffer(buffer) else { continue }
@@ -495,14 +498,38 @@ class AppleSttPlugin: NSObject {
 
             let int16Ptr = ptr.withMemoryRebound(to: Int16.self, capacity: length / 2) { $0 }
             let count = length / 2
+            if count == 0 { continue }
 
-            for i in 0..<count {
-                sampleBuffer.append(int16Ptr[i])
-                if sampleBuffer.count >= windowSamples {
-                    let rms = sqrt(sampleBuffer.reduce(Float(0)) { $0 + Float($1) * Float($1) / Float(windowSamples) })
-                    windowRMS.append(rms)
-                    sampleBuffer.removeAll(keepingCapacity: true)
+            var floats = [Float](repeating: 0, count: count)
+            vDSP_vflt16(int16Ptr, 1, &floats, 1, vDSP_Length(count))
+
+            var start = 0
+            if !carry.isEmpty {
+                let need = windowSamples - carry.count
+                if count < need {
+                    carry.append(contentsOf: floats)
+                    continue
                 }
+                carry.append(contentsOf: floats[0..<need])
+                var rms: Float = 0
+                vDSP_rmsqv(carry, 1, &rms, vDSP_Length(windowSamples))
+                windowRMS.append(rms)
+                carry.removeAll(keepingCapacity: true)
+                start = need
+            }
+
+            floats.withUnsafeBufferPointer { buf in
+                var offset = start
+                while offset + windowSamples <= count {
+                    var rms: Float = 0
+                    vDSP_rmsqv(buf.baseAddress! + offset, 1, &rms, vDSP_Length(windowSamples))
+                    windowRMS.append(rms)
+                    offset += windowSamples
+                }
+                start = offset
+            }
+            if start < count {
+                carry.append(contentsOf: floats[start...])
             }
         }
 

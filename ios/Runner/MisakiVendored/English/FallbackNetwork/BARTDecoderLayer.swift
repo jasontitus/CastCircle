@@ -37,6 +37,37 @@ nonisolated final class BARTDecoderLayer: Module {
     super.init()
   }
     
+    /// Incremental decode step: self-attention runs the newest position
+    /// against a running K/V cache; cross-attention reuses K/V projected
+    /// once from the encoder output. With the shipped single-decoder-layer
+    /// configs this is exactly equivalent to re-running callAsFunction over
+    /// the full prefix and reading the last position (layer-input K/V come
+    /// straight from the embeddings, so cached and recomputed values match).
+    func step(
+      _ x: MLXArray,
+      crossK: MLXArray,
+      crossV: MLXArray,
+      selfCache: inout (k: MLXArray, v: MLXArray)?
+    ) -> MLXArray {
+      var (k, v) = selfAttn.projectKV(x)
+      if let cache = selfCache {
+        k = concatenated([cache.k, k], axis: 2)
+        v = concatenated([cache.v, v], axis: 2)
+      }
+      selfCache = (k, v)
+
+      let attnOutput = selfAttn.step(x, k: k, v: v)
+      var output = selfAttnNorm(x + attnOutput)
+
+      let crossOutput = crossAttn.step(output, k: crossK, v: crossV)
+      output = crossAttnNorm(output + crossOutput)
+
+      let ffnOutput = ffn(output)
+      output = ffnNorm(output + ffnOutput)
+
+      return output
+    }
+
     func callAsFunction(_ x: MLXArray, encoderOutput: MLXArray, selfMask: MLXArray? = nil, crossMask: MLXArray? = nil) -> MLXArray {
       // Self-attention with residual
       let attnOutput = selfAttn(x, mask: selfMask)

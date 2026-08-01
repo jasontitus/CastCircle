@@ -64,12 +64,21 @@ Future<bool?> showCloudSyncDialog({
   required List<ScriptLine> cloudLines,
 }) {
   final diffs = diffScriptLines(localLines, cloudLines);
-  final added = diffs.where((d) => d.type == DiffType.added).length;
-  final removed = diffs.where((d) => d.type == DiffType.removed).length;
-  final changed = diffs.where((d) => d.type == DiffType.changed).length;
-  final unchanged = diffs.where((d) => d.type == DiffType.unchanged).length;
-  final changedDiffs =
-      diffs.where((d) => d.type != DiffType.unchanged).toList();
+  var added = 0, removed = 0, changed = 0, unchanged = 0;
+  final changedDiffs = <LineDiff>[];
+  for (final d in diffs) {
+    switch (d.type) {
+      case DiffType.added:
+        added++;
+      case DiffType.removed:
+        removed++;
+      case DiffType.changed:
+        changed++;
+      case DiffType.unchanged:
+        unchanged++;
+    }
+    if (d.type != DiffType.unchanged) changedDiffs.add(d);
+  }
 
   return showDialog<bool>(
     context: context,

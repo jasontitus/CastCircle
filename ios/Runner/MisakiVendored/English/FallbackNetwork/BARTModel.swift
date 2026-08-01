@@ -14,7 +14,11 @@ nonisolated final class BARTModel: Module {
   let decoderNorm: LayerNorm
   let lmHead: Linear
   let logitBias: MLXArray
-    
+
+  /// Position ids 2..<(maxPositions+2), built once — encode/decode slice it
+  /// instead of rebuilding an arange per call.
+  let positionIds: MLXArray
+
   init(config: BARTConfig, weights: [String: MLXArray]) {
     self.config = config
     
@@ -63,12 +67,15 @@ nonisolated final class BARTModel: Module {
     // This is not used
     self.logitBias = weights["final_logits_bias"]!
 
+    self.positionIds =
+      (MLXArray(0..<config.maxPositionEmbeddings) + 2).reshaped([1, config.maxPositionEmbeddings])
+
     super.init()
   }
     
   func encode(_ inputIds: MLXArray, mask: MLXArray? = nil) -> MLXArray {
     let seqLen = inputIds.shape[1]
-    let positions = MLXArray(0..<seqLen).reshaped([1, seqLen]) + 2
+    let positions = positionIds[0..., 0..<seqLen]
         
     // Embeddings
     var hidden = sharedEmbedding(inputIds)
@@ -92,8 +99,8 @@ nonisolated final class BARTModel: Module {
     crossMask: MLXArray? = nil) -> MLXArray
   {
     let seqLen = inputIds.shape[1]
-    let positions = MLXArray(0..<seqLen).reshaped([1, seqLen]) + 2
-    
+    let positions = positionIds[0..., 0..<seqLen]
+
     // Embeddings
     var hidden = sharedEmbedding(inputIds)
     let embedPositions = decoderPositionalEmbedding(positions)
@@ -109,42 +116,64 @@ nonisolated final class BARTModel: Module {
     return lmHead(hidden) + logitBias
   }
     
+  /// Greedy decode with KV caching: each step embeds only the newest token,
+  /// runs it against per-layer self-attention caches and cross-attention K/V
+  /// projected once from the encoder output, and projects only that single
+  /// position through the LM head. The previous implementation re-ran the
+  /// decoder over the entire growing prefix and projected every position
+  /// each step — O(n^2) work per word.
   func generate(inputIds: MLXArray, maxLength: Int = 50, temperature: Float = 1.0) -> MLXArray {
     // Encode input
     let encoderOutput = encode(inputIds)
-    
+
+    // Cross-attention K/V depend only on the encoder output — project once.
+    let crossKV = decoderLayers.map { $0.crossAttn.projectKV(encoderOutput) }
+    var selfCaches = [(k: MLXArray, v: MLXArray)?](repeating: nil, count: decoderLayers.count)
+
     // Start with BOS token
-    var decoderInput = MLXArray([config.bosTokenId]).reshaped([1, 1])
+    var nextToken = Int32(config.bosTokenId)
     var generatedTokens: [Int32] = []
-        
+
     for i in 0..<maxLength {
       if i == maxLength - 1 {
         generatedTokens.append(Int32(config.eosTokenId))
         break
       }
-      
-      // Decode next token
-      let logits = decode(decoderInput, encoderOutput: encoderOutput)
-      let nextTokenLogits = logits[0, logits.shape[1] - 1]
-            
+
+      // Embed only the newest token; earlier positions live in the caches.
+      // Token generated at step i sits at sequence index i → position i+2.
+      let tokenArray = MLXArray([nextToken]).reshaped([1, 1])
+      let positions = positionIds[0..., i..<(i + 1)]
+      var hidden = sharedEmbedding(tokenArray) + decoderPositionalEmbedding(positions)
+      hidden = decoderNorm(hidden)
+
+      for (index, layer) in decoderLayers.enumerated() {
+        hidden = layer.step(
+          hidden,
+          crossK: crossKV[index].k,
+          crossV: crossKV[index].v,
+          selfCache: &selfCaches[index])
+      }
+
+      // LM head over the single newest position (was: every position).
+      let logits = lmHead(hidden) + logitBias
+      let nextTokenLogits = logits[0, 0]
+
       // Apply temperature
       let scaledLogits = nextTokenLogits / temperature
-      
+
       // Sample next token, take the max probability value
-      let nextToken = scaledLogits.argMax().item(Int32.self)
-      
+      let next = scaledLogits.argMax().item(Int32.self)
+
       // Stop if EOS token
-      if nextToken == config.eosTokenId {
+      if next == config.eosTokenId {
           break
       }
-      
-      generatedTokens.append(nextToken)
-      
-      // Append to decoder input
-      let newToken = MLXArray([nextToken]).reshaped([1, 1])
-      decoderInput = concatenated([decoderInput, newToken], axis: 1)
+
+      generatedTokens.append(next)
+      nextToken = next
     }
-        
+
     return MLXArray(generatedTokens)
   }
 }

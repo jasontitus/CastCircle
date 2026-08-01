@@ -61,14 +61,19 @@ final understudyFallbackProvider = StateProvider<bool>((ref) => true);
 /// Rehearsal script font size (adjustable via +/- in rehearsal top bar).
 final rehearsalFontSizeProvider = StateProvider<double>((ref) => 18.0);
 
-Future<String> _getVersionString() async {
-  try {
-    final info = await PackageInfo.fromPlatform();
-    return 'Version ${info.version} (${info.buildNumber})';
-  } catch (_) {
-    return 'Version ${AppConstants.appVersion}';
-  }
-}
+// Memoized: the version can't change while the app runs, and a fresh
+// PackageInfo future per rebuild made the FutureBuilder flicker through its
+// loading state on every settings rebuild.
+Future<String>? _versionFuture;
+
+Future<String> _getVersionString() => _versionFuture ??= () async {
+      try {
+        final info = await PackageInfo.fromPlatform();
+        return 'Version ${info.version} (${info.buildNumber})';
+      } catch (_) {
+        return 'Version ${AppConstants.appVersion}';
+      }
+    }();
 
 class SettingsScreen extends ConsumerWidget {
   const SettingsScreen({super.key});
@@ -267,15 +272,6 @@ class SettingsScreen extends ConsumerWidget {
               subtitle: const Text('Test TTS engine and view diagnostics'),
               trailing: const Icon(Icons.chevron_right),
               onTap: () => context.push('/kokoro-debug'),
-            ),
-            ListTile(
-              leading: const Icon(Icons.mic),
-              title: const Text('STT Debug'),
-              subtitle: const Text(
-                'Test speech recognition with vocabulary hints',
-              ),
-              trailing: const Icon(Icons.chevron_right),
-              onTap: () => context.push('/parakeet-debug'),
             ),
             ListTile(
               leading: const Icon(Icons.terminal),

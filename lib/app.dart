@@ -30,7 +30,6 @@ import 'features/onboarding/model_setup_screen.dart';
 import 'features/settings/ai_models_screen.dart';
 import 'features/settings/settings_screen.dart';
 import 'features/settings/kokoro_debug_screen.dart';
-import 'features/settings/parakeet_debug_screen.dart';
 import 'features/settings/debug_log_screen.dart';
 import 'providers/production_providers.dart';
 
@@ -179,11 +178,6 @@ GoRouter _buildRouter(Ref ref) => GoRouter(
       name: '/kokoro-debug',
       path: '/kokoro-debug',
       builder: (context, state) => const KokoroDebugScreen(),
-    ),
-    GoRoute(
-      name: '/parakeet-debug',
-      path: '/parakeet-debug',
-      builder: (context, state) => const ParakeetDebugScreen(),
     ),
     GoRoute(
       name: '/debug-log',

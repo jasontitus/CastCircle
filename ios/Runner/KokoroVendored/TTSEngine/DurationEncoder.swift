@@ -81,16 +81,25 @@ final class DurationEncoder {
   func callAsFunction(_ x: MLXArray, style: MLXArray, textLengths _: MLXArray, m: MLXArray) -> MLXArray {
     // Step 1: Transpose to [seq_len, batch, dModel] for processing
     var x = x.transposed(2, 0, 1)
-    
+
     // Step 2: Broadcast style to match sequence length [seq_len, batch, styDim]
     let s = MLX.broadcast(style, to: [x.shape[0], x.shape[1], style.shape[style.shape.count - 1]])
-    
+
+    // Style and masks in the layouts the loop needs, computed once (these
+    // were re-derived inside the loop on every AdaLN block).
+    let sChan = s.transposed(1, 2, 0)                                  // [batch, styDim, seq]
+    let maskSeqMajor = m.expandedDimensions(axes: [-1]).transposed(1, 0, 2)
+    let maskChanMajor = m.expandedDimensions(axes: [-1]).transposed(0, 2, 1)
+    let seqLen = m.shape[m.shape.count - 1]
+
     // Step 3: Concatenate features with style [seq_len, batch, dModel + styDim]
     x = MLX.concatenated([x, s], axis: -1)
-    
+
     // Step 4: Apply mask to zero out padding positions
-    x = MLX.where(m.expandedDimensions(axes: [-1]).transposed(1, 0, 2), MLXArray.zeros(like: x), x)
-    
+    // (zeros(like:) rather than a 0.0 scalar: the scalar promotes bf16
+    // activations to float32 and changes the numerics.)
+    x = MLX.where(maskSeqMajor, MLXArray.zeros(like: x), x)
+
     // Step 5: Transpose to [batch, dModel + styDim, seq_len] for layer processing
     x = x.transposed(1, 2, 0)
 
@@ -101,25 +110,30 @@ final class DurationEncoder {
         // Apply AdaLN with style conditioning
         // Transpose to [batch, seq_len, features] for AdaLN
         x = adaLayerNorm(x.transposed(0, 2, 1), style).transposed(0, 2, 1)
-        
+
         // Re-concatenate with style for next layer
-        x = MLX.concatenated([x, s.transposed(1, 2, 0)], axis: 1)
-        
+        x = MLX.concatenated([x, sChan], axis: 1)
+
         // Reapply mask to maintain padding
-        x = MLX.where(m.expandedDimensions(axes: [-1]).transposed(0, 2, 1), MLXArray.zeros(like: x), x)
-        
+        x = MLX.where(maskChanMajor, MLXArray.zeros(like: x), x)
+
       // Handle LSTM blocks
       } else if let lstm = block as? LSTM {
         // Transpose to [batch, seq_len, features] for LSTM and extract first batch
         x = x.transposed(0, 2, 1)[0]
-        
+
         // Process through bidirectional LSTM
         let (lstmOutput, _) = lstm(x)
-        
+
         // Transpose back to [batch, features, seq_len]
         x = lstmOutput.transposed(0, 2, 1)
-        
-        // Pad output to match original sequence length if needed
+
+        // Pad output to match original sequence length if needed.
+        // Do NOT "optimize" this away: the LSTM preserves length so it looks
+        // like a dead copy, but the scatter's exact graph shape affects MLX
+        // kernel fusion downstream — removing it (or swapping in contiguous()
+        // or an asType cast) perturbs the audio at the 1e-3 level. Verified
+        // bit-exact only in this form (tools/mlx-harness).
         let xPad = MLXArray.zeros([x.shape[0], x.shape[1], m.shape[m.shape.count - 1]])
         xPad[0 ..< x.shape[0], 0 ..< x.shape[1], 0 ..< x.shape[2]] = x
         x = xPad

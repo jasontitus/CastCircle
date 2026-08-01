@@ -1,9 +1,11 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:ffi';
 import 'dart:io';
 import 'dart:isolate';
 import 'dart:typed_data';
 
+import 'package:crypto/crypto.dart' as crypto;
 import 'package:ffi/ffi.dart' as pkg_ffi;
 import 'package:path_provider/path_provider.dart';
 import 'package:sherpa_onnx/sherpa_onnx.dart' as sherpa;
@@ -168,9 +170,22 @@ class KokoroOnnxService {
   /// generation so it runs next. Prefetches are non-urgent: they queue behind
   /// everything and are the natural casualty of an urgent arrival.
   Future<String?> synthesize(String text,
-      {required String voice, double speed = 1.0, bool urgent = false}) {
+      {required String voice, double speed = 1.0, bool urgent = false}) async {
+    // Disk cache first: actors drill the same scene repeatedly, and
+    // synthesis runs near realtime (RTF ~0.9) — a replayed line from cache
+    // is instant instead of seconds. Keyed by everything that shapes the
+    // audio. Works even while the engine is still loading.
+    final cachePath = await _cachePathFor(text, voice, speed);
+    if (cachePath != null && File(cachePath).existsSync()) {
+      try {
+        // Touch so pruning is LRU.
+        File(cachePath).setLastModifiedSync(DateTime.now());
+      } catch (_) {}
+      return cachePath;
+    }
+
     if (_toIsolate == null && _starting == null) {
-      return Future.value(null);
+      return null;
     }
     final req = _Req(
       seq: _nextSeq++,
@@ -189,11 +204,81 @@ class KokoroOnnxService {
         return q.urgent;
       });
       _cancelBelow.value = req.seq;
+      // FRONT of the queue: the actor is waiting on this line RIGHT NOW.
+      // Appending put it behind stale prefetches (each a queue round-trip,
+      // and a session restart piles several up — field: 11.5 s before the
+      // first line of a new read-through started playing).
+      _queue.insert(0, req);
+    } else {
+      _queue.add(req);
     }
-
-    _queue.add(req);
     _pump();
-    return req.completer.future;
+
+    final path = await req.completer.future;
+    if (path == null || cachePath == null) return path;
+    // Adopt the fresh WAV into the cache (same filesystem — cheap rename).
+    try {
+      File(path).renameSync(cachePath);
+      return cachePath;
+    } catch (_) {
+      return path;
+    }
+  }
+
+  // ── Synthesis cache ────────────────────────────────────
+
+  static String? _cacheDirPath;
+  static bool _pruneScheduled = false;
+
+  Future<String?> _cachePathFor(String text, String voice, double speed) async {
+    try {
+      var dir = _cacheDirPath;
+      if (dir == null) {
+        dir = '${(await getTemporaryDirectory()).path}/kokoro_cache';
+        Directory(dir).createSync(recursive: true);
+        _cacheDirPath = dir;
+        _schedulePrune(dir);
+      }
+      final key =
+          crypto.sha1.convert(utf8.encode('$text|$voice|$speed')).toString();
+      return '$dir/$key.wav';
+    } catch (_) {
+      return null; // cacheless operation is always safe
+    }
+  }
+
+  /// LRU-prune the cache to ~150 MB, once per app run. WAVs are ~48 KB/s of
+  /// audio, so this keeps roughly an hour of recently used lines.
+  void _schedulePrune(String dir) {
+    if (_pruneScheduled) return;
+    _pruneScheduled = true;
+    Future(() {
+      try {
+        const maxBytes = 150 * 1024 * 1024;
+        const lowWater = 100 * 1024 * 1024;
+        final entries = <(File, DateTime, int)>[];
+        var total = 0;
+        for (final e in Directory(dir).listSync()) {
+          if (e is! File) continue;
+          final stat = e.statSync();
+          entries.add((e, stat.modified, stat.size));
+          total += stat.size;
+        }
+        if (total <= maxBytes) return;
+        entries.sort((a, b) => a.$2.compareTo(b.$2)); // oldest first
+        var removed = 0;
+        for (final (file, _, size) in entries) {
+          if (total <= lowWater) break;
+          try {
+            file.deleteSync();
+            total -= size;
+            removed++;
+          } catch (_) {}
+        }
+        DebugLogService.instance.log(LogCategory.tts,
+            'KokoroOnnx: pruned $removed cached WAVs (cache was over 150MB)');
+      } catch (_) {}
+    });
   }
 
   /// Send the next queued request if the isolate is idle.
@@ -312,15 +397,28 @@ Future<void> _isolateMain(_IsolateArgs args) async {
       continue;
     }
     try {
+      // Track whether the abort actually TRUNCATED generation: the callback
+      // polls only between sherpa's internal chunks (~a sentence), so a
+      // cancel can land after the last poll — the audio is then complete
+      // and worth keeping even though the request is stale.
+      var abortedMidGeneration = false;
       final audio = tts.generateWithCallback(
         text: msg['text'] as String,
         sid: msg['sid'] as int,
         speed: (msg['speed'] as num).toDouble(),
         // Polled between generation chunks: 0 aborts. This is how a
         // superseded line stops burning CPU mid-synthesis.
-        callback: (_) => seq < cancelBelow.value ? 0 : 1,
+        callback: (_) {
+          if (seq < cancelBelow.value) {
+            abortedMidGeneration = true;
+            return 0;
+          }
+          return 1;
+        },
       );
-      if (seq < cancelBelow.value) {
+      if (abortedMidGeneration) {
+        // Truncated — never let a half-synthesized line escape (it would be
+        // adopted into the disk cache and play cut off forever).
         args.sendPort.send({'seq': seq, 'aborted': true});
         continue;
       }
@@ -328,6 +426,10 @@ Future<void> _isolateMain(_IsolateArgs args) async {
         args.sendPort.send({'seq': seq, 'error': 'empty audio'});
         continue;
       }
+      // NOTE: a stale-but-COMPLETE generation falls through on purpose: the
+      // service adopts finished WAVs into the disk cache, so a "wasted"
+      // prefetch from a closed session becomes the next session's instant
+      // cache hit instead of discarded work.
       // Unique per call — prefetched paths stay valid while later lines
       // synthesize.
       final path = '${args.tmpDir}/kokoro_onnx_${fileSeq++}.wav';

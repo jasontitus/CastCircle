@@ -15,7 +15,6 @@ class MainActivity : FlutterActivity() {
 
         // Stub plugins for iOS-only features (graceful degradation)
         flutterEngine.plugins.add(KokoroMlxStubPlugin())
-        flutterEngine.plugins.add(MlxSttStubPlugin())
         flutterEngine.plugins.add(MediaControlStubPlugin())
         flutterEngine.plugins.add(BackgroundDownloadStubPlugin())
     }

@@ -36,7 +36,10 @@ struct EnglishNum2Word {
   ]
   
   private var cards: [Int: String] = [:]
-  
+  // cards sorted largest-first, computed once (toCardinal recurses; sorting
+  // inside it re-sorted the table on every recursion level).
+  private var cardsDescending: [(Int, String)] = []
+
   init() {
     // Initialize high number words
     var cards: [Int: String] = [:]
@@ -52,6 +55,7 @@ struct EnglishNum2Word {
       }      
     }
     self.cards = cards
+    self.cardsDescending = cards.sorted { $0.key > $1.key }.map { ($0.key, $0.value) }
   }
   
   private func merge(_ lPair: (String, Int), _ rPair: (String, Int)) -> (String, Int) {
@@ -137,8 +141,8 @@ struct EnglishNum2Word {
       }
     }
     
-    // Handle thousands and higher
-    for (value, word) in midNumWords.sorted(by: { $0.0 > $1.0 }) {
+    // Handle thousands and higher (midNumWords is declared largest-first)
+    for (value, word) in midNumWords {
       if number >= value {
         let quotient = number / value
         let remainder = number % value
@@ -152,7 +156,7 @@ struct EnglishNum2Word {
     }
     
     // Handle very large numbers using cards
-    for (value, word) in cards.sorted(by: { $0.key > $1.key }) {
+    for (value, word) in cardsDescending {
       if number >= value {
         let quotient = number / value
         let remainder = number % value

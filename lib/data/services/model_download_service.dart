@@ -211,30 +211,6 @@ class ModelDownloadService {
       filename: 'tokens.txt',
       subdir: 'live_asr',
     ),
-    AiModel(
-      id: 'parakeet_model',
-      name: 'Parakeet STT Model',
-      description: 'MLX neural speech-to-text (0.6B params)',
-      sizeLabel: '~2.5 GB',
-      // HuggingFace `main` — a repo update changes the bytes, so size is a
-      // truncation floor only (see [fileProblem]).
-      sizeBytes: 2508288736,
-      downloadUrl:
-          'https://huggingface.co/mlx-community/parakeet-tdt-0.6b-v3/resolve/main/model.safetensors',
-      filename: 'model.safetensors',
-      subdir: 'parakeet_stt',
-    ),
-    AiModel(
-      id: 'parakeet_config',
-      name: 'Parakeet STT Config',
-      description: 'Model configuration and vocabulary',
-      sizeLabel: '~244 KB',
-      sizeBytes: 244093,
-      downloadUrl:
-          'https://huggingface.co/mlx-community/parakeet-tdt-0.6b-v3/resolve/main/config.json',
-      filename: 'config.json',
-      subdir: 'parakeet_stt',
-    ),
   ];
 
   final Map<String, ModelDownloadState> _states = {};
@@ -392,7 +368,28 @@ class ModelDownloadService {
     }
     // Clean up any leftover .tmp files from failed downloads
     await _cleanupTmpFiles();
+    await _cleanupRetiredModels();
     _notify();
+  }
+
+  /// Delete model directories for features that no longer exist. Users who
+  /// downloaded the retired Parakeet STT model are carrying ~2.5 GB of dead
+  /// weight in Documents that survives app updates.
+  Future<void> _cleanupRetiredModels() async {
+    for (final subdir in const ['parakeet_stt']) {
+      try {
+        final appDir = await getApplicationDocumentsDirectory();
+        final dir = Directory(p.join(appDir.path, 'models', subdir));
+        if (dir.existsSync()) {
+          await dir.delete(recursive: true);
+          _dlog.log(LogCategory.general,
+              'ModelDownload: deleted retired model dir $subdir');
+        }
+      } catch (e) {
+        _dlog.log(LogCategory.error,
+            'ModelDownload: failed to delete retired model dir $subdir: $e');
+      }
+    }
   }
 
   /// Post-download integrity check. Size first (cheap), then SHA-256 when the
@@ -438,9 +435,6 @@ class ModelDownloadService {
   /// Whether all Kokoro files are downloaded AND usable.
   Future<bool> isKokoroReady() => _groupReady('kokoro_mlx', 'Kokoro');
 
-  /// Whether all Parakeet STT files are downloaded AND usable.
-  Future<bool> isParakeetReady() => _groupReady('parakeet_stt', 'Parakeet');
-
   /// Whether all live-matching ASR files are downloaded AND usable.
   Future<bool> isLiveAsrReady() => _groupReady('live_asr', 'Live ASR');
 
@@ -453,11 +447,17 @@ class ModelDownloadService {
 
   /// Download every live-matching ASR file that isn't already good.
   Future<void> downloadLiveAsr() async {
+    // Concurrent within the group: the Dart-fallback path (Android) blocks
+    // per file, so sequentially the small decoder/joiner/tokens files queued
+    // behind the big encoder. Progress is bytes-weighted across per-file
+    // states, so the setup bar stays honest either way.
+    final needed = <AiModel>[];
     for (final m in availableModels) {
       if (m.subdir != 'live_asr') continue;
       if (fileProblem(m, File(await _filePath(m))) == null) continue;
-      await download(m);
+      needed.add(m);
     }
+    await Future.wait(needed.map(download));
   }
 
   /// Shared readiness check over every model in [subdir] — same [fileProblem]
@@ -477,13 +477,6 @@ class ModelDownloadService {
       return false;
     }
     return true;
-  }
-
-  /// Get the path to the Parakeet model directory, or null if not downloaded.
-  Future<String?> getParakeetModelDir() async {
-    if (!await isParakeetReady()) return null;
-    final appDir = await getApplicationDocumentsDirectory();
-    return p.join(appDir.path, 'models', 'parakeet_stt');
   }
 
   /// Download a model file using native iOS background URLSession.
@@ -571,8 +564,8 @@ class ModelDownloadService {
 
   /// Whether [model] may use the Dart fallback when the native downloader is
   /// unavailable (i.e. on Android). Only the ASR files: letting the fallback
-  /// serve everything would turn the Kokoro/Parakeet Settings tiles on
-  /// Android into multi-GB downloads of MLX models Android can't run.
+  /// serve everything would turn the Kokoro Settings tiles on Android into
+  /// multi-GB downloads of MLX models Android can't run.
   static bool _dartDownloadable(AiModel model) => model.subdir == 'live_asr';
 
   /// Dart-side streamed download for platforms without a native downloader
@@ -685,12 +678,18 @@ class ModelDownloadService {
   }
 
   /// Full path where a model file will be saved.
+  // Cached once — the documents dir never changes during a run, and
+  // resolving it is a platform-channel round trip that used to repeat per
+  // model on every status refresh.
+  String? _docsPath;
+
   Future<String> _filePath(AiModel model) async {
-    final appDir = await getApplicationDocumentsDirectory();
+    final docs =
+        _docsPath ??= (await getApplicationDocumentsDirectory()).path;
     if (model.subdir.isNotEmpty) {
-      return p.join(appDir.path, 'models', model.subdir, model.filename);
+      return p.join(docs, 'models', model.subdir, model.filename);
     }
-    return p.join(appDir.path, 'models', model.filename);
+    return p.join(docs, 'models', model.filename);
   }
 
   Future<Directory> _kokoroDir() async {

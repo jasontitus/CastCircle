@@ -25,6 +25,32 @@ nonisolated final class MultiHeadAttention: Module {
       super.init()
     }
     
+    /// Project key/value once for reuse across incremental decode steps.
+    /// Cross-attention K/V depend only on the encoder output; self-attention
+    /// K/V for a new token are appended to a running cache.
+    func projectKV(_ kv: MLXArray) -> (k: MLXArray, v: MLXArray) {
+      let batchSize = kv.shape[0]
+      let k = kProj(kv).reshaped([batchSize, -1, numHeads, headDim]).transposed(0, 2, 1, 3)
+      let v = vProj(kv).reshaped([batchSize, -1, numHeads, headDim]).transposed(0, 2, 1, 3)
+      return (k, v)
+    }
+
+    /// Attention for the newest position only, against precomputed K/V.
+    /// Identical math to callAsFunction with the same K/V rows.
+    func step(_ query: MLXArray, k: MLXArray, v: MLXArray) -> MLXArray {
+      let batchSize = query.shape[0]
+      let seqLen = query.shape[1]
+      let q = qProj(query).reshaped([batchSize, seqLen, numHeads, headDim]).transposed(0, 2, 1, 3)
+
+      let scale = Float(1.0 / sqrt(Double(headDim)))
+      let scores = matmul(q, k.transposed(0, 1, 3, 2)) * scale
+      let attnWeights = softmax(scores, axis: -1)
+      let attnOutput = matmul(attnWeights, v)
+
+      let output = attnOutput.transposed(0, 2, 1, 3).reshaped([batchSize, seqLen, dModel])
+      return outProj(output)
+    }
+
     func callAsFunction(_ query: MLXArray, key: MLXArray? = nil, value: MLXArray? = nil, mask: MLXArray? = nil) -> MLXArray {
       let key = key ?? query
       let value = value ?? query

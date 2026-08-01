@@ -15,6 +15,7 @@
 //            directly into the recognizer — that mode validates decoding and
 //            matching but NOT the microphone; the metric line says which
 //            mode produced the score.
+import 'dart:async';
 import 'dart:io';
 import 'dart:typed_data';
 
@@ -160,6 +161,51 @@ void main() {
     expect(firstMs, lessThan(allMs ~/ 2),
         reason: 'playback must be able to start well before the whole line '
             'is synthesized');
+
+    // ── Part 1c: REAL TtsService.speak pipelining (playthrough) ──
+    // Part 1 simulates its own pipeline and once reported 0 ms while the
+    // real path sat silent 6-10 s between lines (speak() returns after
+    // playback COMPLETES, so an after-speak prefetch never overlapped).
+    // This drives the actual speak path with the rehearsal-style
+    // onPlaybackStarted prefetch hook and measures the audio GAP between
+    // consecutive lines — the number the actor actually hears.
+    final tsvc = TtsService.instance;
+    final speakLines = [
+      'Mr. Bennet, how can you abuse your own children in such a way?',
+      'Mrs. Long and her nieces must take their chance at the assembly.',
+      'Depend upon it, Mr. Bingley will be delighted to see you all.',
+    ];
+    final prefetches = <int, List<Future<String?>>?>{};
+    var speakIdx = 0;
+    DateTime? lastCompletion;
+    final gaps = <int>[];
+    Completer<void> lineDone = Completer<void>();
+    tsvc.onPlaybackStarted = () {
+      if (lastCompletion != null) {
+        gaps.add(DateTime.now().difference(lastCompletion!).inMilliseconds);
+      }
+      // Rehearsal-style: the moment audio starts, prefetch the NEXT line.
+      final next = speakIdx + 1;
+      if (next < speakLines.length && !prefetches.containsKey(next)) {
+        prefetches[next] = tsvc.prepareKokoro(speakLines[next]);
+      }
+    };
+    tsvc.setCompletionHandler(() {
+      lastCompletion = DateTime.now();
+      if (!lineDone.isCompleted) lineDone.complete();
+    });
+    for (speakIdx = 0; speakIdx < speakLines.length; speakIdx++) {
+      lineDone = Completer<void>();
+      await tsvc.speak(speakLines[speakIdx],
+          precomputedChunks: prefetches[speakIdx]);
+      await lineDone.future.timeout(const Duration(seconds: 60));
+    }
+    tsvc.onPlaybackStarted = null;
+    tsvc.setCompletionHandler(() {});
+    print('PROBE: speakPath interLineGaps=${gaps}ms');
+    expect(gaps.length, speakLines.length - 1);
+    expect(gaps.every((g) => g < 2500), true,
+        reason: 'consecutive TTS lines must flow, got $gaps');
 
     // ── Part 2: acoustic round trip (speaker → air → mic → recognizer) ──
     await SttChannel.instance.initialize();

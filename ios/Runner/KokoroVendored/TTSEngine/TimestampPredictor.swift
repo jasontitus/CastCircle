@@ -21,12 +21,16 @@ class TimestampPredictor {
     }
               
     let magicDivisor: Float = 80.0
-    
+
+    // One GPU→CPU transfer for the whole duration vector; the loop below
+    // previously issued a sync per token via .item().
+    let dur: [Float] = predictionDuration.asArray(Float.self)
+
     // We track 2 counts, measured in half-frames: (left, right)
     // This way we can cut space characters in half
     // TO_DO: Is -3 an appropriate offset?
     var left: Float = 0
-    var right: Float = 2 * max(0, predictionDuration[0].item() - 3)
+    var right: Float = 2 * max(0, dur[0] - 3)
     left = right
 
     // Updates:
@@ -34,28 +38,28 @@ class TimestampPredictor {
     // right = left + space_dur
     var i = 1
     for t in tokens {
-      guard i < predictionDuration.shape[0] - 1 else {
+      guard i < dur.count - 1 else {
         break
       }
-     
+
       if t.phonemes == nil {
         if !t.whitespace.isEmpty {
           i += 1
-          left = right + predictionDuration[i].item()
-          right = left + predictionDuration[i].item()
+          left = right + dur[i]
+          right = left + dur[i]
           i += 1
         }
         continue
       }
-      
+
       let j = i + t.phonemes!.count
-      if j >= predictionDuration.shape[0] {
+      if j >= dur.count {
         break
       }
 
       t.start_ts = Double(left / magicDivisor)
-      let tokenDuration: Float = predictionDuration[i..<j].sum().item()
-      let spaceDuration: Float = t.whitespace.isEmpty ? 0.0 : predictionDuration[j].item()
+      let tokenDuration: Float = dur[i..<j].reduce(0, +)
+      let spaceDuration: Float = t.whitespace.isEmpty ? 0.0 : dur[j]
       left = right + (2.0 * tokenDuration) + spaceDuration
       t.end_ts = Double(left / magicDivisor)
       right = left + spaceDuration

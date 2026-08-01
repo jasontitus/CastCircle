@@ -12,7 +12,6 @@
 		331C808B294A63AB00263BE5 /* RunnerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 331C807B294A618700263BE5 /* RunnerTests.swift */; };
 		3B3967161E833CAA004F5970 /* AppFrameworkInfo.plist in Resources */ = {isa = PBXBuildFile; fileRef = 3B3967151E833CAA004F5970 /* AppFrameworkInfo.plist */; };
 		435E218509157EDD3CA4E645 /* MediaControlPlugin.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9E8E620EB48706A30AA540AC /* MediaControlPlugin.swift */; };
-		6C9D3AFED19C5CBACEC128A8 /* MLXSttPlugin.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4C96AB88695FDD4A90758E11 /* MLXSttPlugin.swift */; };
 		74858FAF1ED2DC5600515810 /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 74858FAE1ED2DC5600515810 /* AppDelegate.swift */; };
 		7884E8682EC3CC0700C636F2 /* SceneDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7884E8672EC3CC0400C636F2 /* SceneDelegate.swift */; };
 		78A318202AECB46A00862997 /* FlutterGeneratedPluginSwiftPackage in Frameworks */ = {isa = PBXBuildFile; productRef = 78A3181F2AECB46A00862997 /* FlutterGeneratedPluginSwiftPackage */; };
@@ -22,11 +21,6 @@
 		A1B2C3D401000001E0000001 /* KokoroMLXPlugin.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D401000002E0000001 /* KokoroMLXPlugin.swift */; };
 		A1B2C3D401000003E0000001 /* KokoroMLXService.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D401000004E0000001 /* KokoroMLXService.swift */; };
 		A1B2C3D40100000AE0000001 /* MLX in Frameworks */ = {isa = PBXBuildFile; productRef = A1B2C3D40100000BE0000001 /* MLX */; };
-		7AED110000000000000000C1 /* MLXLLM in Frameworks */ = {isa = PBXBuildFile; productRef = 7AED110000000000000000B1 /* MLXLLM */; };
-		7AED110000000000000000C2 /* MLXLMCommon in Frameworks */ = {isa = PBXBuildFile; productRef = 7AED110000000000000000B2 /* MLXLMCommon */; };
-		5F00CC0000000000000C01 /* MLXHuggingFace in Frameworks */ = {isa = PBXBuildFile; productRef = 5F00CC0000000000000B01 /* MLXHuggingFace */; };
-		5F00AA0000000000000C01 /* HuggingFace in Frameworks */ = {isa = PBXBuildFile; productRef = 5F00AA0000000000000B01 /* HuggingFace */; };
-		5F00BB0000000000000C01 /* Tokenizers in Frameworks */ = {isa = PBXBuildFile; productRef = 5F00BB0000000000000B01 /* Tokenizers */; };
 		A1B2C3D40100000DE0000001 /* MLXFast in Frameworks */ = {isa = PBXBuildFile; productRef = A1B2C3D40100000EE0000001 /* MLXFast */; };
 		A1B2C3D401000010E0000001 /* MLXNN in Frameworks */ = {isa = PBXBuildFile; productRef = A1B2C3D401000011E0000001 /* MLXNN */; };
 		A1B2C3D401000012E0000001 /* MLXRandom in Frameworks */ = {isa = PBXBuildFile; productRef = A1B2C3D401000013E0000001 /* MLXRandom */; };
@@ -144,7 +138,6 @@
 		331C8081294A63A400263BE5 /* RunnerTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = RunnerTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		3B3967151E833CAA004F5970 /* AppFrameworkInfo.plist */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text.plist.xml; name = AppFrameworkInfo.plist; path = Flutter/AppFrameworkInfo.plist; sourceTree = "<group>"; };
 		45C988F22D22947BE9BAD5E1 /* Pods_Runner.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = Pods_Runner.framework; sourceTree = BUILT_PRODUCTS_DIR; };
-		4C96AB88695FDD4A90758E11 /* MLXSttPlugin.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = MLXSttPlugin.swift; sourceTree = "<group>"; };
 		5A95CF2BBDE44FD5E6919522 /* Pods-RunnerTests.profile.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-RunnerTests.profile.xcconfig"; path = "Target Support Files/Pods-RunnerTests/Pods-RunnerTests.profile.xcconfig"; sourceTree = "<group>"; };
 		6C27C3A984572946223BDF96 /* Pods_RunnerTests.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = Pods_RunnerTests.framework; sourceTree = BUILT_PRODUCTS_DIR; };
 		72EFC47527D7783B485D8917 /* Pods-RunnerTests.debug.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-RunnerTests.debug.xcconfig"; path = "Target Support Files/Pods-RunnerTests/Pods-RunnerTests.debug.xcconfig"; sourceTree = "<group>"; };
@@ -263,11 +256,6 @@
 				14692237A6EC9A5B95750614 /* Pods_Runner.framework in Frameworks */,
 				KOKORO000600000000000001 /* MLXUtilsLibrary in Frameworks */,
 				A1B2C3D40100000AE0000001 /* MLX in Frameworks */,
-				7AED110000000000000000C1 /* MLXLLM in Frameworks */,
-				7AED110000000000000000C2 /* MLXLMCommon in Frameworks */,
-				5F00CC0000000000000C01 /* MLXHuggingFace in Frameworks */,
-				5F00AA0000000000000C01 /* HuggingFace in Frameworks */,
-				5F00BB0000000000000C01 /* Tokenizers in Frameworks */,
 				A1B2C3D40100000DE0000001 /* MLXFast in Frameworks */,
 				A1B2C3D401000010E0000001 /* MLXNN in Frameworks */,
 				A1B2C3D401000012E0000001 /* MLXRandom in Frameworks */,
@@ -335,7 +323,6 @@
 				A1B2C3D401000002E0000001 /* KokoroMLXPlugin.swift */,
 				A1B2C3D401000004E0000001 /* KokoroMLXService.swift */,
 				74858FAD1ED2DC5600515810 /* Runner-Bridging-Header.h */,
-				4C96AB88695FDD4A90758E11 /* MLXSttPlugin.swift */,
 				BGDL000100000000000001 /* BackgroundDownloadPlugin.swift */,
 				ASTT000100000000000001 /* AppleSttPlugin.swift */,
 				MMON000100000000000001 /* MemoryMonitorPlugin.swift */,
@@ -619,12 +606,6 @@
 				A1B2C3D401000013E0000001 /* MLXRandom */,
 				A1B2C3D401000015E0000001 /* MLXFFT */,
 				KOKORO000500000000000001 /* MLXUtilsLibrary */,
-				PRKT000400000000000001 /* ParakeetSTT */,
-				7AED110000000000000000B1 /* MLXLLM */,
-				7AED110000000000000000B2 /* MLXLMCommon */,
-				5F00CC0000000000000B01 /* MLXHuggingFace */,
-				5F00AA0000000000000B01 /* HuggingFace */,
-				5F00BB0000000000000B01 /* Tokenizers */,
 			);
 			productName = Runner;
 			productReference = 97C146EE1CF9000F007C117D /* Runner.app */;
@@ -663,10 +644,6 @@
 				781AD8BC2B33823900A9FFBB /* XCLocalSwiftPackageReference "FlutterGeneratedPluginSwiftPackage" */,
 				A1B2C3D40100000CE0000001 /* XCRemoteSwiftPackageReference "mlx-swift" */,
 				KOKORO000400000000000002 /* XCRemoteSwiftPackageReference "MLXUtilsLibrary" */,
-				PRKT000300000000000001 /* XCLocalSwiftPackageReference "parakeet-stt" */,
-				7AED110000000000000000A1 /* XCRemoteSwiftPackageReference "mlx-swift-lm" */,
-				5F00AA0000000000000A01 /* XCRemoteSwiftPackageReference "swift-huggingface" */,
-				5F00BB0000000000000A01 /* XCRemoteSwiftPackageReference "swift-transformers" */,
 			);
 			productRefGroup = 97C146EF1CF9000F007C117D /* Products */;
 			projectDirPath = "";
@@ -859,7 +836,6 @@
 				ASTT000200000000000001 /* AppleSttPlugin.swift in Sources */,
 				MMON000200000000000001 /* MemoryMonitorPlugin.swift in Sources */,
 				A1B2C3D401000003E0000001 /* KokoroMLXService.swift in Sources */,
-				6C9D3AFED19C5CBACEC128A8 /* MLXSttPlugin.swift in Sources */,
 				BGDL000200000000000001 /* BackgroundDownloadPlugin.swift in Sources */,
 				KOKORO000200000000000001 /* AlbertEmbeddings.swift in Sources */,
 				KOKORO000200000000000002 /* AlbertEncoder.swift in Sources */,
@@ -1282,10 +1258,6 @@
 			isa = XCLocalSwiftPackageReference;
 			relativePath = Flutter/ephemeral/Packages/FlutterGeneratedPluginSwiftPackage;
 		};
-		PRKT000300000000000001 /* XCLocalSwiftPackageReference "parakeet-stt" */ = {
-			isa = XCLocalSwiftPackageReference;
-			relativePath = "LocalPackages/parakeet-stt";
-		};
 /* End XCLocalSwiftPackageReference section */
 
 /* Begin XCRemoteSwiftPackageReference section */
@@ -1303,30 +1275,6 @@
 			requirement = {
 				kind = upToNextMajorVersion;
 				minimumVersion = 0.0.6;
-			};
-		};
-		7AED110000000000000000A1 /* XCRemoteSwiftPackageReference "mlx-swift-lm" */ = {
-			isa = XCRemoteSwiftPackageReference;
-			repositoryURL = "https://github.com/ml-explore/mlx-swift-lm.git";
-			requirement = {
-				kind = branch;
-				branch = main;
-			};
-		};
-		5F00AA0000000000000A01 /* XCRemoteSwiftPackageReference "swift-huggingface" */ = {
-			isa = XCRemoteSwiftPackageReference;
-			repositoryURL = "https://github.com/huggingface/swift-huggingface";
-			requirement = {
-				kind = upToNextMajorVersion;
-				minimumVersion = 0.9.0;
-			};
-		};
-		5F00BB0000000000000A01 /* XCRemoteSwiftPackageReference "swift-transformers" */ = {
-			isa = XCRemoteSwiftPackageReference;
-			repositoryURL = "https://github.com/huggingface/swift-transformers";
-			requirement = {
-				kind = upToNextMajorVersion;
-				minimumVersion = 1.3.0;
 			};
 		};
 /* End XCRemoteSwiftPackageReference section */
@@ -1365,35 +1313,6 @@
 			isa = XCSwiftPackageProductDependency;
 			package = KOKORO000400000000000002 /* XCRemoteSwiftPackageReference "MLXUtilsLibrary" */;
 			productName = MLXUtilsLibrary;
-		};
-		PRKT000400000000000001 /* ParakeetSTT */ = {
-			isa = XCSwiftPackageProductDependency;
-			productName = ParakeetSTT;
-		};
-		7AED110000000000000000B1 /* MLXLLM */ = {
-			isa = XCSwiftPackageProductDependency;
-			package = 7AED110000000000000000A1 /* XCRemoteSwiftPackageReference "mlx-swift-lm" */;
-			productName = MLXLLM;
-		};
-		7AED110000000000000000B2 /* MLXLMCommon */ = {
-			isa = XCSwiftPackageProductDependency;
-			package = 7AED110000000000000000A1 /* XCRemoteSwiftPackageReference "mlx-swift-lm" */;
-			productName = MLXLMCommon;
-		};
-		5F00CC0000000000000B01 /* MLXHuggingFace */ = {
-			isa = XCSwiftPackageProductDependency;
-			package = 7AED110000000000000000A1 /* XCRemoteSwiftPackageReference "mlx-swift-lm" */;
-			productName = MLXHuggingFace;
-		};
-		5F00AA0000000000000B01 /* HuggingFace */ = {
-			isa = XCSwiftPackageProductDependency;
-			package = 5F00AA0000000000000A01 /* XCRemoteSwiftPackageReference "swift-huggingface" */;
-			productName = HuggingFace;
-		};
-		5F00BB0000000000000B01 /* Tokenizers */ = {
-			isa = XCSwiftPackageProductDependency;
-			package = 5F00BB0000000000000A01 /* XCRemoteSwiftPackageReference "swift-transformers" */;
-			productName = Tokenizers;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

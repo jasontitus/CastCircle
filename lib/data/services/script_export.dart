@@ -191,12 +191,12 @@ class ScriptExporter {
     buf.writeln('=' * 60);
     buf.writeln();
 
-    final charLines = script.lines
+    final charLineCount = script.lines
         .where((l) =>
             l.lineType == LineType.dialogue && l.isForCharacter(characterName))
-        .toList();
+        .length;
 
-    buf.writeln('Total lines: ${charLines.length}');
+    buf.writeln('Total lines: $charLineCount');
     buf.writeln();
 
     String currentAct = '';
@@ -278,8 +278,14 @@ class ScriptExporter {
   }
 
   static String _lastWords(String text, int wordCount) {
-    final words = text.split(' ');
-    if (words.length <= wordCount) return text;
-    return words.sublist(words.length - wordCount).join(' ');
+    // Scan backward for the wordCount-th space; one substring, no full split.
+    var spaces = 0;
+    for (var i = text.length - 1; i > 0; i--) {
+      if (text[i] == ' ') {
+        spaces++;
+        if (spaces == wordCount) return text.substring(i + 1);
+      }
+    }
+    return text;
   }
 }

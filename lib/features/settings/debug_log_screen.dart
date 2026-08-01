@@ -22,15 +22,22 @@ class _DebugLogScreenState extends State<DebugLogScreen> {
   LogCategory? _filter;
   Timer? _refreshTimer;
   final _scrollController = ScrollController();
+  int _lastEntryCount = -1;
 
   @override
   void initState() {
     super.initState();
-    // Refresh every 2 seconds to pick up new entries
+    // Refresh every 2 seconds to pick up new entries — but only rebuild
+    // when something actually arrived.
     _refreshTimer = Timer.periodic(
       const Duration(seconds: 2),
       (_) {
-        if (mounted) setState(() {});
+        if (!mounted) return;
+        final count = _log.entryCount;
+        if (count != _lastEntryCount) {
+          _lastEntryCount = count;
+          setState(() {});
+        }
       },
     );
     // Log a memory snapshot when opening the screen

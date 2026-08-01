@@ -121,13 +121,6 @@ class ModelManager {
     );
   }
 
-  // ── MLX Parakeet STT ─────────────────────────────────────
-
-  /// Check if Parakeet STT model is downloaded.
-  Future<bool> isParakeetReady() async {
-    return ModelDownloadService.instance.isParakeetReady();
-  }
-
   // ── Download all ───────────────────────────────────────
 
   /// Check if all required models are downloaded.

@@ -138,7 +138,7 @@ class ScriptParser {
 
     // Detect multi-character names (e.g., "ELIZABETH AND JANE") and split
     // them into individual characters
-    _detectMultiCharacterNames();
+    _detectMultiCharacterNames(rawText);
 
     _detectTitleHeaders(rawText, title);
 
@@ -786,9 +786,12 @@ class ScriptParser {
       if (nameCount > 2) continue; // Not a rare name — don't fuzzy match
       if (name.length < 4) continue;
 
-      // Scale threshold: short names (≤5 chars) need exact-minus-1,
-      // longer names allow up to 2 edits. Prevents MARY→DARCY.
-      final maxDist = name.length <= 5 ? 1 : 2;
+      // Scale threshold: short names (≤5 chars) need exact-minus-1, mid
+      // names allow 2 edits (prevents MARY→DARCY), and long names (≥8)
+      // allow 3 — "MKS BENNEE" → "MRS. BENNET" is 3 edits (field case from
+      // a scanned import). The rare-only / first-letter / merge-into-more-
+      // common guards all still apply.
+      final maxDist = name.length <= 5 ? 1 : (name.length >= 8 ? 3 : 2);
       String? best;
       var bestDist = maxDist + 1;
       var bestCount = -1;
@@ -909,7 +912,7 @@ class ScriptParser {
   /// Detect multi-character names in [knownCharacters] and populate
   /// [multiCharacterMap] with the split. Also adds the individual names
   /// to [knownCharacters] so they get proper voice/color assignments.
-  void _detectMultiCharacterNames() {
+  void _detectMultiCharacterNames(String rawText) {
     for (final name in knownCharacters.toList()) {
       final parts = _tryMultiCharacterSplit(name);
       if (parts != null && parts.length >= 2) {
@@ -918,8 +921,87 @@ class ScriptParser {
         for (final part in parts) {
           knownCharacters.add(part);
         }
+        continue;
+      }
+
+      // OCR sometimes eats a dual cue's separator outright
+      // ("ANNE/LADY CATHERINE." → "ANNEADYCATHERINE.", field case from a
+      // scanned import). Recover the split against the known cast — but
+      // only for RARE cues: a frequent cue spelled this way is a real
+      // name, not a corruption.
+      final glued = _tryGluedMultiCharacterSplit(name);
+      if (glued != null) {
+        final escaped = RegExp.escape(name);
+        final count = RegExp('^$escaped\\.\\s', multiLine: true)
+            .allMatches(rawText)
+            .length;
+        if (count <= 2) {
+          multiCharacterMap[name] = glued;
+          for (final part in glued) {
+            knownCharacters.add(part);
+          }
+        }
       }
     }
+  }
+
+  /// "ANNEADYCATHERINE" → [ANNE, LADY CATHERINE]: fires only when the glued
+  /// cue ENDS with a known long character name (≤1 edit after stripping
+  /// spaces/punctuation — the eaten separator often takes the next letter
+  /// with it) and the leftover prefix is a short plausible name.
+  List<String>? _tryGluedMultiCharacterSplit(String name) {
+    // Cue-corruption recovery only applies to all-caps cue names that are a
+    // single glued token: a separator eaten by OCR leaves NO space behind.
+    // Multi-word names ("A YOUNG MARQUIS", "ALL THE CADETS") are legitimate
+    // compositional cues — splitting those manufactured phantom characters
+    // across the Cyrano corpus.
+    if (name != name.toUpperCase()) return null;
+    if (name.contains(' ')) return null;
+    final s = name.replaceAll(RegExp(r'[^A-Z]'), '');
+    if (s.length < 10) return null;
+
+    for (final known in knownCharacters) {
+      if (known == name) continue;
+      final k = known.replaceAll(RegExp(r'[^A-Z]'), '');
+      // Suffix candidate must be long (multi-word names like LADY
+      // CATHERINE) and leave at least 3 chars of prefix.
+      if (k.length < 8 || k.length + 3 > s.length) continue;
+      // The suffix may have lost its leading letter to the eaten separator,
+      // so try both split points and keep the best: lowest edit distance,
+      // then a prefix that's already in the cast, then the longer prefix
+      // ("ANNE|[L]ADY CATHERINE" beats "ANN|[E]ADYCATHERINE" on a tie).
+      String? bestPrefix;
+      var bestDist = 2;
+      var bestPrefixKnown = false;
+      for (final win in [k.length, k.length - 1]) {
+        if (win + 3 > s.length) continue;
+        final suffix = s.substring(s.length - win);
+        final dist = _editDistance(suffix, k);
+        if (dist > 1) continue;
+        final prefix = s.substring(0, s.length - win);
+        if (prefix.length < 3 || _titlePrefixes.contains(prefix)) continue;
+        final prefixIsKnown = knownCharacters
+            .any((c) => c.replaceAll(RegExp(r'[^A-Z]'), '') == prefix);
+        final better = dist < bestDist ||
+            (dist == bestDist &&
+                ((prefixIsKnown && !bestPrefixKnown) ||
+                    (prefixIsKnown == bestPrefixKnown &&
+                        prefix.length > (bestPrefix?.length ?? 0))));
+        if (better) {
+          bestPrefix = prefix;
+          bestDist = dist;
+          bestPrefixKnown = prefixIsKnown;
+        }
+      }
+      if (bestPrefix != null) {
+        // Prefer the cast's spelling if the prefix is already a known name.
+        final prefixKnown = knownCharacters.firstWhere(
+            (c) => c.replaceAll(RegExp(r'[^A-Z]'), '') == bestPrefix,
+            orElse: () => bestPrefix!);
+        return [prefixKnown, known];
+      }
+    }
+    return null;
   }
 
   /// Try to split a character name into multiple individual characters.
@@ -1047,47 +1129,78 @@ class ScriptParser {
   }
 
   /// Detect character cue at start of line.
-  ({String character, String dialogue})? _detectCharacterCue(String line) {
+  /// Compiled cue patterns per character, rebuilt only when the character
+  /// set or format changes. _detectCharacterCue runs for EVERY text line —
+  /// recompiling ~5 regexes per character per line was ~10^5 compilations
+  /// on a full-length import.
+  List<({String char, RegExp dot, RegExp colonEmpty, RegExp colonInline,
+      RegExp? ownLine, RegExp? flexible})>? _cuePatterns;
+  int _cuePatternsCharCount = -1;
+  ScriptFormat? _cuePatternsFormat;
+
+  List<({String char, RegExp dot, RegExp colonEmpty, RegExp colonInline,
+      RegExp? ownLine, RegExp? flexible})> _buildCuePatterns() {
     final sorted = knownCharacters.toList()
       ..sort((a, b) => b.length.compareTo(a.length));
-
     final caseSensitive = _format != ScriptFormat.titleCase;
+    return [
+      for (final char in sorted)
+        (() {
+          final escaped = RegExp.escape(char);
+          final tokens = char
+              .split(RegExp(r'[.\s]+'))
+              .where((t) => t.isNotEmpty)
+              .toList();
+          return (
+            char: char,
+            dot: RegExp('^$escaped\\.\\s+(.*)', caseSensitive: caseSensitive),
+            colonEmpty: RegExp('^$escaped(?:\\s*\\([^)]*\\))?\\s*:\$',
+                caseSensitive: caseSensitive),
+            colonInline: RegExp('^$escaped(?:\\s*\\([^)]*\\))?\\s*:\\s+(.*)',
+                caseSensitive: caseSensitive),
+            ownLine: _format == ScriptFormat.nameOnOwnLine
+                ? RegExp('^$escaped\\.?\$')
+                : null,
+            flexible: tokens.length < 2
+                ? null
+                : RegExp(
+                    '^${tokens.map(RegExp.escape).join(r'[.,:]?\s*')}\\s*[.:]\\s+(.*)',
+                    caseSensitive: caseSensitive),
+          );
+        })(),
+    ];
+  }
 
-    for (final char in sorted) {
-      final escaped = RegExp.escape(char);
+  ({String character, String dialogue})? _detectCharacterCue(String line) {
+    if (_cuePatterns == null ||
+        _cuePatternsCharCount != knownCharacters.length ||
+        _cuePatternsFormat != _format) {
+      _cuePatterns = _buildCuePatterns();
+      _cuePatternsCharCount = knownCharacters.length;
+      _cuePatternsFormat = _format;
+    }
+    final patterns = _cuePatterns!;
+
+    for (final p in patterns) {
       // Standard match: "NAME. dialogue..."
-      final pattern = RegExp(
-        '^$escaped\\.\\s+(.*)',
-        caseSensitive: caseSensitive,
-      );
-      final match = pattern.firstMatch(line);
+      final match = p.dot.firstMatch(line);
       if (match != null) {
-        return (character: char, dialogue: match.group(1)!);
+        return (character: p.char, dialogue: match.group(1)!);
       }
 
       // "NAME:" or "NAME (aside):" — colon format (Cyrano etc.)
-      final colonMatch = RegExp(
-        '^$escaped(?:\\s*\\([^)]*\\))?\\s*:\$',
-        caseSensitive: caseSensitive,
-      ).firstMatch(line);
-      if (colonMatch != null) {
-        return (character: char, dialogue: '');
+      if (p.colonEmpty.hasMatch(line)) {
+        return (character: p.char, dialogue: '');
       }
       // "NAME: dialogue..." — colon with inline dialogue
-      final colonInline = RegExp(
-        '^$escaped(?:\\s*\\([^)]*\\))?\\s*:\\s+(.*)',
-        caseSensitive: caseSensitive,
-      ).firstMatch(line);
+      final colonInline = p.colonInline.firstMatch(line);
       if (colonInline != null) {
-        return (character: char, dialogue: colonInline.group(1)!);
+        return (character: p.char, dialogue: colonInline.group(1)!);
       }
 
       // Name-on-own-line: "NAME." or "NAME" with nothing after
-      if (_format == ScriptFormat.nameOnOwnLine) {
-        final ownLine = RegExp('^$escaped\\.?\$');
-        if (ownLine.hasMatch(line)) {
-          return (character: char, dialogue: '');
-        }
+      if (p.ownLine != null && p.ownLine!.hasMatch(line)) {
+        return (character: p.char, dialogue: '');
       }
     }
 
@@ -1097,19 +1210,12 @@ class ScriptParser {
     // [.,:] variants and missing spaces between the name's tokens, but keep
     // the trailing cue separator strict ('.' or ':' + space) so dialogue that
     // merely STARTS with a name ("MARY, come here…") is never consumed.
-    for (final char in sorted) {
-      final tokens = char
-          .split(RegExp(r'[.\s]+'))
-          .where((t) => t.isNotEmpty)
-          .toList();
-      if (tokens.length < 2) continue; // single tokens: exact pass covers them
-      final flexible = tokens.map(RegExp.escape).join(r'[.,:]?\s*');
-      final match = RegExp(
-        '^$flexible\\s*[.:]\\s+(.*)',
-        caseSensitive: caseSensitive,
-      ).firstMatch(line);
+    for (final p in patterns) {
+      final flexible = p.flexible;
+      if (flexible == null) continue; // single tokens: exact pass covers them
+      final match = flexible.firstMatch(line);
       if (match != null) {
-        return (character: char, dialogue: match.group(1)!);
+        return (character: p.char, dialogue: match.group(1)!);
       }
     }
     return null;

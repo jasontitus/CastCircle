@@ -10,16 +10,6 @@ void main() {
     test('isListening is false initially', () {
       expect(SttService.instance.isListening, false);
     });
-
-    test('isMlxReady is false before init', () {
-      expect(SttService.instance.isMlxReady, false);
-    });
-
-    test('SttEngine enum has expected values', () {
-      expect(SttEngine.values,
-          containsAll([SttEngine.mlx, SttEngine.apple]));
-      expect(SttEngine.values.length, 2);
-    });
   });
 
   group('SttService.mergeTranscripts', () {
@@ -181,6 +171,36 @@ void main() {
             'Your partner is the only handsome girl in the room',
             'your partner is the'),
         false,
+      );
+    });
+
+    test('common tail words mid-sentence do not fire (field cut-off)', () {
+      // Line ends "...as I sit by the fire"; tail words "by"/"the" are
+      // common enough to appear mid-line. The transcript below contains
+      // both but the actor is clearly still mid-sentence — must NOT count
+      // as the ending.
+      const line = 'or you are conscious that your figures appear to the '
+          'greatest advantage in walking; I can admire you much better '
+          'as I sit by the fire.';
+      expect(
+        SttService.heardLineEnding(
+            line, 'figures appear to the greatest advantage in walking'),
+        false,
+      );
+      // Reaching the actual ending still fires.
+      expect(
+        SttService.heardLineEnding(
+            line, 'i can admire you much better as i sit by the fire'),
+        true,
+      );
+    });
+
+    test('one trailing recognizer word after the ending still fires', () {
+      expect(
+        SttService.heardLineEnding(
+            'I can admire you much better as I sit by the fire.',
+            'admire you much better as i sit by the fire um'),
+        true,
       );
     });
   });

@@ -143,8 +143,7 @@ class _AiModelsScreenState extends State<AiModelsScreen> {
               // live_asr powers Android live matching only (Apple platforms
               // use the OS recognizer) — don't offer a dead download.
               ...ModelDownloadService.availableModels
-                  .where((m) =>
-                      m.subdir != 'parakeet_stt' && m.subdir != 'live_asr')
+                  .where((m) => m.subdir != 'live_asr')
                   .map((model) => _buildModelTile(context, model)),
 
             const Divider(),
@@ -165,13 +164,6 @@ class _AiModelsScreenState extends State<AiModelsScreen> {
               subtitle: const Text('Test TTS engine and view diagnostics'),
               trailing: const Icon(Icons.chevron_right),
               onTap: () => context.push('/kokoro-debug'),
-            ),
-            ListTile(
-              leading: const Icon(Icons.mic),
-              title: const Text('STT Debug'),
-              subtitle: const Text('Test speech recognition'),
-              trailing: const Icon(Icons.chevron_right),
-              onTap: () => context.push('/parakeet-debug'),
             ),
           ],
         ),

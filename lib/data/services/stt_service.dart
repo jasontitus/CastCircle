@@ -5,34 +5,18 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import 'stt_channel.dart';
 import 'debug_log_service.dart';
-import 'mlx_stt_channel.dart';
-
-/// STT engine type.
-enum SttEngine {
-  /// Apple SFSpeechRecognizer with contextualStrings (primary — real-time).
-  apple,
-
-  /// MLX Parakeet batch transcription (for file transcription).
-  mlx,
-}
-
 /// Speech-to-text service.
 ///
 /// Primary engine: Apple SFSpeechRecognizer via custom platform channel
 /// with contextualStrings for vocabulary hinting. Provides real-time
 /// streaming results — words appear as you speak.
-///
-/// MLX Parakeet is available for batch file transcription but not used
-/// for live mic input (it's a batch model, not streaming).
 class SttService {
   SttService._();
   static final instance = SttService._();
 
   final SttChannel _sttChannel = SttChannel.instance;
-  final MlxSttChannel _mlxChannel = MlxSttChannel.instance;
 
   bool _isListening = false;
-  SttEngine _activeEngine = SttEngine.apple;
 
   /// Bumped on every listen()/stop() so delayed continuous-mode restarts can
   /// tell whether they belong to the current session.
@@ -40,9 +24,7 @@ class SttService {
 
   String _locale = 'en-US';
 
-  SttEngine get activeEngine => _activeEngine;
   bool get isListening => _isListening;
-  bool get isMlxReady => _mlxChannel.isInitialized;
   bool get isAvailable => _sttChannel.isInitialized;
   String get locale => _locale;
 
@@ -65,14 +47,9 @@ class SttService {
       }
     } catch (_) {}
 
-    // Dispose any previously loaded MLX model to free memory —
-    // we use the native OS recognizer now; Parakeet is only for batch transcription
-    _mlxChannel.dispose();
-
     // Apple SFSpeechRecognizer — real-time streaming with vocabulary hints
     final appleOk = await _sttChannel.initialize(locale: locale);
     if (appleOk) {
-      _activeEngine = SttEngine.apple;
       DebugLogService.instance.log(LogCategory.stt,
           'STT ready (locale=$locale, contextualStrings)');
       return true;
@@ -80,17 +57,6 @@ class SttService {
 
     DebugLogService.instance.logError(LogCategory.stt, 'No STT engine available');
     return false;
-  }
-
-  /// Re-attempt MLX init (for batch file transcription).
-  Future<bool> reloadMlx() async {
-    try {
-      final ok = await _mlxChannel.initialize('builtin');
-      return ok;
-    } catch (e) {
-      debugPrint('STT: MLX init failed: $e');
-      return false;
-    }
   }
 
   // Stored callbacks for continuous mode restarts
@@ -279,16 +245,6 @@ class SttService {
     await _sttChannel.stop();
   }
 
-  /// Transcribe a pre-recorded audio file (MLX Parakeet only).
-  Future<String?> transcribeFile(String audioPath,
-      {List<String>? vocabularyHints}) async {
-    if (_mlxChannel.isInitialized) {
-      return _mlxChannel.transcribe(audioPath,
-          vocabularyHints: vocabularyHints);
-    }
-    return null;
-  }
-
   // ── Match Score ───────────────────────────────────────
 
   /// Match score using Longest Common Subsequence (LCS) of words.
@@ -326,6 +282,18 @@ class SttService {
         .where((w) => w.isNotEmpty)
         .toList();
     if (spo.isEmpty) return false;
+    // Anchor: the transcript must actually END at the line's ending — one
+    // of the line's last two words must be among the last two heard words.
+    // Without this, lines ending in common words ("...as I sit by the
+    // fire") matched mid-sentence: "by"/"the" appear everywhere, so the
+    // 2-of-3-anywhere-in-the-window test below fired while the actor was
+    // still talking (field: cut off on the final line of a scene). If the
+    // recognizer never emits the final words, callers fall back to the
+    // long-silence path — a slower advance, never a cut-off.
+    final lastExp = exp.length <= 2 ? exp : exp.sublist(exp.length - 2);
+    final lastSpo = spo.length <= 2 ? spo : spo.sublist(spo.length - 2);
+    if (!lastSpo.any(lastExp.contains)) return false;
+
     final tail = exp.length <= 3 ? exp : exp.sublist(exp.length - 3);
     final window = spo.length <= 8 ? spo : spo.sublist(spo.length - 8);
     final hits = tail.where(window.contains).length;
@@ -347,24 +315,30 @@ class SttService {
       return 0.0;
     }
 
-    // LCS with fuzzy word matching (edit distance ≤ 1 counts as match)
+    // LCS with fuzzy word matching (edit distance ≤ 1 counts as match).
+    // Two rows, not a full (m+1)x(n+1) matrix: this runs on the MAIN isolate
+    // for every recognition partial — several times a second while the actor
+    // speaks — and the full-matrix version allocated a list-of-lists each
+    // call.
     final m = expectedWords.length;
     final n = spokenWords.length;
-    final dp = List.generate(m + 1, (_) => List.filled(n + 1, 0));
+    var prev = List<int>.filled(n + 1, 0);
+    var cur = List<int>.filled(n + 1, 0);
 
     for (var i = 1; i <= m; i++) {
       for (var j = 1; j <= n; j++) {
         if (_wordsMatch(expectedWords[i - 1], spokenWords[j - 1])) {
-          dp[i][j] = dp[i - 1][j - 1] + 1;
+          cur[j] = prev[j - 1] + 1;
         } else {
-          dp[i][j] = dp[i - 1][j] > dp[i][j - 1]
-              ? dp[i - 1][j]
-              : dp[i][j - 1];
+          cur[j] = prev[j] > cur[j - 1] ? prev[j] : cur[j - 1];
         }
       }
+      final t = prev;
+      prev = cur;
+      cur = t..fillRange(0, n + 1, 0);
     }
 
-    return dp[m][n] / m;
+    return prev[n] / m;
   }
 
   /// Check if two words match — exact or within edit distance 1.
@@ -458,6 +432,5 @@ class SttService {
 
   void dispose() {
     _sttChannel.dispose();
-    _mlxChannel.dispose();
   }
 }
