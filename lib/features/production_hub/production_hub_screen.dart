@@ -398,6 +398,13 @@ class _ProductionHubScreenState extends ConsumerState<ProductionHubScreen> {
       return const Center(child: Text('No scenes detected'));
     }
 
+    // Hoisted out of itemBuilder: an indexWhere over the cast per character
+    // chip made each visible row O(sceneChars × castSize).
+    final charIndexByName = {
+      for (var i = 0; i < script.characters.length; i++)
+        script.characters[i].name: i,
+    };
+
     return ListView.builder(
       padding: const EdgeInsets.all(16),
       itemCount: scenes.length,
@@ -500,8 +507,7 @@ class _ProductionHubScreenState extends ConsumerState<ProductionHubScreen> {
                     spacing: 4,
                     runSpacing: 4,
                     children: scene.characters.map((charName) {
-                      final charIdx = script.characters
-                          .indexWhere((c) => c.name == charName);
+                      final charIdx = charIndexByName[charName] ?? -1;
                       final color = charIdx >= 0
                           ? AppTheme.colorForCharacter(charIdx)
                           : Colors.grey;

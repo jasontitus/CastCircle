@@ -43,6 +43,16 @@ below was re-checked against current code before classification.
 
 ## Round B — screen jank (verified still present)
 
+STATUS: 14-18 done (rehearsal Opacity→alpha + hoisted watches;
+recording_studio memos; cast_manager maps + assignment memo;
+production_hub maps; browser docs-dir hoist). REMAINING as Round C:
+bulk_cast per-keystroke rebuild, voice_config incremental counter +
+non-lazy list, _syncCastFromCloud batching, recording_character per-row
+map, browser linesById/sort memo, ocr_review true-lazy itemBuilder,
+character_manager range pass, scene_editor count precompute, and the
+Swift trio (rmsLevel vDSP, download-progress throttle iOS+macOS, G2P
+linkRegex + Lexicon stem reuse).
+
 14. rehearsal_screen: `Opacity` wrapper per row forces a saveLayer per item —
     with every row built (cacheExtent), each rebuild hands the raster thread
     hundreds of offscreen buffers. Replace with alpha-blended colors. [high]

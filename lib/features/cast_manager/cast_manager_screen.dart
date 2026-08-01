@@ -31,6 +31,28 @@ class CastManagerScreen extends ConsumerStatefulWidget {
 }
 
 class _CastManagerScreenState extends ConsumerState<CastManagerScreen> {
+  // assignVoicesFromScript memo: a full script walk + graph coloring whose
+  // inputs change rarely, but the screen rebuilds on every cast/recording
+  // change.
+  Map<String, String>? _assignmentCache;
+  Object? _assignmentKey;
+
+  Map<String, String> _memoAssignment(ParsedScript script) {
+    final key = Object.hash(
+        identityHashCode(script), _currentPreset, _genderOverrides.toString());
+    if (_assignmentCache != null && _assignmentKey == key) {
+      return _assignmentCache!;
+    }
+    _assignmentKey = key;
+    return _assignmentCache = VoiceConfigService.assignVoicesFromScript(
+      lines: script.lines,
+      characters: script.characters,
+      femaleVoices: _currentPreset.femaleVoices,
+      maleVoices: _currentPreset.maleVoices,
+      genderOverrides: _genderOverrides,
+    );
+  }
+
   final _voiceConfig = VoiceConfigService.instance;
   VoicePreset _currentPreset = VoicePresets.modernAmerican;
   Map<String, CharacterVoiceConfig> _voiceOverrides = {};
@@ -140,17 +162,12 @@ class _CastManagerScreenState extends ConsumerState<CastManagerScreen> {
         .where((m) => m.hasJoined && m.role != CastRole.organizer)
         .length;
 
-    // Adjacency-aware voice assignment, ONCE per build — this walks every
-    // script line, and it used to run inside each character card's builder
-    // (N full script passes per rebuild). Gender overrides included so the
-    // voice shown here matches what rehearsal actually plays.
-    final autoAssignment = VoiceConfigService.assignVoicesFromScript(
-      lines: script.lines,
-      characters: script.characters,
-      femaleVoices: _currentPreset.femaleVoices,
-      maleVoices: _currentPreset.maleVoices,
-      genderOverrides: _genderOverrides,
-    );
+    // Adjacency-aware voice assignment — memoized on its actual inputs
+    // (script identity, preset, overrides): the full script walk + coloring
+    // used to rerun on every castMembers/recordings rebuild that can't
+    // change the assignment. Gender overrides included so the voice shown
+    // here matches what rehearsal actually plays.
+    final autoAssignment = _memoAssignment(script);
     final totalRecordedLines = recordings.length;
     final totalLines = script.lines
         .where((l) => l.lineType == LineType.dialogue)
@@ -159,14 +176,33 @@ class _CastManagerScreenState extends ConsumerState<CastManagerScreen> {
         ? (totalRecordedLines / totalLines * 100).round()
         : 0;
 
+    // Per-build indexes: the card builder used to do a linear scan over
+    // castMembers (primaryFor/understudyFor) and a full-script
+    // linesForCharacter walk PER CARD — O(chars × members + chars × lines)
+    // per rebuild, and this screen rebuilds on every cast/recording change.
+    final primaryByChar = <String, CastMemberModel>{};
+    final understudyByChar = <String, CastMemberModel>{};
+    for (final m in castMembers) {
+      if (m.role == CastRole.primary) {
+        primaryByChar.putIfAbsent(m.characterName, () => m);
+      } else if (m.role == CastRole.understudy) {
+        understudyByChar.putIfAbsent(m.characterName, () => m);
+      }
+    }
+    // Mirrors isForCharacter: character match OR multiCharacters membership.
+    final linesByChar = <String, List<ScriptLine>>{};
+    for (final l in script.lines) {
+      if (l.lineType != LineType.dialogue) continue;
+      if (l.character.isNotEmpty) (linesByChar[l.character] ??= []).add(l);
+      for (final c in l.multiCharacters) {
+        if (c != l.character) (linesByChar[c] ??= []).add(l);
+      }
+    }
+
     // Check if any characters still need actors assigned
-    final unassignedCount = script.characters.where((char) {
-      return castMembers
-          .where(
-            (m) => m.characterName == char.name && m.role == CastRole.primary,
-          )
-          .isEmpty;
-    }).length;
+    final unassignedCount = script.characters
+        .where((char) => !primaryByChar.containsKey(char.name))
+        .length;
 
     return Scaffold(
       appBar: AppBar(
@@ -334,15 +370,11 @@ class _CastManagerScreenState extends ConsumerState<CastManagerScreen> {
                 itemBuilder: (context, index) {
                   final char = script.characters[index];
                   final color = AppTheme.colorForCharacter(char.colorIndex);
-                  final primary = ref
-                      .read(castMembersProvider.notifier)
-                      .primaryFor(char.name);
-                  final understudy = ref
-                      .read(castMembersProvider.notifier)
-                      .understudyFor(char.name);
+                  final primary = primaryByChar[char.name];
+                  final understudy = understudyByChar[char.name];
 
                   // Recording progress for this character
-                  final charLines = script.linesForCharacter(char.name);
+                  final charLines = linesByChar[char.name] ?? const [];
                   final recordedCount = charLines
                       .where((l) => recordings.containsKey(l.id))
                       .length;

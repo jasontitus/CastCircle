@@ -981,6 +981,11 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
         for (var i = 0; i < script.characters.length; i++)
           script.characters[i].name: i,
     };
+    // Watched ONCE here, not inside itemBuilder — per-item watches gave
+    // every built row its own provider subscription.
+    final baseFontSize = ref.watch(rehearsalFontSizeProvider);
+    final hideMyLines = ref.watch(hideMyLinesProvider);
+    final mode = ref.read(rehearsalModeProvider);
 
     final list = ListView.builder(
       controller: _scrollController,
@@ -993,10 +998,9 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
         final line = dialogueLines[index];
         final isCurrent = index == currentIdx;
         final isPast = index < currentIdx;
-        final isMe = ref.read(rehearsalModeProvider) != RehearsalMode.readthrough &&
+        final isMe = mode != RehearsalMode.readthrough &&
             myCharacter != null &&
             line.isForCharacter(myCharacter);
-        final baseFontSize = ref.watch(rehearsalFontSizeProvider);
         final fontSize = isCurrent ? baseFontSize : baseFontSize - 3;
 
         // For multi-character lines, use first individual for color lookup
@@ -1016,11 +1020,15 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
         } else {
           opacity = 0.5;
         }
+        // Alpha baked into each color instead of an Opacity widget: a
+        // non-1.0 Opacity forces a saveLayer offscreen buffer PER ROW, and
+        // with cacheExtent building the whole scene every rebuild handed the
+        // raster thread hundreds of them.
+        Color dim(Color c) =>
+            opacity == 1.0 ? c : c.withValues(alpha: opacity);
 
-        return Opacity(
-          key: isCurrent ? _currentLineKey : null,
-          opacity: opacity,
-          child: Container(
+        return Container(
+            key: isCurrent ? _currentLineKey : null,
             margin: const EdgeInsets.symmetric(vertical: 6),
             padding: const EdgeInsets.all(12),
             decoration: BoxDecoration(
@@ -1051,7 +1059,7 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
                       width: 8,
                       height: 8,
                       decoration: BoxDecoration(
-                        color: color,
+                        color: dim(color),
                         shape: BoxShape.circle,
                       ),
                     ),
@@ -1059,7 +1067,7 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
                     Text(
                       isMe ? 'YOU (${line.character})' : line.character,
                       style: TextStyle(
-                        color: color,
+                        color: dim(color),
                         fontWeight: FontWeight.bold,
                         fontSize: 12,
                       ),
@@ -1096,17 +1104,17 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
                       '(${line.stageDirection})',
                       style: TextStyle(
                         fontStyle: FontStyle.italic,
-                        color: Colors.grey[600],
+                        color: dim(Colors.grey[600]!),
                         fontSize: 13,
                       ),
                     ),
                   ),
                 // Hide the actor's upcoming lines in blind mode
-                if (ref.watch(hideMyLinesProvider) && isMe && !isPast)
+                if (hideMyLines && isMe && !isPast)
                   Text(
                     'Say your line...',
                     style: TextStyle(
-                      color: Colors.grey[600],
+                      color: dim(Colors.grey[600]!),
                       fontSize: fontSize,
                       height: 1.4,
                       fontStyle: FontStyle.italic,
@@ -1116,7 +1124,7 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
                   Text(
                     line.text,
                     style: TextStyle(
-                      color: Colors.white,
+                      color: dim(Colors.white),
                       fontSize: fontSize,
                       height: 1.4,
                     ),
@@ -1143,7 +1151,6 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
                   ),
               ],
             ),
-          ),
         );
       },
     );

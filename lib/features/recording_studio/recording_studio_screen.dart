@@ -51,6 +51,7 @@ class _RecordingStudioScreenState extends ConsumerState<RecordingStudioScreen> {
   String? _initError;
 
   late List<ScriptLine> _myLines;
+  ParsedScript? _myLinesScript; // identity key for the _myLines memo
   String? _character;
 
   /// Everything a finished take needs, cached from build(). Riverpod throws if
@@ -229,8 +230,13 @@ class _RecordingStudioScreenState extends ConsumerState<RecordingStudioScreen> {
       );
     }
 
+    // Memoized: build() ticks at 10 Hz while recording (the duration timer),
+    // and linesForCharacter walks the whole script per call.
+    if (_character != character || _myLinesScript != script) {
+      _myLinesScript = script;
+      _myLines = script.linesForCharacter(character);
+    }
     _character = character;
-    _myLines = script.linesForCharacter(character);
 
     if (_myLines.isEmpty) {
       return Scaffold(
@@ -336,12 +342,22 @@ class _RecordingStudioScreenState extends ConsumerState<RecordingStudioScreen> {
     );
   }
 
+  // line.id → full-script index, built once per script — _buildContextLines
+  // runs on every build, which ticks at 10 Hz while recording.
+  Map<String, int>? _fullIdxById;
+  ParsedScript? _fullIdxScript;
+
   Widget _buildContextLines(
       BuildContext context, ParsedScript script, Color charColor) {
+    if (_fullIdxScript != script) {
+      _fullIdxScript = script;
+      _fullIdxById = {
+        for (var i = 0; i < script.lines.length; i++) script.lines[i].id: i,
+      };
+    }
     // Show the 2 lines before the current one in the full script
     final currentLine = _myLines[_currentLineIdx];
-    final fullIdx =
-        script.lines.indexWhere((l) => l.id == currentLine.id);
+    final fullIdx = _fullIdxById![currentLine.id] ?? -1;
     final contextLines = <ScriptLine>[];
     for (var i = fullIdx - 1; i >= 0 && contextLines.length < 2; i--) {
       final line = script.lines[i];

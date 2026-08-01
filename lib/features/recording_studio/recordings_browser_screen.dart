@@ -584,12 +584,16 @@ class _RecordingsBrowserScreenState
 
   /// Resolve a recording's local path — if the stored absolute path is stale
   /// (app container UUID changed after reinstall), try the current Documents dir.
+  // Documents dir resolved once — _resolveRecordingPath runs per recording
+  // during the existence scan (hundreds of platform-channel hops otherwise).
+  Directory? _docsDirCache;
+
   Future<String?> _resolveRecordingPath(Recording recording) async {
     // Try stored path first
     if (File(recording.localPath).existsSync()) return recording.localPath;
 
     // Try current Documents/recordings/{filename}
-    final docsDir = await getApplicationDocumentsDirectory();
+    final docsDir = _docsDirCache ??= await getApplicationDocumentsDirectory();
     final filename = p.basename(recording.localPath);
     final resolved = p.join(docsDir.path, 'recordings', filename);
     if (File(resolved).existsSync()) return resolved;
