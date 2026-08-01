@@ -419,8 +419,12 @@ class _ScriptImportScreenState extends ConsumerState<ScriptImportScreen> {
       _preview = ParsedScript(
         title: script.title,
         lines: result.lines,
+        // Scene ranges are positional — removing review lines shifts every
+        // later scene, which rehearsal (linesInScene) would then play from
+        // the wrong part of the script.
+        scenes: ParsedScript.remapScenes(
+            script.scenes, script.lines, result.lines),
         characters: script.characters,
-        scenes: script.scenes,
         rawText: script.rawText,
       );
     });

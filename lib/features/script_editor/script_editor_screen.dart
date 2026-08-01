@@ -601,7 +601,9 @@ class _ScriptEditorScreenState extends ConsumerState<ScriptEditorScreen> {
       title: script.title,
       lines: reindexed,
       characters: script.characters,
-      scenes: script.scenes,
+      // A reorder moves lines across scene boundaries — remap so each scene
+      // still covers its own lines (see ParsedScript.remapScenes).
+      scenes: ParsedScript.remapScenes(script.scenes, script.lines, reindexed),
       rawText: script.rawText,
     );
 
@@ -1143,7 +1145,11 @@ class _ScriptEditorScreenState extends ConsumerState<ScriptEditorScreen> {
       title: script.title,
       lines: updatedLines,
       characters: charList,
-      scenes: script.scenes,
+      // Positional scene ranges must follow line insertions/deletions or
+      // rehearsal plays the wrong slice (see ParsedScript.remapScenes).
+      // A no-op when the edit didn't change line count or order.
+      scenes:
+          ParsedScript.remapScenes(script.scenes, script.lines, updatedLines),
       rawText: script.rawText,
     );
     // Editor mutations used to live in memory only — an app kill, or
@@ -1192,7 +1198,11 @@ class _ScriptEditorScreenState extends ConsumerState<ScriptEditorScreen> {
       title: script.title,
       lines: updatedLines,
       characters: charList,
-      scenes: script.scenes,
+      // Positional scene ranges must follow line insertions/deletions or
+      // rehearsal plays the wrong slice (see ParsedScript.remapScenes).
+      // A no-op when the edit didn't change line count or order.
+      scenes:
+          ParsedScript.remapScenes(script.scenes, script.lines, updatedLines),
       rawText: script.rawText,
     );
     // Editor mutations used to live in memory only — an app kill, or

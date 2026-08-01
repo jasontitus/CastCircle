@@ -316,6 +316,48 @@ class ParsedScript {
     required this.rawText,
   });
 
+  /// Rebuild scene line ranges after the lines list changed (removals,
+  /// insertions, reordering), matching lines by id.
+  ///
+  /// Scenes are POSITIONAL — [ScriptScene.startLineIndex]/[endLineIndex]
+  /// index into [lines] — so ANY edit that shifts positions silently
+  /// repoints every later scene at the wrong slice. The script itself still
+  /// reads correctly everywhere (the editor and export walk `lines`), but
+  /// rehearsal plays [linesInScene], so it pulls dialogue from a different
+  /// part of the play. That was the field report: "the lines are all out of
+  /// order in rehearsal, but the script is fine" after an OCR review pass
+  /// removed not-script lines.
+  ///
+  /// Scene identity (id, name, location) is preserved; a scene whose lines
+  /// were all removed is dropped.
+  static List<ScriptScene> remapScenes(
+    List<ScriptScene> scenes,
+    List<ScriptLine> oldLines,
+    List<ScriptLine> newLines,
+  ) {
+    final newIndexById = <String, int>{
+      for (var i = 0; i < newLines.length; i++) newLines[i].id: i,
+    };
+    final remapped = <ScriptScene>[];
+    for (final scene in scenes) {
+      int? start;
+      int? end;
+      final from = scene.startLineIndex.clamp(0, oldLines.length);
+      final to = (scene.endLineIndex + 1).clamp(from, oldLines.length);
+      for (var i = from; i < to; i++) {
+        final idx = newIndexById[oldLines[i].id];
+        if (idx == null) continue; // line was removed
+        if (start == null || idx < start) start = idx;
+        if (end == null || idx > end) end = idx;
+      }
+      if (start == null || end == null) continue; // scene fully removed
+      remapped.add(
+        scene.copyWith(startLineIndex: start, endLineIndex: end),
+      );
+    }
+    return remapped;
+  }
+
   /// Get all lines for a specific character, including multi-character lines
   /// where this character is one of the speakers.
   List<ScriptLine> linesForCharacter(String characterName) {
