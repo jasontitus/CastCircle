@@ -1844,20 +1844,27 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
     if (script == null || scene == null) return;
     final dialogueLines = _getRehearsalLines(script, scene, myCharacter);
 
-    // Prefetch the first line plus the next two TTS lines.
+    // QUEUE the first line plus the next two TTS lines (primes the engine),
+    // but only WAIT for the first line plus the opening chunk of the second:
+    // that guarantees a gapless first transition without holding the start
+    // hostage to three full lines of ~realtime synthesis (field: "1 of 5"
+    // took noticeably longer than just starting used to).
     _prefetchLineAudio(firstLine);
     var idx = dialogueLines.indexOf(firstLine);
-    final targets = <ScriptLine>[firstLine];
+    ScriptLine? secondLine;
     for (var n = 0; n < 2 && idx >= 0; n++) {
       final next = _nextOtherLine(dialogueLines, idx, myCharacter, mode);
       if (next == null) break;
       _prefetchLineAudio(next);
-      targets.add(next);
+      secondLine ??= next;
       idx = dialogueLines.indexOf(next);
     }
 
     final futures = <Future<String?>>[
-      for (final t in targets) ...?_ttsPrefetch[t.id],
+      ...?_ttsPrefetch[firstLine.id],
+      if (secondLine != null &&
+          (_ttsPrefetch[secondLine.id]?.isNotEmpty ?? false))
+        _ttsPrefetch[secondLine.id]!.first,
     ];
     if (futures.isEmpty) return;
 
