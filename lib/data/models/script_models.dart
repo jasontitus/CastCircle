@@ -361,9 +361,15 @@ class ParsedScript {
   }
 
   /// Get unique act names in order.
+  // Memoized via Expando (the class has a const constructor, so it can't
+  // hold a mutable field): every access walked all lines, and UI code reads
+  // `acts` repeatedly. Instances are immutable (copyWith builds new ones).
+  static final _actsCache = Expando<List<String>>();
   List<String> get acts {
+    final cached = _actsCache[this];
+    if (cached != null) return cached;
     final seen = <String>{};
-    return lines
+    return _actsCache[this] = lines
         .where((l) => l.act.isNotEmpty && seen.add(l.act))
         .map((l) => l.act)
         .toList();

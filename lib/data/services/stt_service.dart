@@ -253,10 +253,18 @@ class SttService {
   /// must say the words in roughly the right sequence to score well.
   /// Handles insertions, deletions, and STT adding extra words gracefully.
   /// Strip stage directions the same way [matchScore] does.
+  // Compiled once: these run per partial STT result (several times/second
+  // while the actor speaks), and RegExp() compiles on construction.
+  static final _parenRe = RegExp(r'\([^)]*\)');
+  static final _bracketRe = RegExp(r'\[[^\]]*\]');
+  static final _unclosedRe = RegExp(r'[(\[][^)\]]*$');
+  static final _wsRe = RegExp(r'\s+');
+  static final _nonWordSpaceRe = RegExp(r'[^\w\s]');
+
   static String _dialogueOnly(String expected) => expected
-      .replaceAll(RegExp(r'\([^)]*\)'), ' ')
-      .replaceAll(RegExp(r'\[[^\]]*\]'), ' ')
-      .replaceAll(RegExp(r'[(\[][^)\]]*$'), ' '); // unclosed (OCR-dropped close)
+      .replaceAll(_parenRe, ' ')
+      .replaceAll(_bracketRe, ' ')
+      .replaceAll(_unclosedRe, ' '); // unclosed (OCR-dropped close)
 
   /// Whether the transcript shows the actor actually REACHED THE END of the
   /// line: at least two of its last three dialogue words appear near the end
@@ -273,12 +281,12 @@ class SttService {
     // gluing "good-humoured" into one token the recognizer (which emits
     // "good humoured") could never produce.
     final exp = _normalize(_dialogueOnly(expected).replaceAll('-', ' '))
-        .split(RegExp(r'\s+'))
+        .split(_wsRe)
         .where((w) => w.isNotEmpty)
         .toList();
     if (exp.isEmpty) return true;
     final spo = _normalize(spoken.replaceAll('-', ' '))
-        .split(RegExp(r'\s+'))
+        .split(_wsRe)
         .where((w) => w.isNotEmpty)
         .toList();
     if (spo.isEmpty) return false;
@@ -308,8 +316,8 @@ class SttService {
     final normalizedExpected = _normalize(dialogueExpected);
     if (normalizedExpected.isEmpty) return 1.0;
 
-    final expectedWords = normalizedExpected.split(RegExp(r'\s+'));
-    final spokenWords = _normalize(spoken).split(RegExp(r'\s+'));
+    final expectedWords = normalizedExpected.split(_wsRe);
+    final spokenWords = _normalize(spoken).split(_wsRe);
 
     if (spokenWords.isEmpty || (spokenWords.length == 1 && spokenWords[0].isEmpty)) {
       return 0.0;
@@ -372,7 +380,7 @@ class SttService {
   }
 
   static String _normalize(String text) {
-    return text.toLowerCase().replaceAll(RegExp(r'[^\w\s]'), '').trim();
+    return text.toLowerCase().replaceAll(_nonWordSpaceRe, '').trim();
   }
 
   // ── Concurrent Recording ─────────────────────────────

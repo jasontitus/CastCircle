@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
@@ -169,6 +170,19 @@ class RecordingSyncService {
       _dlog.logError(
           LogCategory.error, 'RecordingSync: cache manifest restore failed', e);
     }
+  }
+
+  /// Debounced variant for the REALTIME path: the manifest re-encodes the
+  /// ENTIRE global cache, and each castmate-recording arrival used to
+  /// trigger a full O(all cached recordings) encode + rewrite. Coalescing a
+  /// burst into one write loses at most 2 s of index on a crash (the audio
+  /// files themselves are already on disk). End-of-sync callers keep the
+  /// immediate [_saveManifest] — one write per sync, and deterministic for
+  /// tests that read the manifest right after.
+  Timer? _manifestDebounce;
+  void _saveManifestDebounced() {
+    _manifestDebounce?.cancel();
+    _manifestDebounce = Timer(const Duration(seconds: 2), _saveManifest);
   }
 
   /// Persist the cache index. Writes are chained (downloads run 4-way
@@ -630,7 +644,7 @@ class RecordingSyncService {
         character: characterName,
         productionId: productionId,
       );
-      _saveManifest();
+      _saveManifestDebounced();
 
       onRecordingReady?.call(lineId, path);
     } catch (e) {

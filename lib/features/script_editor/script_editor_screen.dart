@@ -1026,6 +1026,8 @@ class _ScriptEditorScreenState extends ConsumerState<ScriptEditorScreen> {
     final controller = TextEditingController(text: line.text);
 
     showDialog(
+      // Dispose when the dialog closes — same leak class as the edit sheet
+      // controllers fixed earlier (this site was missed).
       context: context,
       builder: (context) => AlertDialog(
         title: const Text('Split Line'),
@@ -1062,7 +1064,7 @@ class _ScriptEditorScreenState extends ConsumerState<ScriptEditorScreen> {
           ),
         ],
       ),
-    );
+    ).whenComplete(controller.dispose);
   }
 
   void _applySplit(ScriptLine line, int splitPos) {

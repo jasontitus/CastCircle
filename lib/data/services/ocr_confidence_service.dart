@@ -90,12 +90,15 @@ class OcrConfidenceService {
     }
   }
 
-  /// Inject a theatrical vocabulary directly (for tests/unit use).
-  @visibleForTesting
+  /// Inject a theatrical vocabulary directly (tests, or a background isolate
+  /// that can't touch rootBundle — see script_import's Isolate.run scoring).
   void setTheatricalVocab(Set<String> vocab) {
     _theatricalVocab = vocab.map((w) => w.trim().toLowerCase()).toSet();
     _vocabLoadAttempted = true;
   }
+
+  /// The loaded vocab, for handing to a background isolate's scorer.
+  Set<String> get theatricalVocab => _theatricalVocab;
 
   /// Dispose the spell checker to free memory.
   void dispose() {
@@ -245,6 +248,11 @@ class OcrConfidenceService {
       {List<ScriptCharacter> characters = const []}) {
     _ensureLoaded();
     _buildWhitelist(lines, characters);
+    // The memo's validity depends on the whitelist, which is per-script:
+    // without this, a word whitelisted by a PREVIOUS import stays "valid"
+    // for every later script (wrong review verdicts), and the cache grows
+    // monotonically across imports.
+    _wordValidCache.clear();
 
     return lines.map((line) {
       if (line.text.trim().isEmpty) return line;

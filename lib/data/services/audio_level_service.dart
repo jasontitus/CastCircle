@@ -54,6 +54,12 @@ class AudioLevelService {
       volume = 1.0; // analysis unavailable — leave playback untouched
     }
 
+    // Cheap LRU cap: the cache is keyed by file path and previously grew
+    // without bound across re-recordings and productions. 512 doubles is
+    // tiny, but unbounded-forever is how slow leaks are born.
+    if (_gainCache.length >= 512) {
+      _gainCache.remove(_gainCache.keys.first);
+    }
     _gainCache[path] = volume;
     return volume;
   }

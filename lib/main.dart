@@ -18,6 +18,7 @@ import 'data/services/model_download_service.dart';
 import 'data/services/tts_service.dart';
 import 'data/services/stt_service.dart';
 import 'data/services/debug_log_service.dart';
+import 'data/services/frame_stats_service.dart';
 import 'data/services/sync_queue.dart';
 import 'firebase_options.dart';
 
@@ -109,6 +110,10 @@ void main() async {
 
   // Initialize debug logging first so other services can use it
   await DebugLogService.instance.init();
+
+  // UI jank telemetry into the field log — dumpsys gfxinfo can't see
+  // Flutter's frames, so this is the only field-visible jank measure.
+  FrameStatsService.instance.install();
 
   // Start recording upload queue so local recordings sync to cloud
   SyncQueue.instance.start();

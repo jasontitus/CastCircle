@@ -457,14 +457,22 @@ class TtsService {
   /// directions ("(softly)", "(crossing to the window)", "[aside]"), never the
   /// spoken words — so they should never be read aloud. Collapses the leftover
   /// whitespace. Exposed for reuse (e.g. line-matching) and testing.
+  // Compiled once: stripStageDirections runs per speak() AND per rehearsal
+  // quiet-sample plausibility check.
+  static final _parenRe = RegExp(r'\([^)]*\)');
+  static final _bracketRe = RegExp(r'\[[^\]]*\]');
+  static final _unclosedRe = RegExp(r'[(\[][^)\]]*$');
+  static final _wsRe = RegExp(r'\s+');
+  static final _sentenceSplitRe = RegExp(r'(?<=[.!?;])\s+');
+
   static String stripStageDirections(String text) {
-    var t = text.replaceAll(RegExp(r'\([^)]*\)'), ' '); // (closed)
-    t = t.replaceAll(RegExp(r'\[[^\]]*\]'), ' '); // [closed]
+    var t = text.replaceAll(_parenRe, ' '); // (closed)
+    t = t.replaceAll(_bracketRe, ' '); // [closed]
     // Unclosed direction running to end of the line — OCR'd scripts routinely
     // drop the closing ')' / ']' (the direction wraps to the next line), e.g.
     // "Nothing would delight me more. (MRS. GARDINER and ELIZABETH turn to…".
-    t = t.replaceAll(RegExp(r'[(\[][^)\]]*$'), ' ');
-    return t.replaceAll(RegExp(r'\s+'), ' ').trim();
+    t = t.replaceAll(_unclosedRe, ' ');
+    return t.replaceAll(_wsRe, ' ').trim();
   }
 
   /// Split text into chunks at sentence boundaries for Kokoro's 510 token limit.
@@ -478,6 +486,9 @@ class TtsService {
   /// gaps: the "slow playthrough" complaint). Expanding to the full word
   /// removes the false boundary at every layer and pins the pronunciation.
   @visibleForTesting
+  static final _abbrevRe = RegExp(
+      r'\b(Mr|Mrs|Ms|Dr|Prof|Rev|Capt|Col|Lt|Sgt|Jr|Sr|St)\.');
+
   static String expandAbbreviations(String text) {
     const expansions = {
       'Mr': 'Mister',
@@ -497,7 +508,8 @@ class TtsService {
     return text.replaceAllMapped(
       // Word-boundary + period, case as written (titles are capitalized in
       // scripts; leave lowercase "st." etc alone rather than guess).
-      RegExp(r'\b(' + expansions.keys.join('|') + r')\.'),
+      // Compiled once — this runs per speak().
+      _abbrevRe,
       (m) => expansions[m[1]]!,
     );
   }
@@ -508,7 +520,7 @@ class TtsService {
     // multi-sentence line so playback starts after ~one sentence of synthesis
     // while the rest generates during playback. (Cross-sentence prosody loss
     // is negligible — sherpa synthesizes per sentence internally anyway.)
-    final sentences = text.split(RegExp(r'(?<=[.!?;])\s+'));
+    final sentences = text.split(_sentenceSplitRe);
     if (text.length <= 120 || sentences.length < 2) {
       if (text.length <= 300) return [text];
     }

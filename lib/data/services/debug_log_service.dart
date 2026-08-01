@@ -181,8 +181,11 @@ class DebugLogService {
       return;
     }
     try {
+      // No flush: an fsync per entry on the CALLER'S thread (often the UI
+      // isolate mid-rehearsal) costs milliseconds each. The OS buffers the
+      // append; the periodic _flushTimer and crash reports cover durability.
       File(path).writeAsStringSync('${entry.toLine()}\n',
-          mode: FileMode.append, flush: true);
+          mode: FileMode.append);
     } catch (e) {
       debugPrint('Log append failed: $e');
     }

@@ -180,11 +180,20 @@ class ScriptImportService {
   Future<ParsedScript> _scoreConfidence(ParsedScript script) async {
     final scorer = OcrConfidenceService.instance;
     try {
+      // Vocab loads on the MAIN isolate (rootBundle), but the scoring itself
+      // — a 251K-word dictionary probe per distinct word across the whole
+      // script — runs in a background isolate, exactly like the parse: doing
+      // it on the UI isolate froze the import spinner for seconds on big
+      // scanned plays.
       await scorer.ensureVocabLoaded();
-      final scoredLines = scorer.scoreScript(
-        script.lines,
-        characters: script.characters,
-      );
+      final vocab = scorer.theatricalVocab;
+      final lines = script.lines;
+      final characters = script.characters;
+      final scoredLines = await Isolate.run(() {
+        final s = OcrConfidenceService.instance; // fresh in this isolate
+        s.setTheatricalVocab(vocab);
+        return s.scoreScript(lines, characters: characters);
+      });
       var reviewCount = 0;
       var notScriptCount = 0;
       for (final l in scoredLines) {
@@ -633,6 +642,15 @@ class ScriptImportService {
 
   /// Estimate OCR confidence for a line based on text heuristics.
   /// Returns 0.0 (garbage) to 1.0 (clean).
+  // Compiled once — _estimateLineConfidence runs per OCR line on the ML Kit
+  // fallback path (thousands of lines per scanned play).
+  static final _validCharRe = RegExp(r'''[a-zA-Z0-9 .,;:!?'"()\-/]''');
+  static final _confWsRe = RegExp(r'\s+');
+  static final _vowelRe = RegExp(r'[aeiouAEIOU]');
+  static final _loneCharRe = RegExp(r'^[IaO0-9]$');
+  static final _quadRepeatRe = RegExp(r'(.)\1{3,}');
+  static final _tripleRepeatRe = RegExp(r'(.)\1{2}');
+
   static double _estimateLineConfidence(String text) {
     if (text.trim().isEmpty) return 1.0;
 
@@ -641,7 +659,7 @@ class ScriptImportService {
 
     // 1. Ratio of alphanumeric + common punctuation vs junk characters
     final cleanChars = trimmed.replaceAll(
-      RegExp(r'''[a-zA-Z0-9 .,;:!?'"()\-/]'''),
+      _validCharRe,
       '',
     );
     final junkRatio = cleanChars.length / trimmed.length;
@@ -653,13 +671,13 @@ class ScriptImportService {
       score -= 0.05;
 
     // 2. Words without vowels (likely garbled)
-    final words = trimmed.split(RegExp(r'\s+'));
+    final words = trimmed.split(_confWsRe);
     if (words.isNotEmpty) {
       var noVowelCount = 0;
       for (final word in words) {
         if (word.length <= 2) continue;
         if (word == word.toUpperCase() && word.length <= 12) continue;
-        if (!RegExp(r'[aeiouAEIOU]').hasMatch(word)) {
+        if (!_vowelRe.hasMatch(word)) {
           noVowelCount++;
         }
       }
@@ -672,7 +690,7 @@ class ScriptImportService {
 
     // 3. Lone single characters (fragmented words)
     final loneChars = words
-        .where((w) => w.length == 1 && !RegExp(r'^[IaO0-9]$').hasMatch(w))
+        .where((w) => w.length == 1 && !_loneCharRe.hasMatch(w))
         .length;
     if (words.length > 2) {
       final loneRatio = loneChars / words.length;
@@ -683,9 +701,9 @@ class ScriptImportService {
     }
 
     // 4. Repeated characters (stutter from misread: "tttthe")
-    if (RegExp(r'(.)\1{3,}').hasMatch(trimmed)) {
+    if (_quadRepeatRe.hasMatch(trimmed)) {
       score -= 0.3;
-    } else if (RegExp(r'(.)\1{2}').hasMatch(trimmed.toLowerCase())) {
+    } else if (_tripleRepeatRe.hasMatch(trimmed.toLowerCase())) {
       final triples = RegExp(
         r'(.)\1{2}',
       ).allMatches(trimmed.toLowerCase()).length;
