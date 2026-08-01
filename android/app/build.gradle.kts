@@ -76,3 +76,16 @@ android {
 flutter {
     source = "../.."
 }
+
+dependencies {
+    // ONNX Runtime Java bindings for PaddleOcrPlugin.kt — VENDORED, not the
+    // Maven AAR: the AAR bundles its own libonnxruntime.so (1.22.0) which
+    // collides with sherpa-onnx's newer bundled copy (1.27.0), and the jniLibs
+    // merge can pick the wrong one (sherpa's JNI needs C-API v27; the 1.22 lib
+    // would kill live matching + TTS at runtime). So we ship only the AAR's
+    // classes.jar + per-ABI libonnxruntime4j_jni.so (app-source jniLibs) and
+    // let sherpa's libonnxruntime.so be the ONLY C runtime — the 1.22 Java
+    // bridge runs on it via ORT's versioned C API. Regenerate with
+    // scripts/fetch-ort-java.sh; scripts/verify-apk-ort.sh checks the APK.
+    implementation(files("libs/onnxruntime-java-1.22.0.jar"))
+}

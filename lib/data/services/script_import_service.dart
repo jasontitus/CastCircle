@@ -388,7 +388,10 @@ class ScriptImportService {
         buffer.writeln();
         rawLineIndex++;
       }
-      debugPrint(
+      // Field log, not debugPrint: which engine ran DECIDES import quality
+      // and must show up in debug reports.
+      DebugLogService.instance.log(
+        LogCategory.general,
         'PDF OCR (PaddleOCR): ${paddleResult.pageCount} pages, '
         '${paddleResult.failedPages} failed, '
         'stripped $strippedMargin margin notes + $strippedFurniture running '

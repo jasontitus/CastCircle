@@ -9,6 +9,7 @@ class MainActivity : FlutterActivity() {
 
         // Register custom platform channel plugins
         flutterEngine.plugins.add(AndroidSttPlugin())
+        flutterEngine.plugins.add(PaddleOcrPlugin())
         flutterEngine.plugins.add(PdfTextPlugin())
         flutterEngine.plugins.add(ContactPickerPlugin())
         flutterEngine.plugins.add(MemoryMonitorPlugin())
