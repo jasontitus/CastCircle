@@ -128,6 +128,25 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
   Timer? _silenceTimer;
   static const _silenceTimeout = Duration(seconds: 5);
 
+  /// When listening for the current actor line began. The silence timeout's
+  /// "still audibly speaking" re-arm defers advancing while the mic hears
+  /// anything above the threshold — in a room with steady background noise
+  /// that loop starved the timeout FOREVER (field: 35+ s of dead air after
+  /// the actor finished, until they tapped next themselves). [_listenDeadline]
+  /// is the un-starvable ceiling: generous enough for slow delivery of the
+  /// line's actual length, but noise can no longer postpone it.
+  DateTime? _listenStartedAt;
+  Duration _listenMaxWait = const Duration(seconds: 30);
+
+  /// Ceiling for how long we listen for [line]: ~3× a slow reading of the
+  /// text (12 s floor for one-word lines, 45 s cap for monologues).
+  static Duration _maxListenFor(ScriptLine line) {
+    final words = line.text.split(RegExp(r'\s+')).length;
+    // ~140 wpm reading pace → seconds, tripled for hesitant delivery.
+    final secs = (words / 140.0 * 60.0 * 3.0).clamp(12.0, 45.0);
+    return Duration(milliseconds: (secs * 1000).round());
+  }
+
   // Match confirmation timer — don't advance while actor is still speaking.
   // When match score exceeds threshold, wait for a brief silence before advancing
   // to ensure the actor has finished reading a long multi-sentence line.
@@ -2210,7 +2229,10 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
     // Full expected phrase + its individual words only
     final vocabHints = <String>[cleanLine, ...wordHints];
 
-    // Start silence timer — if no new results for a while, auto-advance
+    // Start silence timer — if no new results for a while, auto-advance.
+    // Also stamp the listening ceiling for this line (see _listenStartedAt).
+    _listenStartedAt = DateTime.now();
+    _listenMaxWait = _maxListenFor(line);
     _resetSilenceTimer(line);
 
     // Live mic level for the listening indicator (smoothed in SttService).
@@ -2483,14 +2505,30 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
 
       // Never time out an actor who is audibly mid-line — if level events
       // stalled but the mic still hears speech, come back shortly instead.
-      if (_stt.inputLevel >= SttService.silenceThreshold) {
+      // But only up to the per-line ceiling: steady background noise sits
+      // above the threshold too, and an unbounded re-arm loop left the
+      // actor stranded with no fallback at all.
+      final started = _listenStartedAt;
+      final pastCeiling = started != null &&
+          DateTime.now().difference(started) > _listenMaxWait;
+      if (!pastCeiling && _stt.inputLevel >= SttService.silenceThreshold) {
         _silenceTimer = Timer(const Duration(milliseconds: 500), () {
           if (mounted) _resetSilenceTimer(line);
         });
         return;
       }
 
-      _logLineOutcome('silence timeout');
+      if (pastCeiling && mounted) {
+        // Make the rescue visible — a silent advance after a long noisy
+        // wait reads as random. (never-silently-fail)
+        ScaffoldMessenger.of(context).showAutoToast(const SnackBar(
+          content: Text("Couldn't confirm your line — advancing. If this "
+              'keeps happening, the room may be too noisy for line '
+              'matching.'),
+          duration: Duration(seconds: 5),
+        ));
+      }
+      _logLineOutcome(pastCeiling ? 'noise-capped timeout' : 'silence timeout');
       _stopCaptureForLine(line);
       _stt.stop();
 
@@ -2893,6 +2931,10 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
     if (started) {
       _isCapturingAudio = true;
       // Hard fallback so a silent/never-ending mic still advances.
+      // Stamp the ceiling here too — this is Android's listen start, and a
+      // stale stamp from the previous line would trip pastCeiling instantly.
+      _listenStartedAt = DateTime.now();
+      _listenMaxWait = _maxListenFor(line);
       _resetSilenceTimer(line);
     } else {
       // Never silent: tell the user recording didn't happen.
