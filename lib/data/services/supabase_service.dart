@@ -242,13 +242,15 @@ class SupabaseService {
 
   // ── Cast ──────────────────────────────────────────────
 
-  Future<List<Map<String, dynamic>>> fetchCastMembers(
-      String productionId) async {
+  Future<List<Map<String, dynamic>>> fetchCastMembers(String productionId,
+      {String? joinCode}) async {
     try {
-      // Try RPC first (bypasses RLS)
+      // Try RPC first (bypasses RLS). v3 requires the join code for callers
+      // who aren't members yet (the join flow); members pass no code and
+      // are authorized by membership.
       final rpcResult = await _client.rpc(
         'fetch_cast_for_join',
-        params: {'prod_id': productionId},
+        params: {'prod_id': productionId, 'code': joinCode ?? ''},
       );
       if (rpcResult != null && rpcResult is List) {
         return List<Map<String, dynamic>>.from(
@@ -354,10 +356,11 @@ class SupabaseService {
   Future<void> claimInvitation({
     required String castMemberId,
     required String userId,
+    required String joinCode,
   }) async {
     try {
       await _client.rpc('claim_cast_invitation',
-          params: {'member_id': castMemberId});
+          params: {'member_id': castMemberId, 'code': joinCode});
       // The RPC returns void even when it matched 0 rows (role already
       // claimed) — verify the row is actually ours before reporting success.
       final row = await _client
@@ -431,14 +434,16 @@ class SupabaseService {
     required String userId,
     required String characterName,
     required String displayName,
-    required String role,
+    required String joinCode,
   }) async {
     try {
+      // v3: the RPC verifies the join code and forces role='actor'
+      // server-side (a caller-supplied role was never trustworthy).
       final result = await _client.rpc('join_production', params: {
         'prod_id': productionId,
+        'code': joinCode,
         'char_name': characterName,
         'display_name': displayName,
-        'member_role': role,
       });
       if (result != null && result is Map) {
         _dlog.log(LogCategory.network,
@@ -458,7 +463,8 @@ class SupabaseService {
             'user_id': userId,
             'character_name': characterName,
             'display_name': displayName,
-            'role': role,
+            // The insert policy only allows self-rows with a plain role.
+            'role': 'actor',
             'joined_at': DateTime.now().toIso8601String(),
           })
           .select()

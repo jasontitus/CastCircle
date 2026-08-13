@@ -393,9 +393,12 @@ class _JoinProductionScreenState extends ConsumerState<JoinProductionScreen> {
         return;
       }
 
-      // Fetch cast members to show available characters
+      // Fetch cast members to show available characters. Pass the code:
+      // the caller isn't a member yet, and the v3 RPC authorizes pre-join
+      // roster reads by code knowledge only.
       final productionId = production['id'] as String;
-      final cast = await supa.fetchCastMembers(productionId);
+      final cast = await supa.fetchCastMembers(productionId,
+          joinCode: _codeController.text.trim().toUpperCase());
       if (!mounted) return;
 
       // Auto-select the character that was pre-filled from deep link
@@ -471,6 +474,7 @@ class _JoinProductionScreenState extends ConsumerState<JoinProductionScreen> {
           await supa.claimInvitation(
             castMemberId: invitation.first['id'] as String,
             userId: userId,
+            joinCode: _codeController.text.trim().toUpperCase(),
           );
           localMember = CastMemberModel(
             id: invitation.first['id'] as String,
@@ -493,7 +497,7 @@ class _JoinProductionScreenState extends ConsumerState<JoinProductionScreen> {
           userId: userId,
           characterName: characterName,
           displayName: name,
-          role: 'actor',
+          joinCode: _codeController.text.trim().toUpperCase(),
         );
         localMember = CastMemberModel(
           id: row['id'] as String,
