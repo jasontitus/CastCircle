@@ -751,18 +751,34 @@ class _CharacterManagerScreenState
         )
         .toList();
 
-    // Recalculate scenes with updated characters
-    final updatedScenes = script.scenes.map((scene) {
+    // Scene ranges are POSITIONAL indices into `lines`, so deleting or
+    // merging a character (which drops that character's lines) shifts every
+    // later scene — rehearsal would then play the wrong slice while the
+    // script itself still read correctly. Remap by line id first.
+    final remappedScenes = ParsedScript.remapScenes(
+      script.scenes,
+      script.lines,
+      updatedLines,
+    );
+
+    // Then recompute each scene's character list from its (new) range.
+    // NB: index into updatedLines positionally — the previous code compared
+    // `line.orderIndex` against the scene's start/end, which are different
+    // domains (the parser numbers orderIndex from 1, a drag-reorder renumbers
+    // it from 0), so the membership test was wrong even before any edit.
+    final updatedScenes = remappedScenes.map((scene) {
       final sceneChars = <String>{};
-      for (final line in updatedLines) {
-        if (line.orderIndex >= scene.startLineIndex &&
-            line.orderIndex <= scene.endLineIndex &&
-            line.lineType == LineType.dialogue &&
-            line.character.isNotEmpty) {
+      final end = scene.endLineIndex.clamp(0, updatedLines.length - 1);
+      for (var i = scene.startLineIndex; i <= end; i++) {
+        final line = updatedLines[i];
+        if (line.lineType != LineType.dialogue) continue;
+        if (line.multiCharacters.isNotEmpty) {
+          sceneChars.addAll(line.multiCharacters);
+        } else if (line.character.isNotEmpty) {
           sceneChars.add(line.character);
         }
       }
-      return scene.copyWith(characters: sceneChars.toList());
+      return scene.copyWith(characters: sceneChars.toList()..sort());
     }).toList();
 
     ref.read(currentScriptProvider.notifier).state = ParsedScript(

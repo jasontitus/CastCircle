@@ -108,5 +108,35 @@ void main() {
       expect(remapped[1].startLineIndex, 3);
       expect(remapped[1].endLineIndex, 4);
     });
+
+    test('deleting a character keeps later scenes on their own lines', () {
+      // Mirrors character_manager_screen._applyDelete: drop every line of one
+      // character, then remap. Field-class bug — the script still reads
+      // correctly, but rehearsal opens a scene on someone else's dialogue.
+      final all = [
+        line('a0', 'scene one, keeper', character: 'KEEP'),
+        line('a1', 'scene one, doomed', character: 'CUT'),
+        line('a2', 'scene one, keeper 2', character: 'KEEP'),
+        line('a3', 'scene two first', character: 'KEEP'),
+        line('a4', 'scene two, doomed', character: 'CUT'),
+        line('a5', 'scene two last', character: 'KEEP'),
+      ];
+      final scenes = [scene('s1', 'Scene 1', 0, 2), scene('s2', 'Scene 2', 3, 5)];
+      final kept = all.where((l) => l.character != 'CUT').toList();
+
+      final remapped = ParsedScript.remapScenes(scenes, all, kept);
+      final script = ParsedScript(
+          title: 't',
+          lines: kept,
+          characters: const [],
+          scenes: remapped,
+          rawText: '');
+
+      expect(script.linesInScene(remapped[0]).map((l) => l.id), ['a0', 'a2']);
+      // Without the remap this returned ['a2'] + nothing / the wrong window.
+      expect(script.linesInScene(remapped[1]).map((l) => l.id), ['a3', 'a5']);
+      expect(remapped[1].startLineIndex, 2);
+      expect(remapped[1].endLineIndex, 3);
+    });
   });
 }
