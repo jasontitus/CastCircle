@@ -28,12 +28,28 @@ class PdfPageView extends StatefulWidget {
 }
 
 class _PdfPageViewState extends State<PdfPageView> {
+  /// Always points at a cache-owned image (or null). The LRU cache is the
+  /// SOLE owner of every decoded page: nothing else disposes them, and
+  /// eviction skips whichever image is currently on screen.
   ui.Image? _pageImage;
   bool _loading = true;
   String? _renderError;
   final _txController = TransformationController();
   late int _currentPage;
   int _totalPages = 0;
+
+  /// The document handle is opened once per file and reused across page
+  /// flips — every flip used to re-open the PDF (re-parsing the xref) from
+  /// disk before rendering.
+  PdfDocument? _doc;
+  String? _docPath;
+
+  /// Decoded pages, keyed by page number, small LRU. A page flip back to a
+  /// recently-viewed page (the OCR review flow bounces between pages
+  /// constantly in the two-pane layout) reuses the decode instead of paying
+  /// a multi-hundred-ms render + a fresh multi-MB RGBA allocation.
+  final _pageCache = <int, ui.Image>{};
+  static const _maxCachedPages = 4;
 
   /// Bumped on every [_renderPage] call. Rendering a page takes long enough
   /// that quickly stepping through lines leaves several renders in flight; a
@@ -63,20 +79,60 @@ class _PdfPageViewState extends State<PdfPageView> {
 
   @override
   void dispose() {
-    _pageImage?.dispose();
+    _evictAllCached();
+    _doc?.dispose();
     _txController.dispose();
     super.dispose();
+  }
+
+  void _evictAllCached() {
+    for (final img in _pageCache.values) {
+      img.dispose();
+    }
+    _pageCache.clear();
+    _pageImage = null; // was cache-owned; now disposed
+  }
+
+  void _cachePut(int page, ui.Image image) {
+    final replaced = _pageCache.remove(page);
+    if (replaced != null && !identical(replaced, image)) {
+      if (identical(replaced, _pageImage)) _pageImage = null;
+      replaced.dispose();
+    }
+    _pageCache[page] = image;
+    // Maps iterate in insertion order — earliest key = least recently
+    // inserted/hit. Never evict the image currently on screen.
+    final evictable = _pageCache.keys
+        .where((k) => !identical(_pageCache[k], _pageImage))
+        .toList();
+    for (final k in evictable) {
+      if (_pageCache.length <= _maxCachedPages) break;
+      _pageCache.remove(k)?.dispose();
+    }
   }
 
   Future<void> _renderPage() async {
     final generation = ++_renderGeneration;
     final page = _currentPage;
+
+    // Cache hit: instant flip, no I/O, no decode.
+    final cached = _pageCache.remove(page);
+    if (cached != null) {
+      _pageCache[page] = cached; // refresh LRU position
+      setState(() {
+        _pageImage = cached;
+        _loading = false;
+        _renderError = null;
+      });
+      _txController.value = Matrix4.identity();
+      return;
+    }
+
     setState(() {
       _loading = true;
       _renderError = null;
     });
-    _pageImage?.dispose();
-    _pageImage = null;
+    _pageImage = null; // cache still owns the old image
     _txController.value = Matrix4.identity();
 
     try {
@@ -85,26 +141,38 @@ class _PdfPageViewState extends State<PdfPageView> {
         return dir.path;
       };
 
-      final doc = await PdfDocument.openFile(widget.pdfPath);
-      if (_isStale(generation)) {
-        await doc.dispose();
-        return;
+      // Reuse the open document; a new file (or a closed handle) reopens.
+      if (_doc == null || _docPath != widget.pdfPath) {
+        await _doc?.dispose();
+        _evictAllCached();
+        _doc = await PdfDocument.openFile(widget.pdfPath);
+        _docPath = widget.pdfPath;
       }
+      final doc = _doc!;
+      if (_isStale(generation)) return;
       _totalPages = doc.pages.length;
       final pageIdx = page - 1;
       if (pageIdx < 0 || pageIdx >= doc.pages.length) {
-        await doc.dispose();
         _fail(generation, 'Page $page is not in this PDF '
             '(it has $_totalPages page(s)).');
         return;
       }
 
       final pdfPage = doc.pages[pageIdx];
+      // Render sized to the display, not a fixed 3×: viewport width ×
+      // devicePixelRatio × 2 (zoom headroom for reading small print), capped
+      // at 3× intrinsic. A letter-size scan at fixed 3× was a ~17 MB RGBA
+      // buffer + decode per flip regardless of the screen showing it.
+      final media = MediaQuery.maybeOf(context);
+      final viewW = media == null ? 800.0 : media.size.width;
+      final dpr = media?.devicePixelRatio ?? 2.0;
+      final targetW =
+          (viewW * dpr * 2).clamp(pdfPage.width, pdfPage.width * 3);
+      final scale = targetW / pdfPage.width;
       final pdfImage = await pdfPage.render(
-        fullWidth: pdfPage.width * 3,
-        fullHeight: pdfPage.height * 3,
+        fullWidth: pdfPage.width * scale,
+        fullHeight: pdfPage.height * scale,
       );
-      await doc.dispose();
 
       if (pdfImage == null) {
         _fail(generation, 'Page $page could not be rendered.');
@@ -115,9 +183,14 @@ class _PdfPageViewState extends State<PdfPageView> {
       pdfImage.dispose();
 
       // A newer request (or a dispose) beat us here — this image would show the
-      // wrong page, and dropping it without disposing leaks its pixel buffer.
+      // wrong page. It's still a perfectly good decode: cache it for the flip
+      // back instead of discarding it.
       if (_isStale(generation)) {
-        image.dispose();
+        if (mounted) {
+          _cachePut(page, image);
+        } else {
+          image.dispose();
+        }
         return;
       }
 
@@ -125,6 +198,7 @@ class _PdfPageViewState extends State<PdfPageView> {
         _pageImage = image;
         _loading = false;
       });
+      _cachePut(page, image);
     } catch (e, stack) {
       _fail(generation, 'Page $page of this PDF could not be shown.', e, stack);
     }

@@ -665,8 +665,6 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
     final script = ref.watch(currentScriptProvider);
     final scene = ref.watch(selectedSceneProvider);
     final myCharacter = ref.watch(rehearsalCharacterProvider);
-    final currentIdx = ref.watch(currentLineIndexProvider);
-    final rehearsalState = ref.watch(rehearsalStateProvider);
     final jumpBackLines = ref.watch(jumpBackLinesProvider);
 
     if (script == null || scene == null) {
@@ -679,28 +677,43 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
     final mode = ref.watch(rehearsalModeProvider);
     final dialogueLines = _getRehearsalLines(script, scene, myCharacter);
 
-    final isComplete = currentIdx >= dialogueLines.length;
-    final currentLine = isComplete ? null : dialogueLines[currentIdx];
-    final isMyLine = mode != RehearsalMode.readthrough &&
-        myCharacter != null &&
-        (currentLine?.isForCharacter(myCharacter) ?? false);
-    final progress = dialogueLines.isEmpty
-        ? 0.0
-        : currentIdx / dialogueLines.length;
+    // REBUILD-STORM FIX: currentLineIndexProvider and rehearsalStateProvider
+    // are the app's fastest-changing providers (every line advance, every
+    // STT state flip). They used to be watched HERE, so each advance rebuilt
+    // the entire screen — including every realized list row (the large
+    // cacheExtent keeps ~dozens alive). Every consumer of the pair below is
+    // now a scoped Consumer, and the line list itself never rebuilds on an
+    // advance: rows subscribe to their own `select`s (see _buildScriptView).
+    bool isMyLineAt(int idx) {
+      if (mode == RehearsalMode.readthrough || myCharacter == null) {
+        return false;
+      }
+      if (idx >= dialogueLines.length) return false;
+      return dialogueLines[idx].isForCharacter(myCharacter);
+    }
 
     return Scaffold(
       backgroundColor: Colors.black,
       body: SafeArea(
         child: Column(
           children: [
-            _buildTopBar(context, scene, progress, rehearsalState, mode),
-            LinearProgressIndicator(
-              value: progress,
-              backgroundColor: Colors.grey[900],
-              color: isMyLine
-                  ? Theme.of(context).colorScheme.primary
-                  : Colors.grey[600],
-            ),
+            Consumer(builder: (context, ref, _) {
+              final currentIdx = ref.watch(currentLineIndexProvider);
+              final rehearsalState = ref.watch(rehearsalStateProvider);
+              final progress = dialogueLines.isEmpty
+                  ? 0.0
+                  : currentIdx / dialogueLines.length;
+              return Column(children: [
+                _buildTopBar(context, scene, progress, rehearsalState, mode),
+                LinearProgressIndicator(
+                  value: progress,
+                  backgroundColor: Colors.grey[900],
+                  color: isMyLineAt(currentIdx)
+                      ? Theme.of(context).colorScheme.primary
+                      : Colors.grey[600],
+                ),
+              ]);
+            }),
             // Session-start voice pre-roll progress (see _preRollVoices).
             ValueListenableBuilder<(int, int)?>(
               valueListenable: _preparingVoices,
@@ -734,28 +747,47 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
               },
             ),
             Expanded(
-              child: isComplete
-                  ? _buildCompletionView(context, scene, dialogueLines.length)
-                  : _buildScriptView(
-                      context, script, dialogueLines, currentIdx, myCharacter,
-                      rehearsalState),
+              // Rebuilds only when completion flips, not per advance.
+              child: Consumer(builder: (context, ref, _) {
+                final isComplete = ref.watch(currentLineIndexProvider
+                    .select((i) => i >= dialogueLines.length));
+                return isComplete
+                    ? _buildCompletionView(context, scene, dialogueLines.length)
+                    : _buildScriptView(
+                        context, script, dialogueLines, myCharacter);
+              }),
             ),
             // Match feedback for STT. Listens instead of reading the field so
             // a new partial result repaints this bar alone.
-            if (isMyLine)
-              ValueListenableBuilder<bool>(
+            Consumer(builder: (context, ref, _) {
+              final onMyLine = ref.watch(
+                  currentLineIndexProvider.select((i) => isMyLineAt(i)));
+              if (!onMyLine) return const SizedBox.shrink();
+              return ValueListenableBuilder<bool>(
                 valueListenable: _showMatchFeedback,
                 builder: (context, show, _) => show
                     ? _buildMatchFeedback(context)
                     : const SizedBox.shrink(),
-              ),
+              );
+            }),
             // AirPods / Action Button hint
-            if (_showJumpBackHint && !isComplete)
-              _buildJumpBackHint(context),
-            _buildControls(
-              context, rehearsalState, isMyLine, isComplete,
-              currentIdx, dialogueLines.length, jumpBackLines,
-            ),
+            if (_showJumpBackHint)
+              Consumer(builder: (context, ref, _) {
+                final isComplete = ref.watch(currentLineIndexProvider
+                    .select((i) => i >= dialogueLines.length));
+                return isComplete
+                    ? const SizedBox.shrink()
+                    : _buildJumpBackHint(context);
+              }),
+            Consumer(builder: (context, ref, _) {
+              final currentIdx = ref.watch(currentLineIndexProvider);
+              final rehearsalState = ref.watch(rehearsalStateProvider);
+              return _buildControls(
+                context, rehearsalState, isMyLineAt(currentIdx),
+                currentIdx >= dialogueLines.length,
+                currentIdx, dialogueLines.length, jumpBackLines,
+              );
+            }),
           ],
         ),
       ),
@@ -969,9 +1001,7 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
     BuildContext context,
     ParsedScript script,
     List<ScriptLine> dialogueLines,
-    int currentIdx,
     String? myCharacter,
-    RehearsalState rehearsalState,
   ) {
     // Hoisted out of itemBuilder: with cacheExtent forcing ~145 rows built,
     // a per-row indexWhere over the cast was O(rows × characters) per frame.
@@ -990,24 +1020,39 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
     final list = ListView.builder(
       controller: _scrollController,
       padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
-      // Large cache extent so items are built before they're visible.
-      // This ensures _currentLineKey is always available for scrolling.
-      cacheExtent: 10000,
+      // Generous cache so _currentLineKey is materialized for key-based
+      // scrolling across normal advances (estimated-offset fallback covers
+      // long jumps). Was 10000 — with the per-advance rebuild storm fixed,
+      // the remaining cost of cached rows is construction on the RARE full
+      // rebuild, but ~30-50 rows a side is still plenty.
+      cacheExtent: 3000,
       itemCount: dialogueLines.length,
       itemBuilder: (context, index) {
         final line = dialogueLines[index];
-        final isCurrent = index == currentIdx;
-        final isPast = index < currentIdx;
         final isMe = mode != RehearsalMode.readthrough &&
             myCharacter != null &&
             line.isForCharacter(myCharacter);
-        final fontSize = isCurrent ? baseFontSize : baseFontSize - 3;
 
         // For multi-character lines, use first individual for color lookup
         final colorLookupName = line.multiCharacters.isNotEmpty
             ? line.multiCharacters.first
             : line.character;
         final charIdx = charIndexByName[colorLookupName] ?? -1;
+
+        // Each row watches ONLY its own derived booleans: on a line advance
+        // exactly the outgoing and incoming rows rebuild (their selects
+        // flip); every other realized row's subscriptions are unchanged.
+        return Consumer(builder: (context, ref, _) {
+        final isCurrent =
+            ref.watch(currentLineIndexProvider.select((i) => i == index));
+        final isPast =
+            ref.watch(currentLineIndexProvider.select((i) => index < i));
+        // Only the current row shows state-dependent chrome (mic pulse /
+        // speaker icon), so only it subscribes to the STT state flips.
+        final rehearsalState = isCurrent
+            ? ref.watch(rehearsalStateProvider)
+            : RehearsalState.ready;
+        final fontSize = isCurrent ? baseFontSize : baseFontSize - 3;
         final color = charIdx >= 0
             ? AppTheme.colorForCharacter(charIdx)
             : Colors.grey;
@@ -1152,6 +1197,7 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
               ],
             ),
         );
+        });
       },
     );
     // Cap the reading column on tablets so script lines stay comfortably
