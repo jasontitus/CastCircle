@@ -205,9 +205,6 @@ class ScriptScene {
     required this.characters,
   });
 
-  /// How many dialogue lines in this scene.
-  int get dialogueLineCount => characters.isEmpty ? 0 : endLineIndex - startLineIndex + 1;
-
   /// Display label for scene picker.
   String get displayLabel {
     if (location.isNotEmpty) return '$sceneName — $location';

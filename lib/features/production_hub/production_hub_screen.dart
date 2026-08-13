@@ -383,6 +383,33 @@ class _ProductionHubScreenState extends ConsumerState<ProductionHubScreen> {
     );
   }
 
+  Map<String, (int, int)>? _sceneCountsCache;
+  (List<ScriptLine>, List<ScriptScene>, String?)? _sceneCountsKey;
+
+  /// scene.id → (dialogue count, my-line count), one pass per scene.
+  Map<String, (int, int)> _memoSceneCounts(
+      ParsedScript script, String? myCharacter) {
+    final key = (script.lines, script.scenes, myCharacter);
+    if (_sceneCountsCache != null &&
+        identical(_sceneCountsKey?.$1, key.$1) &&
+        identical(_sceneCountsKey?.$2, key.$2) &&
+        _sceneCountsKey?.$3 == key.$3) {
+      return _sceneCountsCache!;
+    }
+    final counts = <String, (int, int)>{};
+    for (final scene in script.scenes) {
+      var dialogue = 0, mine = 0;
+      for (final l in script.linesInScene(scene)) {
+        if (l.lineType != LineType.dialogue) continue;
+        dialogue++;
+        if (myCharacter != null && l.isForCharacter(myCharacter)) mine++;
+      }
+      counts[scene.id] = (dialogue, mine);
+    }
+    _sceneCountsKey = key;
+    return _sceneCountsCache = counts;
+  }
+
   Widget _buildSceneList(
     BuildContext context,
     ParsedScript script,
@@ -405,6 +432,11 @@ class _ProductionHubScreenState extends ConsumerState<ProductionHubScreen> {
         script.characters[i].name: i,
     };
 
+    // Per-scene dialogue/my-line counts, memoized on (lines, character):
+    // linesInScene sublists the script per visible row, re-running on every
+    // list rebuild (mode toggles, filters) — O(sceneSize) allocation per row.
+    final sceneCounts = _memoSceneCounts(script, myCharacter);
+
     return ListView.builder(
       padding: const EdgeInsets.all(16),
       itemCount: scenes.length,
@@ -412,15 +444,8 @@ class _ProductionHubScreenState extends ConsumerState<ProductionHubScreen> {
         final scene = scenes[index];
         final isMyScene =
             myCharacter != null && scene.characters.contains(myCharacter);
-        // One pass per row — linesInScene walks the whole script.
-        final sceneDialogue = script
-            .linesInScene(scene)
-            .where((l) => l.lineType == LineType.dialogue)
-            .toList();
-        final myLineCount = myCharacter != null
-            ? sceneDialogue.where((l) => l.isForCharacter(myCharacter)).length
-            : 0;
-        final totalDialogue = sceneDialogue.length;
+        final (totalDialogue, myLineCount) =
+            sceneCounts[scene.id] ?? (0, 0);
 
         return Card(
           margin: const EdgeInsets.only(bottom: 12),

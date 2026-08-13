@@ -105,24 +105,36 @@ class _VoiceConfigScreenState extends ConsumerState<VoiceConfigScreen> {
                   // Assignment computed ONCE for all tiles (it walks every
                   // script line), with gender overrides so the shown voice
                   // matches rehearsal playback.
-                  ...(() {
-                    final autoAssignment =
-                        VoiceConfigService.assignVoicesFromScript(
-                      lines: script.lines,
-                      characters: script.characters,
-                      femaleVoices: _currentPreset.femaleVoices,
-                      maleVoices: _currentPreset.maleVoices,
-                      genderOverrides: _genderOverrides,
-                    );
-                    return script.characters.map(
-                      (char) => _buildCharacterTile(
-                          char, production.id, script, autoAssignment),
-                    );
-                  })(),
+                  ...script.characters.map(
+                    (char) => _buildCharacterTile(char, production.id, script,
+                        _memoAssignment(script)),
+                  ),
                   const SizedBox(height: 32),
                 ],
               ),
             ),
+    );
+  }
+
+  // Memoized like cast_manager's copy: the full-script adjacency walk +
+  // greedy coloring re-ran on every setState (preset tap, dialect toggle)
+  // for a script that hadn't changed.
+  Map<String, String>? _assignmentCache;
+  Object? _assignmentKey;
+
+  Map<String, String> _memoAssignment(ParsedScript script) {
+    final key = Object.hash(identityHashCode(script.lines), _currentPreset.id,
+        _genderOverrides.toString());
+    if (_assignmentCache != null && _assignmentKey == key) {
+      return _assignmentCache!;
+    }
+    _assignmentKey = key;
+    return _assignmentCache = VoiceConfigService.assignVoicesFromScript(
+      lines: script.lines,
+      characters: script.characters,
+      femaleVoices: _currentPreset.femaleVoices,
+      maleVoices: _currentPreset.maleVoices,
+      genderOverrides: _genderOverrides,
     );
   }
 

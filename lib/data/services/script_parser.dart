@@ -61,10 +61,13 @@ class ScriptParser {
   /// untouched) with optional adjacent page numbers.
   final List<RegExp> _headerScrubPatterns = [];
 
+  static final _nonAlnumSpaceRe = RegExp(r'[^a-z0-9 ]');
+  static final _wsRunRe = RegExp(r'\s+');
+
   static String _normalizeForHeader(String s) => s
       .toLowerCase()
-      .replaceAll(RegExp(r'[^a-z0-9 ]'), '')
-      .replaceAll(RegExp(r'\s+'), ' ')
+      .replaceAll(_nonAlnumSpaceRe, '')
+      .replaceAll(_wsRunRe, ' ')
       .trim();
 
   // Noise patterns (page headers, footers, OCR artifacts)
@@ -1123,13 +1126,30 @@ class ScriptParser {
     return false;
   }
 
+  // _cleanLine runs once per raw line AND once per flushed block — compiling
+  // its four patterns inline was tens of thousands of RegExp constructions
+  // per full-length import (same class of fix as _cuePatterns below).
+  static final _ocrJunkCharsRe = RegExp(r'[|~°]');
+  static final _trailingSlashRe = RegExp(r'\s+[/\\]\s*$');
+  static final _multiSpaceRe = RegExp(r'  +');
+  static final _trailingBracketNoiseRe = RegExp(r'\s*\[[A-Z0-9][^\]]*$');
+  // Per-line loop patterns from _parseLines, hoisted for the same reason.
+  static final _folgerRunningHeaderRe =
+      RegExp(r'ACT \d+\. SC\.', caseSensitive: false);
+  static final _actHeaderRe = RegExp(
+      r'^(?:ACT\s+(?:THE\s+)?(?:[IV]+|\d+|FIRST|SECOND|THIRD|FOURTH|FIFTH)\.?|Actus\s+\w+)',
+      caseSensitive: false);
+  static final _sceneHeaderRe = RegExp(
+      r'^(?:SCENE\s+[\d.IVXiv]+|Sc[oe]na\s+\w+)',
+      caseSensitive: false);
+
   /// Clean OCR artifacts from text.
   String _cleanLine(String text) {
-    text = text.replaceAll(RegExp(r'[|~°]'), '');
-    text = text.replaceAll(RegExp(r'\s+[/\\]\s*$'), '');
-    text = text.replaceAll(RegExp(r'  +'), ' ');
+    text = text.replaceAll(_ocrJunkCharsRe, '');
+    text = text.replaceAll(_trailingSlashRe, '');
+    text = text.replaceAll(_multiSpaceRe, ' ');
     // Strip trailing OCR noise: bracketed fragments like "[I.4 -HIL A leter for..."
-    text = text.replaceAll(RegExp(r'\s*\[[A-Z0-9][^\]]*$'), '');
+    text = text.replaceAll(_trailingBracketNoiseRe, '');
     return text.trim();
   }
 
@@ -1471,13 +1491,9 @@ class ScriptParser {
       // ACT headers — check BEFORE noise filter since "ACT 1" looks like noise.
       // Matches: "ACT I", "ACT 1", "ACT THE FIRST.", "ACT FIRST.",
       // "Actus Primus", but NOT Folger running headers "ACT 2. SC. 1"
-      final isRunningHeader = RegExp(r'ACT \d+\. SC\.', caseSensitive: false).hasMatch(line);
-      final actMatch = isRunningHeader
-          ? null
-          : RegExp(
-              r'^(?:ACT\s+(?:THE\s+)?(?:[IV]+|\d+|FIRST|SECOND|THIRD|FOURTH|FIFTH)\.?|Actus\s+\w+)',
-              caseSensitive: false,
-            ).firstMatch(line);
+      final isRunningHeader = _folgerRunningHeaderRe.hasMatch(line);
+      final actMatch =
+          isRunningHeader ? null : _actHeaderRe.firstMatch(line);
       if (actMatch != null) {
         flushDialogue();
         currentAct = line.trim();
@@ -1501,10 +1517,7 @@ class ScriptParser {
 
       // Explicit SCENE headers (supports "SCENE 1", "SCENE IV", "SCENE 1.2",
       // and Latin "Scena Secunda", "Scoena Prima")
-      final sceneMatch = RegExp(
-        r'^(?:SCENE\s+[\d.IVXiv]+|Sc[oe]na\s+\w+)',
-        caseSensitive: false,
-      ).firstMatch(line);
+      final sceneMatch = _sceneHeaderRe.firstMatch(line);
       if (sceneMatch != null) {
         flushDialogue();
         currentScene = line.trim();

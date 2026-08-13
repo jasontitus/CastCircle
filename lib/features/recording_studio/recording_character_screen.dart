@@ -4,6 +4,7 @@ import 'package:go_router/go_router.dart';
 
 import '../../core/responsive.dart';
 import '../../core/theme/app_theme.dart';
+import '../../data/models/script_models.dart';
 import '../../providers/production_providers.dart';
 
 class RecordingCharacterScreen extends ConsumerWidget {
@@ -37,7 +38,37 @@ class RecordingCharacterScreen extends ConsumerWidget {
           ),
         ],
       ),
-      body: Column(
+      body: _CharacterList(script: script, recordings: recordings),
+    );
+  }
+}
+
+/// Body with the per-character line index computed ONCE per build:
+/// linesForCharacter scans the whole script, and calling it inside
+/// itemBuilder made every newly-visible row an O(script) scan
+/// (characters × lines predicate calls per full list build).
+class _CharacterList extends ConsumerWidget {
+  const _CharacterList({required this.script, required this.recordings});
+
+  final ParsedScript script;
+  final Map<String, Recording> recordings;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final linesByChar = <String, List<ScriptLine>>{
+      for (final c in script.characters) c.name: [],
+    };
+    for (final l in script.lines) {
+      if (l.lineType != LineType.dialogue) continue;
+      if (l.multiCharacters.isNotEmpty) {
+        for (final name in l.multiCharacters) {
+          linesByChar[name]?.add(l);
+        }
+      } else {
+        linesByChar[l.character]?.add(l);
+      }
+    }
+    return Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Padding(
@@ -56,7 +87,7 @@ class RecordingCharacterScreen extends ConsumerWidget {
                 itemBuilder: (context, index) {
                   final char = script.characters[index];
                   final color = AppTheme.colorForCharacter(char.colorIndex);
-                  final charLines = script.linesForCharacter(char.name);
+                  final charLines = linesByChar[char.name] ?? const [];
                   final recordedCount = charLines
                       .where((l) => recordings.containsKey(l.id))
                       .length;
@@ -108,7 +139,6 @@ class RecordingCharacterScreen extends ConsumerWidget {
             ),
           ),
         ],
-      ),
     );
   }
 }

@@ -37,6 +37,29 @@ class _CastManagerScreenState extends ConsumerState<CastManagerScreen> {
   Map<String, String>? _assignmentCache;
   Object? _assignmentKey;
 
+  // linesByChar depends only on the script, but this screen rebuilds on
+  // every castMembers/recordings sync — a background recording arriving
+  // re-walked a multi-thousand-line script for nothing.
+  Map<String, List<ScriptLine>>? _linesByCharCache;
+  List<ScriptLine>? _linesByCharKey;
+
+  Map<String, List<ScriptLine>> _memoLinesByChar(ParsedScript script) {
+    if (_linesByCharCache != null && identical(_linesByCharKey, script.lines)) {
+      return _linesByCharCache!;
+    }
+    // Mirrors isForCharacter: character match OR multiCharacters membership.
+    final linesByChar = <String, List<ScriptLine>>{};
+    for (final l in script.lines) {
+      if (l.lineType != LineType.dialogue) continue;
+      if (l.character.isNotEmpty) (linesByChar[l.character] ??= []).add(l);
+      for (final c in l.multiCharacters) {
+        if (c != l.character) (linesByChar[c] ??= []).add(l);
+      }
+    }
+    _linesByCharKey = script.lines;
+    return _linesByCharCache = linesByChar;
+  }
+
   Map<String, String> _memoAssignment(ParsedScript script) {
     final key = Object.hash(
         identityHashCode(script), _currentPreset, _genderOverrides.toString());
@@ -189,15 +212,7 @@ class _CastManagerScreenState extends ConsumerState<CastManagerScreen> {
         understudyByChar.putIfAbsent(m.characterName, () => m);
       }
     }
-    // Mirrors isForCharacter: character match OR multiCharacters membership.
-    final linesByChar = <String, List<ScriptLine>>{};
-    for (final l in script.lines) {
-      if (l.lineType != LineType.dialogue) continue;
-      if (l.character.isNotEmpty) (linesByChar[l.character] ??= []).add(l);
-      for (final c in l.multiCharacters) {
-        if (c != l.character) (linesByChar[c] ??= []).add(l);
-      }
-    }
+    final linesByChar = _memoLinesByChar(script);
 
     // Check if any characters still need actors assigned
     final unassignedCount = script.characters

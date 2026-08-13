@@ -46,7 +46,12 @@ class _RecordingStudioScreenState extends ConsumerState<RecordingStudioScreen> {
   RecordingStatus _status = RecordingStatus.idle;
   int _currentLineIdx = 0;
   String? _currentRecordingPath;
-  Duration _recordingDuration = Duration.zero;
+  // ValueNotifier, not a field + setState: the 10 Hz tick used to rebuild
+  // the ENTIRE studio screen for the whole recording (re-running the
+  // recorded-count scan and context-line walk while the device encoded
+  // audio). Only the timer label listens now.
+  final ValueNotifier<Duration> _recordingDuration =
+      ValueNotifier(Duration.zero);
   Timer? _durationTimer;
   String? _initError;
 
@@ -87,6 +92,7 @@ class _RecordingStudioScreenState extends ConsumerState<RecordingStudioScreen> {
   @override
   void dispose() {
     _durationTimer?.cancel();
+    _recordingDuration.dispose();
     final recorder = _recorder;
     if (_stopInFlight) {
       // _stopRecording is mid-save and will release the recorder itself.
@@ -101,7 +107,7 @@ class _RecordingStudioScreenState extends ConsumerState<RecordingStudioScreen> {
         character: _character,
         notifier: _recordingsNotifier,
         productionId: _productionId,
-        durationMs: _recordingDuration.inMilliseconds,
+        durationMs: _recordingDuration.value.inMilliseconds,
       ));
     } else {
       recorder?.dispose();
@@ -443,9 +449,12 @@ class _RecordingStudioScreenState extends ConsumerState<RecordingStudioScreen> {
                 const Icon(Icons.fiber_manual_record,
                     color: Colors.red, size: 12),
                 const SizedBox(width: 6),
-                Text(
-                  _formatDuration(_recordingDuration),
-                  style: const TextStyle(color: Colors.red, fontSize: 14),
+                ValueListenableBuilder<Duration>(
+                  valueListenable: _recordingDuration,
+                  builder: (context, d, _) => Text(
+                    _formatDuration(d),
+                    style: const TextStyle(color: Colors.red, fontSize: 14),
+                  ),
                 ),
               ],
             ),
@@ -618,12 +627,10 @@ class _RecordingStudioScreenState extends ConsumerState<RecordingStudioScreen> {
     }
 
     _currentRecordingPath = filePath;
-    _recordingDuration = Duration.zero;
+    _recordingDuration.value = Duration.zero;
     _durationTimer = Timer.periodic(const Duration(milliseconds: 100), (_) {
       if (mounted) {
-        setState(() {
-          _recordingDuration += const Duration(milliseconds: 100);
-        });
+        _recordingDuration.value += const Duration(milliseconds: 100);
       }
     });
 
@@ -640,7 +647,7 @@ class _RecordingStudioScreenState extends ConsumerState<RecordingStudioScreen> {
     final character = _character;
     final notifier = _recordingsNotifier;
     final productionId = _productionId;
-    final durationMs = _recordingDuration.inMilliseconds;
+    final durationMs = _recordingDuration.value.inMilliseconds;
 
     String? path;
     _stopInFlight = true; // dispose() must leave the recorder alone until we're done

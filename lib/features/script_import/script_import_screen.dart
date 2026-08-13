@@ -174,8 +174,34 @@ class _ScriptImportScreenState extends ConsumerState<ScriptImportScreen> {
     );
   }
 
+  // (dialogue, review, notScript) counts in one pass, memoized on the line
+  // list identity — three separate full scans re-ran on every preview
+  // setState (dialect taps, the _saving toggles).
+  (List<ScriptLine>, int, int, int)? _previewCounts;
+  (int, int, int) _countsFor(ParsedScript script) {
+    final cached = _previewCounts;
+    if (cached != null && identical(cached.$1, script.lines)) {
+      return (cached.$2, cached.$3, cached.$4);
+    }
+    var dialogue = 0, review = 0, notScript = 0;
+    for (final l in script.lines) {
+      if (l.lineType == LineType.dialogue) dialogue++;
+      switch (l.reviewStatus) {
+        case OcrReviewStatus.review:
+          review++;
+        case OcrReviewStatus.likelyNotScript:
+          notScript++;
+        case OcrReviewStatus.ok:
+          break;
+      }
+    }
+    _previewCounts = (script.lines, dialogue, review, notScript);
+    return (dialogue, review, notScript);
+  }
+
   Widget _buildPreview(BuildContext context) {
     final script = _preview!;
+    final (dialogueCount, _, _) = _countsFor(script);
 
     return Column(
       children: [
@@ -186,11 +212,7 @@ class _ScriptImportScreenState extends ConsumerState<ScriptImportScreen> {
           child: Row(
             mainAxisAlignment: MainAxisAlignment.spaceAround,
             children: [
-              _statBadge(
-                context,
-                '${script.lines.where((l) => l.lineType == LineType.dialogue).length}',
-                'Lines',
-              ),
+              _statBadge(context, '$dialogueCount', 'Lines'),
               _statBadge(context, '${script.characters.length}', 'Characters'),
               _statBadge(context, '${script.acts.length}', 'Acts'),
             ],
@@ -364,12 +386,7 @@ class _ScriptImportScreenState extends ConsumerState<ScriptImportScreen> {
   /// Banner surfacing low-OCR lines flagged for review. Hidden when the import
   /// was clean (no `review` / `likelyNotScript` lines).
   Widget _buildReviewBanner(BuildContext context, ParsedScript script) {
-    final reviewCount = script.lines
-        .where((l) => l.reviewStatus == OcrReviewStatus.review)
-        .length;
-    final notScriptCount = script.lines
-        .where((l) => l.reviewStatus == OcrReviewStatus.likelyNotScript)
-        .length;
+    final (_, reviewCount, notScriptCount) = _countsFor(script);
     if (reviewCount == 0 && notScriptCount == 0) {
       return const SizedBox.shrink();
     }

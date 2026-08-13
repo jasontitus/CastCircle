@@ -112,11 +112,11 @@ class _ScriptEditorScreenState extends ConsumerState<ScriptEditorScreen> {
       charColors[char.name] = AppTheme.colorForCharacter(char.colorIndex);
     }
 
-    final filteredLines = _filteredLines(script);
-
-    final lowOcrCount = script.lines
-        .where((l) => l.ocrConfidence != null && l.ocrConfidence! < 0.85)
-        .length;
+    // Memoized: every setState in this screen (filter chips, reorder mode,
+    // tablet line select) re-ran both full-script scans. Keyed on the line
+    // list identity + the three filter knobs.
+    final filteredLines = _memoFilteredLines(script);
+    final lowOcrCount = _memoLowOcrCount(script);
 
     return Scaffold(
       appBar: AppBar(
@@ -537,6 +537,39 @@ class _ScriptEditorScreenState extends ConsumerState<ScriptEditorScreen> {
         ],
       ),
     );
+  }
+
+  List<ScriptLine>? _filteredCache;
+  (List<ScriptLine>, String?, bool, bool)? _filteredKey;
+  int _lowOcrCache = -1;
+  List<ScriptLine>? _lowOcrKey;
+
+  List<ScriptLine> _memoFilteredLines(ParsedScript script) {
+    final key = (
+      script.lines,
+      _selectedCharacter,
+      _showDirections,
+      _showLowConfidenceOnly
+    );
+    if (_filteredCache != null &&
+        identical(_filteredKey?.$1, key.$1) &&
+        _filteredKey?.$2 == key.$2 &&
+        _filteredKey?.$3 == key.$3 &&
+        _filteredKey?.$4 == key.$4) {
+      return _filteredCache!;
+    }
+    _filteredKey = key;
+    return _filteredCache = _filteredLines(script);
+  }
+
+  int _memoLowOcrCount(ParsedScript script) {
+    if (_lowOcrCache >= 0 && identical(_lowOcrKey, script.lines)) {
+      return _lowOcrCache;
+    }
+    _lowOcrKey = script.lines;
+    return _lowOcrCache = script.lines
+        .where((l) => l.ocrConfidence != null && l.ocrConfidence! < 0.85)
+        .length;
   }
 
   List<ScriptLine> _filteredLines(ParsedScript script) {

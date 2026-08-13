@@ -60,6 +60,32 @@ class _RecordingsBrowserScreenState
     super.dispose();
   }
 
+  List<_RecordedLine>? _entriesCache;
+  (List<ScriptLine>, Map<String, Recording>, String?)? _entriesKey;
+
+  List<_RecordedLine> _memoEntries(
+      ParsedScript script, Map<String, Recording> recordings) {
+    if (_entriesCache != null &&
+        identical(_entriesKey?.$1, script.lines) &&
+        identical(_entriesKey?.$2, recordings) &&
+        _entriesKey?.$3 == _filterCharacter) {
+      return _entriesCache!;
+    }
+    final linesById = {for (final l in script.lines) l.id: l};
+    final entries = <_RecordedLine>[];
+    for (final entry in recordings.entries) {
+      final line = linesById[entry.key];
+      if (line != null &&
+          (_filterCharacter == null || line.character == _filterCharacter)) {
+        entries.add(_RecordedLine(line: line, recording: entry.value));
+      }
+    }
+    entries.sort((a, b) => a.line.orderIndex.compareTo(b.line.orderIndex));
+    _scanFileExistence(entries);
+    _entriesKey = (script.lines, recordings, _filterCharacter);
+    return _entriesCache = entries;
+  }
+
   @override
   Widget build(BuildContext context) {
     final script = ref.watch(currentScriptProvider);
@@ -72,28 +98,10 @@ class _RecordingsBrowserScreenState
       );
     }
 
-    // Build a fast lookup map: O(n+m) instead of the prior O(n*m).
-    final linesById = {for (final l in script.lines) l.id: l};
-
-    // Build list of recorded lines with their recordings
-    final recordedEntries = <_RecordedLine>[];
-    for (final entry in recordings.entries) {
-      final line = linesById[entry.key];
-      if (line != null) {
-        if (_filterCharacter == null || line.character == _filterCharacter) {
-          recordedEntries.add(
-            _RecordedLine(line: line, recording: entry.value),
-          );
-        }
-      }
-    }
-
-    // Sort by script order
-    recordedEntries.sort(
-      (a, b) => a.line.orderIndex.compareTo(b.line.orderIndex),
-    );
-
-    _scanFileExistence(recordedEntries);
+    // Derived lists memoized on (lines, recordings, filter): every play/stop
+    // tap toggles _playingLineId via setState, and rebuilding + re-sorting
+    // the whole recording library per tap stuttered with hundreds of takes.
+    final recordedEntries = _memoEntries(script, recordings);
 
     // Characters that have at least one recording
     final recordedCharacters = <String>{};
@@ -591,14 +599,15 @@ class _RecordingsBrowserScreenState
   Directory? _docsDirCache;
 
   Future<String?> _resolveRecordingPath(Recording recording) async {
-    // Try stored path first
-    if (File(recording.localPath).existsSync()) return recording.localPath;
+    // Async exists(): this runs per recording in the existence scan — the
+    // sync stat variant blocked the UI isolate N times on first paint.
+    if (await File(recording.localPath).exists()) return recording.localPath;
 
     // Try current Documents/recordings/{filename}
     final docsDir = _docsDirCache ??= await getApplicationDocumentsDirectory();
     final filename = p.basename(recording.localPath);
     final resolved = p.join(docsDir.path, 'recordings', filename);
-    if (File(resolved).existsSync()) return resolved;
+    if (await File(resolved).exists()) return resolved;
 
     // Try recording cache (downloaded from cloud). The directory tree is
     // walked ONCE per screen and searched in memory — this fallback runs per

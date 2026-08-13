@@ -152,11 +152,15 @@ class _OcrReviewScreenState extends State<OcrReviewScreen> {
     });
   }
 
-  List<ScriptLine> get _reviewLines => widget.lines
+  // widget.lines never changes for this State's lifetime (edits live in
+  // _byId, removals in _removedIds), so these filters are computed once.
+  // As getters they re-scanned the whole script 5-6× per setState — tens of
+  // thousands of predicate calls per tap on a large scan.
+  late final List<ScriptLine> _reviewLines = widget.lines
       .where((l) => l.reviewStatus == OcrReviewStatus.review)
       .toList();
 
-  List<ScriptLine> get _notScriptLines => widget.lines
+  late final List<ScriptLine> _notScriptLines = widget.lines
       .where((l) => l.reviewStatus == OcrReviewStatus.likelyNotScript)
       .toList();
 
@@ -347,19 +351,7 @@ class _OcrReviewScreenState extends State<OcrReviewScreen> {
           // a TextField (one of the heaviest widgets), and a bad scan flags
           // 100-300 lines. Building them all on every setState (save, remove,
           // select) cost hundreds of ms per tap.
-          child: Builder(builder: (context) {
-            final children = _buildListChildren(
-              context,
-              reviewLines,
-              notScriptLines,
-              twoPane: false,
-            );
-            return ListView.builder(
-              padding: const EdgeInsets.all(16),
-              itemCount: children.length,
-              itemBuilder: (context, i) => children[i],
-            );
-          }),
+          child: _buildLazyList(reviewLines, notScriptLines, twoPane: false),
         ),
       ],
     );
@@ -378,19 +370,8 @@ class _OcrReviewScreenState extends State<OcrReviewScreen> {
             children: [
               Expanded(
                 flex: 5,
-                child: Builder(builder: (context) {
-                  final children = _buildListChildren(
-                    context,
-                    reviewLines,
-                    notScriptLines,
-                    twoPane: true,
-                  );
-                  return ListView.builder(
-                    padding: const EdgeInsets.all(16),
-                    itemCount: children.length,
-                    itemBuilder: (context, i) => children[i],
-                  );
-                }),
+                child:
+                    _buildLazyList(reviewLines, notScriptLines, twoPane: true),
               ),
               const VerticalDivider(width: 1),
               Expanded(
@@ -404,47 +385,67 @@ class _OcrReviewScreenState extends State<OcrReviewScreen> {
     );
   }
 
-  /// The list content shared by both layouts.
-  List<Widget> _buildListChildren(
-    BuildContext context,
+  /// The list content shared by both layouts, built LAZILY: the itemBuilder
+  /// constructs each review card (TextField — one of the heaviest widgets)
+  /// only when its row scrolls near the viewport. The previous version
+  /// prebuilt every card into a List<Widget> and indexed into it, which
+  /// made ListView.builder lazy for layout but not construction — hundreds
+  /// of card subtrees allocated per tap on a heavily-flagged scan.
+  Widget _buildLazyList(
     List<ScriptLine> reviewLines,
     List<ScriptLine> notScriptLines, {
     required bool twoPane,
   }) {
-    final theme = Theme.of(context);
-    return [
-      if (reviewLines.isEmpty)
-        Padding(
-          padding: const EdgeInsets.symmetric(vertical: 24),
-          child: Text(
-            'No lines need review.',
-            textAlign: TextAlign.center,
-            style: theme.textTheme.bodyMedium?.copyWith(
-              color: theme.colorScheme.onSurface.withValues(alpha: 0.6),
-            ),
-          ),
-        )
-      else ...[
-        Text('Review & edit', style: theme.textTheme.titleMedium),
-        const SizedBox(height: 4),
-        Text(
-          twoPane
-              ? 'Tap a line to see its page on the right. '
-                  'Fix any misread text, then Done.'
-              : 'Fix any misread text, then Done. '
-                  'Editing a line clears its flag.',
-          style: theme.textTheme.bodySmall?.copyWith(
-            color: theme.colorScheme.onSurface.withValues(alpha: 0.6),
-          ),
-        ),
-        const SizedBox(height: 12),
-        ...reviewLines.map((l) => _buildReviewCard(l, twoPane: twoPane)),
-      ],
-      if (notScriptLines.isNotEmpty) ...[
-        const SizedBox(height: 24),
-        _buildNotScriptSection(context, notScriptLines),
-      ],
-    ];
+    // Row map: 0 = header (or empty note), 1..n = review cards,
+    // then optionally [spacer, not-script section].
+    final cardCount = reviewLines.length;
+    final hasNotScript = notScriptLines.isNotEmpty;
+    final itemCount = 1 + cardCount + (hasNotScript ? 2 : 0);
+    return ListView.builder(
+      padding: const EdgeInsets.all(16),
+      itemCount: itemCount,
+      itemBuilder: (context, i) {
+        final theme = Theme.of(context);
+        if (i == 0) {
+          if (reviewLines.isEmpty) {
+            return Padding(
+              padding: const EdgeInsets.symmetric(vertical: 24),
+              child: Text(
+                'No lines need review.',
+                textAlign: TextAlign.center,
+                style: theme.textTheme.bodyMedium?.copyWith(
+                  color: theme.colorScheme.onSurface.withValues(alpha: 0.6),
+                ),
+              ),
+            );
+          }
+          return Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text('Review & edit', style: theme.textTheme.titleMedium),
+              const SizedBox(height: 4),
+              Text(
+                twoPane
+                    ? 'Tap a line to see its page on the right. '
+                        'Fix any misread text, then Done.'
+                    : 'Fix any misread text, then Done. '
+                        'Editing a line clears its flag.',
+                style: theme.textTheme.bodySmall?.copyWith(
+                  color: theme.colorScheme.onSurface.withValues(alpha: 0.6),
+                ),
+              ),
+              const SizedBox(height: 12),
+            ],
+          );
+        }
+        final cardIdx = i - 1;
+        if (cardIdx < cardCount) {
+          return _buildReviewCard(reviewLines[cardIdx], twoPane: twoPane);
+        }
+        if (cardIdx == cardCount) return const SizedBox(height: 24);
+        return _buildNotScriptSection(context, notScriptLines);
+      },
+    );
   }
 
   /// The pinned right pane on wide layouts: the source page for the selected

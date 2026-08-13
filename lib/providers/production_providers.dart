@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:isolate';
 import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
@@ -382,7 +383,9 @@ Future<void> persistScriptLocally(
   // Save a JSON backup to SharedPreferences as a second local copy
   try {
     final jsonList = script.lines.map((l) => l.toJson()).toList();
-    final jsonString = jsonEncode(jsonList);
+    // Isolate.run: encoding a full play is a multi-MB synchronous JSON pass
+    // that ran on the UI isolate inside the debounced autosave.
+    final jsonString = await Isolate.run(() => jsonEncode(jsonList));
     if (jsonString.length <= _maxBackupBytes) {
       final prefs = await SharedPreferences.getInstance();
       await prefs.setString('script_backup_$productionId', jsonString);

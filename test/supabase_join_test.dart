@@ -7,6 +7,19 @@ import 'package:http/http.dart' as http;
 ///
 /// Run with: flutter test test/supabase_join_test.dart
 void main() {
+
+  // These tests hit the LIVE production Supabase: every run signs up a real
+  // throwaway account (polluting auth.users) and requires network. They are
+  // opt-in: RUN_SUPABASE_TESTS=1 flutter test --dart-define=RUN_SUPABASE_TESTS=1 ...
+  const optIn = bool.fromEnvironment('RUN_SUPABASE_TESTS') ||
+      String.fromEnvironment('RUN_SUPABASE_TESTS') == '1';
+  if (!optIn) {
+    test('skipped — live-Supabase tests are opt-in', () {
+      markTestSkipped('Set --dart-define=RUN_SUPABASE_TESTS=1 to run the '
+          'live join-flow tests against production Supabase.');
+    });
+    return;
+  }
   const supabaseUrl = 'https://vngpbmqymdaxxnvqptsk.supabase.co';
   const anonKey = 'sb_publishable_f3YAIMI4GIEIPdDwnvfO3Q_stwSCxXI';
 

@@ -17,8 +17,16 @@ final rehearsalHistoryProvider =
 class RehearsalHistoryNotifier extends StateNotifier<List<RehearsalSession>> {
   RehearsalHistoryNotifier() : super([]);
 
+  /// Keep the most recent sessions only — the list is in-memory for the
+  /// process lifetime and every add copies it, so unbounded growth taxes
+  /// long rehearsal days for history nobody scrolls that far back into.
+  static const _maxSessions = 100;
+
   void add(RehearsalSession session) {
-    state = [session, ...state]; // newest first
+    state = [
+      session,
+      ...state.take(_maxSessions - 1),
+    ]; // newest first
   }
 
   void clear() {

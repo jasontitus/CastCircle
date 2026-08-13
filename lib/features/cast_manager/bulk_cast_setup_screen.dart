@@ -34,6 +34,7 @@ class _BulkCastSetupScreenState extends ConsumerState<BulkCastSetupScreen> {
 
   @override
   void dispose() {
+    _filledTick.dispose();
     for (final c in _nameControllers.values) {
       c.dispose();
     }
@@ -59,6 +60,12 @@ class _BulkCastSetupScreenState extends ConsumerState<BulkCastSetupScreen> {
 
   int get _filledCount =>
       _nameControllers.values.where((c) => c.text.trim().isNotEmpty).length;
+
+  /// Rebuild scope for keystrokes: only the summary bar and Save buttons
+  /// depend on the name texts, so typing bumps this notifier instead of
+  /// setState on the screen root (which re-filtered the whole cast and
+  /// re-laid-out every character card per keystroke).
+  final ValueNotifier<int> _filledTick = ValueNotifier(0);
 
   @override
   Widget build(BuildContext context) {
@@ -86,12 +93,17 @@ class _BulkCastSetupScreenState extends ConsumerState<BulkCastSetupScreen> {
           onPressed: () => context.pop(),
         ),
         actions: [
-          if (!unassigned.every((c) => _nameFor(c.name).text.trim().isEmpty))
-            TextButton.icon(
-              onPressed: _saving ? null : _saveAndShowInvites,
-              icon: const Icon(Icons.check),
-              label: const Text('Save'),
-            ),
+          ValueListenableBuilder<int>(
+            valueListenable: _filledTick,
+            builder: (context, _, __) =>
+                unassigned.every((c) => _nameFor(c.name).text.trim().isEmpty)
+                    ? const SizedBox.shrink()
+                    : TextButton.icon(
+                        onPressed: _saving ? null : _saveAndShowInvites,
+                        icon: const Icon(Icons.check),
+                        label: const Text('Save'),
+                      ),
+          ),
         ],
       ),
       body: unassigned.isEmpty
@@ -141,9 +153,12 @@ class _BulkCastSetupScreenState extends ConsumerState<BulkCastSetupScreen> {
                 padding: const EdgeInsets.all(16),
                 child: Row(
                   children: [
-                    Text(
-                      '$_filledCount of ${unassigned.length} filled in',
-                      style: Theme.of(context).textTheme.bodySmall,
+                    ValueListenableBuilder<int>(
+                      valueListenable: _filledTick,
+                      builder: (context, _, __) => Text(
+                        '$_filledCount of ${unassigned.length} filled in',
+                        style: Theme.of(context).textTheme.bodySmall,
+                      ),
                     ),
                     const Spacer(),
                     FilledButton.icon(
@@ -211,7 +226,7 @@ class _BulkCastSetupScreenState extends ConsumerState<BulkCastSetupScreen> {
                 ),
               ),
               textInputAction: TextInputAction.next,
-              onChanged: (_) => setState(() {}),
+              onChanged: (_) => _filledTick.value++,
             ),
             const SizedBox(height: 8),
             TextField(
