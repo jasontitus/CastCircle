@@ -95,29 +95,36 @@ class ContactPickerPlugin : FlutterPlugin, MethodChannel.MethodCallHandler,
                     name = cursor.getString(0)
                     val contactId = cursor.getString(1)
 
-                    // Get phone
-                    contentResolver.query(
-                        ContactsContract.CommonDataKinds.Phone.CONTENT_URI,
-                        arrayOf(ContactsContract.CommonDataKinds.Phone.NUMBER),
-                        "${ContactsContract.CommonDataKinds.Phone.CONTACT_ID} = ?",
-                        arrayOf(contactId), null
-                    )?.use { phoneCursor ->
-                        if (phoneCursor.moveToFirst()) {
-                            phone = phoneCursor.getString(0)
+                    // Phone/email need READ_CONTACTS (the picker's URI grant
+                    // covers only the picked row, not these tables), and the
+                    // app never requests it at runtime. Own try/catch per
+                    // query: a SecurityException here must degrade to
+                    // name-only, not throw away the name we already read.
+                    try {
+                        contentResolver.query(
+                            ContactsContract.CommonDataKinds.Phone.CONTENT_URI,
+                            arrayOf(ContactsContract.CommonDataKinds.Phone.NUMBER),
+                            "${ContactsContract.CommonDataKinds.Phone.CONTACT_ID} = ?",
+                            arrayOf(contactId), null
+                        )?.use { phoneCursor ->
+                            if (phoneCursor.moveToFirst()) {
+                                phone = phoneCursor.getString(0)
+                            }
                         }
-                    }
+                    } catch (_: SecurityException) {}
 
-                    // Get email
-                    contentResolver.query(
-                        ContactsContract.CommonDataKinds.Email.CONTENT_URI,
-                        arrayOf(ContactsContract.CommonDataKinds.Email.ADDRESS),
-                        "${ContactsContract.CommonDataKinds.Email.CONTACT_ID} = ?",
-                        arrayOf(contactId), null
-                    )?.use { emailCursor ->
-                        if (emailCursor.moveToFirst()) {
-                            email = emailCursor.getString(0)
+                    try {
+                        contentResolver.query(
+                            ContactsContract.CommonDataKinds.Email.CONTENT_URI,
+                            arrayOf(ContactsContract.CommonDataKinds.Email.ADDRESS),
+                            "${ContactsContract.CommonDataKinds.Email.CONTACT_ID} = ?",
+                            arrayOf(contactId), null
+                        )?.use { emailCursor ->
+                            if (emailCursor.moveToFirst()) {
+                                email = emailCursor.getString(0)
+                            }
                         }
-                    }
+                    } catch (_: SecurityException) {}
                 }
             }
 

@@ -74,7 +74,7 @@ class AndroidSttPlugin : FlutterPlugin, MethodChannel.MethodCallHandler, Activit
     override fun onDetachedFromEngine(binding: FlutterPlugin.FlutterPluginBinding) {
         channel.setMethodCallHandler(null)
         destroyRecognizer()
-        releaseRecorder()
+        releaseRecorderAsync() // main thread — never block it on the capture join
         context = null
     }
 
@@ -235,8 +235,8 @@ class AndroidSttPlugin : FlutterPlugin, MethodChannel.MethodCallHandler, Activit
         // Safety net: if the screen closes mid-capture, stop() is called without
         // a matching stopRecording — release the recorder so it doesn't leak the
         // mic. In the normal flow stopRecording already cleared it, so this is a
-        // no-op then.
-        releaseRecorder()
+        // no-op then. Async: this runs on the platform main thread.
+        releaseRecorderAsync()
         result.success(null)
     }
 
@@ -461,6 +461,26 @@ class AndroidSttPlugin : FlutterPlugin, MethodChannel.MethodCallHandler, Activit
         captureThread = null
         audioRecord = null
         recordingPath = null
+    }
+
+    /**
+     * Release without blocking the platform main thread: the capture loop
+     * can be parked in dequeueInputBuffer / drainEncoder, and joining it
+     * from stopListening/onDetachedFromEngine froze the UI for up to 1.5 s.
+     * Only safe where no NEW AudioRecord is created right after —
+     * startRecording keeps the synchronous join for the mic handoff.
+     */
+    private fun releaseRecorderAsync() {
+        capturing = false
+        val thread = captureThread
+        captureThread = null
+        audioRecord = null
+        recordingPath = null
+        if (thread != null) {
+            Thread({
+                try { thread.join(3000) } catch (_: InterruptedException) {}
+            }, "RehearsalCaptureRelease").start()
+        }
     }
 
     private fun destroyRecognizer() {

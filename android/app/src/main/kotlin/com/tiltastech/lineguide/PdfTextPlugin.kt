@@ -59,22 +59,11 @@ class PdfTextPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
     }
 
     /**
-     * Check if the PDF file is readable and has pages.
-     * Returns false so the Dart layer always uses OCR on Android.
+     * Android always answers "no embedded text" so the Dart layer uses OCR
+     * (PdfRenderer cannot extract a text layer). The old body opened the PDF
+     * and parsed its xref on the MAIN thread just to discard the result —
+     * wasted I/O per call, and the fd leaked when the PdfRenderer
+     * constructor threw on a corrupt file.
      */
-    private fun checkPdfReadable(path: String): Boolean {
-        return try {
-            val file = File(path)
-            if (!file.exists()) return false
-            val fd = ParcelFileDescriptor.open(file, ParcelFileDescriptor.MODE_READ_ONLY)
-            val renderer = PdfRenderer(fd)
-            val hasPages = renderer.pageCount > 0
-            renderer.close()
-            fd.close()
-            // Return false to force OCR path on Android (PdfRenderer can't extract text)
-            false
-        } catch (e: Exception) {
-            false
-        }
-    }
+    private fun checkPdfReadable(path: String): Boolean = false
 }

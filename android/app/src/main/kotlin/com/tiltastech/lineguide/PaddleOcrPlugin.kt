@@ -166,7 +166,11 @@ class PaddleOcrPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
             return
         }
         try {
-            PdfRenderer(fd).use { renderer ->
+            // fd.use: if the PdfRenderer constructor throws on a corrupt
+            // PDF, .use on the renderer never runs and the fd leaked —
+            // repeated corrupt imports exhausted the fd table.
+            fd.use { openFd ->
+            PdfRenderer(openFd).use { renderer ->
                 val pageCount = renderer.pageCount
                 val pages = ArrayList<Map<String, Any>>(pageCount)
                 var failed = 0
@@ -201,6 +205,7 @@ class PaddleOcrPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
                     result.success(
                         mapOf("pages" to pages, "pageCount" to pageCount, "failedPages" to failed))
                 }
+            }
             }
         } catch (t: Throwable) {
             mainHandler.post { result.error("PDF_OCR_FAILED", "$t", null) }
@@ -280,66 +285,85 @@ class PaddleOcrPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
     /** Threshold the DB probability map and extract axis-aligned boxes via a
      * scanline connected-components pass, scaled back to original coords. */
     private fun detectBoxes(prob: FloatArray, mW: Int, mH: Int, origW: Int, origH: Int): List<Rect> {
-        val label = IntArray(mW * mH)
-        var next = 1
-        val minX = ArrayList<Int>()
-        val minY = ArrayList<Int>()
-        val maxX = ArrayList<Int>()
-        val maxY = ArrayList<Int>()
-        val area = ArrayList<Int>()
-        fun newComp() {
-            minX.add(Int.MAX_VALUE); minY.add(Int.MAX_VALUE)
-            maxX.add(0); maxY.add(0); area.add(0)
-        }
-        newComp() // index 0 unused
-        val stack = ArrayDeque<Int>()
-        for (sy in 0 until mH) {
-            for (sx in 0 until mW) {
-                val s = sy * mW + sx
-                if (prob[s] <= detThresh || label[s] != 0) continue
-                newComp()
-                val id = next
-                next++
-                stack.clear()
-                stack.addLast(s)
-                label[s] = id
-                while (stack.isNotEmpty()) {
-                    val p = stack.removeLast()
-                    val x = p % mW
-                    val y = p / mW
-                    if (x < minX[id]) minX[id] = x
-                    if (x > maxX[id]) maxX[id] = x
-                    if (y < minY[id]) minY[id] = y
-                    if (y > maxY[id]) maxY[id] = y
-                    area[id] = area[id] + 1
-                    // 4-neighborhood
-                    if (x > 0) { val np = p - 1; if (prob[np] > detThresh && label[np] == 0) { label[np] = id; stack.addLast(np) } }
-                    if (x < mW - 1) { val np = p + 1; if (prob[np] > detThresh && label[np] == 0) { label[np] = id; stack.addLast(np) } }
-                    if (y > 0) { val np = p - mW; if (prob[np] > detThresh && label[np] == 0) { label[np] = id; stack.addLast(np) } }
-                    if (y < mH - 1) { val np = p + mW; if (prob[np] > detThresh && label[np] == 0) { label[np] = id; stack.addLast(np) } }
-                }
-            }
-        }
+        // All-primitive connected components: the previous version kept
+        // per-component bounds in ArrayList<Int> and the DFS stack in
+        // ArrayDeque<Int> — ~2 Integer autobox allocations per foreground
+        // pixel (hundreds of thousands per dense page) of pure GC churn.
+        // Each component completes before the next seed, so its bounds are
+        // plain locals; the stack is a grow-by-doubling IntArray.
+        val visited = BooleanArray(mW * mH)
+        var stack = IntArray(4096)
         val sx = origW.toFloat() / mW
         val sy = origH.toFloat() / mH
         val boxes = ArrayList<Rect>()
-        for (id in 1 until next) {
-            if (area[id] < detMinBoxArea) continue
-            // DBNet shrinks text regions — recover full glyphs with PP-OCR's
-            // "unclip": expand by dist = area·ratio/perimeter before the ±1px
-            // pad (Mac-verified: word accuracy 92% → 99%).
-            val bw = maxX[id] - minX[id] + 1
-            val bh = maxY[id] - minY[id] + 1
-            val dist = ((bw * bh).toFloat() * detUnclipRatio / (2 * (bw + bh)).toFloat()).roundToInt()
-            val mnx = minX[id] - dist
-            val mny = minY[id] - dist
-            val mxx = maxX[id] + dist
-            val mxy = maxY[id] + dist
-            val x0 = (max(0, mnx - 1) * sx).toInt()
-            val y0 = (max(0, mny - 1) * sy).toInt()
-            val x1 = (min(mW, mxx + 2) * sx).toInt()
-            val y1 = (min(mH, mxy + 2) * sy).toInt()
-            if (x1 > x0 && y1 > y0) boxes.add(Rect(x0, y0, x1, y1))
+        for (seedY in 0 until mH) {
+            for (seedX in 0 until mW) {
+                val s = seedY * mW + seedX
+                if (prob[s] <= detThresh || visited[s]) continue
+                var top = 0
+                visited[s] = true
+                stack[top++] = s
+                var minX = Int.MAX_VALUE
+                var minY = Int.MAX_VALUE
+                var maxX = 0
+                var maxY = 0
+                var area = 0
+                while (top > 0) {
+                    val p = stack[--top]
+                    val x = p % mW
+                    val y = p / mW
+                    if (x < minX) minX = x
+                    if (x > maxX) maxX = x
+                    if (y < minY) minY = y
+                    if (y > maxY) maxY = y
+                    area++
+                    // 4-neighborhood; push() inlined with stack growth.
+                    if (x > 0) {
+                        val np = p - 1
+                        if (!visited[np] && prob[np] > detThresh) {
+                            visited[np] = true
+                            if (top == stack.size) stack = stack.copyOf(stack.size * 2)
+                            stack[top++] = np
+                        }
+                    }
+                    if (x < mW - 1) {
+                        val np = p + 1
+                        if (!visited[np] && prob[np] > detThresh) {
+                            visited[np] = true
+                            if (top == stack.size) stack = stack.copyOf(stack.size * 2)
+                            stack[top++] = np
+                        }
+                    }
+                    if (y > 0) {
+                        val np = p - mW
+                        if (!visited[np] && prob[np] > detThresh) {
+                            visited[np] = true
+                            if (top == stack.size) stack = stack.copyOf(stack.size * 2)
+                            stack[top++] = np
+                        }
+                    }
+                    if (y < mH - 1) {
+                        val np = p + mW
+                        if (!visited[np] && prob[np] > detThresh) {
+                            visited[np] = true
+                            if (top == stack.size) stack = stack.copyOf(stack.size * 2)
+                            stack[top++] = np
+                        }
+                    }
+                }
+                if (area < detMinBoxArea) continue
+                // DBNet shrinks text regions — recover full glyphs with PP-OCR's
+                // "unclip": expand by dist = area·ratio/perimeter before the ±1px
+                // pad (Mac-verified: word accuracy 92% → 99%).
+                val bw = maxX - minX + 1
+                val bh = maxY - minY + 1
+                val dist = ((bw * bh).toFloat() * detUnclipRatio / (2 * (bw + bh)).toFloat()).roundToInt()
+                val x0 = (max(0, minX - dist - 1) * sx).toInt()
+                val y0 = (max(0, minY - dist - 1) * sy).toInt()
+                val x1 = (min(mW, maxX + dist + 2) * sx).toInt()
+                val y1 = (min(mH, maxY + dist + 2) * sy).toInt()
+                if (x1 > x0 && y1 > y0) boxes.add(Rect(x0, y0, x1, y1))
+            }
         }
         return boxes
     }
