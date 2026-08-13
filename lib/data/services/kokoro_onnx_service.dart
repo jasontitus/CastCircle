@@ -145,6 +145,24 @@ class KokoroOnnxService {
           _pump();
         }
       }
+    }, onDone: () {
+      // The isolate died on its own (native crash in sherpa, OS kill): the
+      // port stream just ends. Without this, every in-flight and queued
+      // synthesize() awaits its completer forever and TTS silently hangs.
+      if (epoch != _epoch) return;
+      _dlog.logError(LogCategory.tts,
+          'KokoroOnnx: synthesis isolate died — failing pending requests');
+      final inFlight = _inFlight;
+      _inFlight = null;
+      if (inFlight != null && !inFlight.completer.isCompleted) {
+        inFlight.completer.complete(null);
+      }
+      for (final req in _queue) {
+        if (!req.completer.isCompleted) req.completer.complete(null);
+      }
+      _queue.clear();
+      _toIsolate = null;
+      if (!ready.isCompleted) ready.complete(false);
     });
 
     // Model load reads ~180 MB from disk — allow a slow first open (cold
@@ -176,11 +194,12 @@ class KokoroOnnxService {
     // is instant instead of seconds. Keyed by everything that shapes the
     // audio. Works even while the engine is still loading.
     final cachePath = await _cachePathFor(text, voice, speed);
-    if (cachePath != null && File(cachePath).existsSync()) {
-      try {
-        // Touch so pruning is LRU.
-        File(cachePath).setLastModifiedSync(DateTime.now());
-      } catch (_) {}
+    if (cachePath != null && await File(cachePath).exists()) {
+      // Touch so pruning stays LRU (the mtime IS the eviction order —
+      // removing this would silently turn pruning into FIFO). Async and
+      // unawaited: a metadata write has no business on the play path.
+      unawaited(
+          File(cachePath).setLastModified(DateTime.now()).catchError((_) {}));
       return cachePath;
     }
 
@@ -252,7 +271,11 @@ class KokoroOnnxService {
   void _schedulePrune(String dir) {
     if (_pruneScheduled) return;
     _pruneScheduled = true;
-    Future(() {
+    // Isolate.run: the walk stats every cached WAV (thousands of files at
+    // steady state) — a Future(...) closure still runs it on the UI isolate.
+    // NB: the closure runs in a fresh isolate — no singletons (DebugLog) in
+    // there; the summary comes back as the return value and is logged here.
+    Isolate.run<int>(() {
       try {
         const maxBytes = 150 * 1024 * 1024;
         const lowWater = 100 * 1024 * 1024;
@@ -264,7 +287,7 @@ class KokoroOnnxService {
           entries.add((e, stat.modified, stat.size));
           total += stat.size;
         }
-        if (total <= maxBytes) return;
+        if (total <= maxBytes) return 0;
         entries.sort((a, b) => a.$2.compareTo(b.$2)); // oldest first
         var removed = 0;
         for (final (file, _, size) in entries) {
@@ -275,10 +298,16 @@ class KokoroOnnxService {
             removed++;
           } catch (_) {}
         }
+        return removed;
+      } catch (_) {
+        return 0;
+      }
+    }).then((removed) {
+      if (removed > 0) {
         DebugLogService.instance.log(LogCategory.tts,
             'KokoroOnnx: pruned $removed cached WAVs (cache was over 150MB)');
-      } catch (_) {}
-    });
+      }
+    }).catchError((_) {});
   }
 
   /// Send the next queued request if the isolate is idle.

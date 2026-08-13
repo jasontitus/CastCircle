@@ -316,7 +316,18 @@ bool _scriptSaveQueued = false;
 /// Persist the current script soon (debounced). Safe to call on every edit.
 void scheduleScriptSave(WidgetRef ref, {Duration delay = const Duration(milliseconds: 800)}) {
   _scriptSaveTimer?.cancel();
-  _scriptSaveTimer = Timer(delay, () => _runScriptSave(ref));
+  // The timer closure can outlive the scheduling widget; a disposed
+  // WidgetRef throws from ref.read and the pending save would be lost with
+  // an unhandled zone error. Editor screens flush on dispose, so the only
+  // work lost here is a save something else already superseded.
+  _scriptSaveTimer = Timer(delay, () async {
+    try {
+      await _runScriptSave(ref);
+    } catch (e) {
+      DebugLogService.instance.logError(LogCategory.general,
+          'Debounced script save failed (screen disposed?)', e);
+    }
+  });
 }
 
 /// Persist immediately (e.g. leaving an editor screen), skipping the debounce.
@@ -466,6 +477,12 @@ void launchRecordingSync(WidgetRef ref, String productionId) {
           RecordingSyncService.instance.getCachedRecordings(productionId);
       ref.read(understudyRecordingsProvider.notifier).loadFromMap(cached);
     }
+  }).catchError((Object e) {
+    // Fire-and-forget: an uncaught throw here would surface as an unhandled
+    // zone error (crash in debug, bare Crashlytics noise in release) with no
+    // sign that recording sync failed.
+    DebugLogService.instance.logError(
+        LogCategory.network, 'Background recording sync failed', e);
   });
 }
 
@@ -530,7 +547,12 @@ Future<List<ScriptLine>?> fetchCloudScriptLines(String productionId) async {
       orderIndex: row['order_index'] as int? ?? 0,
       character: row['character'] as String? ?? '',
       text: row['line_text'] as String? ?? '',
-      lineType: LineType.values.byName(row['line_type'] as String? ?? 'dialogue'),
+      // asNameMap fallback: one unknown line_type (newer app version, bad
+      // row) degrades that line to dialogue instead of nulling the whole
+      // script — byName would throw and abort the entire fetch.
+      lineType: LineType.values
+              .asNameMap()[row['line_type'] as String? ?? 'dialogue'] ??
+          LineType.dialogue,
       stageDirection: row['stage_direction'] as String? ?? '',
       multiCharacters:
           (row['multi_characters'] as List?)?.cast<String>() ?? const [],

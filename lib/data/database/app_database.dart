@@ -5,6 +5,8 @@ import 'package:drift/native.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:path/path.dart' as p;
 
+import '../services/debug_log_service.dart';
+
 part 'app_database.g.dart';
 
 // ── Table Definitions ───────────────────────────────────
@@ -119,33 +121,50 @@ class AppDatabase extends _$AppDatabase {
   @override
   int get schemaVersion => 7;
 
+  /// Runs one migration step, tolerating ONLY the benign already-applied
+  /// case (duplicate column/index from a partial earlier upgrade). Anything
+  /// else rethrows: Drift advances user_version when onUpgrade returns
+  /// normally, so swallowing a real failure here would mask a missing
+  /// column FOREVER — every later query then dies with "no such column"
+  /// and the migration never re-runs to repair it.
+  static Future<void> _step(String what, Future<void> Function() run) async {
+    try {
+      await run();
+    } catch (e) {
+      final msg = e.toString();
+      final alreadyApplied = msg.contains('duplicate column name') ||
+          msg.contains('already exists');
+      if (alreadyApplied) return;
+      DebugLogService.instance
+          .logError(LogCategory.general, 'DB migration step failed: $what', e);
+      rethrow;
+    }
+  }
+
   @override
   MigrationStrategy get migration => MigrationStrategy(
         onUpgrade: (migrator, from, to) async {
-          // Each migration is wrapped in try/catch so a partial failure
-          // (e.g. column already exists) doesn't wipe the database.
           if (from < 2) {
-            try {
-              await migrator.addColumn(productions, productions.locale);
-            } catch (_) {}
+            await _step('add productions.locale',
+                () => migrator.addColumn(productions, productions.locale));
           }
           if (from < 3) {
-            try {
-              await migrator.addColumn(productions, productions.joinCode);
-            } catch (_) {}
+            await _step('add productions.join_code',
+                () => migrator.addColumn(productions, productions.joinCode));
           }
           if (from < 4) {
-            try {
-              await migrator.addColumn(scriptLines, scriptLines.ocrConfidence);
-            } catch (_) {}
+            await _step(
+                'add script_lines.ocr_confidence',
+                () =>
+                    migrator.addColumn(scriptLines, scriptLines.ocrConfidence));
           }
           if (from < 5) {
-            try {
-              await migrator.addColumn(scriptLines, scriptLines.sourcePage);
-            } catch (_) {}
-            try {
-              await migrator.addColumn(scriptLines, scriptLines.sourceLineOnPage);
-            } catch (_) {}
+            await _step('add script_lines.source_page',
+                () => migrator.addColumn(scriptLines, scriptLines.sourcePage));
+            await _step(
+                'add script_lines.source_line_on_page',
+                () => migrator.addColumn(
+                    scriptLines, scriptLines.sourceLineOnPage));
           }
           if (from < 6) {
             // Every query filters by productionId; without these, loads are
@@ -156,16 +175,15 @@ class AppDatabase extends _$AppDatabase {
               idxRecordingsProductionLine,
               idxCastMembersProduction,
             ]) {
-              try {
-                await migrator.createIndex(index);
-              } catch (_) {}
+              await _step('create index ${index.entityName}',
+                  () => migrator.createIndex(index));
             }
           }
           if (from < 7) {
-            try {
-              await migrator.addColumn(
-                  scriptLines, scriptLines.multiCharacters);
-            } catch (_) {}
+            await _step(
+                'add script_lines.multi_characters',
+                () => migrator.addColumn(
+                    scriptLines, scriptLines.multiCharacters));
           }
         },
       );

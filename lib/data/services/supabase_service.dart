@@ -58,6 +58,11 @@ class SupabaseService {
         _dlog.logError(
             LogCategory.network, 'Supabase init failed after timeout', e);
       }));
+    } catch (e) {
+      // A fast failure (malformed URL/key, DNS refusal) used to rethrow raw
+      // out of startup; degrade to offline exactly like the timeout path.
+      _dlog.logError(LogCategory.network,
+          'Supabase init failed — starting offline', e);
     }
   }
 
@@ -481,8 +486,10 @@ class SupabaseService {
         'lookup_production_by_join_code',
         params: {'lookup_code': code.toUpperCase()},
       );
+      // Never log the row itself: it carries join_code (a standing
+      // credential) and organizer_id, and this log is user-exportable.
       dlog.log(LogCategory.network,
-          'RPC result: type=${rpcResult.runtimeType}, isMap=${rpcResult is Map}, value=$rpcResult');
+          'RPC result: type=${rpcResult.runtimeType}, isMap=${rpcResult is Map}');
 
       if (rpcResult is Map) {
         dlog.log(LogCategory.network, 'RPC success: ${rpcResult['title']}');
@@ -504,7 +511,7 @@ class SupabaseService {
 
     // Fallback: direct query
     try {
-      dlog.log(LogCategory.network, 'Trying direct query for join_code=$code');
+      dlog.log(LogCategory.network, 'Trying direct join-code query');
       final rows = await _client
           .from('productions')
           .select()
@@ -650,9 +657,14 @@ class SupabaseService {
   /// List available recordings for a production.
   Future<List<Map<String, dynamic>>> fetchRecordings(
       String productionId) async {
+    // Only the columns the sync algorithm reads — the full row set for a
+    // mature production is thousands of rows, decoded on the UI isolate.
+    // (A recorded_at watermark was considered and rejected: upload/download
+    // decisions need the global newest-per-line view, and a partial fetch
+    // here re-introduces the re-download/missed-upload class of sync bug.)
     return _client
         .from('recordings')
-        .select()
+        .select('line_id, user_id, audio_url, duration_ms, recorded_at')
         .eq('production_id', productionId);
   }
 
@@ -719,10 +731,26 @@ class SupabaseService {
         .delete()
         .eq('production_id', productionId);
 
-    // Insert in batches of 100
-    for (var i = 0; i < lines.length; i += 100) {
-      final batch = lines.sublist(i, i + 100 > lines.length ? lines.length : i + 100);
-      await _client.from('script_lines').insert(batch);
+    // Insert in batches, a few in flight at a time. Serial 100-row batches
+    // made a 4000-line play ~40 sequential round-trips (several seconds on
+    // cellular); bounded concurrency keeps payloads modest without turning
+    // a flaky connection into 40 parallel failures. Row order doesn't
+    // matter — every row carries order_index.
+    const batchSize = 200;
+    const maxInFlight = 4;
+    final batches = <List<Map<String, dynamic>>>[
+      for (var i = 0; i < lines.length; i += batchSize)
+        lines.sublist(
+            i, i + batchSize > lines.length ? lines.length : i + batchSize),
+    ];
+    for (var i = 0; i < batches.length; i += maxInFlight) {
+      final window = batches.sublist(
+          i,
+          i + maxInFlight > batches.length
+              ? batches.length
+              : i + maxInFlight);
+      await Future.wait(
+          window.map((b) => _client.from('script_lines').insert(b)));
     }
   }
 

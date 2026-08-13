@@ -551,22 +551,25 @@ class RecordingSyncService {
   /// map used to leak one production's recordings into every other
   /// production's provider (a fresh production showed them all as orphans).
   Map<String, Recording> getCachedRecordings(String productionId) {
+    // The per-entry existsSync is contract, not paranoia: a cached file can
+    // be deleted mid-session (cache clear, OS storage pressure) and a stale
+    // entry here would hand rehearsal a player that opens nothing — the
+    // sync-service tests pin the "deleted file ⇒ re-download" behavior.
     final result = <String, Recording>{};
     for (final entry in _cache.entries) {
       final cached = entry.value;
       if (cached.productionId != productionId) continue;
-      if (File(cached.localPath).existsSync()) {
-        result[entry.key] = Recording(
-          id: 'cache_${entry.key}',
-          scriptLineId: entry.key,
-          character: cached.character,
-          localPath: cached.localPath,
-          remoteUrl: null,
-          durationMs: cached.durationMs,
-          recordedAt: DateTime.fromMillisecondsSinceEpoch(
-              cached.recordedAt.clamp(0, 1 << 52)),
-        );
-      }
+      if (!File(cached.localPath).existsSync()) continue;
+      result[entry.key] = Recording(
+        id: 'cache_${entry.key}',
+        scriptLineId: entry.key,
+        character: cached.character,
+        localPath: cached.localPath,
+        remoteUrl: null,
+        durationMs: cached.durationMs,
+        recordedAt: DateTime.fromMillisecondsSinceEpoch(
+            cached.recordedAt.clamp(0, 1 << 52)),
+      );
     }
     return result;
   }

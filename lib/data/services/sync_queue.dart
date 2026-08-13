@@ -183,7 +183,14 @@ class SyncQueue {
           'pending': _pending.map((j) => j.toJson()).toList(),
           'failed': _failed.map((j) => j.toJson()).toList(),
         });
-        await File(await _persistPath()).writeAsString(snapshot);
+        // Write-to-temp + rename: writeAsString in place can leave a
+        // truncated file on crash, and the next launch's failed parse
+        // would then let an empty in-memory queue clobber every queued
+        // upload. rename() on the same volume is atomic.
+        final path = await _persistPath();
+        final tmp = File('$path.tmp');
+        await tmp.writeAsString(snapshot, flush: true);
+        await tmp.rename(path);
       } catch (e) {
         _dlog.logError(LogCategory.error, 'SyncQueue: persist failed', e);
       }
@@ -204,7 +211,20 @@ class SyncQueue {
     try {
       final file = File(await _persistPath());
       if (!file.existsSync()) return;
-      final data = jsonDecode(await file.readAsString());
+      late final dynamic data;
+      try {
+        data = jsonDecode(await file.readAsString());
+      } catch (e) {
+        // Corrupt queue file (e.g. crash mid-write on an old build). Move it
+        // aside instead of leaving it in place, where the next persist from
+        // an empty queue would silently destroy the evidence.
+        _dlog.logError(
+            LogCategory.error, 'SyncQueue: queue file corrupt — set aside', e);
+        try {
+          await file.rename('${file.path}.corrupt');
+        } catch (_) {}
+        return;
+      }
       if (data is! Map) return;
       final restored = <SyncJob>[
         ...((data['pending'] as List? ?? [])

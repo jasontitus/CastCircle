@@ -18,6 +18,21 @@ class VoiceConfigService {
 
   SharedPreferences? _prefs;
 
+  // Per-production mutation chain: every mutator below is a
+  // read-whole-map → modify → write-whole-map over one SharedPreferences
+  // blob, so two overlapping calls interleave at the await and the later
+  // write silently drops the earlier change (e.g. two overrides set
+  // back-to-back from the voice sheet). Chaining serializes them.
+  final Map<String, Future<void>> _mutationChains = {};
+
+  Future<T> _serialized<T>(String productionId, Future<T> Function() op) {
+    final prev = _mutationChains[productionId] ?? Future<void>.value();
+    final run = prev.then((_) => op());
+    _mutationChains[productionId] =
+        run.then<void>((_) {}, onError: (_) {});
+    return run;
+  }
+
   Future<SharedPreferences> get _preferences async {
     _prefs ??= await SharedPreferences.getInstance();
     return _prefs!;
@@ -76,21 +91,23 @@ class VoiceConfigService {
 
   /// Set a voice override for a specific character.
   Future<void> setOverride(
-      String productionId, CharacterVoiceConfig config) async {
-    final overrides = await getOverrides(productionId);
-    overrides[config.characterName] = config;
-    await _saveOverrides(productionId, overrides);
-    debugPrint(
-        'VoiceConfig: Override ${config.characterName} → ${config.voiceId}');
-  }
+      String productionId, CharacterVoiceConfig config) =>
+      _serialized(productionId, () async {
+        final overrides = await getOverrides(productionId);
+        overrides[config.characterName] = config;
+        await _saveOverrides(productionId, overrides);
+        debugPrint(
+            'VoiceConfig: Override ${config.characterName} → ${config.voiceId}');
+      });
 
   /// Remove a character's voice override (revert to preset).
   Future<void> removeOverride(
-      String productionId, String characterName) async {
-    final overrides = await getOverrides(productionId);
-    overrides.remove(characterName);
-    await _saveOverrides(productionId, overrides);
-  }
+      String productionId, String characterName) =>
+      _serialized(productionId, () async {
+        final overrides = await getOverrides(productionId);
+        overrides.remove(characterName);
+        await _saveOverrides(productionId, overrides);
+      });
 
   Future<void> _saveOverrides(
       String productionId, Map<String, CharacterVoiceConfig> overrides) async {
@@ -230,11 +247,12 @@ class VoiceConfigService {
 
   /// Set the gender for a specific character.
   Future<void> setGender(
-      String productionId, String characterName, CharacterGender gender) async {
-    final genders = await getGenders(productionId);
-    genders[characterName] = gender;
-    await _saveGenders(productionId, genders);
-  }
+      String productionId, String characterName, CharacterGender gender) =>
+      _serialized(productionId, () async {
+        final genders = await getGenders(productionId);
+        genders[characterName] = gender;
+        await _saveGenders(productionId, genders);
+      });
 
   Future<void> _saveGenders(
       String productionId, Map<String, CharacterGender> genders) async {
@@ -271,15 +289,16 @@ class VoiceConfigService {
 
   /// Set a locale override for a specific character.
   Future<void> setLocale(
-      String productionId, String characterName, String? locale) async {
-    final locales = await getLocales(productionId);
-    if (locale == null) {
-      locales.remove(characterName);
-    } else {
-      locales[characterName] = locale;
-    }
-    await _saveLocales(productionId, locales);
-  }
+      String productionId, String characterName, String? locale) =>
+      _serialized(productionId, () async {
+        final locales = await getLocales(productionId);
+        if (locale == null) {
+          locales.remove(characterName);
+        } else {
+          locales[characterName] = locale;
+        }
+        await _saveLocales(productionId, locales);
+      });
 
   Future<void> _saveLocales(
       String productionId, Map<String, String> locales) async {
@@ -300,7 +319,11 @@ class VoiceConfigService {
   Future<void> renameCharacter(
       String productionId, String oldName, String newName) async {
     if (oldName == newName) return;
+    await _serialized(productionId, () => _renameLoaded(productionId, oldName, newName));
+  }
 
+  Future<void> _renameLoaded(
+      String productionId, String oldName, String newName) async {
     final overrides = await getOverrides(productionId);
     final movedOverride = overrides.remove(oldName);
     if (movedOverride != null && !overrides.containsKey(newName)) {

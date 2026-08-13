@@ -137,6 +137,10 @@ class ModelManager {
   }
 
   /// Download all models. Use ModelDownloadService for individual model downloads.
+  ///
+  /// Pairs with [isAllReady]: on Android that also requires the live
+  /// line-matching ASR group, so it must be downloaded here too — otherwise
+  /// "download all" completes and the ready gate still reports false forever.
   Future<void> downloadAll({
     void Function(String model, String file, double progress)? onProgress,
   }) async {
@@ -144,6 +148,9 @@ class ModelManager {
       onProgress: (file, progress) =>
           onProgress?.call('Kokoro TTS', file, progress),
     );
+    if (Platform.isAndroid) {
+      await ModelDownloadService.instance.downloadLiveAsr();
+    }
   }
 
   /// Delete all cached models.
@@ -215,12 +222,13 @@ class ModelManager {
     } catch (e) {
       debugPrint('Archive extraction failed: $e');
       rethrow;
+    } finally {
+      // Delete the ~180 MB archive on failure too — repeated failed
+      // extractions (e.g. disk full) used to accumulate these.
+      try {
+        await File(archivePath).delete();
+      } catch (_) {}
     }
-
-    // Clean up archive
-    try {
-      await File(archivePath).delete();
-    } catch (_) {}
 
     onProgress?.call(1.0);
     debugPrint('Archive extracted successfully');
@@ -235,23 +243,28 @@ class ModelManager {
     final (archivePath, destDir) = args;
     // Decompress bzip2 → temp tar file
     final tempDir = Directory.systemTemp.createTempSync('lineguide_extract');
-    final tarPath = p.join(tempDir.path, 'temp.tar');
+    try {
+      final tarPath = p.join(tempDir.path, 'temp.tar');
 
-    final input = InputFileStream(archivePath);
-    final output = OutputFileStream(tarPath);
-    BZip2Decoder().decodeStream(input, output);
-    input.closeSync();
-    output.closeSync();
+      final input = InputFileStream(archivePath);
+      final output = OutputFileStream(tarPath);
+      BZip2Decoder().decodeStream(input, output);
+      input.closeSync();
+      output.closeSync();
 
-    // Extract tar entries to destination
-    final tarInput = InputFileStream(tarPath);
-    final archive = TarDecoder().decodeStream(tarInput);
-    extractArchiveToDiskSync(archive, destDir);
-    tarInput.closeSync();
-    archive.clear();
-
-    // Cleanup temp tar
-    tempDir.deleteSync(recursive: true);
+      // Extract tar entries to destination
+      final tarInput = InputFileStream(tarPath);
+      final archive = TarDecoder().decodeStream(tarInput);
+      extractArchiveToDiskSync(archive, destDir);
+      tarInput.closeSync();
+      archive.clear();
+    } finally {
+      // Failure used to leak the fully-decompressed tar (hundreds of MB)
+      // in system temp on every failed extraction.
+      try {
+        tempDir.deleteSync(recursive: true);
+      } catch (_) {}
+    }
   }
 
   /// Download a single file with progress reporting.
@@ -320,10 +333,17 @@ class ModelManager {
       final tmpFile = File(tmpPath);
       final sink = tmpFile.openWrite();
 
+      // Throttle progress to ~1 MB deltas: the callback typically ends in
+      // setState, and per-socket-chunk emission meant thousands of full
+      // screen rebuilds over a 180 MB archive.
+      var lastNotified = 0;
       await for (final chunk in response) {
         sink.add(chunk);
         bytesReceived += chunk.length;
-        if (contentLength > 0) {
+        if (contentLength > 0 &&
+            (bytesReceived - lastNotified > 1024 * 1024 ||
+                bytesReceived == contentLength)) {
+          lastNotified = bytesReceived;
           onProgress?.call(bytesReceived / contentLength);
         }
       }

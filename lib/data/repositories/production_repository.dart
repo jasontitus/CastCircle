@@ -174,7 +174,8 @@ class ProductionRepository {
 
   Future<void> saveScenes(
       String productionId, List<models.ScriptScene> scenes) async {
-    await _db.deleteScenesForProduction(productionId);
+    // Delete + reinsert must be atomic (same guarantee saveScriptLines
+    // makes): a crash between the two would permanently lose every scene.
     final companions = scenes.asMap().entries.map((e) => ScenesCompanion(
           id: Value(e.value.id),
           productionId: Value(productionId),
@@ -187,7 +188,10 @@ class ProductionRepository {
           sortOrder: Value(e.key),
           characters: Value(e.value.characters.join(',')),
         )).toList();
-    await _db.insertScenes(companions);
+    await _db.transaction(() async {
+      await _db.deleteScenesForProduction(productionId);
+      await _db.insertScenes(companions);
+    });
   }
 
   models.ScriptScene _sceneFromRow(Scene row) {

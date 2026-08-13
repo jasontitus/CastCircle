@@ -577,9 +577,35 @@ class ModelDownloadService {
     debugPrint('ModelDownload: Dart fallback download for ${model.id}');
     final tmpFile = File('$outPath.tmp');
     final client = HttpClient();
+    // Follow redirects by hand so each hop can be scheme-checked — the
+    // default client would silently follow an https→http downgrade and put
+    // the model bytes on the wire in the clear (ModelManager._downloadFile
+    // makes the same guarantee).
+    client.autoUncompress = false;
     try {
-      final req = await client.getUrl(Uri.parse(model.downloadUrl));
-      final res = await req.close();
+      var uri = Uri.parse(model.downloadUrl);
+      HttpClientResponse res;
+      var redirectsLeft = 5;
+      while (true) {
+        final req = await client.getUrl(uri);
+        req.followRedirects = false;
+        res = await req.close();
+        if (!res.isRedirect) break;
+        final location = res.headers.value('location');
+        await res.drain<void>();
+        if (location == null) {
+          throw HttpException('Redirect without Location for $uri');
+        }
+        final target = uri.resolve(location);
+        if (target.scheme != 'https') {
+          throw HttpException(
+              'Refusing non-HTTPS redirect to ${target.scheme}://${target.host}');
+        }
+        if (--redirectsLeft < 0) {
+          throw HttpException('Too many redirects for ${model.downloadUrl}');
+        }
+        uri = target;
+      }
       if (res.statusCode != 200) {
         throw HttpException('HTTP ${res.statusCode} for ${model.downloadUrl}');
       }

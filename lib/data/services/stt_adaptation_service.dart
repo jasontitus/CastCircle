@@ -1,3 +1,5 @@
+import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/foundation.dart';
@@ -137,6 +139,125 @@ class SttAdaptationService {
   /// Per-production pooled profile, keyed by productionId.
   final Map<String, SttProfile> _productionProfiles = {};
 
+  // ── Persistence ────────────────────────────────────────
+  //
+  // Profiles used to be memory-only: every collected sample, status and
+  // adapter path vanished on restart, so an actor could never accumulate
+  // the 60s+ needed for readyToTrain across sessions. Profiles now persist
+  // as JSON under the production's adapter dir and hydrate lazily.
+
+  final Map<String, Future<void>> _hydrations = {};
+  Timer? _persistDebounce;
+  final Set<String> _dirtyProductions = {};
+
+  /// Hydrate a production's profiles from disk (idempotent, lazy).
+  Future<void> ensureLoaded(String productionId) =>
+      _hydrations[productionId] ??= _loadProduction(productionId);
+
+  Future<void> _loadProduction(String productionId) async {
+    try {
+      final file = File(p.join(await _adapterDir(productionId), 'profiles.json'));
+      if (!file.existsSync()) return;
+      final data = jsonDecode(await file.readAsString());
+      if (data is! Map) return;
+      SttProfile? decode(dynamic j) {
+        if (j is! Map) return null;
+        final m = Map<String, dynamic>.from(j);
+        final samples = (m['samples'] as List? ?? [])
+            .whereType<Map>()
+            .map((x) => TrainingSample.fromJson(Map<String, dynamic>.from(x)))
+            // A sample whose audio file is gone can't train anything.
+            .where((x) => File(x.audioPath).existsSync())
+            .toList();
+        return SttProfile(
+          actorId: m['actor_id'] as String? ?? '',
+          productionId: productionId,
+          samples: samples,
+          status: SttAdaptationStatus.values
+                  .asNameMap()[m['status'] as String? ?? ''] ??
+              SttAdaptationStatus.needsData,
+          adapterPath: m['adapter_path'] as String?,
+          lastTrainedAt: DateTime.tryParse(m['last_trained_at'] as String? ?? ''),
+          wordErrorRate: (m['wer'] as num?)?.toDouble(),
+        );
+      }
+
+      SttProfile merge(SttProfile disk, SttProfile? live) {
+        if (live == null) return disk;
+        // Union by audioPath: live (this-session) samples win, disk fills
+        // in everything accumulated in previous runs.
+        final livePaths = {for (final x in live.samples) x.audioPath};
+        final samples = [
+          ...disk.samples.where((x) => !livePaths.contains(x.audioPath)),
+          ...live.samples,
+        ];
+        final merged = live.copyWith(
+          samples: samples,
+          adapterPath: live.adapterPath ?? disk.adapterPath,
+          lastTrainedAt: live.lastTrainedAt ?? disk.lastTrainedAt,
+          wordErrorRate: live.wordErrorRate ?? disk.wordErrorRate,
+        );
+        return merged.copyWith(
+            status: _computeStatus(merged.samples.length,
+                merged.totalAudioSeconds, merged.adapterPath));
+      }
+
+      for (final j in (data['actors'] as List? ?? [])) {
+        final profile = decode(j);
+        if (profile == null || profile.actorId.isEmpty) continue;
+        final key = '$productionId:${profile.actorId}';
+        _actorProfiles[key] = merge(profile, _actorProfiles[key]);
+      }
+      final prod = decode(data['production']);
+      if (prod != null) {
+        _productionProfiles[productionId] =
+            merge(prod, _productionProfiles[productionId]);
+      }
+    } catch (e) {
+      debugPrint('SttAdaptation: hydrate failed for $productionId: $e');
+    }
+  }
+
+  void _schedulePersist(String productionId) {
+    _dirtyProductions.add(productionId);
+    _persistDebounce?.cancel();
+    _persistDebounce = Timer(const Duration(seconds: 2), () {
+      final dirty = _dirtyProductions.toList();
+      _dirtyProductions.clear();
+      for (final pid in dirty) {
+        unawaited(_persistProduction(pid));
+      }
+    });
+  }
+
+  Future<void> _persistProduction(String productionId) async {
+    try {
+      Map<String, dynamic> encode(SttProfile profile) => {
+            'actor_id': profile.actorId,
+            'samples': profile.samples.map((s) => s.toJson()).toList(),
+            'status': profile.status.name,
+            'adapter_path': profile.adapterPath,
+            'last_trained_at': profile.lastTrainedAt?.toIso8601String(),
+            'wer': profile.wordErrorRate,
+          };
+      final snapshot = jsonEncode({
+        'actors': [
+          for (final e in _actorProfiles.entries)
+            if (e.key.startsWith('$productionId:')) encode(e.value),
+        ],
+        'production': _productionProfiles[productionId] == null
+            ? null
+            : encode(_productionProfiles[productionId]!),
+      });
+      final path = p.join(await _adapterDir(productionId), 'profiles.json');
+      final tmp = File('$path.tmp');
+      await tmp.writeAsString(snapshot, flush: true);
+      await tmp.rename(path);
+    } catch (e) {
+      debugPrint('SttAdaptation: persist failed for $productionId: $e');
+    }
+  }
+
   // ── Profile Management ─────────────────────────────────
 
   /// Get per-actor profile, creating if needed.
@@ -178,6 +299,9 @@ class SttAdaptationService {
     required String transcript,
     required int durationMs,
   }) {
+    // Kick hydration so samples from previous runs merge in (they combine
+    // by audioPath, so adding before the disk snapshot lands is safe).
+    unawaited(ensureLoaded(productionId));
     final sample = TrainingSample(
       audioPath: audioPath,
       transcript: transcript,
@@ -193,11 +317,11 @@ class SttAdaptationService {
       productionId: productionId,
       samples: const [],
     );
+    final actorSeconds = actorProfile.totalAudioSeconds + durationMs / 1000.0;
     _actorProfiles[actorKey] = actorProfile.copyWith(
       samples: [...actorProfile.samples, sample],
-      status: _computeStatus(actorProfile.samples.length + 1,
-          actorProfile.totalAudioSeconds + durationMs / 1000.0,
-          actorProfile.adapterPath),
+      status: _computeStatus(
+          actorProfile.samples.length + 1, actorSeconds, actorProfile.adapterPath),
     );
 
     // Also add to pooled production profile
@@ -216,8 +340,9 @@ class SttAdaptationService {
     debugPrint(
       'SttAdaptation: Added sample for $actorId '
       '(${actorProfile.samples.length + 1} samples, '
-      '${(actorProfile.totalAudioSeconds + durationMs / 1000.0).toStringAsFixed(0)}s total)',
+      '${actorSeconds.toStringAsFixed(0)}s total)',
     );
+    _schedulePersist(productionId);
   }
 
   SttAdaptationStatus _computeStatus(
@@ -364,6 +489,8 @@ class SttAdaptationService {
 
   /// Clear all adaptation data for a production.
   Future<void> clearProduction(String productionId) async {
+    _hydrations.remove(productionId);
+    _dirtyProductions.remove(productionId);
     // Remove actor profiles
     _actorProfiles.removeWhere(
         (key, _) => key.startsWith('$productionId:'));

@@ -5,9 +5,11 @@ enum CastRole {
   understudy;
 
   /// Map from Supabase role strings (which use 'actor' instead of 'primary').
+  /// Unknown strings (a newer app version's role, a malformed row) degrade to
+  /// primary instead of throwing — one bad cloud row must not kill cast load.
   static CastRole fromString(String s) {
     if (s == 'actor') return CastRole.primary;
-    return CastRole.values.byName(s);
+    return CastRole.values.asNameMap()[s] ?? CastRole.primary;
   }
 
   /// Convert to Supabase-compatible string.

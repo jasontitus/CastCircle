@@ -126,8 +126,24 @@ class SttVocabularyService {
   /// Clear vocabulary for a production.
   void clearProduction(String productionId) {
     _vocabularies.remove(productionId);
-    _actorCorrections.removeWhere(
-        (key, _) => key.startsWith('$productionId:'));
+    // Collect the words whose corrections are being dropped so their
+    // compiled patterns go too — _correctionPatterns is process-global and
+    // used to grow for the lifetime of the app across every production.
+    final droppedWords = <String>{};
+    _actorCorrections.removeWhere((key, corrections) {
+      if (!key.startsWith('$productionId:')) return false;
+      droppedWords.addAll(corrections.keys);
+      return true;
+    });
+    if (droppedWords.isNotEmpty) {
+      // A word may also be corrected under another production; only evict
+      // patterns no surviving correction map still references.
+      final stillUsed = <String>{
+        for (final m in _actorCorrections.values) ...m.keys,
+      };
+      _correctionPatterns
+          .removeWhere((w, _) => droppedWords.contains(w) && !stillUsed.contains(w));
+    }
   }
 
   // ── Correction ───────────────────────────────────────
@@ -212,7 +228,15 @@ class SttVocabularyService {
         final right = expectedWords[i];
         // Only learn if the wrong version is close enough (likely same word)
         if (_editDistanceAtMost(wrong, right, 3) <= 3) {
-          _actorCorrections[key]![wrong] = right;
+          final map = _actorCorrections[key]!;
+          // Cap like correctionCache: every entry is a regex pass over every
+          // STT partial, so an unbounded map slowly taxes live matching.
+          if (map.length >= 500 && !map.containsKey(wrong)) {
+            final evict = map.keys.first;
+            map.remove(evict);
+            _correctionPatterns.remove(evict);
+          }
+          map[wrong] = right;
         }
       }
     }

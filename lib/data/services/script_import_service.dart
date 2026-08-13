@@ -481,7 +481,11 @@ class ScriptImportService {
               continue;
             }
 
-            await tempFile.writeAsBytes(byteData.buffer.asUint8List());
+            // Respect the view's offset/length: toByteData may return a
+            // view into a larger buffer, and asUint8List() on the bare
+            // buffer would append trailing garbage that breaks OCR.
+            await tempFile.writeAsBytes(byteData.buffer
+                .asUint8List(byteData.offsetInBytes, byteData.lengthInBytes));
 
             final inputImage = InputImage.fromFilePath(tempFile.path);
             final recognized = await textRecognizer.processImage(inputImage);
@@ -650,6 +654,7 @@ class ScriptImportService {
   static final _loneCharRe = RegExp(r'^[IaO0-9]$');
   static final _quadRepeatRe = RegExp(r'(.)\1{3,}');
   static final _tripleRepeatRe = RegExp(r'(.)\1{2}');
+  static final _nonAlnumRe = RegExp(r'[^a-zA-Z0-9\s]');
 
   static double _estimateLineConfidence(String text) {
     if (text.trim().isEmpty) return 1.0;
@@ -704,9 +709,8 @@ class ScriptImportService {
     if (_quadRepeatRe.hasMatch(trimmed)) {
       score -= 0.3;
     } else if (_tripleRepeatRe.hasMatch(trimmed.toLowerCase())) {
-      final triples = RegExp(
-        r'(.)\1{2}',
-      ).allMatches(trimmed.toLowerCase()).length;
+      final triples =
+          _tripleRepeatRe.allMatches(trimmed.toLowerCase()).length;
       if (triples > 1) score -= 0.15;
     }
 
@@ -725,7 +729,7 @@ class ScriptImportService {
     }
 
     // 6. Very short line with lots of punctuation (likely noise)
-    if (trimmed.length < 5 && RegExp(r'[^a-zA-Z0-9\s]').hasMatch(trimmed)) {
+    if (trimmed.length < 5 && _nonAlnumRe.hasMatch(trimmed)) {
       score -= 0.15;
     }
 
