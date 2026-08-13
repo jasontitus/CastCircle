@@ -83,10 +83,14 @@ class LSTM: Module {
     var currentHidden = hidden ?? MLXArray.zeros([x.shape[0], hiddenSize])
     var currentCell = cell ?? MLXArray.zeros([x.shape[0], hiddenSize])
 
+    // Hoisted: loop-invariant, and one transpose node per timestep grew
+    // the graph linearly with input length.
+    let whForwardT = whForward.transposed()
+
     // Process sequence in forward direction (0 to seqLen-1)
     for idx in 0 ..< seqLen {
       var ifgo = xProj[0..., idx, 0...]
-      ifgo = ifgo + MLX.matmul(currentHidden, whForward.transposed())
+      ifgo = ifgo + MLX.matmul(currentHidden, whForwardT)
 
       // Split gates
       let gates = MLX.split(ifgo, parts: 4, axis: -1)
@@ -131,10 +135,12 @@ class LSTM: Module {
     var currentHidden = hidden ?? MLXArray.zeros([x.shape[0], hiddenSize])
     var currentCell = cell ?? MLXArray.zeros([x.shape[0], hiddenSize])
 
+    let whBackwardT = whBackward.transposed() // loop-invariant
+
     // Process sequence in backward direction (seqLen-1 to 0)
     for idx in stride(from: seqLen - 1, through: 0, by: -1) {
       var ifgo = xProj[0..., idx, 0...]
-      ifgo = ifgo + MLX.matmul(currentHidden, whBackward.transposed())
+      ifgo = ifgo + MLX.matmul(currentHidden, whBackwardT)
 
       // Split gates
       let gates = MLX.split(ifgo, parts: 4, axis: -1)

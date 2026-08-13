@@ -94,7 +94,16 @@ func interpolate1d(
     return MLX.broadcast(input, to: outputShape)
   }
 
-  let xLow = MLX.floor(x).asType(.int32)
+  // Clamp the low index: in upsampling the first output positions map to
+  // x < 0, and floor gives -1, which MLX negative-indexing WRAPS to the
+  // last input sample — blending the final (largest) phase value into the
+  // start of the output. Via SineGen this was a ~150-sample decaying phase
+  // glitch at the onset of every voiced utterance. Clamping to 0 makes the
+  // edge replicate the first sample instead (standard align_corners=false
+  // edge handling). NB: intentional audio change, onset-only.
+  let xLow = MLX.clip(
+    MLX.floor(x).asType(.int32), min: MLXArray(0, dtype: .int32),
+    max: MLXArray(inputWidth - 1, dtype: .int32))
   let xHigh = MLX.minimum(xLow + 1, MLXArray(inputWidth - 1, dtype: .int32))
   let xFrac = x - xLow.asType(.float32)
 

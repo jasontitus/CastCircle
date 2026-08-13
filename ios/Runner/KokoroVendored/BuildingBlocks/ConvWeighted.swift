@@ -11,6 +11,29 @@ class ConvWeighted: Module {
   var weightV: MLXArray
   var bias: MLXArray?
 
+  // Frozen-weight caches: weightV/weightG/bias never change after load, but
+  // every forward re-ran the full weight-norm reduction (norm + sqrt +
+  // divide + multiply over the whole weight tensor) and re-reshaped the
+  // bias — redundant GPU work per conv layer per synthesis. Computed
+  // lazily on first forward, identical ops → identical values.
+  private var cachedNormalizedWeight: MLXArray?
+  private var cachedReshapedBias: MLXArray?
+
+  private func normalizedWeight() -> MLXArray {
+    if let cached = cachedNormalizedWeight { return cached }
+    let weight = weightNorm(weightV: weightV, weightG: weightG, dim: 0)
+    cachedNormalizedWeight = weight
+    return weight
+  }
+
+  private func reshapedBias() -> MLXArray? {
+    if bias == nil { return nil }
+    if let cached = cachedReshapedBias { return cached }
+    let reshaped = bias!.reshaped([1, 1, -1])
+    cachedReshapedBias = reshaped
+    return reshaped
+  }
+
   let stride: Int
   let padding: Int
   let dilation: Int
@@ -97,8 +120,8 @@ class ConvWeighted: Module {
   }
   
   public func callAsFunction(_ x: MLXArray, conv: (MLXArray, MLXArray, Int, Int, Int, Int, StreamOrDevice) -> MLXArray) -> MLXArray {
-    let weight = weightNorm(weightV: weightV, weightG: weightG, dim: 0)
-    bias = bias?.reshaped([1, 1, -1])
+    let weight = normalizedWeight()
+    let bias = reshapedBias()
 
     func applyConv(x: MLXArray, weightToUse: MLXArray) -> MLXArray {
       let result = conv(
@@ -125,8 +148,8 @@ class ConvWeighted: Module {
   }
   
   public func callAsFunction(_ x: MLXArray, conv: (MLXArray, MLXArray, Int, Int, Int, Int, Int, StreamOrDevice) -> MLXArray) -> MLXArray {
-    let weight = weightNorm(weightV: weightV, weightG: weightG, dim: 0)
-    bias = bias?.reshaped([1, 1, -1])
+    let weight = normalizedWeight()
+    let bias = reshapedBias()
 
     func applyConv(x: MLXArray, weightToUse: MLXArray) -> MLXArray {
       let result = conv(

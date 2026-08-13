@@ -26,10 +26,11 @@ class AlbertLayer {
       fatalError("Wrong shape for AlbertLayer FullLayerLayerNorm bias or weights!")
     }
 
-    for i in 0 ..< config.hiddenSize {
-      fullLayerLayerNorm.weight![i] = fullLayerLayerNormWeights[i]
-      fullLayerLayerNorm.bias![i] = fullLayerLayerNormBiases[i]
-    }
+    // Whole-range in-place assign — see AlbertEmbeddings.
+    fullLayerLayerNorm.weight![0...] =
+      fullLayerLayerNormWeights.asType(fullLayerLayerNorm.weight!.dtype)
+    fullLayerLayerNorm.bias![0...] =
+      fullLayerLayerNormBiases.asType(fullLayerLayerNorm.bias!.dtype)
   }
 
   func ffChunk(_ attentionOutput: MLXArray) -> MLXArray {

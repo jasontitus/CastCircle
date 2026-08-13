@@ -67,7 +67,11 @@ class _InstanceNorm {
 
     if training || !trackRunningStats {
       mean = MLX.mean(input, axes: reduceDims, keepDims: true)
-      variance = MLX.variance(input, axes: reduceDims, keepDims: true)
+      // Variance from the mean already in hand (E[(x-µ)²]) — MLX.variance
+      // recomputes its own mean, a second full reduction over the tensor
+      // on every decoder-block forward.
+      let centered = input - mean
+      variance = MLX.mean(centered * centered, axes: reduceDims, keepDims: true)
 
       if trackRunningStats && training, let runningMean, let runningVar {
         let overallMean = MLX.mean(mean, axes: [0])

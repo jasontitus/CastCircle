@@ -98,8 +98,12 @@ final class TextEncoder {
     let mask = m.expandedDimensions(axis: 1)   // [batch, 1, seq] for channel-major
     let maskT = m.expandedDimensions(axis: 2)  // [batch, seq, 1] for seq-major
 
-    // Apply mask to zero out padding positions
-    x = MLX.where(maskT, 0.0, x)
+    // Apply mask to zero out padding positions.
+    // zeros(like:) not scalar 0.0: the Float literal promoted the whole
+    // bf16 activation to fp32 for the where (and everything downstream of
+    // it) — 2× memory bandwidth on every mask application, ~14 per
+    // synthesis. DurationEncoder documents the identical fix.
+    x = MLX.where(maskT, MLXArray.zeros(like: x), x)
 
     // Step 2: Process through CNN blocks. Every layer here operates in
     // [batch, seq_len, channels]; the previous implementation swapped axes
@@ -108,10 +112,10 @@ final class TextEncoder {
       for layer in convBlock {
         if let convWeighted = layer as? ConvWeighted {
           x = convWeighted(x, conv: MLX.conv1d)
-          x = MLX.where(maskT, 0.0, x)
+          x = MLX.where(maskT, MLXArray.zeros(like: x), x)
         } else if let layer = layer as? LayerNormInference {
           x = layer(x)
-          x = MLX.where(maskT, 0.0, x)
+          x = MLX.where(maskT, MLXArray.zeros(like: x), x)
         } else if let layer = layer as? LeakyReLU {
           // LeakyReLU(0) == 0, so already-masked rows stay zero — no re-mask.
           x = layer(x)
@@ -128,6 +132,6 @@ final class TextEncoder {
 
     // Apply final mask and return (the zeros-then-_updateInternal pad here
     // was dead: _updateInternal replaced the freshly allocated buffer).
-    return MLX.where(mask, 0.0, x)
+    return MLX.where(mask, MLXArray.zeros(like: x), x)
   }
 }

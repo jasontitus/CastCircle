@@ -39,10 +39,9 @@ class AlbertSelfAttention {
       fatalError("Wrong shape for AlbertSelfAttention LayerNorm bias or weights!")
     }
 
-    for i in 0 ..< layerNormBiases.shape[0] {
-      layerNorm.bias![i] = layerNormBiases[i]
-      layerNorm.weight![i] = layerNormWeights[i]
-    }
+    // Whole-range in-place assign — see AlbertEmbeddings.
+    layerNorm.bias![0...] = layerNormBiases.asType(layerNorm.bias!.dtype)
+    layerNorm.weight![0...] = layerNormWeights.asType(layerNorm.weight!.dtype)
   }
 
   func transposeForScores(_ x: MLXArray) -> MLXArray {

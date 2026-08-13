@@ -23,10 +23,11 @@ class AlbertEmbeddings {
       fatalError("Wrong shape for AlbertEmbeddings LayerNorm bias or weights!")
     }
 
-    for i in 0 ..< layerNormBiases.shape[0] {
-      layerNorm.bias![i] = layerNormBiases[i]
-      layerNorm.weight![i] = layerNormWeights[i]
-    }
+    // Whole-range in-place assign (dtype-preserving via the destination
+    // array): the scalar loop forced a GPU→CPU sync per element —
+    // ~2×embeddingSize stalls at model load. One bulk op instead.
+    layerNorm.bias![0...] = layerNormBiases.asType(layerNorm.bias!.dtype)
+    layerNorm.weight![0...] = layerNormWeights.asType(layerNorm.weight!.dtype)
   }
 
   func callAsFunction(

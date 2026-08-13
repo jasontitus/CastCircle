@@ -23,8 +23,11 @@ class AdaLayerNorm: Module {
     let beta = split[1].transposed(2, 0, 1)
 
     let mean = MLX.mean(x, axes: [-1], keepDims: true)
-    let variance = MLX.variance(x, axes: [-1], keepDims: true)
-    let normalized = (x - mean) / MLX.sqrt(variance + eps)
+    // E[(x-µ)²] from the existing mean — MLX.variance re-reduced x from
+    // scratch (see InstanceNorm1d).
+    let centered = x - mean
+    let variance = MLX.mean(centered * centered, axes: [-1], keepDims: true)
+    let normalized = centered / MLX.sqrt(variance + eps)
 
     return (1 + gamma) * normalized + beta
   }
