@@ -125,6 +125,10 @@ class _ModelSetupScreenState extends State<ModelSetupScreen> {
   }
 
   Future<void> _downloadAll() async {
+    // Record consent: the launch-time auto-downloader only runs for users
+    // who chose to download (never for "Skip for now" users on cellular).
+    SharedPreferences.getInstance()
+        .then((p) => p.setBool('models_auto_download_ok', true));
     setState(() {
       _downloading = true;
       for (final i in _items) {
@@ -153,7 +157,16 @@ class _ModelSetupScreenState extends State<ModelSetupScreen> {
           }
           // Completion also arrives via the listener; poll until settled so
           // the line-matching row (Android-only today) never runs early.
+          // Deadline: a native download that stalls with no progress, error,
+          // or completion used to spin this loop forever, pinning the button
+          // in "downloading" and blocking the line-matching step behind it.
+          final deadline = DateTime.now().add(const Duration(minutes: 15));
           while (mounted && !_voices.ready && _voices.error == null) {
+            if (DateTime.now().isAfter(deadline)) {
+              _voices.error =
+                  'Download timed out — check your connection and retry.';
+              break;
+            }
             await Future.delayed(const Duration(milliseconds: 500));
           }
         }

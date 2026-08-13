@@ -608,6 +608,15 @@ class _RecordingStudioScreenState extends ConsumerState<RecordingStudioScreen> {
       return;
     }
 
+    // Closing the studio during the permission prompt / recorder start
+    // disposes the State; stop the recorder we just started and bail.
+    if (!mounted) {
+      try {
+        await _recorder?.stop();
+      } catch (_) {}
+      return;
+    }
+
     _currentRecordingPath = filePath;
     _recordingDuration = Duration.zero;
     _durationTimer = Timer.periodic(const Duration(milliseconds: 100), (_) {

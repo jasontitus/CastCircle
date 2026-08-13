@@ -229,7 +229,6 @@ class _JoinProductionScreenState extends ConsumerState<JoinProductionScreen> {
                     border: OutlineInputBorder(),
                     hintText: 'How should others see you?',
                   ),
-                  onChanged: (_) => setState(() {}),
                 ),
                 const SizedBox(height: 16),
                 // Show available characters (those without a joined primary)
@@ -261,8 +260,14 @@ class _JoinProductionScreenState extends ConsumerState<JoinProductionScreen> {
                       ),
                     ),
                   ),
-                FilledButton.icon(
-                  onPressed: _loading || _nameController.text.trim().isEmpty
+                // ValueListenableBuilder instead of a per-keystroke
+                // setState on the screen root: with a large cast, every
+                // keystroke rebuilt the whole character list just to
+                // enable/disable this button.
+                ValueListenableBuilder<TextEditingValue>(
+                  valueListenable: _nameController,
+                  builder: (context, nameValue, _) => FilledButton.icon(
+                  onPressed: _loading || nameValue.text.trim().isEmpty
                       ? null
                       : _joinProduction,
                   icon: _loading
@@ -275,6 +280,7 @@ class _JoinProductionScreenState extends ConsumerState<JoinProductionScreen> {
                   label: const Text('Join Production'),
                   style: FilledButton.styleFrom(
                     minimumSize: const Size.fromHeight(48),
+                  ),
                   ),
                 ),
                 const SizedBox(height: 12),
@@ -434,7 +440,16 @@ class _JoinProductionScreenState extends ConsumerState<JoinProductionScreen> {
     final dlog = DebugLogService.instance;
     try {
       final supa = SupabaseService.instance;
-      final userId = supa.currentUser!.id;
+      final user = supa.currentUser;
+      if (user == null) {
+        // Session lapsed between render (isSignedIn gate) and the tap.
+        setState(() {
+          _loading = false;
+          _error = 'Your session expired — please sign in again.';
+        });
+        return;
+      }
+      final userId = user.id;
       final productionId = _foundProduction!['id'] as String;
       final characterName = _selectedCharacter == '__none__'
           ? ''

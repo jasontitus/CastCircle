@@ -12,6 +12,7 @@ import '../../data/models/script_models.dart';
 import '../../data/services/analytics_service.dart';
 import '../../data/services/debug_log_service.dart';
 import '../../data/services/paddle_ocr_channel.dart';
+import '../../data/services/script_parser.dart';
 import '../../data/services/supabase_service.dart';
 import '../../data/services/voice_config_service.dart';
 import '../../providers/production_providers.dart';
@@ -424,10 +425,42 @@ class _ScriptImportScreenState extends ConsumerState<ScriptImportScreen> {
         // the wrong part of the script.
         scenes: ParsedScript.remapScenes(
             script.scenes, script.lines, result.lines),
-        characters: script.characters,
+        // Recount characters from the surviving lines: a character whose
+        // only lines were removed in review used to linger in the preview's
+        // cast list with a stale line count until the next DB reload.
+        characters: _recountCharacters(script.characters, result.lines),
         rawText: script.rawText,
       );
     });
+  }
+
+  /// Rebuild the character list from [lines], preserving gender (and keeping
+  /// colorIndex stable by list position, like the parser does).
+  static List<ScriptCharacter> _recountCharacters(
+      List<ScriptCharacter> existing, List<ScriptLine> lines) {
+    final genders = {for (final c in existing) c.name: c.gender};
+    final counts = <String, int>{};
+    for (final line in lines) {
+      if (line.lineType != LineType.dialogue) continue;
+      if (line.multiCharacters.isNotEmpty) {
+        for (final char in line.multiCharacters) {
+          counts[char] = (counts[char] ?? 0) + 1;
+        }
+      } else if (line.character.isNotEmpty) {
+        counts[line.character] = (counts[line.character] ?? 0) + 1;
+      }
+    }
+    final sorted = counts.entries.toList()
+      ..sort((a, b) => b.value.compareTo(a.value));
+    return [
+      for (final (i, e) in sorted.indexed)
+        ScriptCharacter(
+          name: e.key,
+          colorIndex: i,
+          lineCount: e.value,
+          gender: genders[e.key] ?? ScriptParser.inferGender(e.key),
+        ),
+    ];
   }
 
   Widget _statBadge(BuildContext context, String value, String label) {

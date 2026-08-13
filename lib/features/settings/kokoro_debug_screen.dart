@@ -41,6 +41,7 @@ class _KokoroDebugScreenState extends State<KokoroDebugScreen> {
   }
 
   Future<void> _loadDebugInfo() async {
+    if (!mounted) return;
     setState(() => _loading = true);
 
     // Get TTS debug info
@@ -82,6 +83,9 @@ class _KokoroDebugScreenState extends State<KokoroDebugScreen> {
   }
 
   void _log(String msg) {
+    // Called after awaits from _speak/_stop/_tryInit — a no-op once the
+    // screen is gone beats setState-after-dispose.
+    if (!mounted) return;
     setState(() {
       _statusLog = '${DateTime.now().toString().substring(11, 19)} $msg\n$_statusLog';
     });
@@ -124,7 +128,7 @@ class _KokoroDebugScreenState extends State<KokoroDebugScreen> {
   Future<void> _stop() async {
     await _tts.stop();
     _log('Stopped');
-    setState(() => _speaking = false);
+    if (mounted) setState(() => _speaking = false);
   }
 
   @override

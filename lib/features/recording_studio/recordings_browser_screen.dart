@@ -486,20 +486,9 @@ class _RecordingsBrowserScreenState
     final notifier = ref.read(recordingsProvider.notifier);
     final productionId = ref.read(currentProductionProvider)?.id;
 
-    // Delete local file
-    var localFileGone = true;
-    try {
-      final file = File(recording.localPath);
-      if (file.existsSync()) await file.delete();
-    } catch (e) {
-      // Was a bare `catch (_) {}`: the take stayed on disk and kept playing
-      // through the path resolver, with the UI insisting it was deleted.
-      localFileGone = false;
-      dlog.logError(LogCategory.error,
-          'Delete: could not remove file ${recording.localPath}', e);
-    }
-
-    // Remove from provider (and Drift DB)
+    // Provider state FIRST — remove() drops the row from state
+    // synchronously before its own await, which is what lets the
+    // Dismissible leave the tree this frame. File and cloud cleanup follow.
     try {
       await notifier.remove(recording.scriptLineId);
     } catch (e) {
@@ -512,6 +501,19 @@ class _RecordingsBrowserScreenState
         ));
       }
       return;
+    }
+
+    // Delete local file
+    var localFileGone = true;
+    try {
+      final file = File(recording.localPath);
+      if (file.existsSync()) await file.delete();
+    } catch (e) {
+      // Was a bare `catch (_) {}`: the take stayed on disk and kept playing
+      // through the path resolver, with the UI insisting it was deleted.
+      localFileGone = false;
+      dlog.logError(LogCategory.error,
+          'Delete: could not remove file ${recording.localPath}', e);
     }
 
     final cloud = await _deleteCloudCopy(recording, productionId);

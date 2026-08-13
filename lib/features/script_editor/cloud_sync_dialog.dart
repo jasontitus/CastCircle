@@ -33,10 +33,17 @@ List<LineDiff> diffScriptLines(List<ScriptLine> local, List<ScriptLine> cloud) {
       continue;
     }
     matchedLocalIds.add(loc.id);
+    // multiCharacters and the act/scene tags matter too: a cloud edit that
+    // only changed an ensemble line's speaker list or moved a line to
+    // another scene used to display as "unchanged" and be dropped from the
+    // change list.
     final same = loc.character == cld.character &&
         loc.text == cld.text &&
         loc.lineType == cld.lineType &&
-        loc.stageDirection == cld.stageDirection;
+        loc.stageDirection == cld.stageDirection &&
+        loc.act == cld.act &&
+        loc.scene == cld.scene &&
+        _sameList(loc.multiCharacters, cld.multiCharacters);
     diffs.add(LineDiff(
         type: same ? DiffType.unchanged : DiffType.changed,
         local: loc,
@@ -272,4 +279,13 @@ Widget _buildDiffTile(BuildContext context, LineDiff diff) {
       ],
     ),
   );
+}
+
+bool _sameList(List<String> a, List<String> b) {
+  if (identical(a, b)) return true;
+  if (a.length != b.length) return false;
+  for (var i = 0; i < a.length; i++) {
+    if (a[i] != b[i]) return false;
+  }
+  return true;
 }

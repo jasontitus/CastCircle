@@ -144,10 +144,15 @@ class RecordingsNotifier extends StateNotifier<Map<String, Recording>> {
 
   Future<void> remove(String scriptLineId) async {
     final recording = state[scriptLineId];
+    // State first, synchronously: the recordings browser calls this from
+    // Dismissible.onDismissed, and the row must leave the tree this frame
+    // or Flutter throws "A dismissed Dismissible widget is still part of
+    // the tree". The DB row follows; if that fails the row simply
+    // reappears on the next load instead of dangling file-less.
+    state = Map.from(state)..remove(scriptLineId);
     if (recording != null) {
       await _repo.deleteRecording(recording.id);
     }
-    state = Map.from(state)..remove(scriptLineId);
   }
 
   /// Load recordings from a pre-built map (e.g. from recording sync cache).

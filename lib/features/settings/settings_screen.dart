@@ -322,8 +322,10 @@ class SettingsScreen extends ConsumerWidget {
   }
 
   Future<void> _signOut(BuildContext context, WidgetRef ref) async {
-    // Clear persisted skip-auth flag.
-    ref.read(sharedPreferencesProvider).remove('auth_skipped');
+    // Clear persisted skip-auth flag. Awaited: fire-and-forget raced the
+    // navigation, and an app kill before the flush meant next launch still
+    // read auth_skipped=true and skipped straight past sign-in.
+    await ref.read(sharedPreferencesProvider).remove('auth_skipped');
 
     // Sign out of Supabase if there's an active session.
     if (SupabaseService.instance.isInitialized &&

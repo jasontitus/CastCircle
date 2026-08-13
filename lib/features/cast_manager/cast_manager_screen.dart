@@ -1072,14 +1072,19 @@ class _CastManagerScreenState extends ConsumerState<CastManagerScreen> {
     final title = production?.title ?? 'the production';
     final code = production?.joinCode ?? '';
 
-    final deepLink = PendingJoin.buildUri(
-      code: code,
-      characterName: member.characterName,
-    );
+    // An empty code yields castcircle://join?code=, which the join screen
+    // rejects — the reminder link would be dead. Match _inviteActor: fall
+    // back to text without the link.
+    final deepLink = code.isNotEmpty
+        ? PendingJoin.buildUri(code: code, characterName: member.characterName)
+        : null;
 
-    final text =
-        'Reminder: You\'re invited to play ${member.characterName} in "$title" '
-        'on CastCircle.\n\nTap to join: $deepLink\n\nOr enter code: $code';
+    final text = deepLink != null
+        ? 'Reminder: You\'re invited to play ${member.characterName} in '
+            '"$title" on CastCircle.\n\nTap to join: $deepLink\n\n'
+            'Or enter code: $code'
+        : 'Reminder: You\'re invited to play ${member.characterName} in '
+            '"$title" on CastCircle. Download the app to get started.';
 
     _shareWithOrigin(text, 'CastCircle Reminder');
   }
@@ -1243,7 +1248,9 @@ class _CastManagerScreenState extends ConsumerState<CastManagerScreen> {
                           final overrides = await _voiceConfig.getOverrides(
                             production.id,
                           );
-                          setState(() => _voiceOverrides = overrides);
+                          if (mounted) {
+                            setState(() => _voiceOverrides = overrides);
+                          }
                           if (ctx.mounted) Navigator.pop(ctx);
                         },
                         child: const Text('Reset'),
@@ -1261,7 +1268,9 @@ class _CastManagerScreenState extends ConsumerState<CastManagerScreen> {
                         final overrides = await _voiceConfig.getOverrides(
                           production.id,
                         );
-                        setState(() => _voiceOverrides = overrides);
+                        if (mounted) {
+                          setState(() => _voiceOverrides = overrides);
+                        }
                         if (ctx.mounted) Navigator.pop(ctx);
                       },
                       child: const Text('Save'),

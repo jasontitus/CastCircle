@@ -142,6 +142,7 @@ class _VoiceConfigScreenState extends ConsumerState<VoiceConfigScreen> {
       onChanged: (value) async {
         if (value == null) return;
         await _voiceConfig.setPreset(productionId, value);
+        if (!mounted) return;
         setState(() => _currentPreset = VoicePresets.byId(value));
         // Sync to cloud so cast members get this preset when they join
         final supa = SupabaseService.instance;
@@ -199,6 +200,7 @@ class _VoiceConfigScreenState extends ConsumerState<VoiceConfigScreen> {
               tooltip: 'Reset to preset',
               onPressed: () async {
                 await _voiceConfig.removeOverride(productionId, char.name);
+                if (!mounted) return;
                 setState(() => _overrides.remove(char.name));
               },
             ),
@@ -281,7 +283,7 @@ class _VoiceConfigScreenState extends ConsumerState<VoiceConfigScreen> {
                         final overrides = await _voiceConfig.getOverrides(
                           productionId,
                         );
-                        setState(() => _overrides = overrides);
+                        if (mounted) setState(() => _overrides = overrides);
                         if (ctx.mounted) Navigator.pop(ctx);
                       },
                       child: const Text('Save'),
@@ -369,9 +371,13 @@ class _VoiceConfigScreenState extends ConsumerState<VoiceConfigScreen> {
     const sampleText = 'To be, or not to be, that is the question.';
 
     try {
-      // Temporarily assign this voice for preview
-      tts.assignVoice(characterName, 0, voiceId: voiceId, speed: speed);
-      await tts.speak(sampleText, character: characterName);
+      // Preview under a scratch name: assigning to the real character
+      // permanently mutated the TTS singleton's maps, so any speak() that
+      // didn't re-run rehearsal's _assignVoices used the previewed voice
+      // instead of the configured one.
+      const previewChar = '__voice_preview__';
+      tts.assignVoice(previewChar, 0, voiceId: voiceId, speed: speed);
+      await tts.speak(sampleText, character: previewChar);
     } on PlatformException {
       if (mounted) {
         ScaffoldMessenger.of(
@@ -415,6 +421,7 @@ class _VoiceConfigScreenState extends ConsumerState<VoiceConfigScreen> {
                     ? 'victorian_english'
                     : 'modern_american';
                 await _voiceConfig.setPreset(production.id, presetId);
+                if (!mounted) return;
                 setState(() => _currentPreset = VoicePresets.byId(presetId));
 
                 // Sync to cloud

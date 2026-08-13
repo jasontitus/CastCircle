@@ -126,11 +126,16 @@ void main() async {
     await TtsService.instance.init();
     await SttService.instance.init();
 
-    // Auto-download Kokoro TTS models if not already present (iOS only — MLX not available on Android)
+    // Auto-download Kokoro TTS models if not already present (iOS only — MLX
+    // not available on Android). Consent-gated: only after the user chose
+    // "Download all" in onboarding — this is ~178 MB, and launching it on
+    // every start regardless surprised users on cellular.
     if (Platform.isIOS) {
+      final prefs = await SharedPreferences.getInstance();
+      final consented = prefs.getBool('models_auto_download_ok') ?? false;
       final modelService = ModelDownloadService.instance;
       await modelService.refreshDownloadedStatus();
-      if (!await modelService.isKokoroReady()) {
+      if (consented && !await modelService.isKokoroReady()) {
         debugPrint('Auto-downloading Kokoro TTS models...');
         for (final model in ModelDownloadService.availableModels) {
           if (model.subdir == 'kokoro_mlx') {

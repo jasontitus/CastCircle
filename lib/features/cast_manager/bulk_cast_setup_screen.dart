@@ -337,6 +337,16 @@ class _BulkCastSetupScreenState extends ConsumerState<BulkCastSetupScreen> {
     final production = ref.read(currentProductionProvider);
     final joinCode = production?.joinCode ?? '';
     final title = production?.title ?? 'a production';
+    if (joinCode.isEmpty) {
+      // Every link would be castcircle://join?code= — rejected by the join
+      // screen. Better no sheet than a sheet of dead links.
+      ScaffoldMessenger.of(context).showAutoToast(const SnackBar(
+        content: Text('This production has no join code yet — invite links '
+            'need one. Try again once the production has synced.'),
+        duration: Duration(seconds: 6),
+      ));
+      return;
+    }
 
     // Collect actors that were filled in
     final actors = <MapEntry<String, String>>[];

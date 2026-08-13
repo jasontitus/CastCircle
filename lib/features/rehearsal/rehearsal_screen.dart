@@ -2655,6 +2655,7 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
         if (target == 0) break; // can't go further back
       }
 
+      if (current == 0) return; // first line — nothing to jump back to
       final jumpCount = (current - target).clamp(1, current);
 
       _dlog.log(LogCategory.rehearsal,

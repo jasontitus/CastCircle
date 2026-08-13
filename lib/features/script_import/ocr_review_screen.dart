@@ -284,7 +284,11 @@ class _OcrReviewScreenState extends State<OcrReviewScreen> {
     });
   }
 
+  bool _popped = false;
+
   void _done() {
+    if (_popped) return;
+    _popped = true;
     final result = <ScriptLine>[];
     for (final line in widget.lines) {
       if (_removedIds.contains(line.id)) continue;
@@ -302,7 +306,15 @@ class _OcrReviewScreenState extends State<OcrReviewScreen> {
     // The two-pane detail view is only useful when we can actually show a page.
     final twoPane = width >= _twoPaneBreakpoint && widget.pdfPath != null;
 
-    return Scaffold(
+    // PopScope: the system back gesture/button used to pop this route with
+    // null, and the caller treats null as "no changes" — every edit and
+    // removal made here was silently discarded. Commit on ANY exit.
+    return PopScope(
+      canPop: false,
+      onPopInvokedWithResult: (didPop, _) {
+        if (!didPop) _done();
+      },
+      child: Scaffold(
       appBar: AppBar(
         title: const Text('Review OCR'),
         leading: IconButton(
@@ -319,6 +331,7 @@ class _OcrReviewScreenState extends State<OcrReviewScreen> {
       body: twoPane
           ? _buildTwoPaneBody(context, reviewLines, notScriptLines)
           : _buildSinglePaneBody(context, reviewLines, notScriptLines),
+      ),
     );
   }
 
