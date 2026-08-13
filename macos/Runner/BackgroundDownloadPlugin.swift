@@ -7,6 +7,7 @@ class BackgroundDownloadPlugin: NSObject, URLSessionDownloadDelegate {
     private let channel: FlutterMethodChannel
     private var session: URLSession!
     private var activeDownloads: [String: DownloadInfo] = [:]
+    private var lastProgressEmit: [String: (fraction: Double, at: Date)] = [:]
 
     struct DownloadInfo {
         let modelId: String
@@ -133,6 +134,19 @@ class BackgroundDownloadPlugin: NSObject, URLSessionDownloadDelegate {
         } else {
             progress = 0.0
         }
+
+        // Throttle: URLSession fires this many times a second and the
+        // delegate queue is main — unthrottled, a multi-hundred-MB model
+        // download was a main-thread platform-channel storm (iOS twin has
+        // the same guard).
+        let now = Date()
+        if let last = lastProgressEmit[modelId],
+           progress < 1.0,
+           progress - last.fraction < 0.01,
+           now.timeIntervalSince(last.at) < 0.3 {
+            return
+        }
+        lastProgressEmit[modelId] = (progress, now)
 
         channel.invokeMethod("onDownloadProgress", arguments: [
             "modelId": modelId,

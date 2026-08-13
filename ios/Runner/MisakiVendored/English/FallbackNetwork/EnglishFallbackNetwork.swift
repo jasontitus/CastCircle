@@ -13,9 +13,17 @@ final class EnglishFallbackNetwork {
 
   private let british: Bool
     
-  init(british: Bool) {    
-    configuration = EnglishFallbackNetwork.loadConfig(british: british)!
-    modelWeights = EnglishFallbackNetwork.loadWeights(british: british)!
+  /// Failable: missing/corrupt bundled BART config or weights used to
+  /// force-unwrap and crash the app at G2P init. Callers fall back to
+  /// lexicon-only phonemization instead.
+  init?(british: Bool) {
+    guard let config = EnglishFallbackNetwork.loadConfig(british: british),
+          let weights = EnglishFallbackNetwork.loadWeights(british: british) else {
+      NSLog("EnglishFallbackNetwork: BART config/weights missing — lexicon-only G2P")
+      return nil
+    }
+    configuration = config
+    modelWeights = weights
     
     self.british = british
     

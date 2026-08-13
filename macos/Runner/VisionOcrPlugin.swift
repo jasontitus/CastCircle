@@ -38,7 +38,10 @@ class VisionOcrPlugin: NSObject {
                                     details: nil))
                 return
             }
-            let scale = args["scale"] as? Double ?? 2.0
+            // Defensive clamp: scale multiplies straight into bitmap
+            // dimensions — an absurd value would allocate a multi-hundred-MB
+            // context per page and jetsam the process mid-OCR.
+            let scale = min(max(args["scale"] as? Double ?? 2.0, 0.5), 4.0)
             ocrPdf(path: path, scale: scale, result: result)
 
         default:
@@ -113,7 +116,6 @@ class VisionOcrPlugin: NSObject {
                 ]
                 pages.append(pageResult)
 
-                NSLog("VisionOCR: Page \(i+1)/\(pageCount) — \(blocks.count) lines")
             }
 
             DispatchQueue.main.async {

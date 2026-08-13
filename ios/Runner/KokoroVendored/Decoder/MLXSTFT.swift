@@ -133,7 +133,10 @@ func mlxIstft(
 
   let xTransposed = x.transposed(1, 0)
   let t = (xTransposed.shape[0] - 1) * hopLen + winLen
-  let windowModLen = 20 / 5
+  // winLen/hopLen, not a literal: the shipped config is 800/200 (= 4), but a
+  // config change would silently alias the overlap-add if this stayed fixed.
+  precondition(winLen % hopLen == 0, "iSTFT winLen must be a multiple of hopLen")
+  let windowModLen = winLen / hopLen
 
   let wSquared = w * w
   let totalWsquared = MLX.concatenated(Array(repeating: wSquared, count: t / winLen))

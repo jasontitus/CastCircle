@@ -52,6 +52,48 @@ class BackgroundDownloadPlugin: NSObject, URLSessionDownloadDelegate {
         destinationPath + ".resume"
     }
 
+    // MARK: - Download-state persistence
+    //
+    // activeDownloads is memory-only, but a BACKGROUND URLSession outlives
+    // the process: iOS relaunches the app and replays didFinishDownloadingTo
+    // with taskDescription intact. The fresh plugin instance used to have an
+    // empty dict, so the guard dropped the callback, the temp file was
+    // deleted by the system, and a multi-GB download that completed while
+    // terminated was silently discarded. Persist modelId → (url, dest) and
+    // reconstruct on replay.
+
+    private static let persistKey = "BackgroundDownloadPlugin.active"
+
+    private func persistDownloadRecord(_ info: DownloadInfo) {
+        var records = UserDefaults.standard.dictionary(forKey: Self.persistKey)
+            as? [String: [String: String]] ?? [:]
+        records[info.modelId] = [
+            "url": info.url.absoluteString,
+            "destinationPath": info.destinationPath,
+        ]
+        UserDefaults.standard.set(records, forKey: Self.persistKey)
+    }
+
+    private func removeDownloadRecord(_ modelId: String) {
+        var records = UserDefaults.standard.dictionary(forKey: Self.persistKey)
+            as? [String: [String: String]] ?? [:]
+        records.removeValue(forKey: modelId)
+        UserDefaults.standard.set(records, forKey: Self.persistKey)
+    }
+
+    /// Rebuild a DownloadInfo for a delegate callback that arrived after the
+    /// process (and activeDownloads) was recreated.
+    private func restoredDownloadInfo(_ modelId: String) -> DownloadInfo? {
+        guard let records = UserDefaults.standard.dictionary(forKey: Self.persistKey)
+                as? [String: [String: String]],
+              let record = records[modelId],
+              let urlString = record["url"],
+              let url = URL(string: urlString),
+              let dest = record["destinationPath"] else { return nil }
+        NSLog("BackgroundDownload: \(modelId) restored from persisted state (post-relaunch delivery)")
+        return DownloadInfo(modelId: modelId, url: url, destinationPath: dest)
+    }
+
     private func handle(_ call: FlutterMethodCall, result: @escaping FlutterResult) {
         switch call.method {
         case "startDownload":
@@ -80,6 +122,7 @@ class BackgroundDownloadPlugin: NSObject, URLSessionDownloadDelegate {
             var info = DownloadInfo(modelId: modelId, url: downloadUrl, destinationPath: destinationPath)
             startTask(&info)
             activeDownloads[modelId] = info
+            persistDownloadRecord(info)
             result(true)
 
         case "cancelDownload":
@@ -94,6 +137,7 @@ class BackgroundDownloadPlugin: NSObject, URLSessionDownloadDelegate {
                 // starts fresh rather than silently resuming.
                 try? FileManager.default.removeItem(atPath: resumePath(info.destinationPath))
             }
+            removeDownloadRecord(modelId)
             result(true)
 
         default:
@@ -130,6 +174,7 @@ class BackgroundDownloadPlugin: NSObject, URLSessionDownloadDelegate {
                 "error": "Network interrupted. Tap Download to resume.",
             ])
             activeDownloads.removeValue(forKey: modelId)
+            removeDownloadRecord(modelId)
             return
         }
         activeDownloads[modelId] = info
@@ -149,8 +194,11 @@ class BackgroundDownloadPlugin: NSObject, URLSessionDownloadDelegate {
         downloadTask: URLSessionDownloadTask,
         didFinishDownloadingTo location: URL
     ) {
-        guard let modelId = downloadTask.taskDescription,
-              let info = activeDownloads[modelId] else { return }
+        guard let modelId = downloadTask.taskDescription else { return }
+        guard let info = activeDownloads[modelId] ?? restoredDownloadInfo(modelId) else {
+            NSLog("BackgroundDownload: \(modelId) finished but no state (memory or disk) — dropping")
+            return
+        }
 
         let destURL = URL(fileURLWithPath: info.destinationPath)
         do {
@@ -174,7 +222,14 @@ class BackgroundDownloadPlugin: NSObject, URLSessionDownloadDelegate {
             ])
         }
         activeDownloads.removeValue(forKey: modelId)
+        removeDownloadRecord(modelId)
     }
+
+    /// Last progress emission per model, for throttling: URLSession fires
+    /// didWriteData many times a second, and every callback was a
+    /// main-thread platform-channel hop — a bridge storm for the whole
+    /// duration of a multi-GB download.
+    private var lastProgressEmit: [String: (fraction: Double, at: Date)] = [:]
 
     func urlSession(
         _ session: URLSession,
@@ -187,6 +242,14 @@ class BackgroundDownloadPlugin: NSObject, URLSessionDownloadDelegate {
         let progress = totalBytesExpectedToWrite > 0
             ? Double(totalBytesWritten) / Double(totalBytesExpectedToWrite)
             : 0.0
+        let now = Date()
+        if let last = lastProgressEmit[modelId],
+           progress < 1.0,
+           progress - last.fraction < 0.01,
+           now.timeIntervalSince(last.at) < 0.3 {
+            return
+        }
+        lastProgressEmit[modelId] = (progress, now)
         channel.invokeMethod("onDownloadProgress", arguments: [
             "modelId": modelId,
             "progress": progress,
@@ -206,7 +269,12 @@ class BackgroundDownloadPlugin: NSObject, URLSessionDownloadDelegate {
         let nsError = error as NSError
         if nsError.code == NSURLErrorCancelled { return }  // user cancel — not an error
 
-        guard let info = activeDownloads[modelId] else { return }
+        guard let info = activeDownloads[modelId] ?? restoredDownloadInfo(modelId) else { return }
+        // Post-relaunch delivery: put the restored info back so
+        // scheduleRetry has state to work with.
+        if activeDownloads[modelId] == nil {
+            activeDownloads[modelId] = info
+        }
 
         // Persist resume data so the retry (or a later manual one) continues
         // from the bytes already on disk. If the server didn't give us resume

@@ -130,22 +130,31 @@ class PdfTextPlugin: NSObject {
     }
 
     private func hasEmbeddedText(path: String, result: @escaping FlutterResult) {
+        // Off the main thread like the sibling extract methods: opening the
+        // PDF + reading 3 pages of text is disk I/O + parse that janked the
+        // UI on large scans every time the OCR-vs-PDFKit decision ran.
+        DispatchQueue.global(qos: .userInitiated).async {
+            let answer = Self.checkEmbeddedText(path: path)
+            DispatchQueue.main.async { result(answer) }
+        }
+    }
+
+    private static func checkEmbeddedText(path: String) -> Bool {
         let url = URL(fileURLWithPath: path)
 
         guard let document = PDFDocument(url: url) else {
-            result(false)
-            return
+            return false
         }
 
+        // Check first 3 pages for text
         for i in 0..<min(3, document.pageCount) {
             if let page = document.page(at: i),
                let text = page.string,
                !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                result(true)
-                return
+                return true
             }
         }
 
-        result(false)
+        return false
     }
 }

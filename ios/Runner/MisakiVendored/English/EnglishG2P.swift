@@ -7,7 +7,7 @@ final public class EnglishG2P {
   private let british: Bool
   private let tagger: NLTagger
   private let lexicon: Lexicon
-  private let fallback: EnglishFallbackNetwork
+  private let fallback: EnglishFallbackNetwork?
   private let unk: String
     
   static let punctuationTags: Set<NLTag> =  Set([.openQuote, .closeQuote, .openParenthesis, .closeParenthesis, .punctuation, .sentenceTerminator, .otherPunctuation])
@@ -425,9 +425,14 @@ final public class EnglishG2P {
         }
         
         if w.phonemes == nil {
-          let out = fallback(w)
-          w.phonemes = out.0
-          w.`_`.rating = out.1
+          // No BART fallback (failed to load): mark unknown, keep going.
+          if let out = fallback?(w) {
+            w.phonemes = out.0
+            w.`_`.rating = out.1
+          } else {
+            w.phonemes = unk
+            w.`_`.rating = 1
+          }
         }
         
         ctx = tokenContext(ctx, ps: w.phonemes, token: w)
@@ -472,7 +477,7 @@ final public class EnglishG2P {
         if shouldFallback {
           let token = mergeTokens(arr)
           let first = arr[0]
-          let out = fallback(token)
+          let out: (String?, Int?) = fallback?(token) ?? (unk, 1)
           first.phonemes = out.0
           first.`_`.rating = out.1
           arr[0] = first

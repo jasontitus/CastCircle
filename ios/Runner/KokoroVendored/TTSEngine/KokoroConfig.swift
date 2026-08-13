@@ -14,8 +14,14 @@ import Foundation
 ///
 /// Configuration is loaded from a JSON file bundled with the module.
 struct KokoroConfig: Decodable {
-  /// Shared configuration instance cached after first load
-  nonisolated(unsafe) static var config: KokoroConfig?
+  /// Shared configuration instance. `static let` with a lazy initializer:
+  /// Swift guarantees thread-safe once-only initialization, closing the data
+  /// race where loadConfig() wrote this var while Tokenizer.tokenize read it
+  /// from another thread with no synchronization.
+  nonisolated(unsafe) static let shared: KokoroConfig = loadConfigFromBundle()
+
+  /// Legacy accessor — reads now always see the fully-initialized instance.
+  static var config: KokoroConfig? { shared }
 
   /// Configuration for the iSTFT (Inverse Short-Time Fourier Transform) decoder network.
   /// Defines the architecture of the decoder that converts mel-spectrograms to audio.
@@ -152,16 +158,12 @@ struct KokoroConfig: Decodable {
   /// - Returns: Parsed KokoroConfig instance
   /// - Note: Uses forced unwrapping (try!) as configuration loading is critical
   ///         and should fail fast if the file is missing or malformed
-  nonisolated static func loadConfig() -> KokoroConfig {
+  nonisolated static func loadConfig() -> KokoroConfig { shared }
+
+  private nonisolated static func loadConfigFromBundle() -> KokoroConfig {
     // Locate config.json in the module bundle
     let fileURL = Bundle.main.url(forResource: "config", withExtension: "json")!
-    
-    // Read file contents
     let configJSON = try! String(contentsOf: fileURL, encoding: .utf8)
-    
-    // Parse JSON and cache the result
-    KokoroConfig.config = try! JSONDecoder().decode(KokoroConfig.self, from: configJSON.data(using: .utf8)!)
-    
-    return KokoroConfig.config!
+    return try! JSONDecoder().decode(KokoroConfig.self, from: configJSON.data(using: .utf8)!)
   }
 }

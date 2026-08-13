@@ -1,5 +1,29 @@
 import NaturalLanguage
 
+// Hoisted to file scope: pennTag(for:) runs at least once per token during
+// phonemization, and building 8 Set literals per call was ~10 allocations
+// per word of pure churn.
+private let whDeterminers: Set<String> = ["which", "whatever", "whichever"]
+private let whPronouns: Set<String>    = ["who", "whom", "whose", "whoever", "whomever", "what", "whatever", "which", "whichever"]
+private let whAdverbs: Set<String>     = ["when", "where", "why", "how"]
+private let possessivePronouns: Set<String> = ["my","your","his","her","its","our","their"]
+private let auxBe: Set<String>   = ["am","is","are","was","were","be","been","being"]
+private let auxDo: Set<String>   = ["do","does","did"]
+private let auxHave: Set<String> = ["have","has","had"]
+private let subordinatingConjunctions: Set<String> = [
+    "because","although","though","if","while","when","whenever","before","after","since","unless","until","that","whether","as"
+]
+private let personalPronounsSet: Set<String> = [
+    "i", "me", "my", "mine", "myself",
+    "you", "your", "yours", "yourself", "yourselves",
+    "he", "him", "his", "himself",
+    "she", "her", "hers", "herself",
+    "it", "its", "itself",
+    "we", "us", "our", "ours", "ourselves",
+    "they", "them", "their", "theirs", "themselves"
+]
+
+
 /// Maps Apple's NLTag (lexicalClass) to a Penn Treebank POS tag string.
 /// `token` is optional but might enable some heuristics.
 func pennTag(for nlTag: NLTag, token: String? = nil) -> String {
@@ -27,16 +51,6 @@ func pennTag(for nlTag: NLTag, token: String? = nil) -> String {
     if nlTag == .openParenthesis { return "(" }
     if nlTag == .closeParenthesis { return ")" }
 
-    let whDeterminers: Set<String> = ["which", "whatever", "whichever"]
-    let whPronouns: Set<String>    = ["who", "whom", "whose", "whoever", "whomever", "what", "whatever", "which", "whichever"]
-    let whAdverbs: Set<String>     = ["when", "where", "why", "how"]
-    let possessivePronouns: Set<String> = ["my","your","his","her","its","our","their"]
-    let auxBe: Set<String>   = ["am","is","are","was","were","be","been","being"]
-    let auxDo: Set<String>   = ["do","does","did"]
-    let auxHave: Set<String> = ["have","has","had"]
-    let subordinatingConjunctions: Set<String> = [
-        "because","although","though","if","while","when","whenever","before","after","since","unless","until","that","whether","as"
-    ]
 
     func looksPlural(_ s: String) -> Bool {
         let l = s.lowercased()
@@ -141,15 +155,5 @@ func pennTag(for nlTag: NLTag, token: String? = nil) -> String {
 }
 
 func isPersonalPrononun(tag: NLTag, token: String) -> Bool {
-  let personalPronouns: Set<String> = [
-    "i", "me", "my", "mine", "myself",
-    "you", "your", "yours", "yourself", "yourselves",
-    "he", "him", "his", "himself",
-    "she", "her", "hers", "herself",
-    "it", "its", "itself",
-    "we", "us", "our", "ours", "ourselves",
-    "they", "them", "their", "theirs", "themselves"
-  ]
-  
-  return tag == .pronoun && personalPronouns.contains(token.lowercased())
+  return tag == .pronoun && personalPronounsSet.contains(token.lowercased())
 }

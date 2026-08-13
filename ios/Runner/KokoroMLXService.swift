@@ -36,7 +36,14 @@ class KokoroMLXService {
     /// Serial actor to prevent concurrent synthesis (NLTagger is not thread-safe).
     private let synthQueue = DispatchQueue(label: "com.castcircle.kokoro-synth")
     /// Incremented on each synthesize call; older calls bail out early.
+    /// Guarded by [genLock]: incremented on the calling Swift-concurrency
+    /// thread while queued blocks read it inside synthQueue — concurrent
+    /// synthesize() calls (prefetch overlaps live playback) raced the
+    /// read-modify-write, and a lost increment let a superseded synthesis
+    /// escape cancellation. NSLock, not synthQueue.sync: the queue is busy
+    /// for whole syntheses and sync-ing on it would block the caller.
     private var synthGeneration: Int = 0
+    private let genLock = NSLock()
 
     var isModelLoaded: Bool { ttsEngine != nil && !voices.isEmpty }
 
@@ -184,8 +191,10 @@ class KokoroMLXService {
         }
 
         // Mark this generation so older in-flight calls can bail out
+        genLock.lock()
         synthGeneration += 1
         let myGeneration = synthGeneration
+        genLock.unlock()
 
         // Determine language from voice prefix
         let language: Language = voice.hasPrefix("a") ? .enUS : .enGB
@@ -199,7 +208,10 @@ class KokoroMLXService {
                 }
 
                 // If a newer synthesis was requested, skip this one
-                if myGeneration != self.synthGeneration {
+                self.genLock.lock()
+                let currentGeneration = self.synthGeneration
+                self.genLock.unlock()
+                if myGeneration != currentGeneration {
                     continuation.resume(throwing: KokoroError.cancelled)
                     return
                 }

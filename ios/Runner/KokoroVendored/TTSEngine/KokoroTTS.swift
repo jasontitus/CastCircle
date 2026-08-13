@@ -27,6 +27,8 @@ public final class KokoroTTS {
   public enum KokoroTTSError: Error {
     /// Thrown when input text exceeds maximum token count
     case tooManyTokens
+    /// Thrown for unusable inputs: non-finite/zero speed, empty text.
+    case invalidInput
   }
   
   /// BERT model for encoding phoneme sequences
@@ -167,6 +169,12 @@ public final class KokoroTTS {
   /// - Throws: `KokoroTTSError.tooManyTokens` if text is too long,
   ///           or `G2PProcessorError` if G2P processing fails
   public func generateAudio(voice: MLXArray, language: Language, text: String, speed: Float = 1.0) throws -> ([Float], [MToken]?) {
+    // speed divides straight into predicted durations: 0/NaN would produce
+    // inf frame counts and a giant (or crashing) alignment allocation. The
+    // value arrives unvalidated from the Dart channel.
+    guard speed.isFinite, speed > 0.05, speed <= 10 else {
+      throw KokoroTTSError.invalidInput
+    }
     // Update language if it has changed
     try updateLanguageIfNeeded(language)
 
@@ -175,6 +183,11 @@ public final class KokoroTTS {
     
     // Step 2: Tokenize and prepare input
     let (paddedInputIds, attentionMask, inputLengths, textMask, inputIds) = try prepareInputTensors(phonemizedText)
+    // Empty/whitespace-only input: tokenCount == 0 would index voice[-1]
+    // (MLX wraps negatives) and synthesize noise with the wrong style.
+    guard !inputIds.isEmpty else {
+      throw KokoroTTSError.invalidInput
+    }
     
     // Step 3: Extract style embeddings from voice
     let (globalStyle, acousticStyle) = extractStyleEmbeddings(from: voice, tokenCount: inputIds.count)
@@ -264,7 +277,9 @@ public final class KokoroTTS {
 
     // Create input length tensor
     let inputLengths = MLXArray(paddedInputIds.dim(-1))
-    let inputLengthMax: Int = inputLengths.max().item()
+    // Same value the reduction would produce, already known on the host —
+    // .max().item() forced a device round-trip on every synthesis.
+    let inputLengthMax: Int = paddedInputIds.dim(-1)
     
     // Create text mask for padding positions
     var textMask = MLXArray(0 ..< inputLengthMax)

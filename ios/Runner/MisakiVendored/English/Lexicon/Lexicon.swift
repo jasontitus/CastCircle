@@ -3,6 +3,19 @@ import NaturalLanguage
 import MLXUtilsLibrary
 
 final class Lexicon {
+  // Compiled once: String.range(of:options:.regularExpression) builds a
+  // fresh NSRegularExpression per call, and these three sit on the
+  // per-token phonemization hot path.
+  private static let vsRegex = try! NSRegularExpression(pattern: "vs\\.?$", options: [.caseInsensitive])
+  private static let doubledIngRegex = try! NSRegularExpression(pattern: "([bcdgklmnprstvxz])\\1ing$|cking$")
+  private static let trailingLowerRegex = try! NSRegularExpression(pattern: "[a-z']+$")
+
+  private static func firstMatchRange(_ regex: NSRegularExpression, in s: String) -> Range<String.Index>? {
+    let ns = NSRange(s.startIndex..., in: s)
+    guard let m = regex.firstMatch(in: s, range: ns) else { return nil }
+    return Range(m.range, in: s)
+  }
+
   static let usVocab: Set<Character> = Set("AIOWYbdfhijklmnpstuvwzæðŋɑɔəɛɜɡɪɹɾʃʊʌʒʤʧˈˌθᵊᵻʔ")
   static let gbVocab: Set<Character> = Set("AIQWYabdfhijklmnpstuvwzðŋɑɒɔəɛɜɡɪɹʃʊʌʒʤʧˈˌːθᵊ")
   static let lexiconOrdinals: [Int] = [39, 45] + Array(65...90) + Array(97...122)
@@ -243,7 +256,7 @@ final class Lexicon {
       return (s + "ɪn", 4)
     } else if ["the", "The"].contains(word) || (word == "THE" && tag == .determiner) {
       return (ctx.futureVowel == true ? "ði" : "ðə", 4)
-    } else if tag == .preposition, word.range(of: "(?i)vs\\.?$", options: .regularExpression) != nil {
+    } else if tag == .preposition, Lexicon.firstMatchRange(Lexicon.vsRegex, in: word) != nil {
       return lookup("versus", tag: nil, stress: nil, ctx: ctx)
     } else if ["used", "Used", "USED"].contains(word) {
       if (tag == .verb || tag == .adjective) && ctx.futureTo {
@@ -406,7 +419,7 @@ final class Lexicon {
       stem = String(word.dropLast(3))
     } else if isKnown(String(word.dropLast(3)) + "e") {
       stem = String(word.dropLast(3)) + "e"
-    } else if word.count > 5, word.range(of: #"([bcdgklmnprstvxz])\1ing$|cking$"#, options: .regularExpression) != nil, isKnown(String(word.dropLast(4))) {
+    } else if word.count > 5, Lexicon.firstMatchRange(Lexicon.doubledIngRegex, in: word) != nil, isKnown(String(word.dropLast(4))) {
       stem = String(word.dropLast(4))
     }
     
@@ -493,7 +506,7 @@ final class Lexicon {
     
     var word = input
     var suffix: String? = nil
-    if let m = word.range(of: "[a-z']+$", options: .regularExpression) {
+    if let m = Lexicon.firstMatchRange(Lexicon.trailingLowerRegex, in: word) {
       suffix = String(word[m])
       word.removeSubrange(m)
     }

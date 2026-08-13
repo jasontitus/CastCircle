@@ -24,7 +24,35 @@ class AppleSttPlugin: NSObject {
     private var authorized = false
 
     // Concurrent audio recording during STT
+    /// All access serialized on [audioFileQueue]: the mic tap writes from
+    /// the realtime render thread while stopRecording closed the file from
+    /// the main thread — a data race that could crash or truncate the take.
+    /// The queue also moves the file I/O itself OFF the render thread (a
+    /// disk-latency spike used to stall the render callback and glitch both
+    /// the recording and the STT feed).
     private var audioFile: AVAudioFile?
+    private let audioFileQueue = DispatchQueue(label: "com.lineguide.stt.audiofile")
+
+    /// Deep-copy a tap buffer so it can be written asynchronously (the tap's
+    /// buffer is reused by the engine once the callback returns).
+    private static func copyBuffer(_ buffer: AVAudioPCMBuffer) -> AVAudioPCMBuffer? {
+        guard let copy = AVAudioPCMBuffer(
+            pcmFormat: buffer.format, frameCapacity: buffer.frameLength) else { return nil }
+        copy.frameLength = buffer.frameLength
+        if let src = buffer.floatChannelData, let dst = copy.floatChannelData {
+            for ch in 0..<Int(buffer.format.channelCount) {
+                dst[ch].update(from: src[ch], count: Int(buffer.frameLength))
+            }
+            return copy
+        }
+        if let src = buffer.int16ChannelData, let dst = copy.int16ChannelData {
+            for ch in 0..<Int(buffer.format.channelCount) {
+                dst[ch].update(from: src[ch], count: Int(buffer.frameLength))
+            }
+            return copy
+        }
+        return nil
+    }
     private var recordingStartTime: Date?
     private var recordingPath: String?
     private var tapFormat: AVAudioFormat? // cached from installTap
@@ -268,13 +296,20 @@ class AppleSttPlugin: NSObject {
         // (exception-guarded) and macOS install paths share it.
         let tapBlock: AVAudioNodeTapBlock = { [weak self] buffer, _ in
             self?.recognitionRequest?.append(buffer)
-            // Concurrent recording: write same audio buffers to file
-            if let file = self?.audioFile {
-                do {
-                    try file.write(from: buffer)
-                } catch {
-                    NSLog("AppleStt: audioFile.write FAILED: \(error)")
-                    self?.audioFile = nil // stop trying after first failure
+            // Concurrent recording: mirror the buffer to the take file, on
+            // the file queue — never disk I/O on the render thread. Copy
+            // first (the engine reuses the tap buffer after we return); if
+            // the copy fails, skip this buffer rather than block.
+            if let self = self, self.audioFile != nil,
+               let copied = AppleSttPlugin.copyBuffer(buffer) {
+                self.audioFileQueue.async { [weak self] in
+                    guard let file = self?.audioFile else { return }
+                    do {
+                        try file.write(from: copied)
+                    } catch {
+                        NSLog("AppleStt: audioFile.write FAILED: \(error)")
+                        self?.audioFile = nil // stop trying after first failure
+                    }
                 }
             }
             // Mic energy for Dart-side endpointing and level UI.
@@ -351,17 +386,18 @@ class AppleSttPlugin: NSObject {
         let cafPath = path + ".caf"
 
         do {
-            audioFile = try AVAudioFile(
+            let file = try AVAudioFile(
                 forWriting: URL(fileURLWithPath: cafPath),
                 settings: format.settings,
                 commonFormat: format.commonFormat,
                 interleaved: format.isInterleaved
             )
+            audioFileQueue.sync { audioFile = file }
             NSLog("AppleStt: Recording started → \(cafPath) (PCM \(format.sampleRate)Hz \(format.channelCount)ch)")
             result(true)
         } catch {
             NSLog("AppleStt: Failed to create audio file: \(error)")
-            audioFile = nil
+            audioFileQueue.sync { audioFile = nil }
             recordingPath = nil
             result(FlutterError(code: "RECORD_ERROR",
                                 message: error.localizedDescription, details: nil))
@@ -378,8 +414,10 @@ class AppleSttPlugin: NSObject {
         let durationMs = Int((Date().timeIntervalSince(recordingStartTime ?? Date())) * 1000)
         let cafPath = destPath + ".caf"
 
-        // Close the PCM file
-        audioFile = nil
+        // Close the PCM file on the file queue, synchronously: this drains
+        // every pending tap write before the CAF is converted below, and it
+        // is the only place allowed to close the file while the tap runs.
+        audioFileQueue.sync { audioFile = nil }
         recordingStartTime = nil
         recordingPath = nil
 
@@ -480,8 +518,15 @@ class AppleSttPlugin: NSObject {
         reader.add(output)
         reader.startReading()
 
-        // Analyze in 50ms windows — find RMS amplitude per window
-        let sampleRate = 44100.0 // approximate; actual may vary
+        // Analyze in 50ms windows — find RMS amplitude per window.
+        // Sample rate from the actual track: mic taps are frequently 48 kHz,
+        // and assuming 44.1k drifted every "50ms" window by ~9%, shifting the
+        // trim boundaries and clipping the first speech edge after long
+        // leading silence.
+        let sampleRate: Double = {
+            let native = track.naturalTimeScale
+            return native > 0 ? Double(native) : 44100.0
+        }()
         let windowSamples = Int(sampleRate * 0.05) // 50ms
         var windowRMS: [Float] = []
         // Partial window carried across sample-buffer boundaries.

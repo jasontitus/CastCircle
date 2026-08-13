@@ -180,7 +180,12 @@ class PaddleOcrPlugin: NSObject {
         // Auto-scale per page so the long side ≈ targetRenderLongPx (clamped
         // 1.0–6.0), instead of a fixed scale — adapts to page size / DPI.
         let longPt = max(b.width, b.height)
-        let autoScale = min(6.0, max(1.0, self.targetRenderLongPx / longPt))
+        // Honor the caller's `scale` as a floor: the channel mirrors
+        // VisionOcrChannel where scale controls render resolution, but it
+        // was parsed and then ignored — callers could never request a
+        // higher-fidelity render. autoScale (long side ≈ 1800px) remains
+        // the default when the caller's scale asks for less.
+        let autoScale = min(6.0, max(1.0, max(scale, self.targetRenderLongPx / longPt)))
         guard let cg = self.renderPage(page, width: b.width * autoScale, height: b.height * autoScale) else {
           failed += 1; continue
         }
