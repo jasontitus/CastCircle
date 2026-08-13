@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:file_picker/file_picker.dart';
+import 'package:wakelock_plus/wakelock_plus.dart';
 import 'package:go_router/go_router.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
@@ -655,6 +656,13 @@ class _ScriptImportScreenState extends ConsumerState<ScriptImportScreen> {
 
       final service = ref.read(scriptImportServiceProvider);
 
+      // Keep the screen (and therefore the process) awake for the whole OCR
+      // run. Field log 2026-08-13: with the screen allowed to time out,
+      // Samsung's power management repeatedly FROZE the app mid-import —
+      // the 30 s sync heartbeat stretched to 78-147 s and 82 pages took
+      // ~15 min instead of ~6. Rehearsal already holds a wakelock for the
+      // same reason.
+      WakelockPlus.enable();
       try {
         // OCR of a scanned script runs for minutes, and back works throughout —
         // every step after this await has to re-check that we're still here.
@@ -702,6 +710,10 @@ class _ScriptImportScreenState extends ConsumerState<ScriptImportScreen> {
               'or convert your PDF to a text file first.';
           _loading = false;
         });
+      } finally {
+        // Import over (success, failure, or user backed out) — let the
+        // screen sleep again. Rehearsal manages its own wakelock.
+        WakelockPlus.disable();
       }
     } catch (e, stack) {
       DebugLogService.instance
