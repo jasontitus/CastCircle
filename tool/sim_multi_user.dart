@@ -82,10 +82,6 @@ Future<void> main(List<String> args) async {
       bad('A and B are the SAME account — use two different accounts');
       return;
     }
-    if (aUserId == bUserId) {
-      bad('A and B are the SAME account — use two different accounts');
-      return;
-    }
 
     print('\n[2] A creates a production with a join code');
     final code = _joinCode();

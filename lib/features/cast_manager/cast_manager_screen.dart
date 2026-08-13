@@ -898,6 +898,10 @@ class _CastManagerScreenState extends ConsumerState<CastManagerScreen> {
     );
   }
 
+  // pi-review 2026-08-13: UNREACHABLE — no caller wires this sheet (or the
+  // invite-card flow behind it) into the UI; _inviteActor shares plain text
+  // directly. Kept as the intended richer invite flow; wire or delete.
+  // ignore: unused_element
   void _showInviteOptions({
     required String productionTitle,
     required String characterName,

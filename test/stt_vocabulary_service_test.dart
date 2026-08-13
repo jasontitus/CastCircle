@@ -37,8 +37,12 @@ void main() {
       ];
 
       service.buildFromScript('test-prod', lines);
-      // Words appearing multiple times are marked as important
-      // "nobler", "fortune" appear once, but common words like "the" appear multiple times
+      final hints = service.getScriptHints('test-prod');
+      // The speaker and distinctive script words surface as hints; stopwords
+      // never do, however often they repeat.
+      expect(hints, contains('Hamlet'));
+      expect(hints.map((h) => h.toLowerCase()), isNot(contains('the')));
+      expect(hints, isNotEmpty);
     });
 
     test('ignores stage directions', () {
@@ -49,7 +53,11 @@ void main() {
       ];
 
       service.buildFromScript('test-prod', lines);
-      // Stage direction text should not be in vocabulary
+      final hints =
+          service.getScriptHints('test-prod').map((h) => h.toLowerCase());
+      // Stage-direction-only words must not leak into the vocabulary.
+      expect(hints, isNot(contains('stage')));
+      expect(hints, isNot(contains('enters')));
     });
   });
 

@@ -33,8 +33,19 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."                  # -> repo root
 
-KEY=7C7256MDM6
-ISSUER=69a6de81-894e-47e3-e053-5b8c7c11a4d1
+# ASC key/issuer ids come from the environment or ~/.appstoreconnect/ids.env
+# (git-ignored) — credential identifiers don't belong in committed code,
+# even though the actual secret (the .p8) already lives outside the repo.
+if [[ -f "$HOME/.appstoreconnect/ids.env" ]]; then
+  # shellcheck disable=SC1091
+  source "$HOME/.appstoreconnect/ids.env"
+fi
+KEY="${ASC_KEY_ID:-}"
+ISSUER="${ASC_ISSUER_ID:-}"
+if [[ -z "$KEY" || -z "$ISSUER" ]]; then
+  echo "✗ Set ASC_KEY_ID and ASC_ISSUER_ID (env or ~/.appstoreconnect/ids.env)" >&2
+  exit 1
+fi
 KEYPATH="$HOME/.appstoreconnect/private_keys/AuthKey_${KEY}.p8"
 ARCHIVE=build/ios/archive/Runner.xcarchive
 ARCHIVE_PLIST="$ARCHIVE/Products/Applications/Runner.app/Info.plist"

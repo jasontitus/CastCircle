@@ -620,7 +620,9 @@ class _ScriptEditorScreenState extends ConsumerState<ScriptEditorScreen> {
 
     // Move the line
     allLines.removeAt(fromIdx);
-    final insertAt = toIdx > fromIdx ? toIdx : toIdx;
+    // Both branches of the old conditional were toIdx — the value is
+    // correct in both directions after the newIndex-- adjustment above.
+    final insertAt = toIdx;
     allLines.insert(insertAt, movedLine);
 
     // Reassign orderIndex

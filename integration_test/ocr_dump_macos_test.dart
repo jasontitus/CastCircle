@@ -7,6 +7,13 @@ import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 import 'package:castcircle/data/services/script_import_service.dart';
 
+/// Repo root for fixture/model staging paths. Relative default works when
+/// tests run from the checkout root; override with
+/// --dart-define=CASTCIRCLE_REPO=/path for other harnesses.
+const _ccRepo =
+    String.fromEnvironment('CASTCIRCLE_REPO', defaultValue: '.');
+
+
 /// Dump the FULL parsed result of the real on-device import pipeline for the
 /// P&P scan, so parser attribution can be analyzed and iterated offline.
 ///
@@ -20,7 +27,7 @@ void main() {
   IntegrationTestWidgetsFlutterBinding.ensureInitialized();
   testWidgets('dump P&P import for parser analysis', (t) async {
     const src =
-        '/Users/jasontitus/experiments/CastCircle/sample-scripts/Pride-Prejudice-SCRIPT.pdf';
+        '$_ccRepo/sample-scripts/Pride-Prejudice-SCRIPT.pdf';
     final tmp = await getTemporaryDirectory();
     await tmp.create(recursive: true);
     final pdf = p.join(tmp.path, 'pp_full.pdf');

@@ -1,48 +1,11 @@
 import 'package:flutter_test/flutter_test.dart';
 
-// TtsService._splitTextForKokoro is private, so we replicate the logic here
-// to test the chunking algorithm. This is a unit test for the algorithm itself.
-List<String> splitTextForKokoro(String text) {
-  if (text.length <= 300) return [text];
+import 'package:castcircle/data/services/tts_service.dart';
 
-  final chunks = <String>[];
-  final sentences = text.split(RegExp(r'(?<=[.!?;])\s+'));
-  var current = '';
-
-  for (final sentence in sentences) {
-    if (current.isEmpty) {
-      current = sentence;
-    } else if (current.length + sentence.length + 1 <= 300) {
-      current = '$current $sentence';
-    } else {
-      chunks.add(current);
-      current = sentence;
-    }
-  }
-  if (current.isNotEmpty) chunks.add(current);
-
-  final result = <String>[];
-  for (final chunk in chunks) {
-    if (chunk.length <= 300) {
-      result.add(chunk);
-    } else {
-      final parts = chunk.split(RegExp(r'(?<=[,;:])\s+'));
-      var sub = '';
-      for (final part in parts) {
-        if (sub.isEmpty) {
-          sub = part;
-        } else if (sub.length + part.length + 1 <= 300) {
-          sub = '$sub $part';
-        } else {
-          result.add(sub);
-          sub = part;
-        }
-      }
-      if (sub.isNotEmpty) result.add(sub);
-    }
-  }
-  return result;
-}
+// Delegates to the REAL implementation via a @visibleForTesting hook —
+// this file used to replicate the algorithm and so verified a copy.
+List<String> splitTextForKokoro(String text) =>
+    TtsService.splitTextForKokoroTest(text);
 
 void main() {
   group('TTS text chunking (splitTextForKokoro)', () {

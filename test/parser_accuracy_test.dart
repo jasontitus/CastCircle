@@ -23,9 +23,10 @@ void main() {
   ParsedScript? parseFile(String filename) {
     final file = File('${scriptsDir.path}/$filename');
     if (!file.existsSync()) {
-      // ignore: avoid_print
-      print('SKIP: $filename not found');
-      return null;
+      // Loud failure, not a silent green: with a wrong CWD or moved
+      // fixtures, every accuracy test used to "pass" while asserting
+      // nothing at all.
+      fail('Fixture missing: ${file.path} — run tests from the repo root.');
     }
     final text = file.readAsStringSync();
     final parser = ScriptParser();
@@ -287,7 +288,8 @@ void main() {
     }
 
     report.writeln('');
-    report.writeln('Generated: ${DateTime.now().toIso8601String()}');
+    // No timestamp: the report is git-tracked, and a timestamp made every
+    // extended test run dirty the working tree with a meaningless diff.
 
     // Write report to file
     File('sample-scripts/PARSER_ACCURACY_REPORT.md')

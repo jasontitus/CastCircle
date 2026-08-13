@@ -71,10 +71,11 @@ Future<void> main() async {
           'matched=${recs.length - orphans.length} ORPHANED=${orphans.length}');
       if (orphans.isNotEmpty) {
         final byWhen = <String, int>{};
+        final charRe = RegExp('/$pid/([^/]+)/'); // compiled once per production
         for (final r in orphans) {
           final when = (r['recorded_at'] as String? ?? '?');
           final day = when.length >= 10 ? when.substring(0, 10) : when;
-          final m = RegExp('/$pid/([^/]+)/')
+          final m = charRe
               .firstMatch(Uri.decodeFull(r['audio_url'] as String? ?? ''));
           final key = '$day ${m?.group(1) ?? '?'} '
               'user=${(r['user_id'] as String? ?? '?').substring(0, 8)}';

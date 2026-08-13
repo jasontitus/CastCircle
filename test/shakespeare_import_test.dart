@@ -695,7 +695,7 @@ Exit the Ghost.
     test('Macbeth text file produces characters and dialogue', () {
       final file = File('sample-scripts/macbeth-pg1533-images-3.txt');
       if (!file.existsSync()) {
-        // Skip if file not available (CI environment)
+        markTestSkipped('fixture missing: ${file.path}');
         return;
       }
       final rawText = file.readAsStringSync();
@@ -741,6 +741,7 @@ Exit the Ghost.
     test('Hamlet text file produces characters and dialogue', () {
       final file = File('sample-scripts/hamlet-pg1524-images-3.txt');
       if (!file.existsSync()) {
+        markTestSkipped('fixture missing: ${file.path}');
         return;
       }
       final rawText = file.readAsStringSync();

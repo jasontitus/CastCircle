@@ -14,7 +14,14 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:integration_test/integration_test.dart';
 import 'package:sherpa_onnx/sherpa_onnx.dart' as sherpa;
 
-const _repo = '/Users/jasontitus/experiments/CastCircle';
+/// Repo root for fixture/model staging paths. Relative default works when
+/// tests run from the checkout root; override with
+/// --dart-define=CASTCIRCLE_REPO=/path for other harnesses.
+const _ccRepo =
+    String.fromEnvironment('CASTCIRCLE_REPO', defaultValue: '.');
+
+
+const _repo = _ccRepo;
 
 class _Candidate {
   const _Candidate(this.name, this.dir, this.encoder, this.decoder, this.joiner);

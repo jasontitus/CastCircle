@@ -37,13 +37,19 @@ for d in "$EVAL/kokoro-en-fp16-v1_0" "$EVAL/kroko"; do
 done
 
 # ── Stage packs on the device once (--sync makes re-runs cheap) ──
-$ADB push --sync "$EVAL/kokoro-en-fp16-v1_0" /data/local/tmp/kpack >/dev/null
+# Explicit failure checks (the harness deliberately runs without `set -e` so
+# cleanup traps always fire): a missing model file or failed push used to
+# let the run continue and print PROBE metrics from a broken staging.
+$ADB push --sync "$EVAL/kokoro-en-fp16-v1_0" /data/local/tmp/kpack >/dev/null \
+  || { echo "ERROR: kokoro pack push failed"; exit 1; }
 mkdir -p /tmp/kroko-min
 for f in encoder.onnx decoder.onnx joiner.onnx tokens.txt; do
+  [ -f "$EVAL/kroko/$f" ] || { echo "ERROR: $EVAL/kroko/$f missing — incomplete model pack"; exit 1; }
   cp "$EVAL/kroko/$f" /tmp/kroko-min/
 done
 # Push to the parent so re-runs don't nest a copy inside an existing dir.
-$ADB push --sync /tmp/kroko-min /data/local/tmp/ >/dev/null
+$ADB push --sync /tmp/kroko-min /data/local/tmp/ >/dev/null \
+  || { echo "ERROR: kroko pack push failed"; exit 1; }
 echo "packs staged on device"
 
 $ADB shell svc power stayon true

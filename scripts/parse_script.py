@@ -71,6 +71,12 @@ KNOWN_CHARACTERS = [
     "OFFICER",
     "SERVANT",
 ]
+# Longest-first so "MR. BENNET" matches before "MR."; compiled once.
+_SORTED_CUE_PATTERNS = [
+    (char, re.compile(re.escape(char) + r"\.\s+"))
+    for char in sorted(KNOWN_CHARACTERS, key=len, reverse=True)
+]
+
 
 # Normalize character name variants to canonical names
 CHARACTER_ALIASES = {
@@ -136,11 +142,11 @@ def detect_character_cue(line: str) -> Optional[tuple[str, str]]:
              CHARACTER NAME. (Direction:) Dialogue text
              MARY, KITTY, LYDIA. (To the audience:) Text
     """
-    # Sort characters by length (longest first) to match "MR. BENNET" before "MR."
-    for char in sorted(KNOWN_CHARACTERS, key=len, reverse=True):
-        # Match character name followed by period and space
-        pattern = re.escape(char) + r"\.\s+"
-        match = re.match(pattern, line)
+    # Precompiled, longest-first (module scope): this runs once per input
+    # line, and re-sorting + re-escaping ~27 patterns per line was ~130k
+    # regex builds on a full-length play.
+    for char, pattern in _SORTED_CUE_PATTERNS:
+        match = pattern.match(line)
         if match:
             dialogue = line[match.end():]
             return (char, dialogue)
@@ -381,12 +387,16 @@ if __name__ == "__main__":
     if md_path == input_file:
         md_path = input_file + "_parsed.md"
 
-    # Write to the repo as the example
-    repo_md_path = "/home/user/Lineguide-/examples/pride_and_prejudice_parsed.md"
-    repo_json_path = "/home/user/Lineguide-/examples/pride_and_prejudice_parsed.json"
-
+    # Write to the repo as the example (repo root derived from this file's
+    # location — the old hardcoded /home/user/Lineguide-/ path failed on
+    # every machine but one long-gone checkout).
     import os
-    os.makedirs(os.path.dirname(repo_md_path), exist_ok=True)
+    repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    examples_dir = os.path.join(repo_root, "examples")
+    repo_md_path = os.path.join(examples_dir, "pride_and_prejudice_parsed.md")
+    repo_json_path = os.path.join(examples_dir, "pride_and_prejudice_parsed.json")
+
+    os.makedirs(examples_dir, exist_ok=True)
 
     with open(repo_md_path, "w") as f:
         f.write(md_output)

@@ -1,3 +1,6 @@
+// pi-review 2026-08-13: UNREFERENCED — no call sites anywhere; the backend
+// is stubbed (isReady => false). Kept for the planned voice-clone feature;
+// delete if that plan is dropped.
 import 'dart:io';
 import 'dart:typed_data';
 

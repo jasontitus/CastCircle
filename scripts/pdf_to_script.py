@@ -329,15 +329,17 @@ def _clean_output(text: str) -> str:
 def convert_pdf_to_script(pdf_path: str) -> str:
     """Convert a play-script PDF to parser-ready text format."""
     doc = pymupdf.open(pdf_path)
-
-    if _is_folger_pdf(doc):
-        print(f"Detected Folger Shakespeare format ({doc.page_count} pages)")
-        text = _extract_folger(doc)
-    else:
-        print(f"Detected standard text PDF ({doc.page_count} pages)")
-        text = _extract_standard(doc)
-
-    doc.close()
+    try:
+        if _is_folger_pdf(doc):
+            print(f"Detected Folger Shakespeare format ({doc.page_count} pages)")
+            text = _extract_folger(doc)
+        else:
+            print(f"Detected standard text PDF ({doc.page_count} pages)")
+            text = _extract_standard(doc)
+    finally:
+        # A corrupt/encrypted PDF raising mid-extract used to leak the doc
+        # handle (and keep the file locked on Windows).
+        doc.close()
     return _clean_output(text)
 
 

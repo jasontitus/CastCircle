@@ -29,13 +29,25 @@ AAB="build/app/outputs/bundle/release/app-release.aab"
 [[ -f "$AAB" ]] || { echo "✗ AAB not produced at $AAB" >&2; exit 1; }
 
 # Sanity-check it's signed with our upload key, not the Android debug key.
+# Enumerate the actual signature entry instead of assuming 'UPLOAD.RSA':
+# with a differently-named alias the old fixed path came back empty and the
+# guard silently printed "signed: unknown" and proceeded — failing at its
+# one job. An unreadable cert is now fatal, not a shrug.
 KT="$(/usr/libexec/java_home 2>/dev/null)/bin/keytool"; [[ -x "$KT" ]] || KT=keytool
-OWNER="$(unzip -p "$AAB" 'META-INF/UPLOAD.RSA' 2>/dev/null | "$KT" -printcert 2>/dev/null | grep -m1 'Owner:' || true)"
+SIG_ENTRY="$(unzip -l "$AAB" 'META-INF/*' 2>/dev/null | grep -oE 'META-INF/[^ ]+\.(RSA|DSA|EC)' | head -1 || true)"
+OWNER=""
+if [[ -n "$SIG_ENTRY" ]]; then
+  OWNER="$(unzip -p "$AAB" "$SIG_ENTRY" 2>/dev/null | "$KT" -printcert 2>/dev/null | grep -m1 'Owner:' || true)"
+fi
+if [[ -z "$OWNER" ]]; then
+  echo "✗ Could not read the AAB's signing cert (entry: ${SIG_ENTRY:-none}) — refusing to upload unverified." >&2
+  exit 1
+fi
 if echo "$OWNER" | grep -qi 'Android Debug'; then
   echo "✗ AAB is DEBUG-signed ($OWNER) — Play will reject it. Check key.properties." >&2
   exit 1
 fi
-echo "✓ AAB built ($(du -h "$AAB" | cut -f1)), signed: ${OWNER:-unknown}"
+echo "✓ AAB built ($(du -h "$AAB" | cut -f1)), signed: $OWNER"
 
 if [[ "${1:-}" == "--build" ]]; then
   echo "▶ --build: skipping upload. AAB at $AAB"

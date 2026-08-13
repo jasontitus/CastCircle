@@ -15,7 +15,6 @@ import '../../data/models/production_models.dart';
 import '../../data/models/script_models.dart';
 import '../../data/services/supabase_service.dart';
 import '../../features/onboarding/model_setup_screen.dart';
-import '../../features/script_editor/cloud_sync_dialog.dart';
 import '../../main.dart' show rootScaffoldMessengerKey;
 import '../../providers/production_providers.dart';
 import '../../core/toast.dart';
@@ -458,36 +457,6 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
         rawText: saved.rawText,
       );
     }
-  }
-
-  bool _scriptsDiffer(ParsedScript localScript, ParsedScript cloudScript) {
-    return diffScriptLines(localScript.lines, cloudScript.lines)
-        .any((diff) => diff.type != DiffType.unchanged);
-  }
-
-  Future<ParsedScript?> _resolveCloudScript(
-    Production production, {
-    required ParsedScript localScript,
-  }) async {
-    final cloudLines = await fetchCloudScriptLines(production.id);
-    if (cloudLines == null || cloudLines.isEmpty) return null;
-
-    final cloudScript = buildParsedScript(production.title, cloudLines);
-    if (!_scriptsDiffer(localScript, cloudScript)) {
-      return null;
-    }
-
-    if (!mounted) return null;
-    final useCloud = await showCloudSyncDialog(
-      context: context,
-      localLines: localScript.lines,
-      cloudLines: cloudScript.lines,
-    );
-
-    if (useCloud == true) {
-      return cloudScript;
-    }
-    return null;
   }
 
   Future<void> _deleteProduction(

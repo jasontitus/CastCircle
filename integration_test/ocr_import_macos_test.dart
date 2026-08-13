@@ -7,6 +7,13 @@ import 'package:path_provider/path_provider.dart';
 import 'package:castcircle/data/services/script_import_service.dart';
 import 'package:castcircle/data/models/script_models.dart';
 
+/// Repo root for fixture/model staging paths. Relative default works when
+/// tests run from the checkout root; override with
+/// --dart-define=CASTCIRCLE_REPO=/path for other harnesses.
+const _ccRepo =
+    String.fromEnvironment('CASTCIRCLE_REPO', defaultValue: '.');
+
+
 void main() {
   IntegrationTestWidgetsFlutterBinding.ensureInitialized();
   testWidgets('macOS imports the P&P scan via PaddleOCR with a small review count', (t) async {
@@ -22,7 +29,7 @@ void main() {
     // this via `flutter drive --profile` so the plugin's Swift image-processing
     // loops are optimized (≈ phone speed); debug-mode ONNX glue is ~8× slower.
     const src =
-        '/Users/jasontitus/experiments/CastCircle/sample-scripts/Pride-Prejudice-SCRIPT.pdf';
+        '$_ccRepo/sample-scripts/Pride-Prejudice-SCRIPT.pdf';
     final tmp = await getTemporaryDirectory();
     await tmp.create(recursive: true);
     final pdf = p.join(tmp.path, 'pp_full.pdf');

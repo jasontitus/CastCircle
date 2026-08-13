@@ -17,7 +17,10 @@ void main() {
 
     setUpAll(() {
       final file = File('sample-scripts/pg37431.txt');
-      if (!file.existsSync()) return;
+      if (!file.existsSync()) {
+        markTestSkipped('fixture missing: ${file.path}');
+        return;
+      }
       final rawText = file.readAsStringSync();
       parser = ScriptParser();
       script = parser.parse(rawText, title: 'Pride and Prejudice');
@@ -25,7 +28,10 @@ void main() {
 
     test('detects act headers', () {
       final file = File('sample-scripts/pg37431.txt');
-      if (!file.existsSync()) return;
+      if (!file.existsSync()) {
+        markTestSkipped('fixture missing: ${file.path}');
+        return;
+      }
 
       final acts = script.lines
           .where((l) => l.lineType == LineType.header)
@@ -36,7 +42,10 @@ void main() {
 
     test('detects at least some characters from Gutenberg format', () {
       final file = File('sample-scripts/pg37431.txt');
-      if (!file.existsSync()) return;
+      if (!file.existsSync()) {
+        markTestSkipped('fixture missing: ${file.path}');
+        return;
+      }
 
       // Gutenberg format uses "name on separate line" not "NAME. dialogue",
       // so the parser may only detect a few characters via the detection pass.
@@ -46,7 +55,10 @@ void main() {
 
     test('no OCR garbage characters survive', () {
       final file = File('sample-scripts/pg37431.txt');
-      if (!file.existsSync()) return;
+      if (!file.existsSync()) {
+        markTestSkipped('fixture missing: ${file.path}');
+        return;
+      }
 
       for (final char in script.characters) {
         final letters = char.name.replaceAll(RegExp(r'[^A-Za-z]'), '');
@@ -60,7 +72,10 @@ void main() {
 
     test('detects JANE AND ELIZABETH as multi-character line', () {
       final file = File('sample-scripts/pg37431.txt');
-      if (!file.existsSync()) return;
+      if (!file.existsSync()) {
+        markTestSkipped('fixture missing: ${file.path}');
+        return;
+      }
 
       final multiLines = script.lines
           .where((l) => l.multiCharacters.isNotEmpty)
@@ -81,7 +96,10 @@ void main() {
 
     setUpAll(() {
       final file = File('sample-scripts/macbeth_folger_converted.txt');
-      if (!file.existsSync()) return;
+      if (!file.existsSync()) {
+        markTestSkipped('fixture missing: ${file.path}');
+        return;
+      }
       final rawText = file.readAsStringSync();
       parser = ScriptParser();
       script = parser.parse(rawText, title: 'Macbeth');
@@ -89,7 +107,10 @@ void main() {
 
     test('detects MACBETH AND LENNOX as multi-character line', () {
       final file = File('sample-scripts/macbeth_folger_converted.txt');
-      if (!file.existsSync()) return;
+      if (!file.existsSync()) {
+        markTestSkipped('fixture missing: ${file.path}');
+        return;
+      }
 
       final multiLines = script.lines
           .where((l) => l.multiCharacters.isNotEmpty)
@@ -108,7 +129,10 @@ void main() {
 
     test('multi-character lines are findable via isForCharacter', () {
       final file = File('sample-scripts/macbeth_folger_converted.txt');
-      if (!file.existsSync()) return;
+      if (!file.existsSync()) {
+        markTestSkipped('fixture missing: ${file.path}');
+        return;
+      }
 
       // MACBETH's lines should include the "MACBETH AND LENNOX" line
       final macbethLines = script.linesForCharacter('MACBETH');
@@ -129,7 +153,10 @@ void main() {
 
     test('ALL is treated as a regular character (not split)', () {
       final file = File('sample-scripts/macbeth_folger_converted.txt');
-      if (!file.existsSync()) return;
+      if (!file.existsSync()) {
+        markTestSkipped('fixture missing: ${file.path}');
+        return;
+      }
 
       // "ALL" has no separator so it should remain as-is
       final allLines = script.lines
@@ -148,7 +175,10 @@ void main() {
 
     setUpAll(() {
       final file = File('sample-scripts/macbeth-pg1533-images-3.txt');
-      if (!file.existsSync()) return;
+      if (!file.existsSync()) {
+        markTestSkipped('fixture missing: ${file.path}');
+        return;
+      }
       final rawText = file.readAsStringSync();
       parser = ScriptParser();
       script = parser.parse(rawText, title: 'Macbeth (Gutenberg)');
@@ -156,7 +186,10 @@ void main() {
 
     test('detects MACBETH, LENNOX as multi-character line (comma format)', () {
       final file = File('sample-scripts/macbeth-pg1533-images-3.txt');
-      if (!file.existsSync()) return;
+      if (!file.existsSync()) {
+        markTestSkipped('fixture missing: ${file.path}');
+        return;
+      }
 
       final multiLines = script.lines
           .where((l) => l.multiCharacters.isNotEmpty)

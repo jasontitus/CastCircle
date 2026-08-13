@@ -17,8 +17,15 @@ import 'package:path_provider/path_provider.dart';
 import 'package:castcircle/data/services/kokoro_onnx_service.dart';
 import 'package:castcircle/data/services/model_manager.dart';
 
+/// Repo root for fixture/model staging paths. Relative default works when
+/// tests run from the checkout root; override with
+/// --dart-define=CASTCIRCLE_REPO=/path for other harnesses.
+const _ccRepo =
+    String.fromEnvironment('CASTCIRCLE_REPO', defaultValue: '.');
+
+
 const _pack =
-    '/Users/jasontitus/experiments/CastCircle/.asr-eval/kokoro-en-fp16-v1_0';
+    '$_ccRepo/.asr-eval/kokoro-en-fp16-v1_0';
 
 Future<void> _stagePack() async {
   final docs = (await getApplicationDocumentsDirectory()).path;

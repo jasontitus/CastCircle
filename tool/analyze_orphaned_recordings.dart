@@ -81,8 +81,10 @@ Future<void> main(List<String> args) async {
   print('matched:      ${matched.length}');
   print('ORPHANED:     ${orphans.length}\n');
 
+  // Compiled once — this runs per recording in two loops below.
+  final charRe = RegExp('/$productionId/([^/]+)/');
   String charOf(String url) {
-    final m = RegExp('/$productionId/([^/]+)/').firstMatch(Uri.decodeFull(url));
+    final m = charRe.firstMatch(Uri.decodeFull(url));
     return m?.group(1) ?? '?';
   }
 

@@ -514,6 +514,12 @@ class TtsService {
     );
   }
 
+  /// Test hook: the chunking test used to verify a hand-copied replica of
+  /// this algorithm, which caught nothing when the real one changed.
+  @visibleForTesting
+  static List<String> splitTextForKokoroTest(String text) =>
+      _splitTextForKokoro(text);
+
   static List<String> _splitTextForKokoro(String text) {
     // Synthesis is ~real-time on Android phones, so time-to-first-audio is
     // set by the FIRST chunk's length: peel off the opening sentence of any

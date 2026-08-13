@@ -45,14 +45,16 @@ void main() {
     // Confidence comes from the raw line(s) that contributed to this parsed
     // line — the 0.80 body line (the "HAMLET." name line is consumed by the
     // parser as the character tag).
-    expect(toBe.ocrConfidence, closeTo(0.80, 0.2));
+    // Tight delta: ±0.2 accepted anything in [0.6, 1.0] — including the
+    // 0.99 speaker-name line this test exists to rule out.
+    expect(toBe.ocrConfidence, closeTo(0.80, 0.05));
 
     final honour = dialogue.firstWhere((l) => l.text.contains('honour'));
     expect(honour.sourcePage, 1);
 
     final thank = dialogue.firstWhere((l) => l.text.contains('humbly thank'));
     expect(thank.sourcePage, 2, reason: 'forward cursor must reach page 2');
-    expect(thank.ocrConfidence, closeTo(0.90, 0.2));
+    expect(thank.ocrConfidence, closeTo(0.90, 0.05));
   });
 
   test('parseAndMapOcr leaves lines without a raw match untagged', () {

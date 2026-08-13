@@ -7,7 +7,14 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:integration_test/integration_test.dart';
 import 'package:sherpa_onnx/sherpa_onnx.dart' as sherpa;
 
-const _dir = '/Users/jasontitus/experiments/CastCircle/.asr-eval/kroko';
+/// Repo root for fixture/model staging paths. Relative default works when
+/// tests run from the checkout root; override with
+/// --dart-define=CASTCIRCLE_REPO=/path for other harnesses.
+const _ccRepo =
+    String.fromEnvironment('CASTCIRCLE_REPO', defaultValue: '.');
+
+
+const _dir = '$_ccRepo/.asr-eval/kroko';
 
 void main() {
   IntegrationTestWidgetsFlutterBinding.ensureInitialized();

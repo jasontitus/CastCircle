@@ -81,8 +81,12 @@ class MediaControlService {
       switch (command) {
         case 'jumpBack':
         case 'playPause':
-          // All physical button presses → jump back (primary rehearsal action)
-          onJumpBack?.call();
+          // Rehearsal wires a real pause handler (_handleRemotePlayPause);
+          // this used to misroute to jump-back, so tapping play/pause on
+          // AirPods/lock screen jumped back instead of pausing. (The iOS
+          // plugin currently only emits jumpBack, so this is future-proofing
+          // plus contract correctness, not a behavior change there.)
+          onPlayPause?.call();
         case 'skip':
           onSkip?.call();
       }

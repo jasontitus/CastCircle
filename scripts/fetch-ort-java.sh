@@ -10,9 +10,26 @@ V=${1:-1.22.0}
 URL="https://repo1.maven.org/maven2/com/microsoft/onnxruntime/onnxruntime-android/$V/onnxruntime-android-$V.aar"
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
+# Pinned SHA-256 for the default 1.22.0 artifact — a substituted Maven
+# artifact would otherwise inject native code into the app unnoticed.
+# Fetching a DIFFERENT version prints the hash and asks you to pin it.
+EXPECTED_SHA_1_22_0="04a4617a9c797cf49225595e45b5546081cb34c86ac817581141577d3b7dbfe2"
+
 echo "▶ fetching $URL"
 curl -sfL -o "$TMP/ort.aar" "$URL"
-shasum -a 256 "$TMP/ort.aar"
+ACTUAL_SHA=$(shasum -a 256 "$TMP/ort.aar" | awk '{print $1}')
+echo "sha256: $ACTUAL_SHA"
+if [ "$V" = "1.22.0" ]; then
+  if [ "$ACTUAL_SHA" != "$EXPECTED_SHA_1_22_0" ]; then
+    echo "✗ SHA-256 mismatch for onnxruntime-android-$V.aar" >&2
+    echo "  expected $EXPECTED_SHA_1_22_0" >&2
+    echo "  actual   $ACTUAL_SHA" >&2
+    exit 1
+  fi
+  echo "✓ sha256 matches pin"
+else
+  echo "⚠ no pinned hash for version $V — verify the hash above and add a pin"
+fi
 (cd "$TMP" && unzip -q ort.aar)
 cp "$TMP/classes.jar" "android/app/libs/onnxruntime-java-$V.jar"
 for abi in arm64-v8a armeabi-v7a x86 x86_64; do

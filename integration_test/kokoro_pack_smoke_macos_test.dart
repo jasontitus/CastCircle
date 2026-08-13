@@ -10,7 +10,14 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:integration_test/integration_test.dart';
 import 'package:sherpa_onnx/sherpa_onnx.dart' as sherpa;
 
-const _eval = '/Users/jasontitus/experiments/CastCircle/.asr-eval';
+/// Repo root for fixture/model staging paths. Relative default works when
+/// tests run from the checkout root; override with
+/// --dart-define=CASTCIRCLE_REPO=/path for other harnesses.
+const _ccRepo =
+    String.fromEnvironment('CASTCIRCLE_REPO', defaultValue: '.');
+
+
+const _eval = '$_ccRepo/.asr-eval';
 const _pack = '$_eval/kokoro-en-fp16-pack';
 
 const _line = 'It is a truth universally acknowledged that a single man in '

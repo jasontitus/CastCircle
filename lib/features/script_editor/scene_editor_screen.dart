@@ -62,12 +62,12 @@ class _SceneEditorScreenState extends ConsumerState<SceneEditorScreen> {
       ),
       body: ContentConstraint(
         maxWidth: 720,
-        child: ReorderableListView.builder(
+        // Plain ListView: scene order derives from line order, so the
+        // ReorderableListView affordance was a lie — the drag animated and
+        // then snapped back, doing nothing.
+        child: ListView.builder(
           padding: const EdgeInsets.all(16),
           itemCount: script.scenes.length,
-          onReorder: (oldIndex, newIndex) {
-            // Reorder not implemented for scenes (order is derived from lines)
-          },
           itemBuilder: (context, index) {
             final scene = script.scenes[index];
             final sceneLines = script.linesInScene(scene);
