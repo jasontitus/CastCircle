@@ -36,13 +36,10 @@
 		FFAB98203095BFA6CE48969C /* Pods_RunnerTests.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 6C27C3A984572946223BDF96 /* Pods_RunnerTests.framework */; };
 		KOKORO000200000000000001 /* AlbertEmbeddings.swift in Sources */ = {isa = PBXBuildFile; fileRef = KOKORO000100000000000001 /* AlbertEmbeddings.swift */; };
 		KOKORO000200000000000002 /* AlbertEncoder.swift in Sources */ = {isa = PBXBuildFile; fileRef = KOKORO000100000000000002 /* AlbertEncoder.swift */; };
-		KOKORO000200000000000003 /* AlbertIntermediate.swift in Sources */ = {isa = PBXBuildFile; fileRef = KOKORO000100000000000003 /* AlbertIntermediate.swift */; };
 		KOKORO000200000000000004 /* AlbertLayer.swift in Sources */ = {isa = PBXBuildFile; fileRef = KOKORO000100000000000004 /* AlbertLayer.swift */; };
 		KOKORO000200000000000005 /* AlbertLayerGroup.swift in Sources */ = {isa = PBXBuildFile; fileRef = KOKORO000100000000000005 /* AlbertLayerGroup.swift */; };
 		KOKORO000200000000000006 /* AlbertModelArgs.swift in Sources */ = {isa = PBXBuildFile; fileRef = KOKORO000100000000000006 /* AlbertModelArgs.swift */; };
-		KOKORO000200000000000007 /* AlbertOutput.swift in Sources */ = {isa = PBXBuildFile; fileRef = KOKORO000100000000000007 /* AlbertOutput.swift */; };
 		KOKORO000200000000000008 /* AlbertSelfAttention.swift in Sources */ = {isa = PBXBuildFile; fileRef = KOKORO000100000000000008 /* AlbertSelfAttention.swift */; };
-		KOKORO000200000000000009 /* AlbertSelfOutput.swift in Sources */ = {isa = PBXBuildFile; fileRef = KOKORO000100000000000009 /* AlbertSelfOutput.swift */; };
 		KOKORO000200000000000010 /* CustomAlbert.swift in Sources */ = {isa = PBXBuildFile; fileRef = KOKORO000100000000000010 /* CustomAlbert.swift */; };
 		KOKORO000200000000000011 /* AdaIN1d.swift in Sources */ = {isa = PBXBuildFile; fileRef = KOKORO000100000000000011 /* AdaIN1d.swift */; };
 		KOKORO000200000000000012 /* AdaINResBlock1.swift in Sources */ = {isa = PBXBuildFile; fileRef = KOKORO000100000000000012 /* AdaINResBlock1.swift */; };
@@ -170,13 +167,10 @@
 		ENTL000100000000000001 /* Runner.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = Runner.entitlements; sourceTree = "<group>"; };
 		KOKORO000100000000000001 /* AlbertEmbeddings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AlbertEmbeddings.swift; sourceTree = "<group>"; };
 		KOKORO000100000000000002 /* AlbertEncoder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AlbertEncoder.swift; sourceTree = "<group>"; };
-		KOKORO000100000000000003 /* AlbertIntermediate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AlbertIntermediate.swift; sourceTree = "<group>"; };
 		KOKORO000100000000000004 /* AlbertLayer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AlbertLayer.swift; sourceTree = "<group>"; };
 		KOKORO000100000000000005 /* AlbertLayerGroup.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AlbertLayerGroup.swift; sourceTree = "<group>"; };
 		KOKORO000100000000000006 /* AlbertModelArgs.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AlbertModelArgs.swift; sourceTree = "<group>"; };
-		KOKORO000100000000000007 /* AlbertOutput.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AlbertOutput.swift; sourceTree = "<group>"; };
 		KOKORO000100000000000008 /* AlbertSelfAttention.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AlbertSelfAttention.swift; sourceTree = "<group>"; };
-		KOKORO000100000000000009 /* AlbertSelfOutput.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AlbertSelfOutput.swift; sourceTree = "<group>"; };
 		KOKORO000100000000000010 /* CustomAlbert.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CustomAlbert.swift; sourceTree = "<group>"; };
 		KOKORO000100000000000011 /* AdaIN1d.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AdaIN1d.swift; sourceTree = "<group>"; };
 		KOKORO000100000000000012 /* AdaINResBlock1.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AdaINResBlock1.swift; sourceTree = "<group>"; };
@@ -381,13 +375,10 @@
 			children = (
 				KOKORO000100000000000001 /* AlbertEmbeddings.swift */,
 				KOKORO000100000000000002 /* AlbertEncoder.swift */,
-				KOKORO000100000000000003 /* AlbertIntermediate.swift */,
 				KOKORO000100000000000004 /* AlbertLayer.swift */,
 				KOKORO000100000000000005 /* AlbertLayerGroup.swift */,
 				KOKORO000100000000000006 /* AlbertModelArgs.swift */,
-				KOKORO000100000000000007 /* AlbertOutput.swift */,
 				KOKORO000100000000000008 /* AlbertSelfAttention.swift */,
-				KOKORO000100000000000009 /* AlbertSelfOutput.swift */,
 				KOKORO000100000000000010 /* CustomAlbert.swift */,
 			);
 			path = Albert;
@@ -839,13 +830,10 @@
 				BGDL000200000000000001 /* BackgroundDownloadPlugin.swift in Sources */,
 				KOKORO000200000000000001 /* AlbertEmbeddings.swift in Sources */,
 				KOKORO000200000000000002 /* AlbertEncoder.swift in Sources */,
-				KOKORO000200000000000003 /* AlbertIntermediate.swift in Sources */,
 				KOKORO000200000000000004 /* AlbertLayer.swift in Sources */,
 				KOKORO000200000000000005 /* AlbertLayerGroup.swift in Sources */,
 				KOKORO000200000000000006 /* AlbertModelArgs.swift in Sources */,
-				KOKORO000200000000000007 /* AlbertOutput.swift in Sources */,
 				KOKORO000200000000000008 /* AlbertSelfAttention.swift in Sources */,
-				KOKORO000200000000000009 /* AlbertSelfOutput.swift in Sources */,
 				KOKORO000200000000000010 /* CustomAlbert.swift in Sources */,
 				KOKORO000200000000000011 /* AdaIN1d.swift in Sources */,
 				KOKORO000200000000000012 /* AdaINResBlock1.swift in Sources */,
