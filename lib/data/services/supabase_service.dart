@@ -720,6 +720,32 @@ class SupabaseService {
         .order('order_index', ascending: true);
   }
 
+  /// Fetch cloud scene metadata (empty list for productions pushed before
+  /// scenes synced — the caller falls back to tag-derived scenes).
+  Future<List<Map<String, dynamic>>> fetchScriptScenes(
+      String productionId) async {
+    return _client
+        .from('script_scenes')
+        .select()
+        .eq('production_id', productionId)
+        .order('sort_order', ascending: true);
+  }
+
+  /// Replace the cloud scene metadata for a production. Scene rows are tiny
+  /// (tens per play), so a single delete + insert is fine.
+  Future<void> saveScriptScenes({
+    required String productionId,
+    required List<Map<String, dynamic>> scenes,
+  }) async {
+    await _client
+        .from('script_scenes')
+        .delete()
+        .eq('production_id', productionId);
+    if (scenes.isNotEmpty) {
+      await _client.from('script_scenes').insert(scenes);
+    }
+  }
+
   /// Save script lines to the cloud (replaces all existing lines).
   Future<void> saveScriptLines({
     required String productionId,

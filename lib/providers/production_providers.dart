@@ -607,10 +607,86 @@ Future<void> pushScriptToCloud(WidgetRef ref) async {
       productionId: production.id,
       lines: rows,
     );
+
+    // Scene metadata too: without this, custom scene names/descriptions
+    // from the scene editor lived only in local Drift — every cloud pull
+    // regenerated scenes from line tags and silently discarded them.
+    final sceneRows = script.scenes.asMap().entries.map((e) => {
+      'id': e.value.id,
+      'production_id': production.id,
+      'sort_order': e.key,
+      'scene_name': e.value.sceneName,
+      'act': e.value.act,
+      'location': e.value.location,
+      'description': e.value.description,
+      'start_line_index': e.value.startLineIndex,
+      'end_line_index': e.value.endLineIndex,
+      'characters': e.value.characters.join(','),
+    }).toList();
+    try {
+      await supa.saveScriptScenes(
+          productionId: production.id, scenes: sceneRows);
+    } catch (e) {
+      // Tolerated separately: the script_scenes table may not exist yet on
+      // an un-migrated backend, and lines (the critical payload) are saved.
+      DebugLogService.instance.logError(LogCategory.network,
+          'Cloud scene push failed for ${production.id} (lines saved)', e);
+    }
   } catch (e) {
     DebugLogService.instance.logError(
         LogCategory.network, 'Cloud script push failed for ${production.id}', e);
     rethrow;
+  }
+}
+
+/// [buildParsedScript], then overlay cloud scene metadata when available.
+///
+/// Scene names/descriptions edited in the scene editor sync via the
+/// script_scenes table; productions pushed before that table existed (or
+/// with an unreachable cloud) keep the tag-derived scenes.
+Future<ParsedScript> buildParsedScriptWithCloudScenes(
+    String title, List<ScriptLine> lines, String productionId) async {
+  final base = buildParsedScript(title, lines);
+  final supa = SupabaseService.instance;
+  if (!supa.isInitialized || !supa.isSignedIn) return base;
+  try {
+    final rows = await supa.fetchScriptScenes(productionId);
+    if (rows.isEmpty) return base;
+    final scenes = <ScriptScene>[];
+    for (final r in rows) {
+      final start = r['start_line_index'] as int? ?? 0;
+      final end = r['end_line_index'] as int? ?? -1;
+      // Ranges are positional into THIS line list; anything inconsistent
+      // (e.g. scenes pushed against a different revision of the lines)
+      // falls back wholesale to tag-derived scenes rather than serving a
+      // wrong slice to rehearsal.
+      if (start < 0 || end < start || end >= lines.length) return base;
+      scenes.add(ScriptScene(
+        id: r['id'] as String,
+        act: r['act'] as String? ?? '',
+        sceneName: r['scene_name'] as String? ?? '',
+        location: r['location'] as String? ?? '',
+        description: r['description'] as String? ?? '',
+        startLineIndex: start,
+        endLineIndex: end,
+        characters: (r['characters'] as String? ?? '')
+            .split(',')
+            .where((c) => c.isNotEmpty)
+            .toList(),
+      ));
+    }
+    if (scenes.isEmpty) return base;
+    return ParsedScript(
+      title: base.title,
+      lines: base.lines,
+      characters: base.characters,
+      scenes: scenes,
+      rawText: base.rawText,
+    );
+  } catch (e) {
+    DebugLogService.instance.logError(LogCategory.network,
+        'Cloud scene fetch failed for $productionId — using tag-derived', e);
+    return base;
   }
 }
 

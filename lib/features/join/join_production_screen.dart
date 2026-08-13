@@ -543,7 +543,8 @@ class _JoinProductionScreenState extends ConsumerState<JoinProductionScreen> {
       if (cloudLines != null && cloudLines.isNotEmpty) {
         dlog.log(LogCategory.network,
             'Join: pulled ${cloudLines.length} script lines from cloud');
-        final script = buildParsedScript(production.title, cloudLines);
+        final script = await buildParsedScriptWithCloudScenes(
+            production.title, cloudLines, production.id);
         ref.read(currentScriptProvider.notifier).state = script;
         ref.read(currentProductionProvider.notifier).state = production;
         // Local-only save: this script just came FROM the cloud. persistScript

@@ -809,7 +809,8 @@ class _ProductionHubScreenState extends ConsumerState<ProductionHubScreen> {
         return;
       }
 
-      final cloudScript = buildParsedScript(production.title, cloudLines);
+      final cloudScript = await buildParsedScriptWithCloudScenes(
+          production.title, cloudLines, production.id);
       final localScript = ref.read(currentScriptProvider);
 
       if (localScript != null &&

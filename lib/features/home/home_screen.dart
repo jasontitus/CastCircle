@@ -269,7 +269,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     try {
       final cloudLines = await fetchCloudScriptLines(production.id);
       if (cloudLines == null || cloudLines.isEmpty) return;
-      final script = buildParsedScript(production.title, cloudLines);
+      final script = await buildParsedScriptWithCloudScenes(
+          production.title, cloudLines, production.id);
 
       // Persist under the production we FETCHED for, never "whatever is
       // current now": the user can open another production while this is in
@@ -330,7 +331,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
         return;
       }
 
-      final updated = buildParsedScript(production.title, cloudLines);
+      final updated = await buildParsedScriptWithCloudScenes(
+          production.title, cloudLines, production.id);
       await persistScriptLocally(ref, production.id, updated);
 
       // Only swap the in-memory script if we're still on this production.
