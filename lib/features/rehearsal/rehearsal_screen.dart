@@ -152,6 +152,22 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
   // to ensure the actor has finished reading a long multi-sentence line.
   Timer? _matchConfirmTimer;
 
+  /// Noise-proof confirm deadline. Both pause detectors assume a quiet room:
+  /// the level gate needs a 150 ms sample under the silence threshold, and
+  /// the no-new-results window needs the transcript to stop churning —
+  /// steady background noise starves BOTH indefinitely (field: "recognized
+  /// perfectly and still sits there 5-10 seconds"). Once the score holds
+  /// over threshold this rolling deadline confirms a line that is
+  /// demonstrably COMPLETE — ending heard + physically-plausible reading
+  /// time — without ever requiring quiet.
+  Timer? _strongMatchDeadline;
+
+  /// Latched true the moment the line's ending appears at the tail of the
+  /// transcript. Under noise the recognizer appends garbage AFTER the
+  /// actor's final words, so the ending stops being the "last two words"
+  /// almost immediately — the latch keeps that evidence.
+  bool _lineEndingHeard = false;
+
   // matchScore is coverage (fraction of the line's words recognized). At/above
   // this, the actor has said essentially the whole line, so we advance after
   // only [_fastConfirmMs] of no-new-results (a snappy "finish line → next line"
@@ -579,6 +595,7 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
     _dlog.log(LogCategory.rehearsal, 'Rehearsal ended');
     _silenceTimer?.cancel();
     _matchConfirmTimer?.cancel();
+    _strongMatchDeadline?.cancel();
     _toastTimer?.cancel();
     _ttsPrefetch.clear();
     _micLevel.dispose();
@@ -2215,6 +2232,9 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
     _matchConfirmed = false;
     _lastRecognizedRaw = '';
     _loggedFirstResultForLine = false;
+    _lineEndingHeard = false;
+    _strongMatchDeadline?.cancel();
+    _strongMatchDeadline = null;
     _listeningStartedAt = DateTime.now();
     _micLevel.value = 0.0;
 
@@ -2344,6 +2364,13 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
     // (still mid long line) keeps the longer 1.2s window so we don't cut a
     // multi-sentence line short. (Energy endpointing also advances on
     // mic-silence.)
+    // Latch on every partial: the ending is only briefly the transcript's
+    // tail before trailing noise words displace it.
+    if (!_lineEndingHeard &&
+        SttService.heardLineEnding(line.text, corrected)) {
+      _lineEndingHeard = true;
+    }
+
     if (score >= threshold) {
       _matchConfirmTimer?.cancel();
       final confirmMs =
@@ -2352,11 +2379,57 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
       _matchConfirmTimer = Timer(Duration(milliseconds: confirmMs), () {
         _confirmIfActorQuiet(line);
       });
+      // Arm once per line; new partials must NOT reset it (that would be
+      // the same starvation again). Fires only when completion is proven.
+      _strongMatchDeadline ??=
+          Timer(const Duration(milliseconds: 1500), () {
+        _confirmDespiteNoise(line);
+      });
     } else {
       // Score dropped below threshold (e.g., new words recognized that
       // don't match) — cancel pending advance
       _matchConfirmTimer?.cancel();
+      _strongMatchDeadline?.cancel();
+      _strongMatchDeadline = null;
     }
+  }
+
+  /// The noise-proof confirm: fires on a deadline no amount of continued
+  /// input can push back. Confirms only when the line is demonstrably
+  /// complete — score over threshold, the ENDING heard (latched), and
+  /// enough elapsed time to have physically read the words. Otherwise it
+  /// re-polls; a paraphrased ending never satisfies it and falls back to
+  /// the quiet/silence paths as before.
+  void _confirmDespiteNoise(ScriptLine line) {
+    _strongMatchDeadline = null;
+    if (!mounted || _matchConfirmed) return;
+    if (ref.read(rehearsalStateProvider) != RehearsalState.listeningForMe) {
+      return;
+    }
+    final threshold = ref.read(matchThresholdProvider) / 100.0;
+    if (_matchScore.value < threshold) return; // below-threshold arm cancels
+
+    final spokenText = TtsService.stripStageDirections(line.text);
+    final wordCount =
+        spokenText.isEmpty ? 0 : spokenText.split(RegExp(r'\s+')).length;
+    final plausible = DateTime.now().difference(_listeningStartedAt) >=
+        Duration(milliseconds: 200 * wordCount);
+    final tailHeard = _lineEndingHeard ||
+        SttService.heardLineEnding(line.text, _recognizedText.value);
+
+    if (tailHeard && plausible) {
+      _dlog.log(
+          LogCategory.stt,
+          'confirming despite continued input (noisy room): '
+          'score=${(_matchScore.value * 100).toStringAsFixed(0)}%');
+      _confirmLineMatch(line);
+      return;
+    }
+    // Over threshold but not provably finished (mid-line crossing, or a
+    // paraphrased ending) — keep watching until it is.
+    _strongMatchDeadline = Timer(const Duration(milliseconds: 800), () {
+      _confirmDespiteNoise(line);
+    });
   }
 
   /// How long the actor must be quiet before an over-threshold score may
@@ -2375,7 +2448,7 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
   ///     ending, so never wait forever).
   Duration _requiredAdvanceSilence(ScriptLine line) {
     final base = ref.read(rehearsalAdvanceSilenceMsProvider);
-    final tailHeard =
+    final tailHeard = _lineEndingHeard ||
         SttService.heardLineEnding(line.text, _recognizedText.value);
     return Duration(milliseconds: tailHeard ? base : (base + 2000));
   }
@@ -2422,7 +2495,7 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
     final minPlausible = Duration(milliseconds: 200 * wordCount);
     final plausible =
         DateTime.now().difference(_listeningStartedAt) >= minPlausible;
-    final tailHeard =
+    final tailHeard = _lineEndingHeard ||
         SttService.heardLineEnding(line.text, _recognizedText.value);
 
     // Quiet needed before confirming, in ~150 ms samples:
@@ -2465,6 +2538,8 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
     _logLineOutcome('matched');
 
     _matchConfirmTimer?.cancel();
+    _strongMatchDeadline?.cancel();
+    _strongMatchDeadline = null;
     _silenceTimer?.cancel();
     _stopCaptureForLine(line);
     _stt.stop();
@@ -2549,6 +2624,8 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
   void _advanceLine(int totalLines) {
     _silenceTimer?.cancel();
     _matchConfirmTimer?.cancel();
+    _strongMatchDeadline?.cancel();
+    _strongMatchDeadline = null;
     // Stop any in-progress audio capture before advancing
     if (_isCapturingAudio) {
       _stt.stopRecording(); // fire-and-forget, file will be finalized
