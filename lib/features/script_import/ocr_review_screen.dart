@@ -288,7 +288,13 @@ class _OcrReviewScreenState extends State<OcrReviewScreen> {
             final page = current.sourcePage!;
             final theme = Theme.of(sheetContext);
 
-            return FractionallySizedBox(
+            // Lift the sheet above the keyboard when the text field has
+            // focus, or the field being edited sits under it.
+            final insets = MediaQuery.of(sheetContext).viewInsets.bottom;
+            return AnimatedPadding(
+              duration: const Duration(milliseconds: 150),
+              padding: EdgeInsets.only(bottom: insets),
+              child: FractionallySizedBox(
               heightFactor: 0.92,
               child: Column(
                 children: [
@@ -323,20 +329,30 @@ class _OcrReviewScreenState extends State<OcrReviewScreen> {
                       ],
                     ),
                   ),
-                  // The OCR text being hunted for, so the user can compare
-                  // it against the highlighted region without leaving.
+                  // EDITABLE in place: the whole point of seeing the page is
+                  // spotting that the OCR text is wrong, so it has to be
+                  // fixable right here — an extra "Edit" button on an
+                  // already-busy rail would just be a detour to this field.
+                  // Shares the card's controller, so a fix made here is the
+                  // same edit "Looks right"/Save commits.
                   Padding(
-                    padding: const EdgeInsets.fromLTRB(16, 4, 16, 8),
-                    child: Align(
-                      alignment: Alignment.centerLeft,
-                      child: Text(
-                        '"${(_origById[current.id] ?? current).text}"',
-                        maxLines: 2,
-                        overflow: TextOverflow.ellipsis,
-                        style: theme.textTheme.bodySmall?.copyWith(
-                          fontStyle: FontStyle.italic,
-                          color: theme.colorScheme.onSurface
-                              .withValues(alpha: 0.75),
+                    padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+                    child: TextField(
+                      controller: _controllers[current.id],
+                      maxLines: 3,
+                      minLines: 1,
+                      style: theme.textTheme.bodyMedium,
+                      decoration: InputDecoration(
+                        isDense: true,
+                        labelText: 'OCR text — tap to fix',
+                        border: const OutlineInputBorder(),
+                        suffixIcon: IconButton(
+                          icon: const Icon(Icons.undo, size: 18),
+                          tooltip: 'Restore what OCR read',
+                          onPressed: () => setSheetState(() {
+                            _controllers[current.id]?.text =
+                                (_origById[current.id] ?? current).text;
+                          }),
                         ),
                       ),
                     ),
@@ -411,6 +427,7 @@ class _OcrReviewScreenState extends State<OcrReviewScreen> {
                   ),
                 ],
               ),
+            ),
             );
           },
         );

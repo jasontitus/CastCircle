@@ -78,6 +78,28 @@ void main() {
     expect(find.text('Flagged line 1 of 2'), findsOneWidget);
   });
 
+  testWidgets('the sheet text is editable and Looks right keeps the fix',
+      (tester) async {
+    final lines = [
+      _line('1', 'She is tolerabl, but nut handsom', 3),
+      _line('2', 'I would not be so fastidious as you are', 4),
+    ];
+    await openSheet(tester, lines);
+
+    // Fix the OCR text right in the page sheet...
+    await tester.enterText(find.byType(TextField).last,
+        'She is tolerable, but not handsome');
+    await tester.pump();
+    await tester.tap(find.widgetWithText(TextButton, 'Looks right'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 400));
+
+    expect(tester.takeException(), isNull);
+    // ...and the correction is what got committed.
+    await tester.pump(const Duration(seconds: 6));
+    expect(find.text('Flagged line 1 of 1'), findsOneWidget);
+  });
+
   testWidgets('"Looks right" clears the flag and advances', (tester) async {
     final lines = [
       _line('1', 'She is tolerable, but not handsome enough', 3),
