@@ -1,7 +1,7 @@
 name: castcircle
 description: "CastCircle - Help actors learn their lines"
 publish_to: 'none'
-version: 0.1.1+150
+version: 0.1.1+151
 
 environment:
   sdk: ^3.11.0
@@ -102,6 +102,7 @@ flutter:
 
   assets:
     - assets/
+    - assets/demo/
     - assets/test_scripts/
     - assets/paddle_ocr/
     - assets/ocr/

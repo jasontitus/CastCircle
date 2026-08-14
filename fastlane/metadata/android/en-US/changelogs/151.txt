@@ -1,0 +1,3 @@
+New: a guided intro on first launch, and a built-in demo production — two scenes of Hamlet in British voices — so you can try a rehearsal before importing your own script.
+
+The intro also covers how to invite your cast.

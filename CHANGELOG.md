@@ -9,6 +9,36 @@ are described in detail; older history is condensed from commit notes.
 
 ---
 
+## 0.1.1+151 — 2026-08-14
+
+### New-user flow
+- **A walkthrough on first launch.** Four pages: what the app does, how a
+  script gets in, the three ways to run a scene (Listen / Read / Cue), and
+  how to get a cast into it — including the specifics, since "you can invite
+  people" without saying how is decoration: share the production's join code,
+  or Cast & Roles → tap a character → Invite to send one actor a link
+  straight to their part. It ends on the two things a new user can actually
+  do next rather than on "Done", and it's reachable any time from ⓘ → How it
+  works.
+- **A bundled demo production.** Two scenes of Hamlet — the sentries on the
+  platform, and the "To be, or not to be" scene through the Ophelia
+  exchange — cast in British RP voices (`shakespearean` preset, `en-GB`),
+  opening with HAMLET already selected so the first screen is a rehearsal
+  rather than a dropdown. Importing a PDF was the single biggest thing
+  between installing the app and understanding it.
+  - Labelled as a demo in the title and on its card ("Demo — sample script,
+    stays on this device"), and it is exactly that: no organizer, no join
+    code, nothing written to Supabase. A demo that created cloud rows would
+    put a fake production in every tester's account and hand out an invite
+    code to a play nobody is staging.
+  - Loading it twice reopens the same production instead of stacking
+    duplicates, and it won't overwrite a part you picked yourself.
+- The first-launch steps are now sequenced — walkthrough, then the
+  AI-voices download offer. Fired together, the download sheet landed on top
+  of page one.
+
+---
+
 ## 0.1.1+150 — 2026-08-14
 
 ### Rehearsal

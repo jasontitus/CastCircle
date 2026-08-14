@@ -14,7 +14,9 @@ import '../../data/services/recording_sync_service.dart';
 import '../../data/models/production_models.dart';
 import '../../data/models/script_models.dart';
 import '../../data/services/supabase_service.dart';
+import '../../data/services/demo_production_service.dart';
 import '../../features/onboarding/model_setup_screen.dart';
+import '../../features/onboarding/welcome_screen.dart';
 import '../../main.dart' show rootScaffoldMessengerKey;
 import '../../providers/production_providers.dart';
 import '../../core/toast.dart';
@@ -45,6 +47,7 @@ class HomeScreen extends ConsumerStatefulWidget {
 
 class _HomeScreenState extends ConsumerState<HomeScreen> {
   bool _submittingProduction = false;
+  bool _loadingDemo = false;
 
   @override
   void initState() {
@@ -53,9 +56,15 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     // device (reinstall / new device used to show an empty home forever).
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted) unawaited(restoreCloudProductions(ref));
-      // New-user flow: one skippable "download all the AI models" step the
-      // first time home is reached with models missing.
-      if (mounted) unawaited(ModelSetupScreen.maybeOffer(context));
+      // New-user flow, in order: the walkthrough (what this app is), THEN
+      // the skippable "download all the AI models" step. Sequenced, not fired
+      // together — side by side, the model sheet lands on top of page one.
+      if (mounted) {
+        unawaited(() async {
+          await WelcomeScreen.maybeOffer(context);
+          if (mounted) await ModelSetupScreen.maybeOffer(context);
+        }());
+      }
     });
   }
 
@@ -134,10 +143,61 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                         .withValues(alpha: 0.6),
                   ),
             ),
+            const SizedBox(height: 28),
+            // Somewhere to go for anyone who doesn't have a script in hand.
+            // Wrap, not Row: at 400pt with large text these two buttons
+            // overflow side by side.
+            Wrap(
+              alignment: WrapAlignment.center,
+              spacing: 12,
+              runSpacing: 8,
+              children: [
+                FilledButton.tonalIcon(
+                  onPressed: _loadingDemo ? null : _openDemo,
+                  icon: _loadingDemo
+                      ? const SizedBox(
+                          width: 16,
+                          height: 16,
+                          child: CircularProgressIndicator(strokeWidth: 2))
+                      : const Icon(Icons.play_circle_outline),
+                  label: Text(_loadingDemo ? 'Opening…' : 'Try the demo'),
+                ),
+                TextButton.icon(
+                  onPressed: () => context.push('/welcome'),
+                  icon: const Icon(Icons.help_outline),
+                  label: const Text('How it works'),
+                ),
+              ],
+            ),
           ],
         ),
       ),
     );
+  }
+
+  /// Open (or create) the bundled demo production and jump into it.
+  ///
+  /// Uses the State's own context deliberately: taking a BuildContext
+  /// parameter here shadows it, and then the `mounted` guard below is
+  /// checking a different object than the context it protects.
+  Future<void> _openDemo() async {
+    setState(() => _loadingDemo = true);
+    try {
+      await DemoProductionService.instance.load(ref);
+      AnalyticsService.instance.logDemoOpened();
+      if (!mounted) return;
+      context.push('/production');
+    } catch (e, stack) {
+      DebugLogService.instance
+          .logError(LogCategory.general, 'Loading the demo failed', e, stack);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showAutoToast(SnackBar(
+        content: Text("Couldn't open the demo: $e"),
+        duration: const Duration(seconds: 6),
+      ));
+    } finally {
+      if (mounted) setState(() => _loadingDemo = false);
+    }
   }
 
   Widget _buildProductionList(
@@ -705,6 +765,20 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
           'Help actors learn their lines by rehearsing with '
           'real cast recordings or text-to-speech.',
         ),
+        const SizedBox(height: 16),
+        // The walkthrough is shown once on first launch; this is how anyone
+        // gets back to it — including the person who skipped it.
+        Align(
+          alignment: Alignment.centerLeft,
+          child: TextButton.icon(
+            onPressed: () {
+              Navigator.of(context).pop();
+              context.push('/welcome');
+            },
+            icon: const Icon(Icons.help_outline),
+            label: const Text('How it works'),
+          ),
+        ),
       ],
     );
   }
@@ -780,11 +854,16 @@ class _ProductionCard extends StatelessWidget {
                     ],
                     const SizedBox(height: 4),
                     // Ownership at a glance — so you know whose production
-                    // you're about to delete BEFORE you delete it.
+                    // you're about to delete BEFORE you delete it. The demo
+                    // is neither yours nor shared, so it says so instead.
                     Row(
                       children: [
                         Icon(
-                          mine ? Icons.verified_user : Icons.group,
+                          DemoProductionService.isDemo(production)
+                              ? Icons.play_circle_outline
+                              : mine
+                                  ? Icons.verified_user
+                                  : Icons.group,
                           size: 12,
                           color: mine
                               ? theme.colorScheme.primary
@@ -793,7 +872,11 @@ class _ProductionCard extends StatelessWidget {
                         ),
                         const SizedBox(width: 4),
                         Text(
-                          mine ? 'Created by you' : 'Joined — someone else\'s',
+                          DemoProductionService.isDemo(production)
+                              ? 'Demo — sample script, stays on this device'
+                              : mine
+                                  ? 'Created by you'
+                                  : 'Joined — someone else\'s',
                           style: theme.textTheme.labelSmall?.copyWith(
                             color: mine
                                 ? theme.colorScheme.onSurface

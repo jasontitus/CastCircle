@@ -27,6 +27,7 @@ import 'features/recording_studio/recordings_browser_screen.dart';
 import 'features/rehearsal/rehearsal_history_screen.dart';
 import 'features/rehearsal/rehearsal_screen.dart';
 import 'features/onboarding/model_setup_screen.dart';
+import 'features/onboarding/welcome_screen.dart';
 import 'features/settings/ai_models_screen.dart';
 import 'features/settings/settings_screen.dart';
 import 'features/settings/kokoro_debug_screen.dart';
@@ -88,6 +89,11 @@ GoRouter _buildRouter(Ref ref) => GoRouter(
       name: '/',
       path: '/',
       builder: (context, state) => const HomeScreen(),
+    ),
+    GoRoute(
+      name: '/welcome',
+      path: '/welcome',
+      builder: (context, state) => const WelcomeScreen(),
     ),
     GoRoute(
       name: '/settings',

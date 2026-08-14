@@ -42,6 +42,12 @@ class AnalyticsService {
     _analytics?.logEvent(name: 'production_joined');
   }
 
+  /// The bundled demo was opened — the clearest signal of whether the
+  /// walkthrough's call to action actually lands.
+  void logDemoOpened() {
+    _analytics?.logEvent(name: 'demo_production_opened');
+  }
+
   void logModelDownloaded({required String modelId}) {
     _analytics?.logEvent(name: 'model_downloaded', parameters: {
       'model_id': modelId,
