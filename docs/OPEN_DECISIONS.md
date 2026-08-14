@@ -62,19 +62,28 @@ therefore offers a marathon scene with no way to pick a chunk.
 
 ---
 
-## 3. Firebase App Check enforcement
+## 3. ~~Firebase App Check enforcement~~ — DECIDED 2026-08-14: no
 
-**Opened:** 2026-08-13 · **Recommendation: don't, for now**
+Jason: "Let's not do Firebase app check." Not revisiting unless real
+backend traffic moves onto Firebase.
 
-API-key restrictions (the part that actually closes the review finding)
-are done for iOS; the Android key still needs its SHA-1 fingerprints
-(blocked on the Play App Signing cert — see below). Full App Check
-enforcement is a separate, larger step.
+Why it was the right call: Play Integrity requires Google Play Services,
+which would break the Fire-tablet path (`docs/FIRE_TABLET.md`) and
+direct-installed builds — and App Check protects Firestore / Storage /
+Functions / Auth, none of which this app uses (auth, data, and audio all
+live in Supabase). Firebase here is analytics + Crashlytics +
+Performance only, which App Check enforcement doesn't gate anyway.
 
-Reason to hold: Play Integrity requires Google Play Services, which
-would break the Fire-tablet story (`docs/FIRE_TABLET.md`) and
-direct-installed builds — and there is no Firebase backend behind the
-door worth protecting (auth/data/audio all live in Supabase).
+**Still worth finishing (not App Check):** the API-key restrictions that
+actually close the review finding. The iOS key is already restricted to
+bundle id `com.tiltastech.castcircle`. The Android key needs its
+fingerprints before restricting, or Play-installed builds lose telemetry:
 
-**Blocked on Jason:** the Play App Signing SHA-1 from Play Console →
-Setup → App integrity, to finish the Android key restriction.
+- upload key SHA-1 `22:F4:9D:A5:55:E5:BF:AB:44:A7:35:96:18:A4:F6:DE:0B:69:93:E9`
+- debug key SHA-1 `06:EC:C4:36:1D:0E:27:9C:13:D0:FC:D5:02:4D:2B:B7:F6:9D:1C:88`
+- **missing:** the Play App Signing SHA-1 (Play Console → Test and
+  release → Setup → App integrity). Google re-signs the AAB, so
+  Play-delivered builds present that cert, not the upload one.
+
+Once that SHA-1 is in hand this is a two-minute `gcloud services
+api-keys update` — no App Check involved.
