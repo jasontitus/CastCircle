@@ -244,7 +244,16 @@ class _PdfPageViewState extends State<PdfPageView> {
     try {
       final lines = _pageOcrCache[page] ??
           await PaddleOcrChannel.ocrPage(widget.pdfPath, page);
-      if (!mounted || _currentPage != page) return;
+      if (!mounted) return;
+      if (_currentPage != page) {
+        // Paged away mid-lookup. Clearing _locating matters: leaving it
+        // true pinned "Locating line…" on screen forever.
+        setState(() {
+          _locating = false;
+          _highlightRects = const [];
+        });
+        return;
+      }
       if (lines == null) {
         // Native single-page OCR unavailable (e.g. macOS) — no highlight,
         // no error: the page itself still shows.
@@ -256,6 +265,13 @@ class _PdfPageViewState extends State<PdfPageView> {
       }
       _pageOcrCache[page] = lines;
       final rects = OcrHighlightMatcher.locate(target, lines);
+      // Field diagnostics: when the chip says "couldn't locate", this line
+      // says whether the page OCR'd at all, and what we were hunting for.
+      DebugLogService.instance.log(
+          LogCategory.general,
+          'Highlight p$page: ${rects.isEmpty ? 'NOT FOUND' : '${rects.length} rect(s)'} '
+          'among ${lines.length} OCR line(s) for '
+          '"${target.length > 40 ? '${target.substring(0, 40)}…' : target}"');
       setState(() {
         _locating = false;
         _highlightRects = rects;

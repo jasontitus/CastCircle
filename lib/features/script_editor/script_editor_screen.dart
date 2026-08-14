@@ -968,6 +968,24 @@ class _ScriptEditorScreenState extends ConsumerState<ScriptEditorScreen> {
                                   Theme.of(innerContext).textTheme.labelSmall,
                             ),
                           TextButton.icon(
+                            icon: const Icon(Icons.delete_outline, size: 18),
+                            label: const Text('Remove'),
+                            style: TextButton.styleFrom(
+                              foregroundColor:
+                                  Theme.of(innerContext).colorScheme.error,
+                            ),
+                            onPressed: () {
+                              _deleteLine(current);
+                              final remaining = _lowOcrLines();
+                              if (remaining.isEmpty) {
+                                Navigator.pop(context);
+                              } else {
+                                goTo(remaining[
+                                    at.clamp(0, remaining.length - 1)]);
+                              }
+                            },
+                          ),
+                          TextButton.icon(
                             icon: const Icon(Icons.check_circle_outline,
                                 size: 18),
                             label: const Text('Looks right'),
