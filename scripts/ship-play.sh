@@ -3,8 +3,11 @@
 # Ship CastCircle to Google Play. Mirrors scripts/ship-testflight.sh for iOS.
 # See docs/RELEASING.md for the full recipe + first-upload caveat.
 #
-#   ./scripts/ship-play.sh          # build signed AAB + upload to Play internal track
-#   ./scripts/ship-play.sh --build  # build the signed AAB only (no upload)
+#   ./scripts/ship-play.sh             # build signed AAB + upload to the internal track
+#   ./scripts/ship-play.sh --closed    # upload to CLOSED testing (alpha) as a draft release
+#   ./scripts/ship-play.sh --closed --live   # ...and roll it out to testers immediately
+#   ./scripts/ship-play.sh --validate  # dry run: Google validates the upload, nothing ships
+#   ./scripts/ship-play.sh --build     # build the signed AAB only (no upload)
 #
 # Prereqs (set up once, both git-ignored / local-only):
 #   - android/key.properties + android/app/castcircle-upload.jks  (release signing)
@@ -15,20 +18,29 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
+# Which track, and whether the release goes live or waits in Play Console.
+LANE=beta            # fastlane lane 'beta' = internal track
+LANE_ARGS=""
+BUILD_ONLY=0
+for arg in "$@"; do
+  case "$arg" in
+    --closed)   LANE=closed_beta ;;
+    --live)     LANE_ARGS="status:completed" ;;
+    --validate) LANE_ARGS="${LANE_ARGS} validate:true" ;;
+    --build)    BUILD_ONLY=1 ;;
+    *) echo "✗ unknown option: $arg" >&2; exit 2 ;;
+  esac
+done
+if [[ "$LANE" == "beta" && -n "$LANE_ARGS" ]]; then
+  echo "✗ --live/--validate only apply to --closed (the internal lane has no such options)." >&2
+  exit 2
+fi
+
 # 1. Release signing must exist, or Gradle silently falls back to DEBUG signing
 #    and Play rejects the build.
 if [[ ! -f android/key.properties ]]; then
   echo "✗ android/key.properties missing — release build would be debug-signed." >&2
   echo "  See docs/RELEASING.md → Android → Signing." >&2
-  exit 1
-fi
-
-# 2. Everything Play will reject us for, checked here in seconds instead of
-#    days later in review (metadata limits, release notes for THIS build,
-#    store graphics, screenshot aspect ratios, signing).
-echo "▶ Preflight..."
-if ! ./scripts/play-preflight.sh; then
-  echo "✗ Preflight failed — not uploading." >&2
   exit 1
 fi
 
@@ -58,7 +70,18 @@ if echo "$OWNER" | grep -qi 'Android Debug'; then
 fi
 echo "✓ AAB built ($(du -h "$AAB" | cut -f1)), signed: $OWNER"
 
-if [[ "${1:-}" == "--build" ]]; then
+# 3. Everything Play will reject us for, checked here in seconds instead of
+#    days later in review (metadata limits, release notes for THIS build,
+#    store graphics, screenshot aspect ratios, signing). This runs AFTER the
+#    build: preflight's staleness check compares the AAB against the source
+#    tree, so running it first always judged the PREVIOUS build.
+echo "▶ Preflight..."
+if ! ./scripts/play-preflight.sh; then
+  echo "✗ Preflight failed — not uploading." >&2
+  exit 1
+fi
+
+if (( BUILD_ONLY )); then
   echo "▶ --build: skipping upload. AAB at $AAB"
   exit 0
 fi
@@ -70,6 +93,11 @@ if [[ ! -f "$HOME/.google-play/play-store-key.json" ]]; then
   exit 1
 fi
 
-echo "▶ Uploading to Play internal track via fastlane..."
-( cd fastlane && fastlane android beta )
-echo "✓ shipped to Play (internal track)"
+if [[ "$LANE" == "closed_beta" ]]; then
+  echo "▶ Uploading to Play CLOSED testing (alpha) via fastlane... ${LANE_ARGS:-(draft release)}"
+else
+  echo "▶ Uploading to Play internal track via fastlane..."
+fi
+# shellcheck disable=SC2086  # LANE_ARGS is intentionally word-split into fastlane options
+( cd fastlane && fastlane android "$LANE" $LANE_ARGS )
+echo "✓ shipped to Play ($LANE)"

@@ -9,6 +9,7 @@
 // Screenshots are reported back to the host driver. scripts/generate_screenshots.sh
 // collects them into fastlane/screenshots/en-US/.
 
+import 'package:drift/native.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show rootBundle;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -32,10 +33,18 @@ const _hamletAssetPath = 'assets/test_scripts/hamlet.txt';
 
 late IntegrationTestWidgetsFlutterBinding _binding;
 
+bool _surfaceConverted = false;
+
 /// Capture a screenshot with the given name after the UI has settled.
 Future<void> _snap(WidgetTester tester, String name) async {
   await tester.pumpAndSettle(const Duration(milliseconds: 500));
-  await _binding.convertFlutterSurfaceToImage();
+  // The Flutter surface is converted to an image ONCE per run. Calling this
+  // before every screenshot trips `assert(!_isSurfaceRendered)` on Android,
+  // which failed the whole run on the second frame.
+  if (!_surfaceConverted) {
+    await _binding.convertFlutterSurfaceToImage();
+    _surfaceConverted = true;
+  }
   await tester.pumpAndSettle();
   await _binding.takeScreenshot(name);
 }
@@ -53,13 +62,20 @@ void main() {
     // Skip auth and any onboarding. `screenshot_mode` suppresses the
     // "Download AI Voices" modal and banner in ProductionHubScreen.
     // setMockInitialValues doesn't apply to the real plugin on-simulator,
-    // so we set values via the real API instead.
+    // so we set values via the real API instead — which means these are the
+    // REAL preferences when this runs on a phone. Remember them and put
+    // them back at the end, or a screenshot run silently leaves the owner's
+    // app signed out of its auth prompt with onboarding suppressed.
     final prefs = await SharedPreferences.getInstance();
+    final prevAuthSkipped = prefs.getBool('auth_skipped');
+    final prevScreenshotMode = prefs.getBool('screenshot_mode');
     await prefs.setBool('auth_skipped', true);
     await prefs.setBool('screenshot_mode', true);
 
-    // Start with a clean in-memory database.
-    final db = AppDatabase();
+    // A REAL in-memory database. `AppDatabase()` opens the on-disk
+    // lineguide.sqlite in the app's documents directory, so using it here
+    // wrote the seeded Hamlet production into whatever device this ran on.
+    final db = AppDatabase.forTesting(NativeDatabase.memory());
 
     // Parse the full Hamlet script so every screen has realistic content.
     final rawHamlet = await rootBundle.loadString(_hamletAssetPath);
@@ -163,6 +179,17 @@ void main() {
     await tester.pumpAndSettle(const Duration(seconds: 1));
     await _snap(tester, '09_cast_manager');
 
+    // Put the device's preferences back the way they were found.
+    Future<void> restore(String key, bool? previous) async {
+      if (previous == null) {
+        await prefs.remove(key);
+      } else {
+        await prefs.setBool(key, previous);
+      }
+    }
+
+    await restore('auth_skipped', prevAuthSkipped);
+    await restore('screenshot_mode', prevScreenshotMode);
     await db.close();
   });
 }

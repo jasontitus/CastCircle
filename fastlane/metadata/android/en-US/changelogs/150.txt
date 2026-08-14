@@ -1,0 +1,3 @@
+Rehearsal: fixed a scene title that could wrap into a tall, unreadable block at the top of the screen.
+
+The headset tip now names the right button on Android.

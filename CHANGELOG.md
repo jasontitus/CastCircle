@@ -9,6 +9,34 @@ are described in detail; older history is condensed from commit notes.
 
 ---
 
+## 0.1.1+150 — 2026-08-14
+
+### Rehearsal
+- **Fixed a mangled rehearsal header.** On a phone the controls (A−/A+,
+  Fast, Read/Cue, Playing, progress) take nearly the whole row, leaving the
+  scene title ~60dp — and with no line limit it wrapped one word-fragment
+  per line ("ACT / I, Sc / ene / 1"), inflating the header to a third of the
+  screen. The title now ellipsises on one line, and the location subtitle
+  only shows where there's room for it (≥600dp). Found in a Play screenshot
+  capture on the Galaxy, not by looking at the code.
+- **"Tap your AirPods" no longer appears on Android**, where there are none;
+  the hint names the headset button instead.
+
+### Release tooling
+- Play screenshots: the pipeline no longer throws away a whole capture run
+  when the test reports a debug-only framework assertion after every frame
+  has already landed — it converts what it captured and says loudly that the
+  run failed. `--convert-only` re-runs just the conversion.
+- The Play set is now an explicit, ordered 8 (Play's maximum), rehearsal
+  first; anything captured but unused is named in the output. Preflight
+  rejects more than 8 screenshots.
+- The screenshot test no longer writes to the device it runs on: it used the
+  real on-disk database (seeding a Hamlet production into whatever phone was
+  attached) and left `auth_skipped` / `screenshot_mode` flipped. It now uses
+  an in-memory database and restores both preferences.
+
+---
+
 ## 0.1.1+149 — 2026-08-14
 
 ### App icon

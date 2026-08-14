@@ -35,6 +35,33 @@ platform :android do
     )
   end
 
+  desc "Build and upload to Play CLOSED testing (alpha track)"
+  # Closed beta = Play's "closed testing", which the API calls the `alpha`
+  # track. Options:
+  #   status:   draft (default) | completed  — draft stages the release and
+  #             leaves the roll-out button in Play Console, which is what you
+  #             want until the App content declarations are signed off.
+  #   validate: true — runs the whole upload through Google's validation and
+  #             then throws the edit away. Nothing reaches testers.
+  # Unlike the internal lane this DOES push the store listing and graphics:
+  # a closed test still shows testers the listing page.
+  lane :closed_beta do |options|
+    sh("cd .. && flutter build appbundle --release")
+
+    upload_to_play_store(
+      track: "alpha",
+      release_status: options[:status] || "draft",
+      aab: "build/app/outputs/bundle/release/app-release.aab",
+      json_key: play_store_key_path,
+      metadata_path: "fastlane/metadata/android",
+      skip_upload_metadata: false,
+      skip_upload_changelogs: false,
+      skip_upload_images: false,
+      skip_upload_screenshots: false,
+      validate_only: options[:validate] == true
+    )
+  end
+
   desc "Promote internal to production"
   lane :promote do
     upload_to_play_store(

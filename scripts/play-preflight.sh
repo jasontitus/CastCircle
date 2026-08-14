@@ -93,6 +93,9 @@ else
 fi
 SHOTS=$(ls "$IMG/phoneScreenshots"/*.png 2>/dev/null | wc -l | tr -d ' ' || true)
 SHOTS=${SHOTS:-0}
+if (( SHOTS > 8 )); then
+  bad "$SHOTS phone screenshots — Play accepts at most 8 per device type"
+fi
 if (( SHOTS >= 2 )); then
   ok "$SHOTS phone screenshots"
   # Play rejects anything outside a 1:2 … 2:1 aspect ratio.

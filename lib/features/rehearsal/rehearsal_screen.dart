@@ -845,21 +845,32 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
               context.pop();
             },
           ),
+          // The controls to the right are inflexible and, on a phone, take
+          // nearly the whole row — so this Expanded gets ~60dp. Without a
+          // line limit the scene name wrapped one word-fragment per line
+          // ("ACT / I, Sc / ene / 1") and inflated the header to a third of
+          // the screen. Ellipsise instead, and drop the location subtitle
+          // where there's no room for it.
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
                   scene.sceneName,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
                   style: const TextStyle(
                     color: Colors.white,
                     fontWeight: FontWeight.bold,
                     fontSize: 14,
                   ),
                 ),
-                if (scene.location.isNotEmpty)
+                if (scene.location.isNotEmpty &&
+                    MediaQuery.sizeOf(context).width >= 600)
                   Text(
                     scene.location,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
                     style: TextStyle(color: Colors.grey[500], fontSize: 12),
                   ),
               ],
@@ -1474,13 +1485,17 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
             child: Text.rich(
               TextSpan(
                 style: TextStyle(color: Colors.blueGrey[300], fontSize: 12),
-                children: const [
-                  TextSpan(
+                children: [
+                  const TextSpan(
                     text: 'Tip: ',
                     style: TextStyle(fontWeight: FontWeight.bold),
                   ),
+                  // Android has no AirPods: the same gesture arrives from
+                  // whatever headset the OS routes media keys from.
                   TextSpan(
-                    text: 'Tap your AirPods to jump back to your last cue',
+                    text: Platform.isIOS
+                        ? 'Tap your AirPods to jump back to your last cue'
+                        : 'Tap your headset button to jump back to your last cue',
                   ),
                 ],
               ),

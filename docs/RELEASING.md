@@ -54,6 +54,9 @@ Notes: hardened runtime (`--options runtime`) + secure timestamp are required. `
 ./scripts/generate-play-screenshots.sh       # phone screenshots (device must be attached)
 ./scripts/play-preflight.sh                  # gate: everything checkable locally
 ./scripts/ship-play.sh                       # preflight + signed AAB + upload to internal
+./scripts/ship-play.sh --closed              # → CLOSED testing (alpha) as a DRAFT release
+./scripts/ship-play.sh --closed --validate   # dry run: Google validates it, nothing ships
+./scripts/ship-play.sh --closed --live       # → closed testing, rolled out to testers now
 ./scripts/ship-play.sh --build               # build the signed AAB only, no upload
 cd fastlane && fastlane android metadata     # push listing text + graphics + screenshots
 cd fastlane && fastlane android promote      # internal → production
@@ -76,9 +79,27 @@ flutter build apk --release          # sideload/Amazon APK instead
 ### Upload
 Fastlane lane (in `fastlane/Fastfile`, platform `:android`):
 ```bash
-cd fastlane && fastlane android beta      # build AAB + upload to internal track
-cd fastlane && fastlane android promote   # internal → production
+cd fastlane && fastlane android beta         # build AAB + upload to internal track
+cd fastlane && fastlane android closed_beta  # → closed testing (alpha), draft release
+cd fastlane && fastlane android promote      # internal → production
 ```
+
+**Track names.** Play's UI names and the API's names differ, which makes the
+lanes look mismatched:
+
+| Play Console | API / fastlane `track:` | Lane |
+|---|---|---|
+| Internal testing | `internal` | `beta` |
+| **Closed testing** | `alpha` | **`closed_beta`** |
+| Open testing | `beta` | — |
+| Production | `production` | `promote` |
+
+`closed_beta` defaults to `release_status: draft`: the build and listing are
+staged in Play Console and the roll-out button stays yours. Pass
+`status:completed` (or `ship-play.sh --closed --live`) to push it to testers
+in the same step, and `validate:true` to have Google validate the whole
+upload and then discard the edit. Unlike the internal lane it also uploads
+the store listing and graphics, since closed testers see the listing page.
 Needs the Play service-account JSON at `~/.google-play/play-store-key.json`
 (set up 2026-07-30, copied from the open-testimony project — same Play
 developer account).
@@ -109,6 +130,29 @@ What preflight CANNOT check, because it only exists in Play Console:
 | Privacy policy URL | Store presence → Main store listing | Same URL as the App Store listing |
 | Countries / pricing (free) | Release → Production | |
 | App access (test credentials) | Policy → App content | Reviewers need a login OR the "Continue without account" path documented — the app works fully offline without one |
+
+### Closed beta (closed testing) — what still needs a human
+
+`./scripts/ship-play.sh --closed` stages the build, the listing text, the
+graphics and the screenshots. What it *cannot* do, because it lives behind
+Console forms:
+
+1. **Create the tester list.** Test and release → Testing → Closed testing →
+   Testers. Either an email list (paste addresses) or a Google Group. A build
+   in the track is invisible until someone is on that list.
+2. **Complete App content** (see the table above). A closed-testing release
+   can be *uploaded* without these, but the roll-out is blocked until data
+   safety, content rating, target audience, privacy policy, and app access
+   are signed off.
+3. **Countries/regions** for the closed track.
+4. **Send the opt-in link.** Console gives a `play.google.com/apps/testing/…`
+   URL; testers must accept it before Play will show them the app.
+
+If this is a **personal** (individual) developer account created after Nov
+2023, Google additionally requires ≥12 testers opted in and the closed test
+running ≥14 continuous days before production access unlocks — worth knowing
+before planning the public launch date, since the clock starts at roll-out,
+not at upload.
 
 ### Assets and how they're produced
 

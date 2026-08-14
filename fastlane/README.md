@@ -31,6 +31,14 @@ Build release AAB for Play Store
 
 Build and upload to Play Store internal test track
 
+### android closed_beta
+
+```sh
+[bundle exec] fastlane android closed_beta
+```
+
+Build and upload to Play CLOSED testing (alpha track)
+
 ### android promote
 
 ```sh
