@@ -649,7 +649,7 @@ class ScriptImportService {
         sourcePage: page != null ? () => page : null,
         // Real position within the page (1-based), not the old constant 0.
         sourceLineOnPage:
-            page != null ? () => _lineOnPage(linePageMap, matchStart!) : null,
+            page != null ? () => _lineOnPage(linePageMap, matchStart) : null,
       );
     }).toList();
 
