@@ -812,7 +812,10 @@ class _ScriptEditorScreenState extends ConsumerState<ScriptEditorScreen> {
   }
 
   void _editLine(BuildContext context, ScriptLine line) {
-    final textController = TextEditingController(text: line.text);
+    // Mutable so the sheet can STEP between low-OCR lines in place
+    // (Prev/Next) instead of closing and reopening for each one.
+    var current = line;
+    final textController = TextEditingController(text: current.text);
     final script = ref.read(currentScriptProvider);
     final production = ref.read(currentProductionProvider);
     final charNames = script?.characters.map((c) => c.name).toList() ?? [];
@@ -822,9 +825,10 @@ class _ScriptEditorScreenState extends ConsumerState<ScriptEditorScreen> {
 
     // Check if we have a PDF source page to show
     final pdfPath = _effectivePdfPath(production);
-    final hasPdfPage = pdfPath != null &&
-        line.sourcePage != null &&
-        File(pdfPath).existsSync();
+    // Whether a page can be shown at all for this file; per-line presence is
+    // re-checked at build time (the walk can step to another line).
+    final hasPdfFile = pdfPath != null && File(pdfPath).existsSync();
+    final hasPdfPage = hasPdfFile && line.sourcePage != null;
 
     // Sheet-scoped controllers: disposed when the sheet closes —
     // they used to leak one pair per opened edit sheet for the whole
@@ -859,15 +863,16 @@ class _ScriptEditorScreenState extends ConsumerState<ScriptEditorScreen> {
                   children: [
                     Expanded(
                       child: Text(
-                        'Edit Line #${line.orderIndex}${line.sourcePage != null ? '  (p${line.sourcePage})' : ''}',
+                        'Edit Line #${current.orderIndex}'
+                        '${current.sourcePage != null ? '  (p${current.sourcePage})' : ''}',
                         style: Theme.of(context).textTheme.titleMedium,
                       ),
                     ),
                     PopupMenuButton<String>(
-                      icon: Icon(_lineTypeIcon(line.lineType), size: 20),
+                      icon: Icon(_lineTypeIcon(current.lineType), size: 20),
                       tooltip: 'Change line type',
                       onSelected: (type) {
-                        _changeLineType(line, type);
+                        _changeLineType(current, type);
                         Navigator.pop(context);
                       },
                       itemBuilder: (context) => [
@@ -887,7 +892,7 @@ class _ScriptEditorScreenState extends ConsumerState<ScriptEditorScreen> {
                       tooltip: 'Split line',
                       onPressed: () {
                         Navigator.pop(context);
-                        _splitLine(context, line);
+                        _splitLine(context, current);
                       },
                     ),
                     IconButton(
@@ -895,7 +900,7 @@ class _ScriptEditorScreenState extends ConsumerState<ScriptEditorScreen> {
                           size: 20, color: Colors.red),
                       tooltip: 'Delete line',
                       onPressed: () {
-                        _deleteLine(line);
+                        _deleteLine(current);
                         Navigator.pop(context);
                       },
                     ),
@@ -903,7 +908,7 @@ class _ScriptEditorScreenState extends ConsumerState<ScriptEditorScreen> {
                 ),
 
                 // ── PDF page viewer (pinch-to-zoom) ──
-                if (hasPdfPage) ...[
+                if (hasPdfFile && current.sourcePage != null) ...[
                   const SizedBox(height: 8),
                   Expanded(
                     child: ClipRRect(
@@ -917,20 +922,107 @@ class _ScriptEditorScreenState extends ConsumerState<ScriptEditorScreen> {
                           borderRadius: BorderRadius.circular(8),
                         ),
                         child: PdfPageView(
+                          key: ValueKey('editor-sheet-${current.id}'),
                           pdfPath: pdfPath,
-                          pageNumber: line.sourcePage!,
-                          lineOnPage: line.sourceLineOnPage,
-                          highlightText: line.text,
+                          pageNumber: current.sourcePage!,
+                          lineOnPage: current.sourceLineOnPage,
+                          highlightText: current.text,
                         ),
                       ),
                     ),
                   ),
+                  // Walk-through over the remaining low-OCR lines, same as
+                  // the import review sheet — for the far more common case
+                  // of cleaning up a script AFTER the import was accepted.
+                  Builder(builder: (innerContext) {
+                    final flagged = _lowOcrLines();
+                    final at = flagged.indexWhere((l) => l.id == current.id);
+                    void goTo(ScriptLine next) {
+                      setModalState(() {
+                        current = next;
+                        textController.text = next.text;
+                        selectedChar = next.character;
+                        isNewChar = !charNames.contains(selectedChar) &&
+                            selectedChar.isNotEmpty;
+                      });
+                    }
+
+                    return Padding(
+                      padding: const EdgeInsets.only(top: 4),
+                      child: Wrap(
+                        alignment: WrapAlignment.spaceEvenly,
+                        crossAxisAlignment: WrapCrossAlignment.center,
+                        spacing: 4,
+                        runSpacing: 4,
+                        children: [
+                          TextButton.icon(
+                            onPressed:
+                                at > 0 ? () => goTo(flagged[at - 1]) : null,
+                            icon: const Icon(Icons.chevron_left),
+                            label: const Text('Prev'),
+                          ),
+                          if (at >= 0)
+                            Text(
+                              'Low OCR ${at + 1} of ${flagged.length}',
+                              style:
+                                  Theme.of(innerContext).textTheme.labelSmall,
+                            ),
+                          TextButton.icon(
+                            icon: const Icon(Icons.delete_outline, size: 18),
+                            label: const Text('Remove'),
+                            style: TextButton.styleFrom(
+                              foregroundColor:
+                                  Theme.of(innerContext).colorScheme.error,
+                            ),
+                            onPressed: () {
+                              _deleteLine(current);
+                              final remaining = _lowOcrLines();
+                              if (remaining.isEmpty) {
+                                Navigator.pop(context);
+                              } else {
+                                goTo(remaining[
+                                    at.clamp(0, remaining.length - 1)]);
+                              }
+                            },
+                          ),
+                          TextButton.icon(
+                            icon: const Icon(Icons.check_circle_outline,
+                                size: 18),
+                            label: const Text('Looks right'),
+                            onPressed: () {
+                              // Keep any typed correction, then clear the
+                              // flag and land on the next flagged line.
+                              final typed = textController.text.trim();
+                              if (typed.isNotEmpty && typed != current.text) {
+                                _updateLine(current, selectedChar, typed);
+                              }
+                              _clearOcrFlag(current);
+                              final remaining = _lowOcrLines();
+                              if (remaining.isEmpty) {
+                                Navigator.pop(context);
+                              } else {
+                                goTo(remaining[
+                                    at.clamp(0, remaining.length - 1)]);
+                              }
+                            },
+                          ),
+                          FilledButton.icon(
+                            onPressed: at >= 0 && at < flagged.length - 1
+                                ? () => goTo(flagged[at + 1])
+                                : null,
+                            icon: const Icon(Icons.chevron_right),
+                            label: const Text('Next'),
+                          ),
+                        ],
+                      ),
+                    );
+                  }),
                   const SizedBox(height: 8),
                 ],
 
                 // ── Character selector ──
-                if (line.lineType == LineType.dialogue ||
-                    line.lineType == LineType.song) ...[
+                if (current.lineType == LineType.dialogue ||
+                    current.lineType == LineType.song) ...[
                   DropdownButtonFormField<String>(
                     value: isNewChar ? '__new__' : selectedChar,
                     decoration: const InputDecoration(
@@ -984,9 +1076,10 @@ class _ScriptEditorScreenState extends ConsumerState<ScriptEditorScreen> {
                     labelText: 'Line text',
                     border: const OutlineInputBorder(),
                     isDense: true,
-                    suffixIcon: line.ocrConfidence != null && line.ocrConfidence! < 0.85
+                    suffixIcon: current.ocrConfidence != null &&
+                            current.ocrConfidence! < 0.85
                         ? Tooltip(
-                            message: 'OCR confidence: ${(line.ocrConfidence! * 100).toInt()}%',
+                            message: 'OCR confidence: ${(current.ocrConfidence! * 100).toInt()}%',
                             child: Icon(Icons.warning_amber_rounded,
                                 color: Colors.amber.shade700, size: 20),
                           )
@@ -1010,8 +1103,8 @@ class _ScriptEditorScreenState extends ConsumerState<ScriptEditorScreen> {
                             ? newCharController.text.trim().toUpperCase()
                             : selectedChar;
                         _updateLine(
-                          line,
-                          finalChar,
+                          current, // the line currently shown, not the one
+                          finalChar, // the sheet was opened with
                           textController.text.trim(),
                         );
                         Navigator.pop(context);
@@ -1148,6 +1241,44 @@ class _ScriptEditorScreenState extends ConsumerState<ScriptEditorScreen> {
     }
 
     _rebuildScript(script, updatedLines);
+  }
+
+  /// Lines still flagged as low-confidence OCR, in script order — the
+  /// walk-through list for the editor's page viewer (mirrors the import
+  /// review screen, for the far more common case of fixing a script AFTER
+  /// the import was accepted).
+  List<ScriptLine> _lowOcrLines() {
+    final script = ref.read(currentScriptProvider);
+    if (script == null) return const [];
+    return [
+      for (final l in script.lines)
+        if (l.ocrConfidence != null && l.ocrConfidence! < 0.85) l,
+    ];
+  }
+
+  /// "Looks right": the OCR text is fine as-is — clear the flag so the line
+  /// leaves the Low OCR filter and the walk-through. Text is untouched.
+  void _clearOcrFlag(ScriptLine line) {
+    final script = ref.read(currentScriptProvider);
+    if (script == null) return;
+    final updatedLines = [
+      for (final l in script.lines)
+        if (l.id == line.id)
+          l.copyWith(
+            ocrConfidence: () => null,
+            reviewStatus: OcrReviewStatus.ok,
+          )
+        else
+          l,
+    ];
+    ref.read(currentScriptProvider.notifier).state = ParsedScript(
+      title: script.title,
+      lines: updatedLines,
+      characters: script.characters,
+      scenes: script.scenes,
+      rawText: script.rawText,
+    );
+    scheduleScriptSave(ref);
   }
 
   void _deleteLine(ScriptLine line) {

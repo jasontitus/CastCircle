@@ -1,6 +1,7 @@
 import 'dart:io';
 import 'dart:isolate';
 import 'dart:math';
+import 'dart:math' as math;
 import 'dart:ui' as ui;
 
 import 'package:flutter/foundation.dart';
@@ -12,6 +13,7 @@ import 'package:pdfrx/pdfrx.dart';
 import '../models/script_models.dart';
 import 'debug_log_service.dart';
 import 'ocr_confidence_service.dart';
+import 'ocr_highlight_matcher.dart';
 import 'script_parser.dart';
 import 'script_export.dart';
 import 'pdf_text_channel.dart';
@@ -572,7 +574,8 @@ class ScriptImportService {
     // the review-flagged ones — so exact contains() failed for them, they
     // lost their sourcePage, and the OCR review's "View page" button
     // vanished on the very lines that needed it (field, iPhone 2026-08-13).
-    final rawLines = rawText.split('\n').map(_normForMatch).toList();
+    final rawLinesOriginal = rawText.split('\n');
+    final rawLines = rawLinesOriginal.map(_normForMatch).toList();
 
     // Parsed lines are in document order, so a line's raw source lies a
     // short distance past the cursor. The bounded window is the load-
@@ -585,22 +588,45 @@ class ScriptImportService {
     const searchWindow = 150; // ~3-4 pages of raw lines
 
     var cursor = 0;
+    // Parsed lines and raw lines both run in document order, so line i of N
+    // sits near raw line i/N × M. The window is anchored to BOTH the last
+    // match and this estimate: anchoring to the cursor alone (build 138)
+    // meant a run of unmatchable lines stalled it, after which the window
+    // could no longer reach the correct raw line and everything downstream
+    // failed too — measured, only 134 of 1187 lines mapped.
+    final parsedCount = script.lines.length;
+    final rawCount = rawLinesOriginal.length;
+    var parsedIdx = -1;
     final updatedLines = script.lines.map((line) {
+      parsedIdx++;
       final searchText = _normForMatch(line.text);
       if (searchText.isEmpty) return line;
 
-      // Find the first contributing raw line at/after the cursor.
-      int? matchStart;
-      final limit = (cursor + searchWindow < rawLines.length)
-          ? cursor + searchWindow
-          : rawLines.length;
-      for (var i = cursor; i < limit; i++) {
-        if (rawLines[i].isEmpty) continue;
-        if (_lineTextMatch(rawLines[i], searchText)) {
-          matchStart = i;
-          break;
-        }
-      }
+      // BEST match in the window, not the first. Taking the first loose
+      // match let a weak early candidate win, pinning the line to a page
+      // its text isn't on — which is what made the page viewer's
+      // highlight report "couldn't locate this line" (measured: 46% of
+      // flagged lines). Scoring comes from OcrHighlightMatcher, the same
+      // code the viewer uses, so a mapped page is a page the viewer can
+      // find the line on BY CONSTRUCTION.
+      final estimate =
+          parsedCount == 0 ? 0 : (parsedIdx * rawCount / parsedCount).round();
+      // Window spans BOTH anchors, with slack behind the earlier one. The
+      // cursor alone was a hard floor: one false strong match jumped it
+      // ahead and every later line was unfindable (the document-order
+      // estimate can't overshoot that way, so it pulls the window back).
+      final lowAnchor = math.min(cursor, estimate);
+      final highAnchor = math.max(cursor, estimate);
+      final rawStart = math.max(0, lowAnchor - 40);
+      final windowEnd = highAnchor + searchWindow;
+      final limit = windowEnd < rawLines.length ? windowEnd : rawLines.length;
+      final best = OcrHighlightMatcher.bestMatch(
+        line.text,
+        rawLinesOriginal,
+        start: rawStart,
+        end: limit,
+      );
+      final matchStart = best?.index;
       if (matchStart == null) return line;
 
       // Average confidence across the consecutive raw lines this parsed line
