@@ -240,7 +240,13 @@ class _OcrReviewScreenState extends State<OcrReviewScreen> {
   /// for the page viewer's Prev/Next.
   List<ScriptLine> _pendingWithPages() => [
         for (final l in _reviewLines)
-          if (!_removedIds.contains(l.id) && l.sourcePage != null) l,
+          // Still pending = not removed, not already resolved (Save /
+          // "Looks right" clears the flag), and locatable on a page.
+          if (!_removedIds.contains(l.id) &&
+              l.sourcePage != null &&
+              (_byId[l.id]?.reviewStatus ?? l.reviewStatus) !=
+                  OcrReviewStatus.ok)
+            l,
       ];
 
   /// Opens the original scanned source page for [line] in a full-height modal
@@ -309,23 +315,6 @@ class _OcrReviewScreenState extends State<OcrReviewScreen> {
                             ],
                           ),
                         ),
-                        // Right where the user can SEE the line is crossed
-                        // out / marginalia — no round-trip back to the card.
-                        TextButton.icon(
-                          icon: const Icon(Icons.delete_outline, size: 18),
-                          label: const Text('Remove'),
-                          style: TextButton.styleFrom(
-                            foregroundColor: theme.colorScheme.error,
-                          ),
-                          onPressed: () {
-                            _removeLine(current); // setState on the screen
-                            setSheetState(() {}); // and refresh the sheet
-                            ScaffoldMessenger.of(context)
-                              ..hideCurrentSnackBar()
-                              ..showAutoToast(const SnackBar(
-                                  content: Text('Line removed')));
-                          },
-                        ),
                         IconButton(
                           icon: const Icon(Icons.close),
                           tooltip: 'Close',
@@ -366,22 +355,55 @@ class _OcrReviewScreenState extends State<OcrReviewScreen> {
                     top: false,
                     child: Padding(
                       padding: const EdgeInsets.fromLTRB(8, 4, 8, 4),
-                      child: Row(
+                      child: Wrap(
+                        alignment: WrapAlignment.spaceEvenly,
+                        crossAxisAlignment: WrapCrossAlignment.center,
+                        spacing: 4,
+                        runSpacing: 4,
                         children: [
                           TextButton.icon(
                             onPressed: idx > 0
                                 ? () => setSheetState(() => idx--)
                                 : null,
                             icon: const Icon(Icons.chevron_left),
-                            label: const Text('Previous'),
+                            label: const Text('Prev'),
                           ),
-                          const Spacer(),
+                          // Remove sits with the navigation: the user is
+                          // looking AT the page when they decide the line
+                          // is crossed out.
+                          TextButton.icon(
+                            icon: const Icon(Icons.delete_outline, size: 18),
+                            label: const Text('Remove'),
+                            style: TextButton.styleFrom(
+                              foregroundColor: theme.colorScheme.error,
+                            ),
+                            onPressed: () {
+                              _removeLine(current); // setState on the screen
+                              setSheetState(() {}); // and refresh the sheet
+                              ScaffoldMessenger.of(context)
+                                ..hideCurrentSnackBar()
+                                ..showAutoToast(const SnackBar(
+                                    content: Text('Line removed')));
+                            },
+                          ),
+                          // "The OCR is fine" — clears the flag and lands on
+                          // the next flagged line, so a clean pass is one
+                          // tap per line without leaving the page view.
+                          TextButton.icon(
+                            icon: const Icon(Icons.check_circle_outline,
+                                size: 18),
+                            label: const Text('Looks right'),
+                            onPressed: () {
+                              _saveEdit(current); // keeps any typed edit
+                              setSheetState(() {});
+                            },
+                          ),
                           FilledButton.icon(
                             onPressed: idx < list.length - 1
                                 ? () => setSheetState(() => idx++)
                                 : null,
                             icon: const Icon(Icons.chevron_right),
-                            label: const Text('Next flagged line'),
+                            label: const Text('Next'),
                           ),
                         ],
                       ),
@@ -672,13 +694,25 @@ class _OcrReviewScreenState extends State<OcrReviewScreen> {
                     label: const Text('Previous'),
                   ),
                   const Spacer(),
+                  TextButton.icon(
+                    icon: const Icon(Icons.check_circle_outline, size: 18),
+                    label: const Text('Looks right'),
+                    onPressed: () {
+                      final next = walkIdx + 1 < walk.length
+                          ? walk[walkIdx + 1]
+                          : null;
+                      _saveEdit(selected);
+                      setState(() => _selectedLineId = next?.id ?? selected.id);
+                    },
+                  ),
+                  const SizedBox(width: 8),
                   FilledButton.icon(
                     onPressed: walkIdx < walk.length - 1
                         ? () => setState(
                             () => _selectedLineId = walk[walkIdx + 1].id)
                         : null,
                     icon: const Icon(Icons.chevron_right),
-                    label: const Text('Next flagged line'),
+                    label: const Text('Next'),
                   ),
                 ],
               ),
@@ -787,7 +821,14 @@ class _OcrReviewScreenState extends State<OcrReviewScreen> {
               ),
               if (_contextExpanded.contains(line.id)) _buildContextEditor(line),
               const SizedBox(height: 8),
-              Row(
+              // Wrap, not Row: with "View page" present these three actions
+              // overflow a 400pt-wide phone by ~158px (clipping Save). Wrap
+              // reflows to a second line instead of clipping.
+              Wrap(
+                alignment: WrapAlignment.end,
+                spacing: 8,
+                runSpacing: 4,
+                crossAxisAlignment: WrapCrossAlignment.center,
                 children: [
                   // On wide layouts the page is already pinned beside the list,
                   // so the per-card "View page" button only appears on phones.
@@ -799,13 +840,11 @@ class _OcrReviewScreenState extends State<OcrReviewScreen> {
                       icon: const Icon(Icons.picture_as_pdf, size: 18),
                       label: const Text('View page'),
                     ),
-                  const Spacer(),
                   TextButton.icon(
                     onPressed: () => _removeLine(line),
                     icon: const Icon(Icons.delete_outline, size: 18),
                     label: const Text('Remove line'),
                   ),
-                  const SizedBox(width: 8),
                   FilledButton(
                     onPressed: () => _saveEdit(line),
                     child: const Text('Save'),
