@@ -831,6 +831,10 @@ class _ScriptEditorScreenState extends ConsumerState<ScriptEditorScreen> {
       context: context,
       isScrollControlled: true,
       useSafeArea: true,
+      // When the sheet embeds the page viewer, its drag-to-dismiss fights
+      // InteractiveViewer for every vertical pan (same fix as the OCR
+      // review sheet). The sheet has explicit pop buttons + tap-outside.
+      enableDrag: !hasPdfPage,
       constraints: hasPdfPage
           ? BoxConstraints(
               maxHeight: MediaQuery.of(context).size.height * 0.92)

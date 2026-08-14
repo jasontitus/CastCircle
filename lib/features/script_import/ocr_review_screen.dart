@@ -242,6 +242,10 @@ class _OcrReviewScreenState extends State<OcrReviewScreen> {
       context: context,
       isScrollControlled: true,
       useSafeArea: true,
+      // The page viewer owns EVERY pan: with drag-to-dismiss enabled the
+      // sheet fought InteractiveViewer for vertical swipes, making the
+      // page feel stuck. Close button + tap-outside still dismiss.
+      enableDrag: false,
       builder: (sheetContext) {
         final theme = Theme.of(sheetContext);
         return FractionallySizedBox(
