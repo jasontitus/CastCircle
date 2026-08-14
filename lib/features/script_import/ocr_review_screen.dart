@@ -236,13 +236,27 @@ class _OcrReviewScreenState extends State<OcrReviewScreen> {
     setState(() => _selectedLineId = line.id);
   }
 
+  /// Flagged lines still pending, in script order — the walk-through list
+  /// for the page viewer's Prev/Next.
+  List<ScriptLine> _pendingWithPages() => [
+        for (final l in _reviewLines)
+          if (!_removedIds.contains(l.id) && l.sourcePage != null) l,
+      ];
+
   /// Opens the original scanned source page for [line] in a full-height modal
   /// bottom sheet so the user can read it while correcting the OCR text. Only
   /// reachable when both [OcrReviewScreen.pdfPath] and `line.sourcePage` exist.
+  ///
+  /// The sheet is a WALK-THROUGH: Prev/Next step to the neighbouring flagged
+  /// lines (new page, new highlight) without closing, so a whole review pass
+  /// is one sheet instead of open-close-scroll-open per line.
   void _viewSourcePage(ScriptLine line) {
     final pdfPath = widget.pdfPath;
-    final page = line.sourcePage;
-    if (pdfPath == null || page == null) return;
+    if (pdfPath == null || line.sourcePage == null) return;
+
+    final pending = _pendingWithPages();
+    var idx = pending.indexWhere((l) => l.id == line.id);
+    if (idx < 0) idx = 0;
 
     showModalBottomSheet<void>(
       context: context,
@@ -253,56 +267,130 @@ class _OcrReviewScreenState extends State<OcrReviewScreen> {
       // page feel stuck. Close button + tap-outside still dismiss.
       enableDrag: false,
       builder: (sheetContext) {
-        final theme = Theme.of(sheetContext);
-        return FractionallySizedBox(
-          heightFactor: 0.92,
-          child: Column(
-            children: [
-              Padding(
-                padding: const EdgeInsets.fromLTRB(16, 8, 8, 0),
-                child: Row(
-                  children: [
-                    Expanded(
+        return StatefulBuilder(
+          builder: (sheetContext, setSheetState) {
+            // Re-read each build: a removal inside the sheet shrinks it.
+            final list = _pendingWithPages();
+            if (list.isEmpty) {
+              WidgetsBinding.instance.addPostFrameCallback((_) {
+                if (sheetContext.mounted) Navigator.of(sheetContext).pop();
+              });
+              return const SizedBox.shrink();
+            }
+            if (idx >= list.length) idx = list.length - 1;
+            final current = list[idx];
+            final page = current.sourcePage!;
+            final theme = Theme.of(sheetContext);
+
+            return FractionallySizedBox(
+              heightFactor: 0.92,
+              child: Column(
+                children: [
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(16, 8, 8, 0),
+                    child: Row(
+                      children: [
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                'Source page $page'
+                                '${current.character.isNotEmpty ? ' — ${current.character}' : ''}',
+                                style: theme.textTheme.titleMedium,
+                              ),
+                              Text(
+                                'Flagged line ${idx + 1} of ${list.length}',
+                                style: theme.textTheme.labelSmall?.copyWith(
+                                  color: theme.colorScheme.onSurface
+                                      .withValues(alpha: 0.6),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                        // Right where the user can SEE the line is crossed
+                        // out / marginalia — no round-trip back to the card.
+                        TextButton.icon(
+                          icon: const Icon(Icons.delete_outline, size: 18),
+                          label: const Text('Remove'),
+                          style: TextButton.styleFrom(
+                            foregroundColor: theme.colorScheme.error,
+                          ),
+                          onPressed: () {
+                            _removeLine(current); // setState on the screen
+                            setSheetState(() {}); // and refresh the sheet
+                            ScaffoldMessenger.of(context)
+                              ..hideCurrentSnackBar()
+                              ..showAutoToast(const SnackBar(
+                                  content: Text('Line removed')));
+                          },
+                        ),
+                        IconButton(
+                          icon: const Icon(Icons.close),
+                          tooltip: 'Close',
+                          onPressed: () => Navigator.of(sheetContext).pop(),
+                        ),
+                      ],
+                    ),
+                  ),
+                  // The OCR text being hunted for, so the user can compare
+                  // it against the highlighted region without leaving.
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(16, 4, 16, 8),
+                    child: Align(
+                      alignment: Alignment.centerLeft,
                       child: Text(
-                        'Source page${line.character.isNotEmpty ? ' — ${line.character}' : ''}',
-                        style: theme.textTheme.titleMedium,
+                        '"${(_origById[current.id] ?? current).text}"',
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                        style: theme.textTheme.bodySmall?.copyWith(
+                          fontStyle: FontStyle.italic,
+                          color: theme.colorScheme.onSurface
+                              .withValues(alpha: 0.75),
+                        ),
                       ),
                     ),
-                    // Right where the user can SEE the line is crossed out /
-                    // marginalia — no round-trip back to the card to act.
-                    TextButton.icon(
-                      icon: const Icon(Icons.delete_outline, size: 18),
-                      label: const Text('Remove line'),
-                      style: TextButton.styleFrom(
-                        foregroundColor: theme.colorScheme.error,
+                  ),
+                  Expanded(
+                    child: PdfPageView(
+                      // Key on the line so a step re-runs the locate.
+                      key: ValueKey('sheet-${current.id}'),
+                      pdfPath: pdfPath,
+                      pageNumber: page,
+                      lineOnPage: current.sourceLineOnPage,
+                      highlightText: (_origById[current.id] ?? current).text,
+                    ),
+                  ),
+                  SafeArea(
+                    top: false,
+                    child: Padding(
+                      padding: const EdgeInsets.fromLTRB(8, 4, 8, 4),
+                      child: Row(
+                        children: [
+                          TextButton.icon(
+                            onPressed: idx > 0
+                                ? () => setSheetState(() => idx--)
+                                : null,
+                            icon: const Icon(Icons.chevron_left),
+                            label: const Text('Previous'),
+                          ),
+                          const Spacer(),
+                          FilledButton.icon(
+                            onPressed: idx < list.length - 1
+                                ? () => setSheetState(() => idx++)
+                                : null,
+                            icon: const Icon(Icons.chevron_right),
+                            label: const Text('Next flagged line'),
+                          ),
+                        ],
                       ),
-                      onPressed: () {
-                        Navigator.of(sheetContext).pop();
-                        _removeLine(line);
-                        ScaffoldMessenger.of(context)
-                          ..hideCurrentSnackBar()
-                          ..showAutoToast(
-                              const SnackBar(content: Text('Line removed')));
-                      },
                     ),
-                    IconButton(
-                      icon: const Icon(Icons.close),
-                      tooltip: 'Close',
-                      onPressed: () => Navigator.of(sheetContext).pop(),
-                    ),
-                  ],
-                ),
+                  ),
+                ],
               ),
-              Expanded(
-                child: PdfPageView(
-                  pdfPath: pdfPath,
-                  pageNumber: page,
-                  lineOnPage: line.sourceLineOnPage,
-                  highlightText: (_origById[line.id] ?? line).text,
-                ),
-              ),
-            ],
-          ),
+            );
+          },
         );
       },
     );
