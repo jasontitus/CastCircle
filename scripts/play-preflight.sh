@@ -109,7 +109,20 @@ else
   bad "need at least 2 phone screenshots in $IMG/phoneScreenshots (run scripts/generate-play-screenshots.sh)"
 fi
 
-# ── 6. The bundle itself ──────────────────────────────────
+# ── 6. The release scripts themselves ─────────────────────
+# A shell script with a syntax error still runs every line up to the break,
+# so it can print "✓ passed" and then exit non-zero — which is exactly what
+# an unterminated string in THIS file did on 2026-08-14. Parse them all.
+SCRIPT_ERRORS=0
+for sh in scripts/*.sh; do
+  if ! bash -n "$sh" 2>/dev/null; then
+    bad "$sh has a shell syntax error: $(bash -n "$sh" 2>&1 | head -1)"
+    SCRIPT_ERRORS=1
+  fi
+done
+if [[ $SCRIPT_ERRORS -eq 0 ]]; then ok "release scripts parse"; fi
+
+# ── 7. The bundle itself ──────────────────────────────────
 AAB=build/app/outputs/bundle/release/app-release.aab
 if [[ "${1:-}" == "--build" ]]; then
   echo "▶ Building release AAB..."
@@ -140,4 +153,4 @@ fi
 echo "✓ Preflight passed. Upload with: ./scripts/ship-play.sh"
 echo "  Reminder — Console-only steps (once per app): Data safety form,"
 echo "  content rating questionnaire, target audience, app access, and the"
-echo "  closed-testing tester list. See docs/RELEASING.md → Android.
+echo "  closed-testing tester list. See docs/RELEASING.md → Android."
