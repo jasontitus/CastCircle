@@ -13,8 +13,10 @@
 #   - android/key.properties + android/app/castcircle-upload.jks  (release signing)
 #   - ~/.google-play/play-store-key.json                          (Play service account, upload only)
 #
-# NOTE: the FIRST upload must be done by hand in Play Console (the API can't
-# create the app listing). After that this script automates every upload.
+# NOTE: the app must already exist in Play Console (the API can't create the
+# listing). The first *upload* does NOT have to be manual, despite the older
+# guidance saying so — build 150 went up through this script on 2026-08-14 as
+# the app's first bundle.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 

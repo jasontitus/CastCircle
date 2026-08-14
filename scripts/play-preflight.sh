@@ -139,5 +139,5 @@ if (( FAIL )); then
 fi
 echo "✓ Preflight passed. Upload with: ./scripts/ship-play.sh"
 echo "  Reminder — Console-only steps (once per app): Data safety form,"
-echo "  content rating questionnaire, target audience, and the FIRST manual"
-echo "  upload. See docs/RELEASING.md → Android → Play Console checklist."
+echo "  content rating questionnaire, target audience, app access, and the"
+echo "  closed-testing tester list. See docs/RELEASING.md → Android.
