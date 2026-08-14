@@ -564,15 +564,27 @@ class ScriptImportService {
   ) {
     final script = ScriptParser().parse(rawText, title: title);
 
-    final rawLines =
-        rawText.split('\n').map((l) => l.trim().toLowerCase()).toList();
+    // NORMALIZED matching, not exact-lowercase: the parser's _cleanLine
+    // rewrites junk chars and spacing on garbled lines — which are exactly
+    // the review-flagged ones — so exact contains() failed for them, they
+    // lost their sourcePage, and the OCR review's "View page" button
+    // vanished on the very lines that needed it (field, iPhone 2026-08-13).
+    final rawLines = rawText.split('\n').map(_normForMatch).toList();
 
-    bool matches(String raw, String search) =>
-        raw.contains(search) || search.contains(raw);
+    bool matches(String raw, String search) {
+      if (raw.isEmpty || search.isEmpty) return false;
+      if (raw.contains(search) || search.contains(raw)) return true;
+      // Weak fallback: same first 12 normalized chars — enough to place a
+      // heavily-rewritten line on its page.
+      if (raw.length >= 12 && search.length >= 12) {
+        return raw.substring(0, 12) == search.substring(0, 12);
+      }
+      return false;
+    }
 
     var cursor = 0;
     final updatedLines = script.lines.map((line) {
-      final searchText = line.text.trim().toLowerCase();
+      final searchText = _normForMatch(line.text);
       if (searchText.isEmpty) return line;
 
       // Find the first contributing raw line at/after the cursor.
@@ -604,9 +616,17 @@ class ScriptImportService {
       return line.copyWith(
         ocrConfidence: avgConf != null ? () => avgConf : null,
         sourcePage: page != null ? () => page : null,
-        sourceLineOnPage: page != null ? () => 0 : null,
+        // Real position within the page (1-based), not the old constant 0.
+        sourceLineOnPage:
+            page != null ? () => _lineOnPage(linePageMap, matchStart!) : null,
       );
     }).toList();
+
+    // Any line still unmapped inherits the nearest mapped neighbor's page:
+    // a page holds ~40 lines, so the neighbor's page is right (or off by
+    // one, and the viewer pages). Confidence is NOT inherited — the page is
+    // navigation, not provenance.
+    _inheritMissingPages(updatedLines);
 
     if (updatedLines.isNotEmpty) {
       return ParsedScript(
@@ -623,6 +643,53 @@ class ScriptImportService {
 
   /// Find the source page for a parsed line by matching against raw lines,
   /// starting from [startIndex] to avoid re-matching earlier lines.
+  static final _normJunkRe = RegExp(r'[^a-z0-9 ]');
+  static final _normWsRe = RegExp(r'\s+');
+
+  /// Lowercase, junk stripped, whitespace collapsed — both sides of every
+  /// raw-vs-parsed comparison go through this so _cleanLine's rewrites
+  /// can't break the match.
+  static String _normForMatch(String s) => s
+      .toLowerCase()
+      .replaceAll(_normJunkRe, ' ')
+      .replaceAll(_normWsRe, ' ')
+      .trim();
+
+  /// 1-based position of [rawIdx] within its page.
+  static int _lineOnPage(Map<int, int> linePageMap, int rawIdx) {
+    final page = linePageMap[rawIdx];
+    if (page == null) return 0;
+    var first = rawIdx;
+    while (first > 0 && linePageMap[first - 1] == page) {
+      first--;
+    }
+    return rawIdx - first + 1;
+  }
+
+  /// Forward- then backward-fill sourcePage for unmapped lines.
+  static void _inheritMissingPages(List<ScriptLine> lines) {
+    int? lastPage;
+    for (var i = 0; i < lines.length; i++) {
+      final page = lines[i].sourcePage;
+      if (page != null) {
+        lastPage = page;
+      } else if (lastPage != null) {
+        final captured = lastPage;
+        lines[i] = lines[i].copyWith(sourcePage: () => captured);
+      }
+    }
+    int? nextPage;
+    for (var i = lines.length - 1; i >= 0; i--) {
+      final page = lines[i].sourcePage;
+      if (page != null) {
+        nextPage = page;
+      } else if (nextPage != null) {
+        final captured = nextPage;
+        lines[i] = lines[i].copyWith(sourcePage: () => captured);
+      }
+    }
+  }
+
   ({int page, int lineOnPage, int rawLineIndex})? _findSourcePageFrom(
     String parsedText,
     List<String> rawLines,

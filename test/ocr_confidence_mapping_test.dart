@@ -57,16 +57,39 @@ void main() {
     expect(thank.ocrConfidence, closeTo(0.90, 0.05));
   });
 
-  test('parseAndMapOcr leaves lines without a raw match untagged', () {
-    const rawText = 'HAMLET.\nWords, words, words.\n';
+  test('normalized matching maps lines _cleanLine rewrote', () {
+    // The raw line carries OCR junk (|, double spaces) that the parser's
+    // _cleanLine strips — exact contains() used to fail here, the line lost
+    // its sourcePage, and the review screen's "View page" button vanished
+    // on exactly the garbled lines that needed it.
+    const rawText = 'HAMLET.\nWords,|  words,  words|.\n';
     final script = ScriptImportService.parseAndMapOcr(
       rawText,
       'Test',
-      {0: 0.9, 1: 0.9},
+      {0: 0.9, 1: 0.7},
       {0: 1, 1: 1},
     );
-    // No crash, and every line either has both page+confidence or neither is
-    // required — just verify the parse survived.
-    expect(script.lines, isNotEmpty);
+    final dialogue = script.lines
+        .firstWhere((l) => l.text.toLowerCase().contains('words'));
+    expect(dialogue.sourcePage, 1,
+        reason: 'cleaned line must still map to its raw page');
+  });
+
+  test('unmatched lines inherit a neighbor page, never confidence', () {
+    // Two raw pages; the middle parsed line is unmatchable garbage relative
+    // to raw (parser synthesizes/rewrites) — it must inherit a page so the
+    // page viewer works, but must NOT inherit OCR confidence.
+    const rawText = 'HAMLET.\nTo be or not to be.\nHORATIO.\nIt harrows me.\n';
+    final script = ScriptImportService.parseAndMapOcr(
+      rawText,
+      'Test',
+      {1: 0.9, 3: 0.9},
+      {0: 1, 1: 1, 2: 2, 3: 2},
+    );
+    for (final line in script.lines) {
+      expect(line.sourcePage, isNotNull,
+          reason: 'every line gets a page (mapped or inherited): '
+              '"${line.text}"');
+    }
   });
 }
