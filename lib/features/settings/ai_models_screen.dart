@@ -252,6 +252,14 @@ class _AiModelsScreenState extends State<AiModelsScreen> {
         .map((s) => s.errorMessage)
         .whereType<String>()
         .firstOrNull;
+    // This tile fronts FOUR files, so "one failed while three carry on" is a
+    // real state — and it used to render as a spinner next to a red error
+    // with nothing saying the group could no longer succeed.
+    final ready = states.values
+        .where((s) => s.status == ModelStatus.downloaded)
+        .length;
+    final failed =
+        states.values.where((s) => s.status == ModelStatus.error).length;
     final totalBytes = models.fold<int>(0, (a, m) => a + m.sizeBytes);
     var progress = 0.0;
     states.forEach((m, s) {
@@ -279,11 +287,33 @@ class _AiModelsScreenState extends State<AiModelsScreen> {
               padding: const EdgeInsets.only(top: 8),
               child: LinearProgressIndicator(value: progress),
             ),
+          if (downloading || failed > 0)
+            Padding(
+              padding: const EdgeInsets.only(top: 4),
+              child: Text(
+                '$ready of ${models.length} files installed'
+                '${failed > 0 ? ' · $failed failed' : ''}',
+                style: TextStyle(
+                  fontSize: 12,
+                  color: failed > 0
+                      ? Colors.orange
+                      : Theme.of(context)
+                          .colorScheme
+                          .onSurface
+                          .withValues(alpha: 0.6),
+                ),
+              ),
+            ),
           if (error != null)
             Padding(
               padding: const EdgeInsets.only(top: 4),
               child: Text(
-                error,
+                downloading
+                    // Saying only "download again" while a spinner is still
+                    // turning reads as "it's handling it". It isn't.
+                    ? '$error (the other files are still downloading — '
+                        'tap download again when they finish)'
+                    : error,
                 style: const TextStyle(color: Colors.red, fontSize: 12),
               ),
             ),

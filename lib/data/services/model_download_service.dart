@@ -581,6 +581,13 @@ class ModelDownloadService {
     // default client would silently follow an https→http downgrade and put
     // the model bytes on the wire in the clear (ModelManager._downloadFile
     // makes the same guarantee).
+    // autoUncompress stays off so the bytes on the wire are the bytes on
+    // disk — but that ALONE corrupted tokens.txt: the CDN gzips text/plain
+    // whether or not we ask, and 3324 gzipped bytes landed on disk under a
+    // filename the verifier expected to be 6310. Ask for identity (which
+    // also restores a real Content-Length for the progress bar) and, since a
+    // server is free to ignore that, decode anything that still arrives
+    // compressed rather than trusting it.
     client.autoUncompress = false;
     try {
       var uri = Uri.parse(model.downloadUrl);
@@ -589,6 +596,7 @@ class ModelDownloadService {
       while (true) {
         final req = await client.getUrl(uri);
         req.followRedirects = false;
+        req.headers.set(HttpHeaders.acceptEncodingHeader, 'identity');
         res = await req.close();
         if (!res.isRedirect) break;
         final location = res.headers.value('location');
@@ -609,13 +617,19 @@ class ModelDownloadService {
       if (res.statusCode != 200) {
         throw HttpException('HTTP ${res.statusCode} for ${model.downloadUrl}');
       }
-      final total = res.contentLength > 0 ? res.contentLength : model.sizeBytes;
+      final encoding =
+          res.headers.value(HttpHeaders.contentEncodingHeader)?.toLowerCase();
+      final compressed = encoding != null && encoding.contains('gzip');
+      final total = res.contentLength > 0 && !compressed
+          ? res.contentLength
+          : model.sizeBytes;
       final sink = tmpFile.openWrite();
       var received = 0;
       var lastNotified = 0;
       try {
-        await for (final chunk in res) {
-          sink.add(chunk);
+        // Progress counts WIRE bytes (what contentLength describes); the sink
+        // gets decoded bytes when the server compressed anyway.
+        Stream<List<int>> body = res.map((chunk) {
           received += chunk.length;
           // Throttle UI updates to every ~1 MB.
           if (total > 0 && received - lastNotified > 1024 * 1024) {
@@ -626,6 +640,17 @@ class ModelDownloadService {
             );
             _notify();
           }
+          return chunk;
+        });
+        if (compressed) {
+          _dlog.log(
+              LogCategory.general,
+              'ModelDownload: ${model.id} arrived Content-Encoding: $encoding '
+              'despite asking for identity — decoding');
+          body = gzip.decoder.bind(body);
+        }
+        await for (final chunk in body) {
+          sink.add(chunk);
         }
         await sink.flush();
       } finally {

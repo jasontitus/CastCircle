@@ -290,6 +290,12 @@ class ModelManager {
     client.autoUncompress = false; // Don't decompress — we need raw bz2 bytes
     try {
       final request = await client.getUrl(Uri.parse(url));
+      // With autoUncompress off, a server that gzips the response writes
+      // gzipped bytes into a file we then treat as the archive. Archives are
+      // sha256-checked so it would fail loudly rather than corrupt silently,
+      // but asking for identity avoids the round trip. (This is exactly what
+      // broke tokens.txt in the model downloader.)
+      request.headers.set(HttpHeaders.acceptEncodingHeader, 'identity');
       final response = await request.close();
 
       if (response.statusCode != 200) {

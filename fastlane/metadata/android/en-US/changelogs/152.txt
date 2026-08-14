@@ -1,0 +1,3 @@
+Fixed: Live Line Matching could not finish installing — one of its files failed verification every time. It now downloads correctly.
+
+The AI Models screen also reports partial failures honestly instead of showing a spinner next to the error.

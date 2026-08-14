@@ -9,6 +9,30 @@ are described in detail; older history is condensed from commit notes.
 
 ---
 
+## 0.1.1+152 — 2026-08-14
+
+### Live Line Matching could never install (Android)
+- **Fixed: the download wrote compressed bytes to disk.** `tokens.txt` failed
+  verification on every single attempt — "size 3324 B != expected 6310 B" —
+  so Live Line Matching could not be installed at all. The CDN gzips
+  `text/plain` whether or not the client asks for it, and the downloader runs
+  with `autoUncompress = false` (so the bytes on the wire are the bytes on
+  disk), which meant 3324 gzipped bytes were saved under a name the verifier
+  expected to be the 6310-byte file. Only that one file was affected: the
+  three `.onnx` files are binaries a CDN won't compress.
+  The downloader now asks for `identity` — which also restores a real
+  Content-Length for the progress bar — and decodes anyway if a server
+  compresses regardless. Verified against the real URL: 6310 bytes, matching
+  sha256, in both cases.
+- The archive downloader got the same header for the same reason.
+- **The tile no longer implies it's coping.** With four files behind one row,
+  one could fail while the rest carried on, showing a spinner next to a red
+  error and nothing to say the group could no longer succeed. It now reports
+  "N of 4 files installed · 1 failed", and while others are still in flight
+  the error says to tap download again when they finish.
+
+---
+
 ## 0.1.1+151 — 2026-08-14
 
 ### New-user flow
