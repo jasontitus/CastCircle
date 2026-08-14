@@ -118,14 +118,39 @@ void main() {
     await tester.pump(const Duration(seconds: 6)); // drain the toast timer
   });
 
+  testWidgets('"Looks right" on the LAST queued line closes cleanly',
+      (tester) async {
+    // Field hang (iOS 147): the app froze on "Looks right" for the final
+    // item in the queue — the path where the sheet must close ITSELF
+    // because nothing is left to show.
+    final lines = [_line('1', 'She is tolerable, but not handsome', 3)];
+    await openSheet(tester, lines);
+    expect(find.text('Flagged line 1 of 1'), findsOneWidget);
+
+    await tester.tap(find.widgetWithText(TextButton, 'Looks right'));
+    // Deliberately pump many frames: a rebuild storm (each build
+    // scheduling another post-frame pop) shows up here as a hang.
+    for (var i = 0; i < 30; i++) {
+      await tester.pump(const Duration(milliseconds: 50));
+    }
+
+    expect(tester.takeException(), isNull);
+    expect(find.text('Flagged line 1 of 1'), findsNothing);
+    await tester.pump(const Duration(seconds: 6));
+  });
+
   testWidgets('removing the last flagged line closes the sheet cleanly',
       (tester) async {
     final lines = [_line('1', 'She is tolerable, but not handsome', 3)];
     await openSheet(tester, lines);
 
     await tester.tap(find.widgetWithText(TextButton, 'Remove'));
-    await tester.pump();
-    await tester.pump(const Duration(milliseconds: 400));
+    // The sheet deliberately keeps the last line's content mounted while it
+    // closes (tearing the page viewer out mid-render froze the UI thread on
+    // device), so allow for the pop + exit animation.
+    for (var i = 0; i < 30; i++) {
+      await tester.pump(const Duration(milliseconds: 50));
+    }
 
     expect(tester.takeException(), isNull);
     expect(find.text('Flagged line 1 of 1'), findsNothing);

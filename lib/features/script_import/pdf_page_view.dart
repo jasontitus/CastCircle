@@ -99,9 +99,25 @@ class _PdfPageViewState extends State<PdfPageView> {
 
   @override
   void dispose() {
-    _evictAllCached();
-    _doc?.dispose();
+    // DEFERRED native teardown. Disposing the pdfium document (and the
+    // decoded page images) synchronously here froze the UI thread on
+    // device when the widget was torn down mid-flight — the field hang on
+    // "Looks right" for the LAST queued line, where the whole sheet body
+    // is replaced in the same frame a render/page-OCR is still running.
+    // Handing the teardown to the next frame lets that work land first;
+    // the objects are unreachable either way.
+    final images = _pageCache.values.toList();
+    _pageCache.clear();
+    _pageImage = null;
+    final doc = _doc;
+    _doc = null;
     _txController.dispose();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      for (final image in images) {
+        image.dispose();
+      }
+      doc?.dispose();
+    });
     super.dispose();
   }
 

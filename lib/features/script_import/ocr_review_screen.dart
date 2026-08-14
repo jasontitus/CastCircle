@@ -263,6 +263,9 @@ class _OcrReviewScreenState extends State<OcrReviewScreen> {
     final pending = _pendingWithPages();
     var idx = pending.indexWhere((l) => l.id == line.id);
     if (idx < 0) idx = 0;
+    // The line whose page is currently shown; survives the queue emptying
+    // so the viewer isn't torn down mid-render on the closing frame.
+    ScriptLine? lastShown = pending.isEmpty ? line : pending[idx];
 
     showModalBottomSheet<void>(
       context: context,
@@ -278,13 +281,20 @@ class _OcrReviewScreenState extends State<OcrReviewScreen> {
             // Re-read each build: a removal inside the sheet shrinks it.
             final list = _pendingWithPages();
             if (list.isEmpty) {
+              // Queue empty — close, but keep the LAST line's content
+              // mounted until the pop lands. Returning an empty box here
+              // ripped the page viewer out of the tree in the same frame,
+              // tearing down a render/page-OCR that was still running and
+              // freezing the UI thread on device.
               WidgetsBinding.instance.addPostFrameCallback((_) {
                 if (sheetContext.mounted) Navigator.of(sheetContext).pop();
               });
-              return const SizedBox.shrink();
+              if (lastShown == null) return const SizedBox.shrink();
+            } else {
+              if (idx >= list.length) idx = list.length - 1;
+              lastShown = list[idx];
             }
-            if (idx >= list.length) idx = list.length - 1;
-            final current = list[idx];
+            final current = lastShown!;
             final page = current.sourcePage!;
             final theme = Theme.of(sheetContext);
 
@@ -312,7 +322,8 @@ class _OcrReviewScreenState extends State<OcrReviewScreen> {
                                 style: theme.textTheme.titleMedium,
                               ),
                               Text(
-                                'Flagged line ${idx + 1} of ${list.length}',
+                                'Flagged line ${idx + 1} of '
+                                '${list.isEmpty ? idx + 1 : list.length}',
                                 style: theme.textTheme.labelSmall?.copyWith(
                                   color: theme.colorScheme.onSurface
                                       .withValues(alpha: 0.6),
