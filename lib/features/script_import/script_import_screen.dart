@@ -671,16 +671,34 @@ class _ScriptImportScreenState extends ConsumerState<ScriptImportScreen> {
 
         // Stage the PDF in the temp dir so the page viewer works during review.
         // It only replaces the production's stored PDF on Accept
-        // (see [_commitStagedPdf]).
-        final production = ref.read(currentProductionProvider);
-        if (production != null) {
+        // (see [_commitStagedPdf], which resolves the production THEN).
+        //
+        // Field 2026-08-13 (iPhone): a review session had no "View page"
+        // buttons and no staged file on disk — staging had silently skipped.
+        // The old code required currentProductionProvider to be non-null
+        // here and skipped WITHOUT A WORD otherwise. Staging needs no
+        // production id (commit derives its destination at accept time), so
+        // it now runs unconditionally under a fixed name, every branch is
+        // logged, and a failed copy still leaves the picker's own file as a
+        // viewer fallback instead of a silently absent button.
+        try {
           final tmpDir = await getTemporaryDirectory();
           if (!mounted) return;
-          final stagedPath = p.join(tmpDir.path, '${production.id}.staged.pdf');
+          final stagedPath = p.join(tmpDir.path, 'import.staged.pdf');
           await File(filePath).copy(stagedPath);
           if (!mounted) return;
           _importedPdfPath = stagedPath;
           _pdfPendingCommit = true;
+          DebugLogService.instance.log(LogCategory.general,
+              'Import: PDF staged for page viewer ($stagedPath)');
+        } catch (e) {
+          // The picked file itself usually survives in tmp — use it so the
+          // review's page viewer still works this session.
+          _importedPdfPath = filePath;
+          _pdfPendingCommit = true;
+          DebugLogService.instance.logError(LogCategory.general,
+              'Import: PDF staging copy failed — page viewer will use the '
+              'picked file directly', e);
         }
 
         setState(() {
