@@ -268,6 +268,23 @@ class _OcrReviewScreenState extends State<OcrReviewScreen> {
                         style: theme.textTheme.titleMedium,
                       ),
                     ),
+                    // Right where the user can SEE the line is crossed out /
+                    // marginalia — no round-trip back to the card to act.
+                    TextButton.icon(
+                      icon: const Icon(Icons.delete_outline, size: 18),
+                      label: const Text('Remove line'),
+                      style: TextButton.styleFrom(
+                        foregroundColor: theme.colorScheme.error,
+                      ),
+                      onPressed: () {
+                        Navigator.of(sheetContext).pop();
+                        _removeLine(line);
+                        ScaffoldMessenger.of(context)
+                          ..hideCurrentSnackBar()
+                          ..showAutoToast(
+                              const SnackBar(content: Text('Line removed')));
+                      },
+                    ),
                     IconButton(
                       icon: const Icon(Icons.close),
                       tooltip: 'Close',
