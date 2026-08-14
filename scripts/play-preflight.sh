@@ -113,10 +113,16 @@ if [[ "${1:-}" == "--build" ]]; then
   flutter build appbundle --release >/dev/null
 fi
 if [[ -f "$AAB" ]]; then
-  # Is this AAB actually the current version? A stale artifact is the
-  # classic "I shipped the wrong build" mistake.
-  AAB_AGE=$(( $(date +%s) - $(stat -f %m "$AAB") ))
-  (( AAB_AGE < 3600 )) || warn "AAB is $((AAB_AGE/60))m old — rebuild if it predates your last change"
+  # Is this AAB actually built from the current tree? Age alone doesn't
+  # answer that, and a stale artifact is the classic "I shipped the wrong
+  # build" mistake — including shipping the previous versionCode, which Play
+  # rejects as a duplicate.
+  NEWER=$(find pubspec.yaml lib android/app/src -newer "$AAB" -type f -print -quit 2>/dev/null || true)
+  if [[ -n "$NEWER" ]]; then
+    bad "AAB is older than $NEWER — rebuild: ./scripts/play-preflight.sh --build"
+  else
+    ok "AAB is newer than every source file"
+  fi
   SIZE_MB=$(( $(stat -f %z "$AAB") / 1024 / 1024 ))
   ok "AAB present (${SIZE_MB}MB on disk; per-device download is far smaller — see docs/RELEASING.md)"
 else
