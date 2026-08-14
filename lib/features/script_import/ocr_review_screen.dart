@@ -587,23 +587,63 @@ class _OcrReviewScreenState extends State<OcrReviewScreen> {
       );
     }
 
+    // Same walk-through affordances as the phone sheet: a wide screen (or
+    // ANY phone in landscape — an iPhone 17 Pro Max is 956pt wide there)
+    // renders this pane instead of the sheet, and it used to offer neither
+    // Remove nor Next, so the actions vanished on rotation.
+    final walk = _pendingWithPages();
+    final walkIdx = walk.indexWhere((l) => l.id == selected.id);
+
     return Container(
       color: theme.colorScheme.surfaceContainerLow,
       child: Column(
         children: [
           Padding(
-            padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
+            padding: const EdgeInsets.fromLTRB(16, 12, 8, 4),
             child: Row(
               children: [
                 Icon(Icons.picture_as_pdf,
                     size: 18, color: theme.colorScheme.primary),
                 const SizedBox(width: 8),
                 Expanded(
-                  child: Text(
-                    'Source page'
-                    '${selected.character.isNotEmpty ? ' — ${selected.character}' : ''}',
-                    style: theme.textTheme.titleSmall,
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        'Source page $page'
+                        '${selected.character.isNotEmpty ? ' — ${selected.character}' : ''}',
+                        style: theme.textTheme.titleSmall,
+                      ),
+                      if (walkIdx >= 0)
+                        Text(
+                          'Flagged line ${walkIdx + 1} of ${walk.length}',
+                          style: theme.textTheme.labelSmall?.copyWith(
+                            color: theme.colorScheme.onSurface
+                                .withValues(alpha: 0.6),
+                          ),
+                        ),
+                    ],
                   ),
+                ),
+                TextButton.icon(
+                  icon: const Icon(Icons.delete_outline, size: 18),
+                  label: const Text('Remove'),
+                  style: TextButton.styleFrom(
+                    foregroundColor: theme.colorScheme.error,
+                  ),
+                  onPressed: () {
+                    // Advance the pinned selection first so the pane lands
+                    // on the next flagged line instead of going blank.
+                    final next = walkIdx >= 0 && walkIdx + 1 < walk.length
+                        ? walk[walkIdx + 1]
+                        : null;
+                    _removeLine(selected);
+                    setState(() => _selectedLineId = next?.id);
+                    ScaffoldMessenger.of(context)
+                      ..hideCurrentSnackBar()
+                      ..showAutoToast(
+                          const SnackBar(content: Text('Line removed')));
+                  },
                 ),
               ],
             ),
@@ -618,6 +658,31 @@ class _OcrReviewScreenState extends State<OcrReviewScreen> {
               highlightText: (_origById[selected.id] ?? selected).text,
             ),
           ),
+          if (walkIdx >= 0)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(8, 0, 8, 8),
+              child: Row(
+                children: [
+                  TextButton.icon(
+                    onPressed: walkIdx > 0
+                        ? () => setState(
+                            () => _selectedLineId = walk[walkIdx - 1].id)
+                        : null,
+                    icon: const Icon(Icons.chevron_left),
+                    label: const Text('Previous'),
+                  ),
+                  const Spacer(),
+                  FilledButton.icon(
+                    onPressed: walkIdx < walk.length - 1
+                        ? () => setState(
+                            () => _selectedLineId = walk[walkIdx + 1].id)
+                        : null,
+                    icon: const Icon(Icons.chevron_right),
+                    label: const Text('Next flagged line'),
+                  ),
+                ],
+              ),
+            ),
         ],
       ),
     );
