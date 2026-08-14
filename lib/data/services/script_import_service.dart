@@ -122,10 +122,13 @@ class ScriptImportService {
           final nativeResult = nativeParser.parse(cleanedText, title: title);
 
           if (_isGoodParse(nativeResult)) {
-            // Map source page onto parsed lines. Forward cursor: parsed lines
-            // are in document order, so restarting the raw-line scan from 0
-            // for every line (the old behavior) was O(N·M).
-            final rawLines = nativeText.split('\n');
+            // Map source page onto parsed lines with the same bounded
+            // forward cursor + normalized matching the OCR path uses
+            // (parseAndMapOcr): the old unbounded, un-normalized scan let
+            // one bad line false-match deep in the document and derail
+            // every later line, and PDFKit's junk chars broke exact
+            // matches the same way _cleanPdfKitText rewrites them.
+            final rawLines = nativeText.split('\n').map(_normForMatch).toList();
             var rawSearchStart = 0;
             final taggedLines = nativeResult.lines.map((line) {
               final pageInfo = _findSourcePageFrom(
@@ -571,22 +574,6 @@ class ScriptImportService {
     // vanished on the very lines that needed it (field, iPhone 2026-08-13).
     final rawLines = rawText.split('\n').map(_normForMatch).toList();
 
-    bool matches(String raw, String search) {
-      if (raw.isEmpty || search.isEmpty) return false;
-      // Containment counts only when the CONTAINED side is substantial —
-      // an OCR fragment that normalizes to "i" or "4 1" would otherwise
-      // "match" nearly any parsed line.
-      if (raw.length >= 8 && search.contains(raw)) return true;
-      if (search.length >= 8 && raw.contains(search)) return true;
-      if (raw == search) return true;
-      // Fallback for heavily-rewritten lines: same first 12 normalized
-      // chars.
-      if (raw.length >= 12 && search.length >= 12) {
-        return raw.substring(0, 12) == search.substring(0, 12);
-      }
-      return false;
-    }
-
     // Parsed lines are in document order, so a line's raw source lies a
     // short distance past the cursor. The bounded window is the load-
     // bearing guard: an UNBOUNDED scan let one garbled line false-match
@@ -609,7 +596,7 @@ class ScriptImportService {
           : rawLines.length;
       for (var i = cursor; i < limit; i++) {
         if (rawLines[i].isEmpty) continue;
-        if (matches(rawLines[i], searchText)) {
+        if (_lineTextMatch(rawLines[i], searchText)) {
           matchStart = i;
           break;
         }
@@ -621,7 +608,7 @@ class ScriptImportService {
       final confidences = <double>[];
       for (var i = matchStart; i < rawLines.length; i++) {
         if (rawLines[i].isEmpty) break;
-        if (i > matchStart && !matches(rawLines[i], searchText)) break;
+        if (i > matchStart && !_lineTextMatch(rawLines[i], searchText)) break;
         final conf = lineConfidences[i];
         if (conf != null) confidences.add(conf);
       }
@@ -659,8 +646,6 @@ class ScriptImportService {
     return script;
   }
 
-  /// Find the source page for a parsed line by matching against raw lines,
-  /// starting from [startIndex] to avoid re-matching earlier lines.
   static final _normJunkRe = RegExp(r'[^a-z0-9 ]');
   static final _normWsRe = RegExp(r'\s+');
 
@@ -672,6 +657,26 @@ class ScriptImportService {
       .replaceAll(_normJunkRe, ' ')
       .replaceAll(_normWsRe, ' ')
       .trim();
+
+  /// True when normalized raw line [raw] contributes to normalized parsed
+  /// line [search]. Shared by the OCR mapping (parseAndMapOcr) and the
+  /// PDFKit page mapping (_findSourcePageFrom) so the two paths can't
+  /// drift.
+  ///
+  /// Containment counts only when the CONTAINED side is substantial — an
+  /// OCR fragment that normalizes to "i" or "4 1" would otherwise "match"
+  /// nearly any parsed line.
+  static bool _lineTextMatch(String raw, String search) {
+    if (raw.isEmpty || search.isEmpty) return false;
+    if (raw.length >= 8 && search.contains(raw)) return true;
+    if (search.length >= 8 && raw.contains(search)) return true;
+    if (raw == search) return true;
+    // Fallback for heavily-rewritten lines: same first 12 normalized chars.
+    if (raw.length >= 12 && search.length >= 12) {
+      return raw.substring(0, 12) == search.substring(0, 12);
+    }
+    return false;
+  }
 
   /// 1-based position of [rawIdx] within its page.
   static int _lineOnPage(Map<int, int> linePageMap, int rawIdx) {
@@ -708,21 +713,36 @@ class ScriptImportService {
     }
   }
 
-  ({int page, int lineOnPage, int rawLineIndex})? _findSourcePageFrom(
+  /// Bounded window (raw lines) for the PDFKit page-mapping cursor — the
+  /// same load-bearing guard as the OCR path's searchWindow: parsed lines
+  /// are in document order, so a line's source lies a short distance past
+  /// the cursor (~3-4 pages of raw lines). Unbounded, one garbled line
+  /// could false-match deep in the document and the cursor would leap with
+  /// it, derailing every later line.
+  static const _sourcePageSearchWindow = 150;
+
+  /// Find the source page for a parsed line by matching [parsedText] against
+  /// pre-normalized raw lines, starting from [startIndex] (avoids
+  /// re-matching earlier lines) and bounded by [_sourcePageSearchWindow].
+  /// Both sides go through [_normForMatch]/[_lineTextMatch] so
+  /// _cleanPdfKitText's rewrites can't break the match.
+  static ({int page, int lineOnPage, int rawLineIndex})? _findSourcePageFrom(
     String parsedText,
-    List<String> rawLines,
+    List<String> normalizedRawLines,
     Map<int, int> linePageMap,
     int startIndex,
   ) {
-    final searchText = parsedText.trim().toLowerCase();
+    final searchText = _normForMatch(parsedText);
     if (searchText.isEmpty) return null;
 
-    for (var i = startIndex; i < rawLines.length; i++) {
-      final rawTrimmed = rawLines[i].trim().toLowerCase();
-      if (rawTrimmed.isEmpty) continue;
+    final limit =
+        min(startIndex + _sourcePageSearchWindow, normalizedRawLines.length);
+    for (var i = startIndex; i < limit; i++) {
+      final raw = normalizedRawLines[i];
+      if (raw.isEmpty) continue;
       final page = linePageMap[i];
       if (page == null) continue;
-      if (rawTrimmed.contains(searchText) || searchText.contains(rawTrimmed)) {
+      if (_lineTextMatch(raw, searchText)) {
         return (page: page, lineOnPage: 0, rawLineIndex: i);
       }
     }

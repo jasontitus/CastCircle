@@ -731,25 +731,14 @@ class _CharacterManagerScreenState
       final carried = existingGenders[renamedFrom];
       if (carried != null) existingGenders.putIfAbsent(renamedTo, () => carried);
     }
-    final charCounts = <String, int>{};
-    for (final line in updatedLines) {
-      if (line.lineType == LineType.dialogue && line.character.isNotEmpty) {
-        charCounts[line.character] = (charCounts[line.character] ?? 0) + 1;
-      }
-    }
-    var colorIdx = 0;
-    final characters = charCounts.entries.toList()
-      ..sort((a, b) => b.value.compareTo(a.value));
-    final charList = characters
-        .map(
-          (e) => ScriptCharacter(
-            name: e.key,
-            colorIndex: colorIdx++,
-            lineCount: e.value,
-            gender: existingGenders[e.key] ?? CharacterGender.female,
-          ),
-        )
-        .toList();
+    // Shared cast rebuild — multi-character lines credit each individual
+    // character (the old local recount credited the combined cue name, so
+    // deleting/renaming a character skewed the ensemble members' counts).
+    final charList = rebuildCharacters(
+      updatedLines,
+      genderFor: (name) =>
+          existingGenders[name] ?? CharacterGender.female,
+    );
 
     // Scene ranges are POSITIONAL indices into `lines`, so deleting or
     // merging a character (which drops that character's lines) shifts every

@@ -693,26 +693,9 @@ Future<ParsedScript> buildParsedScriptWithCloudScenes(
 /// Build a ParsedScript from a list of ScriptLine objects.
 /// Reconstructs scenes from the scene tags already on each line.
 ParsedScript buildParsedScript(String title, List<ScriptLine> lines) {
-  final charCounts = <String, int>{};
-  for (final line in lines) {
-    if (line.lineType == LineType.dialogue && line.character.isNotEmpty) {
-      if (line.multiCharacters.isNotEmpty) {
-        for (final char in line.multiCharacters) {
-          charCounts[char] = (charCounts[char] ?? 0) + 1;
-        }
-      } else {
-        charCounts[line.character] = (charCounts[line.character] ?? 0) + 1;
-      }
-    }
-  }
-  final characters = charCounts.entries.toList()
-    ..sort((a, b) => b.value.compareTo(a.value));
-  final scriptCharacters = characters.asMap().entries.map((e) => ScriptCharacter(
-    name: e.value.key,
-    colorIndex: e.key,
-    lineCount: e.value.value,
-    gender: ScriptParser.inferGender(e.value.key),
-  )).toList();
+  // Shared cast rebuild — multi-character lines credit each individual.
+  final characters =
+      rebuildCharacters(lines, genderFor: ScriptParser.inferGender);
 
   // Rebuild scenes from line scene/act tags
   final scenes = _buildScenesFromLines(lines);
@@ -720,7 +703,7 @@ ParsedScript buildParsedScript(String title, List<ScriptLine> lines) {
   return ParsedScript(
     title: title,
     lines: lines,
-    characters: scriptCharacters,
+    characters: characters,
     scenes: scenes,
     rawText: '',
   );
@@ -832,33 +815,17 @@ Future<ParsedScript?> loadPersistedScript(WidgetRef ref, String productionId) as
 
   if (lines.isEmpty) return null;
 
-  // Rebuild characters from dialogue lines.
-  // Multi-character lines credit each individual character.
-  final charCounts = <String, int>{};
-  for (final line in lines) {
-    if (line.lineType == LineType.dialogue && line.character.isNotEmpty) {
-      if (line.multiCharacters.isNotEmpty) {
-        for (final char in line.multiCharacters) {
-          charCounts[char] = (charCounts[char] ?? 0) + 1;
-        }
-      } else {
-        charCounts[line.character] = (charCounts[line.character] ?? 0) + 1;
-      }
-    }
-  }
-  final characters = charCounts.entries.toList()
-    ..sort((a, b) => b.value.compareTo(a.value));
-
+  // Rebuild characters from dialogue lines (shared rebuildCharacters —
+  // multi-character lines credit each individual character).
   // Load saved genders
   final savedGenders =
       await VoiceConfigService.instance.getGenders(productionId);
 
-  final scriptCharacters = characters.asMap().entries.map((e) => ScriptCharacter(
-        name: e.value.key,
-        colorIndex: e.key,
-        lineCount: e.value.value,
-        gender: savedGenders[e.value.key] ?? ScriptParser.inferGender(e.value.key),
-      )).toList();
+  final scriptCharacters = rebuildCharacters(
+    lines,
+    genderFor:
+        (name) => savedGenders[name] ?? ScriptParser.inferGender(name),
+  );
 
   // If no scenes were persisted, rebuild from line tags
   final effectiveScenes = scenes.isNotEmpty ? scenes : _buildScenesFromLines(lines);

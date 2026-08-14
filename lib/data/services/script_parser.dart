@@ -156,34 +156,12 @@ class ScriptParser {
     // Third pass: detect scenes from parsed lines
     final scenes = _detectScenes(lines);
 
-    // Build character list with line counts.
-    // Multi-character lines credit each individual character.
-    final charCounts = <String, int>{};
-    for (final line in lines) {
-      if (line.lineType == LineType.dialogue && line.character.isNotEmpty) {
-        if (line.multiCharacters.isNotEmpty) {
-          for (final char in line.multiCharacters) {
-            charCounts[char] = (charCounts[char] ?? 0) + 1;
-          }
-        } else {
-          charCounts[line.character] =
-              (charCounts[line.character] ?? 0) + 1;
-        }
-      }
-    }
-
-    final characters = <ScriptCharacter>[];
-    var colorIdx = 0;
-    for (final entry
-        in charCounts.entries.toList()
-          ..sort((a, b) => b.value.compareTo(a.value))) {
-      characters.add(ScriptCharacter(
-        name: entry.key,
-        colorIndex: colorIdx++,
-        lineCount: entry.value,
-        gender: inferGender(entry.key, rawText: rawText),
-      ));
-    }
+    // Build character list with line counts (shared rebuildCharacters —
+    // multi-character lines credit each individual character).
+    final characters = rebuildCharacters(
+      lines,
+      genderFor: (name) => inferGender(name, rawText: rawText),
+    );
 
     return ParsedScript(
       title: title,

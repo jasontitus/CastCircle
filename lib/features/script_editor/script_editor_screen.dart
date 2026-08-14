@@ -1132,6 +1132,9 @@ class _ScriptEditorScreenState extends ConsumerState<ScriptEditorScreen> {
       text: secondText,
       lineType: line.lineType,
       stageDirection: '',
+      // Both halves keep the same speaker(s) — dropping multiCharacters here
+      // silently demoted the second half of a shared line to single-speaker.
+      multiCharacters: line.multiCharacters,
     );
 
     final updatedLines = <ScriptLine>[];
@@ -1158,12 +1161,6 @@ class _ScriptEditorScreenState extends ConsumerState<ScriptEditorScreen> {
   }
 
   void _rebuildScript(ParsedScript script, List<ScriptLine> updatedLines) {
-    final charCounts = <String, int>{};
-    for (final line in updatedLines) {
-      if (line.lineType == LineType.dialogue && line.character.isNotEmpty) {
-        charCounts[line.character] = (charCounts[line.character] ?? 0) + 1;
-      }
-    }
     // Carry genders across the rebuild. ScriptCharacter defaults to female, so
     // omitting this reset the WHOLE cast's gender on any line edit — and the
     // autosave below then persisted it, giving every male character a female
@@ -1171,17 +1168,14 @@ class _ScriptEditorScreenState extends ConsumerState<ScriptEditorScreen> {
     final existingGenders = {
       for (final c in script.characters) c.name: c.gender,
     };
-    var colorIdx = 0;
-    final characters = charCounts.entries.toList()
-      ..sort((a, b) => b.value.compareTo(a.value));
-    final charList = characters
-        .map((e) => ScriptCharacter(
-              name: e.key,
-              colorIndex: colorIdx++,
-              lineCount: e.value,
-              gender: existingGenders[e.key] ?? CharacterGender.female,
-            ))
-        .toList();
+    // Shared cast rebuild — multi-character lines credit each individual
+    // character (the old local recount credited the combined cue name,
+    // spawning a phantom character and reshuffling cast colors).
+    final charList = rebuildCharacters(
+      updatedLines,
+      genderFor: (name) =>
+          existingGenders[name] ?? CharacterGender.female,
+    );
 
     ref.read(currentScriptProvider.notifier).state = ParsedScript(
       title: script.title,
@@ -1204,37 +1198,32 @@ class _ScriptEditorScreenState extends ConsumerState<ScriptEditorScreen> {
     if (script == null) return;
     AnalyticsService.instance.logScriptEdited(action: 'edit_line');
 
+    // Reassigning the character invalidates any ensemble membership: a stale
+    // multiCharacters list would keep matching the old individual characters
+    // (isForCharacter) in rehearsal under the new assignment.
+    final charChanged = newChar != original.character;
     final updatedLines = script.lines.map((l) {
       if (l.id == original.id) {
-        return l.copyWith(character: newChar, text: newText);
+        return l.copyWith(
+          character: newChar,
+          text: newText,
+          multiCharacters: charChanged ? const [] : null,
+        );
       }
       return l;
     }).toList();
 
-    // Recalculate characters
-    final charCounts = <String, int>{};
-    for (final line in updatedLines) {
-      if (line.lineType == LineType.dialogue && line.character.isNotEmpty) {
-        charCounts[line.character] = (charCounts[line.character] ?? 0) + 1;
-      }
-    }
-    // Same gender preservation as _rebuildScript — without it, editing a
-    // single line's text resets every character's gender.
+    // Shared cast rebuild — same gender preservation as _rebuildScript
+    // (without it, editing a single line's text resets every character's
+    // gender).
     final existingGenders = {
       for (final c in script.characters) c.name: c.gender,
     };
-    var colorIdx = 0;
-    final characters = charCounts.entries
-        .toList()
-      ..sort((a, b) => b.value.compareTo(a.value));
-    final charList = characters
-        .map((e) => ScriptCharacter(
-              name: e.key,
-              colorIndex: colorIdx++,
-              lineCount: e.value,
-              gender: existingGenders[e.key] ?? CharacterGender.female,
-            ))
-        .toList();
+    final charList = rebuildCharacters(
+      updatedLines,
+      genderFor: (name) =>
+          existingGenders[name] ?? CharacterGender.female,
+    );
 
     ref.read(currentScriptProvider.notifier).state = ParsedScript(
       title: script.title,

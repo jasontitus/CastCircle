@@ -400,17 +400,57 @@ class ParsedScript {
   }
 
   /// Get unique act names in order.
-  // Memoized via Expando (the class has a const constructor, so it can't
-  // hold a mutable field): every access walked all lines, and UI code reads
-  // `acts` repeatedly. Instances are immutable (copyWith builds new ones).
-  static final _actsCache = Expando<List<String>>();
+  // NOT memoized: a static Expando cache pinned every ParsedScript that ever
+  // read `acts` (with its lines and multi-MB rawText) for the app's
+  // lifetime. The scan is microseconds over a few thousand lines, and the
+  // screens that read it repeatedly already memoize around it.
   List<String> get acts {
-    final cached = _actsCache[this];
-    if (cached != null) return cached;
     final seen = <String>{};
-    return _actsCache[this] = lines
+    return lines
         .where((l) => l.act.isNotEmpty && seen.add(l.act))
         .map((l) => l.act)
         .toList();
   }
+}
+
+/// Rebuild the character list for [lines]: dialogue lines credited by
+/// speaker, sorted by line count (descending), colors assigned in that
+/// order.
+///
+/// Multi-character lines ("MACBETH AND LENNOX") credit each individual in
+/// [ScriptLine.multiCharacters] — never the combined cue name. This is the
+/// single source of truth for cast derivation: import (ScriptParser),
+/// persistence load, and every in-session edit path go through it, so the
+/// cast (names, counts, colors) can't diverge between them.
+///
+/// [genderFor] supplies a character's gender (e.g. from saved overrides or
+/// inference); names it doesn't cover default to [CharacterGender.female].
+List<ScriptCharacter> rebuildCharacters(
+  List<ScriptLine> lines, {
+  CharacterGender Function(String name)? genderFor,
+}) {
+  final charCounts = <String, int>{};
+  for (final line in lines) {
+    if (line.lineType != LineType.dialogue || line.character.isEmpty) {
+      continue;
+    }
+    if (line.multiCharacters.isNotEmpty) {
+      for (final name in line.multiCharacters) {
+        charCounts[name] = (charCounts[name] ?? 0) + 1;
+      }
+    } else {
+      charCounts[line.character] = (charCounts[line.character] ?? 0) + 1;
+    }
+  }
+  final sorted = charCounts.entries.toList()
+    ..sort((a, b) => b.value.compareTo(a.value));
+  return [
+    for (var i = 0; i < sorted.length; i++)
+      ScriptCharacter(
+        name: sorted[i].key,
+        colorIndex: i,
+        lineCount: sorted[i].value,
+        gender: genderFor?.call(sorted[i].key) ?? CharacterGender.female,
+      ),
+  ];
 }
