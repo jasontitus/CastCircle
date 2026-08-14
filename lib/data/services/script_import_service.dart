@@ -573,14 +573,29 @@ class ScriptImportService {
 
     bool matches(String raw, String search) {
       if (raw.isEmpty || search.isEmpty) return false;
-      if (raw.contains(search) || search.contains(raw)) return true;
-      // Weak fallback: same first 12 normalized chars — enough to place a
-      // heavily-rewritten line on its page.
+      // Containment counts only when the CONTAINED side is substantial —
+      // an OCR fragment that normalizes to "i" or "4 1" would otherwise
+      // "match" nearly any parsed line.
+      if (raw.length >= 8 && search.contains(raw)) return true;
+      if (search.length >= 8 && raw.contains(search)) return true;
+      if (raw == search) return true;
+      // Fallback for heavily-rewritten lines: same first 12 normalized
+      // chars.
       if (raw.length >= 12 && search.length >= 12) {
         return raw.substring(0, 12) == search.substring(0, 12);
       }
       return false;
     }
+
+    // Parsed lines are in document order, so a line's raw source lies a
+    // short distance past the cursor. The bounded window is the load-
+    // bearing guard: an UNBOUNDED scan let one garbled line false-match
+    // deep into the document, the cursor leapt with it, every later line
+    // then failed to match, and page inheritance smeared a single early
+    // page across the whole script (field: every "View page" opened the
+    // same overview page). A miss inside the window leaves the cursor
+    // where it was — one bad line can't derail the rest.
+    const searchWindow = 150; // ~3-4 pages of raw lines
 
     var cursor = 0;
     final updatedLines = script.lines.map((line) {
@@ -589,7 +604,10 @@ class ScriptImportService {
 
       // Find the first contributing raw line at/after the cursor.
       int? matchStart;
-      for (var i = cursor; i < rawLines.length; i++) {
+      final limit = (cursor + searchWindow < rawLines.length)
+          ? cursor + searchWindow
+          : rawLines.length;
+      for (var i = cursor; i < limit; i++) {
         if (rawLines[i].isEmpty) continue;
         if (matches(rawLines[i], searchText)) {
           matchStart = i;
