@@ -100,7 +100,9 @@ What preflight CANNOT check, because it only exists in Play Console:
 
 | Step | Where | Notes |
 |---|---|---|
-| Create the app + opt into Play App Signing | Console → All apps → Create app | Must happen before ANY API upload (see below) |
+| ~~Create the app~~ **DONE 2026-08-14** | Console → All apps → Create app | |
+| Opt into Play App Signing + grab its SHA-1 | Test and release → Setup → App integrity | Google re-signs the AAB, so Play-delivered builds present *that* cert. The SHA-1 is what's still missing to restrict the Android API key (see `docs/OPEN_DECISIONS.md` §3) |
+| First upload must be through the Console | Release → Testing → Internal testing | The API (`ship-play.sh`) is refused until one build exists for the package |
 | **Data safety** form | Policy → App content | Declare: audio recordings + email, stored on Supabase, not shared/sold. Rehearsal audio never leaves the device unless the user shares with their cast. |
 | **Content rating** questionnaire | Policy → App content | Utility/productivity; no ads, no UGC feed |
 | Target audience + ads declaration | Policy → App content | No ads |
@@ -112,8 +114,8 @@ What preflight CANNOT check, because it only exists in Play Console:
 
 | Asset | Path | Made by |
 |---|---|---|
-| Icon 512×512 (no alpha) | `fastlane/metadata/android/en-US/images/icon.png` | derived from `app_icon_1024.png` |
-| Feature graphic 1024×500 | `.../images/featureGraphic.png` | generated (icon + wordmark on the app's dark surface) |
+| Icon 512×512 (no alpha) | `fastlane/metadata/android/en-US/images/icon.png` | `python3 scripts/generate-icons.py` |
+| Feature graphic 1024×500 | `.../images/featureGraphic.png` | `python3 scripts/generate-icons.py` (icon + wordmark on a gradient sampled from the artwork) |
 | Phone screenshots (≥2) | `.../images/phoneScreenshots/` | `./scripts/generate-play-screenshots.sh` — drives a CONNECTED device, then letterboxes each frame onto 1080×2160 |
 | Release notes | `.../changelogs/<versionCode>.txt` | `./scripts/play-changelog.sh "…"` (or from a matching CHANGELOG.md section) |
 

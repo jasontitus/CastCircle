@@ -70,8 +70,20 @@ IMG="$MD/images"
 if [[ -f "$IMG/icon.png" ]]; then
   read -r W Hh <<<"$(sips -g pixelWidth -g pixelHeight "$IMG/icon.png" 2>/dev/null | awk '/pixel/{print $2}' | tr '\n' ' ')"
   [[ "$W" == "512" && "$Hh" == "512" ]] && ok "icon.png 512×512" || bad "icon.png must be 512×512 (is ${W}×${Hh})"
+  # Play rejects a store icon with an alpha channel.
+  HAS_ALPHA=$(python3 -c "from PIL import Image; print(1 if Image.open('$IMG/icon.png').mode in ('RGBA','LA','P') else 0)" 2>/dev/null || echo 0)
+  if [[ "$HAS_ALPHA" == "1" ]]; then
+    bad "icon.png has an alpha channel — Play rejects it (regenerate: scripts/generate-icons.py)"
+  fi
 else
   bad "$IMG/icon.png missing"
+fi
+# The store graphics are generated from the source artwork; if that artwork is
+# newer, the listing would ship the previous icon. (This shipped the stock
+# Flutter logo once, because nobody had replaced the placeholder icons.)
+ART=assets/castcircleicon.jpeg
+if [[ -f "$ART" && -f "$IMG/icon.png" ]] && (( $(stat -f %m "$ART") > $(stat -f %m "$IMG/icon.png") )); then
+  bad "$ART is newer than the generated icons — run: python3 scripts/generate-icons.py"
 fi
 if [[ -f "$IMG/featureGraphic.png" ]]; then
   read -r W Hh <<<"$(sips -g pixelWidth -g pixelHeight "$IMG/featureGraphic.png" 2>/dev/null | awk '/pixel/{print $2}' | tr '\n' ' ')"

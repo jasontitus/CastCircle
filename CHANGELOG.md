@@ -9,6 +9,21 @@ are described in detail; older history is condensed from commit notes.
 
 ---
 
+## 0.1.1+149 — 2026-08-14
+
+### App icon
+- **New CastCircle artwork everywhere.** Every platform was still shipping
+  the placeholder Flutter logo — including the Google Play listing icon and
+  feature graphic. All of them now render from `assets/castcircleicon.jpeg`
+  via `scripts/generate-icons.py`: iOS (15 sizes, opaque), macOS (Apple's
+  rounded-rect grid), Android (legacy, round, and adaptive foreground /
+  background layers), and the Play store graphics.
+- **Dark launch screen.** The app is dark-only, but the launch window was
+  white on iOS and on light-mode Android, so every cold start flashed white
+  before the first frame. Both now launch on #121212 with the icon.
+
+---
+
 ## 0.1.1+148 — 2026-08-14
 
 First Android-ready build. Two months of iOS-only iteration folded in, plus

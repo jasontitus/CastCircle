@@ -1,0 +1,3 @@
+CastCircle has a new app icon.
+
+Starting the app no longer flashes a white screen before the first frame — it now opens straight onto the dark theme.
