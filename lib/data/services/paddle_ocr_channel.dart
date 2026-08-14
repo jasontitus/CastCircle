@@ -64,6 +64,34 @@ class PaddleOcrChannel {
     }
   }
 
+  /// OCR one 1-based page and return each recognized line with its FULL
+  /// normalized bounding rect — used by the page viewer to highlight where
+  /// a flagged line's text sits on the scanned page. Returns null when the
+  /// native plugin is unavailable (e.g. macOS).
+  static Future<List<OcrPageLine>?> ocrPage(String pdfPath, int page) async {
+    try {
+      final result = await _channel.invokeMethod<Map>('ocrPdfPage', {
+        'path': pdfPath,
+        'page': page,
+      });
+      final linesRaw = result?['lines'] as List? ?? [];
+      return linesRaw.map((l) {
+        final lm = Map<String, dynamic>.from(l as Map);
+        return OcrPageLine(
+          text: lm['text'] as String? ?? '',
+          left: (lm['left'] as num?)?.toDouble() ?? 0.0,
+          top: (lm['top'] as num?)?.toDouble() ?? 0.0,
+          width: (lm['width'] as num?)?.toDouble() ?? 0.0,
+          height: (lm['height'] as num?)?.toDouble() ?? 0.0,
+        );
+      }).toList();
+    } on MissingPluginException {
+      return null;
+    } on PlatformException {
+      return null;
+    }
+  }
+
   /// OCR an entire PDF natively — renders pages, runs PP-OCR (det+cls+rec) per
   /// page, returns per-page lines with real recognition confidence in one call.
   static Future<PaddlePdfResult?> ocrPdf(
@@ -147,4 +175,21 @@ class PaddlePdfResult {
     required this.pageCount,
     required this.failedPages,
   });
+}
+
+
+/// One recognized line on a single OCR'd page, rect normalized to page size.
+class OcrPageLine {
+  const OcrPageLine({
+    required this.text,
+    required this.left,
+    required this.top,
+    required this.width,
+    required this.height,
+  });
+  final String text;
+  final double left;
+  final double top;
+  final double width;
+  final double height;
 }

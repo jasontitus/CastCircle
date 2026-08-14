@@ -44,6 +44,9 @@ class _OcrReviewScreenState extends State<OcrReviewScreen> {
   /// Working copy keyed by line id, so edits/removals survive list rebuilds.
   late final Map<String, ScriptLine> _byId;
 
+  /// Original (pre-edit) lines, for page-highlight matching.
+  late final Map<String, ScriptLine> _origById;
+
   /// Ids removed by the user (the "likely not script" bulk action or per-line).
   final Set<String> _removedIds = {};
 
@@ -72,6 +75,9 @@ class _OcrReviewScreenState extends State<OcrReviewScreen> {
   void initState() {
     super.initState();
     _byId = {for (final l in widget.lines) l.id: l};
+    // Immutable originals: highlight matching must use the OCR'd text, not
+    // the user's in-progress correction (which no longer matches the page).
+    _origById = {for (final l in widget.lines) l.id: l};
     for (final line in _reviewLines) {
       _controllers[line.id] = TextEditingController(text: line.text);
     }
@@ -275,6 +281,7 @@ class _OcrReviewScreenState extends State<OcrReviewScreen> {
                   pdfPath: pdfPath,
                   pageNumber: page,
                   lineOnPage: line.sourceLineOnPage,
+                  highlightText: (_origById[line.id] ?? line).text,
                 ),
               ),
             ],
@@ -498,9 +505,12 @@ class _OcrReviewScreenState extends State<OcrReviewScreen> {
           ),
           Expanded(
             child: PdfPageView(
+              // Key: re-locate when the selection moves to another line.
+              key: ValueKey('src-${selected.id}'),
               pdfPath: pdfPath,
               pageNumber: page,
               lineOnPage: selected.sourceLineOnPage,
+              highlightText: (_origById[selected.id] ?? selected).text,
             ),
           ),
         ],

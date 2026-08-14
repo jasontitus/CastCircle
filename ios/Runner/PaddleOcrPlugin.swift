@@ -145,6 +145,13 @@ class PaddleOcrPlugin: NSObject {
         if let img = self.loadCGImage(path) { blocks = self.ocrImage(img) }
         DispatchQueue.main.async { result(["blocks": blocks]) }
       }
+    case "ocrPdfPage":
+      guard let args = call.arguments as? [String: Any],
+            let path = args["path"] as? String,
+            let pageNumber = args["page"] as? Int else {
+        result(FlutterError(code: "INVALID_ARGS", message: "Missing 'path'/'page'", details: nil)); return
+      }
+      ocrPdfPage(path: path, pageNumber: pageNumber, result: result)
     case "ocrPdf":
       guard let path = (call.arguments as? [String: Any])?["path"] as? String else {
         result(FlutterError(code: "INVALID_ARGS", message: "Missing 'path'", details: nil)); return
@@ -202,6 +209,35 @@ class PaddleOcrPlugin: NSObject {
     }
   }
 
+  /// OCR a single 1-based page and return its lines WITH full normalized
+  /// rects — used by the page viewer to highlight where a flagged line's
+  /// text sits on the scanned page.
+  private func ocrPdfPage(path: String, pageNumber: Int, result: @escaping FlutterResult) {
+    DispatchQueue.global(qos: .userInitiated).async {
+      guard let doc = PDFDocument(url: URL(fileURLWithPath: path)),
+            pageNumber >= 1, pageNumber <= doc.pageCount,
+            let page = doc.page(at: pageNumber - 1) else {
+        DispatchQueue.main.async {
+          result(FlutterError(code: "PDF_PAGE_FAILED",
+                              message: "Could not open page \(pageNumber)", details: nil))
+        }
+        return
+      }
+      let b = page.bounds(for: .mediaBox)
+      let longPt = max(b.width, b.height)
+      let autoScale = min(6.0, max(1.0, self.targetRenderLongPx / longPt))
+      guard let cg = self.renderPage(page, width: b.width * autoScale, height: b.height * autoScale) else {
+        DispatchQueue.main.async {
+          result(FlutterError(code: "PDF_PAGE_FAILED",
+                              message: "Could not render page \(pageNumber)", details: nil))
+        }
+        return
+      }
+      let lines = self.ocrImage(cg)
+      DispatchQueue.main.async { result(["lines": lines]) }
+    }
+  }
+
   // MARK: - PP-OCR pipeline
 
   private func ocrImage(_ cg: CGImage) -> [[String: Any]] {
@@ -229,6 +265,10 @@ class PaddleOcrPlugin: NSObject {
           "text": text, "confidence": conf,
           "left": Double(box.minX) / fOrigW,
           "width": Double(box.width) / fOrigW,
+          // Full normalized rect so the page viewer can highlight the
+          // region a flagged line came from.
+          "top": Double(box.minY) / Double(max(origH, 1)),
+          "height": Double(box.height) / Double(max(origH, 1)),
         ])
       }
     }

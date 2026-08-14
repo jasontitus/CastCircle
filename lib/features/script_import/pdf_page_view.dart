@@ -5,6 +5,8 @@ import 'package:path_provider/path_provider.dart';
 import 'package:pdfrx/pdfrx.dart';
 
 import '../../data/services/debug_log_service.dart';
+import '../../data/services/ocr_highlight_matcher.dart';
+import '../../data/services/paddle_ocr_channel.dart';
 
 /// Renders a single PDF page as an image with pinch-to-zoom,
 /// initially zoomed to the quadrant where the script line is.
@@ -16,11 +18,17 @@ class PdfPageView extends StatefulWidget {
   final int pageNumber;
   final int? lineOnPage;
 
+  /// When set, the page is re-OCR'd once (native single-page call, ~1 s)
+  /// and the region best matching this text is highlighted and scrolled
+  /// into view — so the user can SEE where a flagged line came from.
+  final String? highlightText;
+
   const PdfPageView({
     super.key,
     required this.pdfPath,
     required this.pageNumber,
     this.lineOnPage,
+    this.highlightText,
   });
 
   @override
@@ -50,6 +58,18 @@ class _PdfPageViewState extends State<PdfPageView> {
   /// a multi-hundred-ms render + a fresh multi-MB RGBA allocation.
   final _pageCache = <int, ui.Image>{};
   static const _maxCachedPages = 4;
+
+  /// Highlight state: rects (normalized page coords) for the current page,
+  /// null while the page-OCR lookup runs, empty when nothing matched.
+  List<Rect>? _highlightRects;
+  bool _locating = false;
+
+  /// Per-page OCR cache so flipping back doesn't re-OCR (small: the sheet
+  /// lives per line).
+  final _pageOcrCache = <int, List<OcrPageLine>>{};
+
+  /// Last layout size, for the auto-scroll transform.
+  Size _lastViewSize = Size.zero;
 
   /// Bumped on every [_renderPage] call. Rendering a page takes long enough
   /// that quickly stepping through lines leaves several renders in flight; a
@@ -125,6 +145,7 @@ class _PdfPageViewState extends State<PdfPageView> {
         _renderError = null;
       });
       _txController.value = Matrix4.identity();
+      _locateHighlight(page);
       return;
     }
 
@@ -199,9 +220,70 @@ class _PdfPageViewState extends State<PdfPageView> {
         _loading = false;
       });
       _cachePut(page, image);
+      _locateHighlight(page);
     } catch (e, stack) {
       _fail(generation, 'Page $page of this PDF could not be shown.', e, stack);
     }
+  }
+
+  /// Re-OCR [page] (cached) and highlight where [widget.highlightText]
+  /// sits. Only meaningful on the flagged line's own page — paging away
+  /// clears the highlight rather than matching the text against the wrong
+  /// page.
+  Future<void> _locateHighlight(int page) async {
+    final target = widget.highlightText;
+    if (target == null || target.trim().isEmpty) return;
+    if (page != widget.pageNumber) {
+      if (mounted) setState(() => _highlightRects = const []);
+      return;
+    }
+    setState(() {
+      _locating = true;
+      _highlightRects = null;
+    });
+    try {
+      final lines = _pageOcrCache[page] ??
+          await PaddleOcrChannel.ocrPage(widget.pdfPath, page);
+      if (!mounted || _currentPage != page) return;
+      if (lines == null) {
+        // Native single-page OCR unavailable (e.g. macOS) — no highlight,
+        // no error: the page itself still shows.
+        setState(() {
+          _locating = false;
+          _highlightRects = const [];
+        });
+        return;
+      }
+      _pageOcrCache[page] = lines;
+      final rects = OcrHighlightMatcher.locate(target, lines);
+      setState(() {
+        _locating = false;
+        _highlightRects = rects;
+      });
+      if (rects.isNotEmpty) _scrollToHighlight(rects.first);
+    } catch (e) {
+      DebugLogService.instance
+          .logError(LogCategory.general, 'Page highlight lookup failed', e);
+      if (mounted) {
+        setState(() {
+          _locating = false;
+          _highlightRects = const [];
+        });
+      }
+    }
+  }
+
+  /// Pan so the highlight's center is vertically centered in the viewport
+  /// (page is fit-to-width, so only the Y axis needs help).
+  void _scrollToHighlight(Rect normRect) {
+    final img = _pageImage;
+    if (img == null || _lastViewSize == Size.zero) return;
+    final scale = _lastViewSize.width / img.width;
+    final pageH = img.height * scale;
+    final targetY = normRect.center.dy * pageH - _lastViewSize.height / 2;
+    final maxY = (pageH - _lastViewSize.height).clamp(0.0, double.infinity);
+    final y = targetY.clamp(0.0, maxY);
+    _txController.value = Matrix4.identity()..translateByDouble(0, -y, 0, 1);
   }
 
   bool _isStale(int generation) => !mounted || generation != _renderGeneration;
@@ -281,31 +363,112 @@ class _PdfPageViewState extends State<PdfPageView> {
                         final pageW = imgW * scale; // == viewW
                         final pageH = imgH * scale;
 
-                        return InteractiveViewer(
-                          transformationController: _txController,
-                          constrained: false,
-                          minScale: 0.5,
-                          maxScale: 8.0,
-                          // Generous margin so any region can be slid into view,
-                          // even when zoomed right in.
-                          boundaryMargin: EdgeInsets.symmetric(
-                            horizontal: viewW,
-                            vertical: viewH,
-                          ),
-                          child: SizedBox(
-                            width: pageW,
-                            height: pageH,
-                            child: RawImage(
-                              image: _pageImage,
-                              fit: BoxFit.fill,
+                        _lastViewSize = Size(viewW, viewH);
+                        return Stack(
+                          children: [
+                            InteractiveViewer(
+                              transformationController: _txController,
+                              constrained: false,
+                              minScale: 0.5,
+                              maxScale: 8.0,
+                              // Generous margin so any region can be slid into
+                              // view, even when zoomed right in.
+                              boundaryMargin: EdgeInsets.symmetric(
+                                horizontal: viewW,
+                                vertical: viewH,
+                              ),
+                              child: SizedBox(
+                                width: pageW,
+                                height: pageH,
+                                child: Stack(
+                                  children: [
+                                    RawImage(
+                                      image: _pageImage,
+                                      fit: BoxFit.fill,
+                                    ),
+                                    // Where the flagged line's text sits,
+                                    // from a fresh single-page OCR.
+                                    for (final r
+                                        in _highlightRects ?? const <Rect>[])
+                                      Positioned(
+                                        left: r.left * pageW - 4,
+                                        top: r.top * pageH - 3,
+                                        width: r.width * pageW + 8,
+                                        height: r.height * pageH + 6,
+                                        child: IgnorePointer(
+                                          child: DecoratedBox(
+                                            decoration: BoxDecoration(
+                                              color: Colors.yellow
+                                                  .withValues(alpha: 0.30),
+                                              border: Border.all(
+                                                  color: Colors.orange,
+                                                  width: 1.5),
+                                              borderRadius:
+                                                  BorderRadius.circular(3),
+                                            ),
+                                          ),
+                                        ),
+                                      ),
+                                  ],
+                                ),
+                              ),
                             ),
-                          ),
+                            if (_locating)
+                              Positioned(
+                                top: 8,
+                                left: 0,
+                                right: 0,
+                                child: Center(child: _statusChip(context,
+                                    'Locating line…', busy: true)),
+                              )
+                            else if (widget.highlightText != null &&
+                                _currentPage == widget.pageNumber &&
+                                (_highlightRects?.isEmpty ?? false))
+                              Positioned(
+                                top: 8,
+                                left: 0,
+                                right: 0,
+                                child: Center(child: _statusChip(context,
+                                    "Couldn't locate this line on the page")),
+                              ),
+                          ],
                         );
                       },
                     )
                   : const Center(child: Text('Could not load page')),
         ),
       ],
+    );
+  }
+
+  Widget _statusChip(BuildContext context, String label,
+      {bool busy = false}) {
+    final theme = Theme.of(context);
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        color: theme.colorScheme.inverseSurface.withValues(alpha: 0.85),
+        borderRadius: BorderRadius.circular(16),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            if (busy) ...[
+              SizedBox(
+                width: 12,
+                height: 12,
+                child: CircularProgressIndicator(
+                    strokeWidth: 2, color: theme.colorScheme.onInverseSurface),
+              ),
+              const SizedBox(width: 8),
+            ],
+            Text(label,
+                style: theme.textTheme.labelSmall
+                    ?.copyWith(color: theme.colorScheme.onInverseSurface)),
+          ],
+        ),
+      ),
     );
   }
 

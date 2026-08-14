@@ -154,7 +154,50 @@ class PaddleOcrPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
                 }
                 Thread({ ocrPdf(path, result) }, "paddle-ocr-pdf").start()
             }
+            "ocrPdfPage" -> {
+                val path = call.argument<String>("path")
+                val page = call.argument<Int>("page")
+                if (path == null || page == null) {
+                    result.error("INVALID_ARGS", "Missing 'path'/'page'", null)
+                    return
+                }
+                Thread({ ocrPdfPage(path, page, result) }, "paddle-ocr-page").start()
+            }
             else -> result.notImplemented()
+        }
+    }
+
+    /** OCR a single 1-based page with full normalized rects — the page
+     * viewer uses this to highlight where a flagged line's text sits. */
+    private fun ocrPdfPage(path: String, pageNumber: Int, result: MethodChannel.Result) {
+        try {
+            ParcelFileDescriptor.open(File(path), ParcelFileDescriptor.MODE_READ_ONLY).use { fd ->
+                PdfRenderer(fd).use { renderer ->
+                    if (pageNumber < 1 || pageNumber > renderer.pageCount) {
+                        mainHandler.post {
+                            result.error("PDF_PAGE_FAILED", "No page $pageNumber", null)
+                        }
+                        return
+                    }
+                    renderer.openPage(pageNumber - 1).use { page ->
+                        val scale = min(6.0, max(1.0, targetRenderLongPx /
+                            max(page.width, page.height).toDouble()))
+                        val bmp = Bitmap.createBitmap(
+                            (page.width * scale).toInt(), (page.height * scale).toInt(),
+                            Bitmap.Config.ARGB_8888)
+                        bmp.eraseColor(Color.WHITE)
+                        page.render(bmp, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
+                        val lines = try {
+                            ocrImage(bmp)
+                        } finally {
+                            bmp.recycle()
+                        }
+                        mainHandler.post { result.success(mapOf("lines" to lines)) }
+                    }
+                }
+            }
+        } catch (t: Throwable) {
+            mainHandler.post { result.error("PDF_PAGE_FAILED", "$t", null) }
         }
     }
 
@@ -262,6 +305,7 @@ class PaddleOcrPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
         // 3. Recognize each box, sorted top-to-bottom (reading order).
         val lines = ArrayList<Map<String, Any>>()
         val fOrigW = max(origW, 1).toDouble()
+        val fOrigH = max(origH, 1).toDouble()
         for (box in boxes.sortedBy { it.top }) {
             val crop = cropBitmap(bmp, box) ?: continue
             try {
@@ -272,6 +316,10 @@ class PaddleOcrPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
                             "text" to text, "confidence" to conf,
                             "left" to box.left / fOrigW,
                             "width" to box.width() / fOrigW,
+                            // Full normalized rect for the page viewer's
+                            // flagged-line highlight.
+                            "top" to box.top / fOrigH,
+                            "height" to box.height() / fOrigH,
                         ))
                 }
             } finally {
