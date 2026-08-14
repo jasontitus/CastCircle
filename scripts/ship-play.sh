@@ -23,6 +23,15 @@ if [[ ! -f android/key.properties ]]; then
   exit 1
 fi
 
+# 2. Everything Play will reject us for, checked here in seconds instead of
+#    days later in review (metadata limits, release notes for THIS build,
+#    store graphics, screenshot aspect ratios, signing).
+echo "▶ Preflight..."
+if ! ./scripts/play-preflight.sh; then
+  echo "✗ Preflight failed — not uploading." >&2
+  exit 1
+fi
+
 echo "▶ Building signed release AAB..."
 flutter build appbundle --release
 AAB="build/app/outputs/bundle/release/app-release.aab"

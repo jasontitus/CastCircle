@@ -50,8 +50,13 @@ Notes: hardened runtime (`--options runtime`) + secure timestamp are required. `
 **One command:**
 
 ```bash
-./scripts/ship-play.sh          # builds signed AAB + uploads to Play internal track (fastlane)
-./scripts/ship-play.sh --build  # build the signed AAB only, no upload
+./scripts/play-changelog.sh "What changed"   # release notes for THIS versionCode
+./scripts/generate-play-screenshots.sh       # phone screenshots (device must be attached)
+./scripts/play-preflight.sh                  # gate: everything checkable locally
+./scripts/ship-play.sh                       # preflight + signed AAB + upload to internal
+./scripts/ship-play.sh --build               # build the signed AAB only, no upload
+cd fastlane && fastlane android metadata     # push listing text + graphics + screenshots
+cd fastlane && fastlane android promote      # internal → production
 ```
 
 ### Signing (set up once — DONE 2026-06-22)
@@ -82,6 +87,66 @@ Fastfile path gotchas (fixed 2026-07-30 — this repo keeps `fastlane/` at the
 repo ROOT, unlike where the file was copied from): `sh()` commands run inside
 `fastlane/` (so the build step is `cd ..`), while fastlane *actions* resolve
 relative paths from the repo root (so the `aab:` path has no `../` prefix).
+
+### Play Console checklist (the parts no script can do)
+
+Run `./scripts/play-preflight.sh` first — it verifies everything checkable
+from this machine (signing, credentials, metadata limits, release notes for
+THIS versionCode, store graphics, screenshot aspect ratios, the AAB). It
+exits non-zero and names what to fix; `ship-play.sh` refuses to upload
+until it passes.
+
+What preflight CANNOT check, because it only exists in Play Console:
+
+| Step | Where | Notes |
+|---|---|---|
+| Create the app + opt into Play App Signing | Console → All apps → Create app | Must happen before ANY API upload (see below) |
+| **Data safety** form | Policy → App content | Declare: audio recordings + email, stored on Supabase, not shared/sold. Rehearsal audio never leaves the device unless the user shares with their cast. |
+| **Content rating** questionnaire | Policy → App content | Utility/productivity; no ads, no UGC feed |
+| Target audience + ads declaration | Policy → App content | No ads |
+| Privacy policy URL | Store presence → Main store listing | Same URL as the App Store listing |
+| Countries / pricing (free) | Release → Production | |
+| App access (test credentials) | Policy → App content | Reviewers need a login OR the "Continue without account" path documented — the app works fully offline without one |
+
+### Assets and how they're produced
+
+| Asset | Path | Made by |
+|---|---|---|
+| Icon 512×512 (no alpha) | `fastlane/metadata/android/en-US/images/icon.png` | derived from `app_icon_1024.png` |
+| Feature graphic 1024×500 | `.../images/featureGraphic.png` | generated (icon + wordmark on the app's dark surface) |
+| Phone screenshots (≥2) | `.../images/phoneScreenshots/` | `./scripts/generate-play-screenshots.sh` — drives a CONNECTED device, then letterboxes each frame onto 1080×2160 |
+| Release notes | `.../changelogs/<versionCode>.txt` | `./scripts/play-changelog.sh "…"` (or from a matching CHANGELOG.md section) |
+
+**Why screenshots are regenerated rather than reused from iOS:** Play rejects
+anything more extreme than a 2:1 aspect ratio. iPhone 6.9" shots are 1:2.17
+and a raw Galaxy capture is 1:2.17 — both too tall. The script letterboxes
+onto an exact 1:2 canvas in the app's surface colour instead of cropping
+(cropping cut off the app bar).
+
+### Download size (measured 2026-08-14, build 148)
+
+The 231 MB figure from `flutter build apk` is the **universal** APK — every
+ABI and density in one file. What Play actually delivers, measured with
+bundletool on the real AAB:
+
+| ABI | Download |
+|---|---|
+| arm64-v8a | ~60 MB |
+| armeabi-v7a | ~58 MB |
+| x86_64 | ~62 MB |
+
+Comfortably under Play's 200 MB limit, so no asset packs / Play Asset
+Delivery are needed. (Re-measure if the bundled models grow: the PaddleOCR
+assets alone are 30 MB.)
+
+```bash
+# how that was measured
+java -jar bundletool.jar build-apks --bundle=build/app/outputs/bundle/release/app-release.aab \
+  --output=/tmp/app.apks --mode=default
+java -jar bundletool.jar get-size total --apks=/tmp/app.apks --dimensions=SDK,ABI
+```
+
+---
 
 **First upload is manual — STILL PENDING as of 2026-07-30** (the Play API can
 only upload to an app that already exists; automated upload ends at

@@ -9,6 +9,43 @@ are described in detail; older history is condensed from commit notes.
 
 ---
 
+## 0.1.1+148 — 2026-08-14
+
+First Android-ready build. Two months of iOS-only iteration folded in, plus
+the OCR cleanup workflow rebuilt around seeing the original scanned page.
+
+### Fixing a scanned script
+- **See where a line came from.** Opening a flagged line's source page
+  re-reads that page and highlights the exact region the text was taken
+  from, scrolling it into view — so a garbled line is obvious at a glance
+  instead of a hunt down the page.
+- **Walk the whole queue in one place.** The page view steps through
+  flagged lines (Prev / Next) with the text editable in place, plus
+  "Looks right" to confirm a line and "Remove" to drop one you can see was
+  crossed out. Same walk-through in the script editor for cleanup after an
+  import is accepted.
+- **Pages are right.** A mapping bug pinned most lines to the wrong page;
+  98% now resolve to the page their text is actually on (measured against
+  the full scan), up from 46%.
+
+### Rehearsal
+- **Background noise no longer stalls a line.** A completed line confirms
+  on the evidence that it finished, instead of waiting for a silence that a
+  noisy room never delivers.
+- A line that can't be matched at all now advances with an explanation
+  rather than sitting there.
+
+### Import
+- The screen stays awake through OCR: an 82-page script no longer takes
+  three times longer because the phone froze the app mid-import.
+- Android reads scanned PDFs with the same engine as iOS.
+
+### Under the hood
+- A 174-finding review pass across the app: background downloads survive
+  the app being killed, database migrations can't silently mask a failure,
+  the recording file can't be truncated by a race, and the join flow now
+  requires the production's join code.
+
 ## 0.1.1+86 — 2026-06-15
 
 Responsive polish for phones and tablets, plus two fixes targeting the top

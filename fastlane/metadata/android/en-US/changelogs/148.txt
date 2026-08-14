@@ -1,0 +1,6 @@
+First Android release of CastCircle.
+
+• Import a scanned script and see exactly where each flagged line came from — the source page is highlighted at the matching text.
+• Fix, confirm, or drop misread lines in one pass, without leaving the page view.
+• Rehearsal keeps up in a noisy room: a finished line advances instead of waiting for silence.
+• Faster imports — the screen stays awake so the phone can't stall OCR partway.
