@@ -49,6 +49,33 @@ void main() {
     expect(names, contains('HORATIO'));
   });
 
+  test('the cast is gendered correctly', () {
+    // The demo is the first thing anyone hears, and voices are assigned from
+    // these. Before role words were understood, nine of eleven parts —
+    // including the KING — were female, so the demo opened with the King of
+    // Denmark in a woman's voice.
+    const expected = {
+      'HAMLET': CharacterGender.male,
+      'HORATIO': CharacterGender.male,
+      'KING': CharacterGender.male,
+      'QUEEN': CharacterGender.female,
+      'POLONIUS': CharacterGender.male,
+      'OPHELIA': CharacterGender.female,
+      'BARNARDO': CharacterGender.male,
+      'FRANCISCO': CharacterGender.male,
+      'MARCELLUS': CharacterGender.male,
+      'ROSENCRANTZ': CharacterGender.male,
+      'GUILDENSTERN': CharacterGender.male,
+    };
+    for (final c in script.characters) {
+      final want = expected[c.name.toUpperCase()];
+      expect(want, isNotNull,
+          reason: '${c.name} is in the demo but not in this table — if the '
+              'demo script changed, update the expectation');
+      expect(c.gender, want, reason: c.name);
+    }
+  });
+
   test('every dialogue line has a speaker', () {
     final orphans = script.lines
         .where((l) => l.lineType == LineType.dialogue && l.character.isEmpty)

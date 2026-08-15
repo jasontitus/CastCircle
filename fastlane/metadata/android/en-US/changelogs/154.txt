@@ -1,0 +1,3 @@
+Fixed: male characters (including Hamlet's King) were being read in female voices — role names like KING and QUEEN are now understood.
+
+Fixed: the first line of a rehearsal could lose its opening syllable on Android.

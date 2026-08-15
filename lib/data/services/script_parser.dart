@@ -358,11 +358,55 @@ class ScriptParser {
         : out.replaceAll(RegExp(r'\s+'), ' ').trim();
   }
 
-  /// Infer gender from a character name using title prefixes.
-  /// Returns male/female/null. Returns null if no title prefix found
+  /// Role words that ARE the whole character name in most plays — "KING",
+  /// "QUEEN", "NURSE" — as opposed to the prefixes below ("KING CLAUDIUS").
+  ///
+  /// Without these, every one of them fell through to the female default:
+  /// Hamlet's KING and POLONIUS were being read in a woman's voice, which is
+  /// how this was noticed.
+  static const _maleRoles = {
+    'KING', 'PRINCE', 'DUKE', 'COUNT', 'EARL', 'BARON', 'EMPEROR',
+    'FATHER', 'SON', 'BROTHER', 'HUSBAND', 'WIDOWER', 'BOY', 'MAN',
+    'GENTLEMAN', 'SOLDIER', 'SERVANT_MALE', 'PRIEST', 'FRIAR', 'MONK',
+    'SQUIRE', 'KNIGHT', 'PAGE', 'GROOM', 'WAITER', 'BUTLER', 'FOOTMAN',
+    'HUNTSMAN', 'SHEPHERD', 'FISHERMAN', 'SAILOR', 'CAPTAIN', 'COLONEL',
+    'MAJOR', 'SERGEANT', 'CONSTABLE', 'INSPECTOR', 'DOCTOR_MALE',
+  };
+  static const _femaleRoles = {
+    'QUEEN', 'PRINCESS', 'DUCHESS', 'COUNTESS', 'EMPRESS', 'LADY',
+    'MOTHER', 'DAUGHTER', 'SISTER', 'WIFE', 'WIDOW', 'GIRL', 'WOMAN',
+    'GENTLEWOMAN', 'NURSE', 'MAID', 'MAIDSERVANT', 'HOUSEKEEPER',
+    'GOVERNESS', 'WAITRESS', 'ABBESS', 'NUN',
+  };
+
+  /// Strip the decorations that wrap a role word in a cast list — "THE KING",
+  /// "FIRST SOLDIER", "OLD MAN", "SECOND WOMAN", "KING 2".
+  static final _roleDecorationRe = RegExp(
+      r'^(THE|A|AN|FIRST|SECOND|THIRD|FOURTH|1ST|2ND|3RD|4TH|OLD|YOUNG)\s+');
+  static final _trailingIndexRe = RegExp(r'\s*[0-9IVX]+$');
+
+  static String _roleCore(String upper) {
+    var out = upper.trim();
+    // Repeatedly, so "THE FIRST SOLDIER" reduces too.
+    while (true) {
+      final stripped = out.replaceFirst(_roleDecorationRe, '');
+      if (stripped == out) break;
+      out = stripped;
+    }
+    return out.replaceFirst(_trailingIndexRe, '').trim();
+  }
+
+  /// Infer gender from a character name using role words and title prefixes.
+  /// Returns male/female/null. Returns null if nothing matched
   /// (caller should try context-based inference).
   static CharacterGender? _inferGenderFromTitle(String name) {
     final upper = name.toUpperCase();
+
+    // Whole-name role words, before prefixes: a character called plain "KING"
+    // has no prefix to match.
+    final core = _roleCore(upper);
+    if (_maleRoles.contains(core)) return CharacterGender.male;
+    if (_femaleRoles.contains(core)) return CharacterGender.female;
     // Male titles
     if (upper.startsWith('MR ') || upper.startsWith('MR. ') ||
         upper.startsWith('SIR ') || upper.startsWith('LORD ') ||
@@ -415,31 +459,51 @@ class ScriptParser {
 
   /// Common English first names used in theatre for gender inference fallback.
   static const _femaleNames = {
-    'JANE', 'ELIZABETH', 'MARY', 'ANNE', 'SARAH', 'EMMA', 'ALICE',
-    'CHARLOTTE', 'LUCY', 'JULIA', 'JULIET', 'OPHELIA', 'KATE',
-    'KATHERINE', 'CATHERINE', 'KITTY', 'LYDIA', 'GEORGIANA', 'PORTIA',
-    'VIOLA', 'ROSALIND', 'DESDEMONA', 'CORDELIA', 'HELENA', 'HERMIA',
-    'TITANIA', 'MIRANDA', 'BEATRICE', 'HERO', 'CLEOPATRA', 'ANTIGONE',
-    'ELECTRA', 'MEDEA', 'NORA', 'HEDDA', 'STELLA', 'BLANCHE', 'LAURA',
-    'AMANDA', 'EMILY', 'DOROTHY', 'MARGARET', 'MARTHA', 'ABIGAIL',
-    'JESSICA', 'MARIA', 'OLIVIA', 'CELIA', 'PHOEBE', 'BIANCA',
-    'DIANA', 'RUTH', 'GRACE', 'HELEN', 'ANNA', 'ROSA', 'CLARA',
-    'FLORENCE', 'ELEANOR', 'SYLVIA', 'GWENDOLEN', 'CECILY', 'MABEL',
+    // Classical parts, same reason as the male list.
+    'JANE', 'ELIZABETH', 'MARY', 'ANNE', 'SARAH', 'EMMA',
+    'ALICE', 'CHARLOTTE', 'LUCY', 'JULIA', 'JULIET', 'OPHELIA',
+    'KATE', 'KATHERINE', 'CATHERINE', 'KITTY', 'LYDIA', 'GEORGIANA',
+    'PORTIA', 'VIOLA', 'ROSALIND', 'DESDEMONA', 'CORDELIA', 'HELENA',
+    'HERMIA', 'TITANIA', 'MIRANDA', 'BEATRICE', 'HERO', 'CLEOPATRA',
+    'ANTIGONE', 'ELECTRA', 'MEDEA', 'NORA', 'HEDDA', 'STELLA',
+    'BLANCHE', 'LAURA', 'AMANDA', 'EMILY', 'DOROTHY', 'MARGARET',
+    'MARTHA', 'ABIGAIL', 'JESSICA', 'MARIA', 'OLIVIA', 'CELIA',
+    'PHOEBE', 'BIANCA', 'DIANA', 'RUTH', 'GRACE', 'HELEN',
+    'ANNA', 'ROSA', 'CLARA', 'FLORENCE', 'ELEANOR', 'SYLVIA',
+    'GWENDOLEN', 'CECILY', 'MABEL', 'GERTRUDE', 'REGAN', 'GONERIL',
+    'NERISSA', 'ADRIANA', 'LUCIANA', 'ISABELLA', 'MARIANA', 'CALPURNIA',
+    'OCTAVIA', 'CHARMIAN', 'VOLUMNIA', 'VIRGILIA', 'LAVINIA', 'TAMORA',
+    'MARINA', 'THAISA', 'IMOGEN', 'HERMIONE', 'PERDITA', 'PAULINA',
+    'URSULA', 'HIPPOLYTA', 'AUDREY', 'SILVIA', 'EMILIA', 'IRAS',
   };
 
   static const _maleNames = {
-    'JOHN', 'JAMES', 'HENRY', 'WILLIAM', 'THOMAS', 'GEORGE', 'CHARLES',
-    'EDWARD', 'RICHARD', 'ROBERT', 'ARTHUR', 'DAVID', 'MICHAEL', 'MARK',
-    'PETER', 'PAUL', 'JACK', 'TOM', 'HAMLET', 'ROMEO', 'OTHELLO',
-    'MACBETH', 'PROSPERO', 'OBERON', 'PUCK', 'LYSANDER', 'DEMETRIUS',
-    'BENEDICK', 'PETRUCHIO', 'IAGO', 'CASSIO', 'ANTONIO', 'SHYLOCK',
-    'FALSTAFF', 'CALIBAN', 'ARIEL', 'FITZWILLIAM', 'COLLINS', 'WICKHAM',
-    'BINGLEY', 'DARCY', 'STANLEY', 'WILLY', 'TROY', 'WALTER', 'EDMUND',
-    'EDGAR', 'KENT', 'GLOUCESTER', 'LEAR', 'HORATIO', 'LAERTES',
-    'CLAUDIUS', 'BANQUO', 'MACDUFF', 'ROSS', 'SEBASTIAN', 'FERDINAND',
-    'VALENTINE', 'OLIVER', 'ORLANDO', 'TOBY', 'ANDREW', 'MALVOLIO',
-    'SIMON', 'RALPH', 'ROGER', 'JOSEPH', 'DANIEL', 'PHILIP', 'FRANK',
-    'ALFIE', 'ARCHIE', 'ALBERT', 'ALFRED', 'FREDERICK', 'LEONARD',
+    // Hamlet and other classical parts that were defaulting to female.
+    'JOHN', 'JAMES', 'HENRY', 'WILLIAM', 'THOMAS', 'GEORGE',
+    'CHARLES', 'EDWARD', 'RICHARD', 'ROBERT', 'ARTHUR', 'DAVID',
+    'MICHAEL', 'MARK', 'PETER', 'PAUL', 'JACK', 'TOM',
+    'HAMLET', 'ROMEO', 'OTHELLO', 'MACBETH', 'PROSPERO', 'OBERON',
+    'PUCK', 'LYSANDER', 'DEMETRIUS', 'BENEDICK', 'PETRUCHIO', 'IAGO',
+    'CASSIO', 'ANTONIO', 'SHYLOCK', 'FALSTAFF', 'CALIBAN', 'ARIEL',
+    'FITZWILLIAM', 'COLLINS', 'WICKHAM', 'BINGLEY', 'DARCY', 'STANLEY',
+    'WILLY', 'TROY', 'WALTER', 'EDMUND', 'EDGAR', 'KENT',
+    'GLOUCESTER', 'LEAR', 'HORATIO', 'LAERTES', 'CLAUDIUS', 'BANQUO',
+    'MACDUFF', 'ROSS', 'SEBASTIAN', 'FERDINAND', 'VALENTINE', 'OLIVER',
+    'ORLANDO', 'TOBY', 'ANDREW', 'MALVOLIO', 'SIMON', 'RALPH',
+    'ROGER', 'JOSEPH', 'DANIEL', 'PHILIP', 'FRANK', 'ALFIE',
+    'ARCHIE', 'ALBERT', 'ALFRED', 'FREDERICK', 'LEONARD', 'POLONIUS',
+    'BARNARDO', 'BERNARDO', 'MARCELLUS', 'FRANCISCO', 'ROSENCRANTZ', 'GUILDENSTERN',
+    'FORTINBRAS', 'OSRIC', 'VOLTEMAND', 'CORNELIUS', 'REYNALDO', 'LUCIANUS',
+    'MERCUTIO', 'TYBALT', 'BENVOLIO', 'CAPULET', 'MONTAGUE', 'ESCALUS',
+    'PARIS', 'BALTHASAR', 'GRATIANO', 'BASSANIO', 'LORENZO', 'LAUNCELOT',
+    'DOGBERRY', 'CLAUDIO', 'LEONATO', 'DON', 'BOTTOM', 'QUINCE',
+    'FLUTE', 'SNOUT', 'STARVELING', 'THESEUS', 'EGEUS', 'ORSINO',
+    'FESTE', 'AGUECHEEK', 'BELCH', 'ANTIPHOLUS', 'DROMIO', 'ANGELO',
+    'LUCIO', 'POMPEY', 'BRUTUS', 'CASSIUS', 'CASCA', 'CAESAR',
+    'ENOBARBUS', 'CORIOLANUS', 'MENENIUS', 'TIMON', 'APEMANTUS', 'ALCIBIADES',
+    'TITUS', 'AARON', 'PERICLES', 'CYMBELINE', 'POSTHUMUS', 'IACHIMO',
+    'LEONTES', 'POLIXENES', 'AUTOLYCUS', 'TRINCULO', 'STEPHANO', 'GONZALO',
+    'ALONSO',
   };
 
   /// Infer gender using title prefixes, common names, script context, then default.

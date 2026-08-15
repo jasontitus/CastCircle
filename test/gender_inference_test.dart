@@ -4,6 +4,51 @@ import 'package:castcircle/data/services/script_parser.dart';
 
 void main() {
   group('ScriptParser.inferGender', () {
+    group('role words that are the whole name', () {
+      // These all defaulted to female before: the title rules only matched
+      // prefixes with a trailing space ("KING CLAUDIUS"), so a character
+      // called plain "KING" never matched one.
+      test('KING → male', () {
+        expect(ScriptParser.inferGender('KING'), CharacterGender.male);
+      });
+
+      test('QUEEN → female', () {
+        expect(ScriptParser.inferGender('QUEEN'), CharacterGender.female);
+      });
+
+      test('NURSE → female', () {
+        expect(ScriptParser.inferGender('NURSE'), CharacterGender.female);
+      });
+
+      test('decorated roles still resolve', () {
+        expect(ScriptParser.inferGender('THE KING'), CharacterGender.male);
+        expect(ScriptParser.inferGender('FIRST SOLDIER'), CharacterGender.male);
+        expect(ScriptParser.inferGender('OLD MAN'), CharacterGender.male);
+        expect(ScriptParser.inferGender('SECOND WOMAN'), CharacterGender.female);
+        expect(ScriptParser.inferGender('KING 2'), CharacterGender.male);
+      });
+
+      test('a prefixed title still wins where it applies', () {
+        expect(ScriptParser.inferGender('KING CLAUDIUS'), CharacterGender.male);
+        expect(ScriptParser.inferGender('LADY MACBETH'), CharacterGender.female);
+      });
+    });
+
+    group('classical parts', () {
+      test('male names that used to default female', () {
+        for (final n in ['POLONIUS', 'MARCELLUS', 'BARNARDO', 'FRANCISCO',
+                         'ROSENCRANTZ', 'GUILDENSTERN', 'MERCUTIO', 'TYBALT']) {
+          expect(ScriptParser.inferGender(n), CharacterGender.male, reason: n);
+        }
+      });
+
+      test('female names', () {
+        for (final n in ['GERTRUDE', 'REGAN', 'GONERIL', 'HERMIONE']) {
+          expect(ScriptParser.inferGender(n), CharacterGender.female, reason: n);
+        }
+      });
+    });
+
     group('title prefix inference', () {
       test('MR. prefix → male', () {
         expect(ScriptParser.inferGender('MR. BENNET'), CharacterGender.male);

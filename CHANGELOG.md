@@ -9,6 +9,30 @@ are described in detail; older history is condensed from commit notes.
 
 ---
 
+## 0.1.1+154 — 2026-08-14
+
+### Voices
+- **The King is no longer a woman.** Character gender drives voice
+  assignment, and gender inference only matched titles as PREFIXES ("KING
+  CLAUDIUS"), so a character called plain "KING" fell through to the female
+  default — as did POLONIUS, BARNARDO, MARCELLUS, FRANCISCO, ROSENCRANTZ and
+  GUILDENSTERN, which weren't in the name lists. Nine of the demo's eleven
+  parts were female. Whole-name role words are now understood (KING, QUEEN,
+  NURSE, FATHER, FIRST SOLDIER, THE KING, OLD MAN…) and the classical
+  Shakespeare parts are in the lists. The demo's cast is asserted
+  name-by-name in a test.
+
+### Rehearsal audio
+- **The first line no longer loses its opening syllable** (Android). The
+  audio output is asleep when rehearsal starts — focus is requested and the
+  route opened microseconds before the first samples — and the hardware eats
+  the start; every later line is fine because the output is awake by then.
+  The first line after an idle gap is now played with a short run of silence
+  in front, so what gets eaten is silence. Only on a cold start: mid-rehearsal
+  this would just add a pause before every line.
+
+---
+
 ## 0.1.1+153 — 2026-08-14
 
 ### Icon

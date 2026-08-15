@@ -6,11 +6,14 @@ import 'package:flutter/services.dart';
 import 'package:firebase_performance/firebase_performance.dart';
 import 'package:flutter_tts/flutter_tts.dart';
 import 'package:just_audio/just_audio.dart';
+import 'package:path/path.dart' as p;
+import 'package:path_provider/path_provider.dart';
 
 import 'debug_log_service.dart';
 import 'kokoro_onnx_service.dart' show KokoroOnnxService;
 import 'perf_service.dart';
 import 'playback_session.dart';
+import 'wav_silence.dart';
 
 /// TTS engine type.
 enum TtsEngine {
@@ -41,6 +44,22 @@ class TtsService {
 
   final FlutterTts _systemTts = FlutterTts();
   final AudioPlayer _audioPlayer = AudioPlayer();
+
+  /// When audio last played. Used to decide whether the output is cold — see
+  /// the padding in the Kokoro play path.
+  DateTime? _lastPlaybackAt;
+
+  /// The output is treated as asleep when nothing has played for a few
+  /// seconds. Mid-rehearsal, lines follow each other closely and stay warm.
+  bool get _outputIsCold {
+    final last = _lastPlaybackAt;
+    return last == null ||
+        DateTime.now().difference(last) > const Duration(seconds: 3);
+  }
+
+  String? _tempDirPath;
+  Future<String> _tempDir() async =>
+      _tempDirPath ??= (await getTemporaryDirectory()).path;
   StreamSubscription? _playerStateSub;
   bool _initialized = false;
   TtsEngine _activeEngine = TtsEngine.kokoroMlx;
@@ -691,6 +710,22 @@ class TtsService {
               voice: voice, speed: speed, urgent: true);
         }
 
+        if (i == 0 && Platform.isAndroid && _outputIsCold) {
+          // The audio output is asleep: focus is requested and the route
+          // opened microseconds before the first samples, and the hardware
+          // swallows the start — the opening syllable of the first line went
+          // missing. Give it silence to eat instead. Only on a cold start;
+          // mid-rehearsal the output is already awake and this would just add
+          // a pause before every line.
+          final padded = await WavSilence.prepend(
+              audioPath, p.join(await _tempDir(), 'tts_warmup.wav'));
+          if (padded != audioPath) {
+            DebugLogService.instance.log(LogCategory.tts,
+                'Kokoro: padded the first line with silence (cold output)');
+            audioPath = padded;
+          }
+        }
+
         await _audioPlayer.stop();
         await _audioPlayer.setFilePath(audioPath);
         if (i == 0) {
@@ -717,6 +752,8 @@ class TtsService {
             .firstWhere((s) => s == ProcessingState.completed);
 
         await _audioPlayer.play();
+
+        _lastPlaybackAt = DateTime.now();
 
         // Wait for this chunk to actually finish playing
         try {
