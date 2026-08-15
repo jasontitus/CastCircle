@@ -9,6 +9,35 @@ are described in detail; older history is condensed from commit notes.
 
 ---
 
+## 0.1.1+153 — 2026-08-14
+
+### Icon
+- **The masks are the subject now.** At launcher sizes the icon read as a
+  twisting swirl — the comedy/tragedy masks sit in the middle of a
+  composition whose outer two thirds are swirl, and they vanished below
+  ~80px. Every icon is now rendered from the centre 52% of the artwork, which
+  makes the faces legible at 60px. `scripts/generate-icons.py --crop` tunes
+  it. The Android adaptive background still blurs the FULL frame — blurring
+  the crop ringed the icon in grey, because the crop's own edges are the
+  bright white swirls.
+
+### Speech
+- **"Long live the King" said /laɪv/, not /lɪv/** (Android). espeak-ng reads
+  the subjunctive as the adjective. Verified with `espeak-ng --ipa`: it's
+  wrong for "Long live", "Let him live", "May he live" and the
+  sentence-initial imperative ("Live and let live"), and already RIGHT for
+  "I live in Denmark", "to live", "we must live" and every adjective use.
+  Only the measured-wrong contexts are rewritten, to a respelling espeak
+  reads correctly.
+  - Android only, deliberately: iOS uses Misaki, which tags parts of speech
+    with NLTagger and already says this correctly — and the respelling is in
+    none of Misaki's dictionaries, so applying it there would push a
+    known-good word into its fallback network.
+  - Applied before the synthesis cache key, so a line already cached with the
+    wrong pronunciation is re-synthesised rather than replayed.
+
+---
+
 ## 0.1.1+152 — 2026-08-14
 
 ### Live Line Matching could never install (Android)

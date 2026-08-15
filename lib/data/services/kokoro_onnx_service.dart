@@ -11,6 +11,7 @@ import 'package:path_provider/path_provider.dart';
 import 'package:sherpa_onnx/sherpa_onnx.dart' as sherpa;
 
 import 'debug_log_service.dart';
+import 'espeak_heteronyms.dart';
 import 'model_manager.dart';
 
 /// Kokoro neural TTS for platforms without MLX (Android): sherpa-onnx
@@ -187,8 +188,14 @@ class KokoroOnnxService {
   /// spoken): it cancels older queued urgent requests and aborts the current
   /// generation so it runs next. Prefetches are non-urgent: they queue behind
   /// everything and are the natural casualty of an urgent arrival.
-  Future<String?> synthesize(String text,
+  Future<String?> synthesize(String rawText,
       {required String voice, double speed = 1.0, bool urgent = false}) async {
+    // Fix the heteronyms espeak-ng reads wrong ("Long live the King" as
+    // /laɪv/) BEFORE the cache key is computed, so the key follows what will
+    // actually be spoken: applying it later would keep serving the
+    // mispronounced WAV already on disk under the original text.
+    final text = EspeakHeteronyms.apply(rawText);
+
     // Disk cache first: actors drill the same scene repeatedly, and
     // synthesis runs near realtime (RTF ~0.9) — a replayed line from cache
     // is instant instead of seconds. Keyed by everything that shapes the

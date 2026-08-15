@@ -33,9 +33,19 @@ from PIL import Image, ImageDraw, ImageFilter, ImageFont, ImageOps
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-# Fraction of the source width occupied by the circular composition. Used to
-# fit the art inside Android's adaptive-icon safe zone.
-ART_EXTENT = 0.86
+# How much of the source artwork to keep, measured from the centre.
+#
+# The full frame reads as "a twisting swirl" at launcher sizes — the masks,
+# which are the subject, occupy only the middle of a composition whose outer
+# two thirds are swirl. Cropping in makes them legible at 60px, at the cost
+# of trimming the outermost arcs. Rendered at 40/60/120px across a range of
+# values before settling here.
+CROP = 0.52
+
+# Fraction of the (cropped) source width occupied by the composition. After
+# cropping, the composition fills the frame — this is what fits the art into
+# Android's adaptive-icon safe zone.
+ART_EXTENT = 1.0
 
 IOS_ICONS = {
     'Icon-App-20x20@1x.png': 20, 'Icon-App-20x20@2x.png': 40,
@@ -94,12 +104,16 @@ def fitted_font(text, size, max_width, bold=False):
     return load_font(size, bold=bold)
 
 
-def square_source(path):
+def square_source(path, crop=1.0):
     im = ImageOps.exif_transpose(Image.open(path)).convert('RGB')
     if im.width != im.height:
         side = min(im.width, im.height)
         left, top = (im.width - side) // 2, (im.height - side) // 2
         im = im.crop((left, top, left + side, top + side))
+    if crop < 1.0:
+        side = round(im.width * crop)
+        off = (im.width - side) // 2
+        im = im.crop((off, off, off + side, off + side))
     return im
 
 
@@ -175,7 +189,7 @@ def circle_alpha(size, feather_from=0.44, feather_to=0.50):
     return mask.filter(ImageFilter.GaussianBlur(blur))
 
 
-def gen_android(src):
+def gen_android(src, full=None):
     print('▶ Android')
     res = os.path.join(ROOT, 'android/app/src/main/res')
     for density, size in ANDROID_LEGACY.items():
@@ -188,7 +202,9 @@ def gen_android(src):
     for density, size in ANDROID_ADAPTIVE.items():
         # Background: the artwork's own gradient, blurred past recognition so
         # the corners the mask may reveal still read as part of the icon.
-        bg = resized(src, size).filter(ImageFilter.GaussianBlur(size * 0.18))
+        # Taken from the UNCROPPED frame — blurring the crop gives a grey ring,
+        # because the crop's edges are the bright white swirls.
+        bg = resized(full or src, size).filter(ImageFilter.GaussianBlur(size * 0.18))
         write(bg.convert('RGBA'), os.path.join(res, f'mipmap-{density}/ic_launcher_background.png'))
 
         # Foreground: the art scaled so its circular composition just fits the
@@ -222,7 +238,7 @@ def corner_gradient(src, w, h):
     return seed.resize((w, h), Image.BICUBIC)
 
 
-def gen_play(src):
+def gen_play(src, full=None):
     print('▶ Play store')
     out = os.path.join(ROOT, 'fastlane/metadata/android/en-US/images')
     write(resized(src, 512), os.path.join(out, 'icon.png'))       # RGB: no alpha
@@ -231,7 +247,7 @@ def gen_play(src):
     # Background: a bilinear gradient between the artwork's own corner colours.
     # (Blurring the artwork itself was the first attempt and went muddy — its
     # centre is white and orange line work, which averages to grey.)
-    canvas = corner_gradient(src, w, h).convert('RGBA')
+    canvas = corner_gradient(full or src, w, h).convert('RGBA')
     # Mild scrim on the text side; the top-right corner is the palette's
     # brightest cyan and white text needs the contrast.
     scrim = Image.new('L', (w, h))
@@ -263,18 +279,25 @@ def gen_play(src):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--src', default='assets/castcircleicon.jpeg')
+    ap.add_argument('--crop', type=float, default=CROP,
+                    help='fraction of the artwork to keep, from the centre '
+                         '(1.0 = the whole frame)')
     args = ap.parse_args()
 
     path = args.src if os.path.isabs(args.src) else os.path.join(ROOT, args.src)
     if not os.path.exists(path):
         sys.exit(f'✗ source artwork not found: {path}')
-    src = square_source(path)
-    print(f'▶ source {os.path.relpath(path, ROOT)}  {src.width}x{src.height}\n')
+    src = square_source(path, crop=args.crop)
+    # The feature graphic's background samples the UNCROPPED corners, which
+    # hold the palette's full range.
+    full = square_source(path)
+    print(f'▶ source {os.path.relpath(path, ROOT)}  cropped to {args.crop:g} '
+          f'→ {src.width}x{src.height}\n')
 
     gen_ios(src)
     gen_macos(src)
-    gen_android(src)
-    gen_play(src)
+    gen_android(src, full)
+    gen_play(src, full)
     print('\n✓ icons regenerated. Rebuild to see them on device '
           '(Android needs a reinstall — launchers cache icons).')
 

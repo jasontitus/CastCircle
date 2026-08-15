@@ -1,0 +1,3 @@
+The app icon now shows the masks clearly at small sizes instead of reading as a swirl.
+
+Fixed the pronunciation of "live" in lines like "Long live the King".
