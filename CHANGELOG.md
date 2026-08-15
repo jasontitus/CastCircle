@@ -9,6 +9,20 @@ are described in detail; older history is condensed from commit notes.
 
 ---
 
+## 0.1.1+155 — 2026-08-14
+
+### A gender you set now stays set
+- Character gender is re-derived from the name every time a production is
+  opened rather than stored on the saved lines — and the load path the home
+  screen uses (`buildParsedScriptWithCloudScenes`, also used by join and the
+  production hub) rebuilt characters from inference alone, ignoring the
+  choices saved from the character manager. Setting a character's gender by
+  hand therefore reverted the next time you opened the production. Explicit
+  choices now win on every path out of that function, including its early
+  returns, and they stay scoped to their own production.
+
+---
+
 ## 0.1.1+154 — 2026-08-14
 
 ### Voices

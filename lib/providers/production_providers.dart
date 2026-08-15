@@ -646,7 +646,10 @@ Future<void> pushScriptToCloud(WidgetRef ref) async {
 /// with an unreachable cloud) keep the tag-derived scenes.
 Future<ParsedScript> buildParsedScriptWithCloudScenes(
     String title, List<ScriptLine> lines, String productionId) async {
-  final base = buildParsedScript(title, lines);
+  // Explicit gender choices win over inference, on every path out of this
+  // function — including the early returns below.
+  final base = buildParsedScript(title, lines,
+      savedGenders: await VoiceConfigService.instance.getGenders(productionId));
   final supa = SupabaseService.instance;
   if (!supa.isInitialized || !supa.isSignedIn) return base;
   try {
@@ -692,7 +695,15 @@ Future<ParsedScript> buildParsedScriptWithCloudScenes(
 
 /// Build a ParsedScript from a list of ScriptLine objects.
 /// Reconstructs scenes from the scene tags already on each line.
-ParsedScript buildParsedScript(String title, List<ScriptLine> lines) {
+/// Rebuild a [ParsedScript] from persisted lines.
+///
+/// [savedGenders] are the user's explicit choices from the character manager.
+/// They MUST be passed by any caller that has a production id: gender is
+/// re-derived on every load rather than stored on the line rows, so omitting
+/// them silently reverts a hand-corrected character to the inferred value the
+/// next time the production is opened.
+ParsedScript buildParsedScript(String title, List<ScriptLine> lines,
+    {Map<String, CharacterGender> savedGenders = const {}}) {
   final charCounts = <String, int>{};
   for (final line in lines) {
     if (line.lineType == LineType.dialogue && line.character.isNotEmpty) {
@@ -711,7 +722,7 @@ ParsedScript buildParsedScript(String title, List<ScriptLine> lines) {
     name: e.value.key,
     colorIndex: e.key,
     lineCount: e.value.value,
-    gender: ScriptParser.inferGender(e.value.key),
+    gender: savedGenders[e.value.key] ?? ScriptParser.inferGender(e.value.key),
   )).toList();
 
   // Rebuild scenes from line scene/act tags

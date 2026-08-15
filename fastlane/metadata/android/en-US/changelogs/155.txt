@@ -1,0 +1,3 @@
+Fixed: a character gender you set by hand reverted the next time you opened the production.
+
+Also in this release: role names like KING and QUEEN get the right voice, and the first line of a rehearsal no longer loses its opening syllable.
