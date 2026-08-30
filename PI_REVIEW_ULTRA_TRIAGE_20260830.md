@@ -1718,4 +1718,4 @@ The final diff audit found four additional defects in the first remediation pass
 - iOS archive: `build/ios/archive/Runner.xcarchive`; Xcode archive and strict code-signature verification succeeded.
 - TestFlight IPA: `build/ios/testflight-156-final/castcircle.ipa`; version `0.1.1`, embedded build `156`, 124,869,502 bytes.
 - IPA SHA-256: `baa20b055b7d2c774beaf431ec01ed912651cf6a335a462cc0dc33c2a808cecb`.
-- The IPA was exported locally with App Store signing. It was **not uploaded**.
+- The IPA was exported locally with App Store signing, validated by Apple, uploaded to App Store Connect, and processed as `VALID` and `APP_STORE_ELIGIBLE`. Build `156` delivery UUID: `d9ead3bf-35aa-4a8a-bdc0-f8c5e5dda7a8`.
