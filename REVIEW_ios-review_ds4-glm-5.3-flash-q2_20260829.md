@@ -1766,4 +1766,4 @@ The corrupted content is what I must review — but the corruption is likely fro
 
 ## Run stats
 
-input 285183 tok (+51183 cached), output 79224 tok — sync requests, discounted — 85 files in 63m (80.8 files/h, 1.4 min/batch)
+input 285183 tok (+51183 cached), output 79224 tok — sync requests, discounted — 81 files in 0m (291600.0 files/h, 0.0 min/batch)

@@ -859,4 +859,4 @@ lib/data/services/script_export.dart — findings: 3
 
 ## Run stats
 
-input 1298207 tok (+639898 cached), output 61820 tok — sync requests, discounted — 146 files in 74m (117.2 files/h, 0.9 min/batch)
+input 1298207 tok (+639898 cached), output 61820 tok — sync requests, discounted — 145 files in 0m (261000.0 files/h, 0.0 min/batch)

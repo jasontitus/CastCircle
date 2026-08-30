@@ -433,4 +433,4 @@ supabase/migrations/20260813110000_join_flow_v3_and_policy_fixes.sql — finding
 
 ## Run stats
 
-input 56713 tok (+16335 cached), output 23363 tok — sync requests, discounted — 29 files in 17m (98.5 files/h, 1.2 min/batch)
+input 56713 tok (+16335 cached), output 23363 tok — sync requests, discounted — 29 files in 0m (104400.0 files/h, 0.0 min/batch)

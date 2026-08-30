@@ -466,4 +466,4 @@ tools/mlx-harness/Sources/harness/main.swift — findings: 3
 
 ## Run stats
 
-input 392750 tok (+58806 cached), output 40990 tok — sync requests, discounted — 107 files in 43m (148.3 files/h, 0.8 min/batch)
+input 392750 tok (+58806 cached), output 40990 tok — sync requests, discounted — 107 files in 0m (192600.0 files/h, 0.0 min/batch)

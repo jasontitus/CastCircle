@@ -2249,4 +2249,4 @@ lib/data/services/voice_config_service.dart — findings: 6
 
 ## Run stats
 
-input 863663 tok (+154672 cached), output 131099 tok — sync requests, discounted — 100 files in 121m (49.4 files/h, 2.2 min/batch)
+input 863663 tok (+154672 cached), output 131099 tok — sync requests, discounted — 97 files in 0m (174600.0 files/h, 0.0 min/batch)

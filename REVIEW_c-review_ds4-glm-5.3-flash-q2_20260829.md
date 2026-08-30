@@ -14,4 +14,4 @@ linux/runner/my_application.h — clean
 
 ## Run stats
 
-input 3565 tok (+2178 cached), output 132 tok — sync requests, discounted — 3 files in 0m (1080.0 files/h, 0.1 min/batch)
+input 3565 tok (+2178 cached), output 132 tok — sync requests, discounted — 3 files in 0m (10800.0 files/h, 0.0 min/batch)

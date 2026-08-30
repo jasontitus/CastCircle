@@ -19,4 +19,4 @@ pubspec.yaml — findings: 9
 
 ## Run stats
 
-input 2816 tok (+1089 cached), output 636 tok — sync requests, discounted — 1 files in 0m (116.1 files/h, 0.5 min/batch)
+input 2816 tok (+1089 cached), output 636 tok — sync requests, discounted — 1 files in 0m (3600.0 files/h, 0.0 min/batch)

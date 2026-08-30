@@ -53,4 +53,4 @@ android/settings.gradle.kts — findings: 1
 
 ## Run stats
 
-input 29298 tok (+5445 cached), output 3972 tok — sync requests, discounted — 10 files in 3m (157.9 files/h, 0.8 min/batch)
+input 29298 tok (+5445 cached), output 3972 tok — sync requests, discounted — 10 files in 0m (36000.0 files/h, 0.0 min/batch)

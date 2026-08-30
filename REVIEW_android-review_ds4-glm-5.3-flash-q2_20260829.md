@@ -91,4 +91,4 @@ android/app/src/main/kotlin/com/tiltastech/lineguide/MainActivity.kt — finding
 
 ## Run stats
 
-input 33748 tok (+5445 cached), output 5832 tok — sync requests, discounted — 12 files in 5m (133.3 files/h, 0.9 min/batch)
+input 33748 tok (+5445 cached), output 5832 tok — sync requests, discounted — 10 files in 0m (36000.0 files/h, 0.0 min/batch)

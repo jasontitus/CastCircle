@@ -2499,4 +2499,4 @@ test_driver/screenshot_driver.dart — findings: 2
 
 ## Run stats
 
-input 1402369 tok (+243337 cached), output 172277 tok — sync requests, discounted — 146 files in 170m (51.4 files/h, 2.2 min/batch)
+input 1402369 tok (+243337 cached), output 172277 tok — sync requests, discounted — 145 files in 0m (174000.0 files/h, 0.0 min/batch)

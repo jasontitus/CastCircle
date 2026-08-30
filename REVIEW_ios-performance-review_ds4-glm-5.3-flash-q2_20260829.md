@@ -351,4 +351,4 @@ ios/RunnerTests/RunnerTests.swift — clean
 
 ## Run stats
 
-input 233727 tok (+59388 cached), output 25648 tok — sync requests, discounted — 81 files in 25m (190.7 files/h, 0.6 min/batch)
+input 233727 tok (+59388 cached), output 25648 tok — sync requests, discounted — 81 files in 0m (291600.0 files/h, 0.0 min/batch)

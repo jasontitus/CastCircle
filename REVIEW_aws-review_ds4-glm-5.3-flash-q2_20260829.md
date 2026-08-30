@@ -14,4 +14,4 @@ supabase/config.toml — findings: 4
 
 ## Run stats
 
-input 7261 tok (+1089 cached), output 478 tok — sync requests, discounted — 1 files in 0m (97.3 files/h, 0.6 min/batch)
+input 7261 tok (+1089 cached), output 478 tok — sync requests, discounted — 1 files in 0m (3600.0 files/h, 0.0 min/batch)

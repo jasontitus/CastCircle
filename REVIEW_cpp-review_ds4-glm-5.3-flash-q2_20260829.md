@@ -16,4 +16,4 @@ linux/runner/my_application.cc — findings: 2
 
 ## Run stats
 
-input 3504 tok (+1089 cached), output 419 tok — sync requests, discounted — 2 files in 0m (288.0 files/h, 0.4 min/batch)
+input 3504 tok (+1089 cached), output 419 tok — sync requests, discounted — 2 files in 0m (7200.0 files/h, 0.0 min/batch)
