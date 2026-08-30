@@ -25,8 +25,6 @@ import 'vision_ocr_channel.dart';
 class ScriptImportService {
   ScriptImportService();
 
-  final ScriptParser _parser = ScriptParser();
-
   /// Pages that could not be OCR'd during the most recent [importFromPdf]
   /// call. The import UI reads this to warn the user — a scan that silently
   /// lost 5 of 60 pages looks perfectly clean in the preview and the actor
@@ -38,26 +36,30 @@ class ScriptImportService {
     final file = File(filePath);
     final rawText = await file.readAsString();
     final title = _titleFromPath(filePath);
-    return _parser.parse(rawText, title: title);
+    return Isolate.run(() => ScriptParser().parse(rawText, title: title));
   }
 
-  /// Import from raw text string.
-  ParsedScript importFromText(String rawText, {String title = 'Untitled'}) {
-    return _parser.parse(rawText, title: title);
-  }
+  /// Import from raw text string. Parsing is deliberately asynchronous so a
+  /// long script can never monopolize the Flutter UI isolate.
+  Future<ParsedScript> importFromText(
+    String rawText, {
+    String title = 'Untitled',
+  }) => Isolate.run(() => ScriptParser().parse(rawText, title: title));
 
   /// Import a script from a markdown file.
   /// Strips markdown formatting (bold, italic, headers, etc.) and parses.
   Future<ParsedScript> importFromMarkdownFile(String filePath) async {
     final file = File(filePath);
-    var rawText = await file.readAsString();
-    rawText = _stripMarkdown(rawText);
+    final rawText = await file.readAsString();
     final title = _titleFromPath(filePath);
-    return _parser.parse(rawText, title: title);
+    return Isolate.run(() {
+      final stripped = _stripMarkdown(rawText);
+      return ScriptParser().parse(stripped, title: title);
+    });
   }
 
   /// Strip common markdown formatting to get clean script text.
-  String _stripMarkdown(String md) {
+  static String _stripMarkdown(String md) {
     var text = md;
     // Remove markdown headers (## ACT I -> ACT I)
     text = text.replaceAll(RegExp(r'^#{1,6}\s*', multiLine: true), '');
@@ -119,31 +121,13 @@ class ScriptImportService {
           debugPrint(
             'PDF import: PDFKit extracted ${nativeText.length} chars from ${perPage.length} pages',
           );
-          final cleanedText = _cleanPdfKitText(nativeText);
-          final nativeParser = ScriptParser();
-          final nativeResult = nativeParser.parse(cleanedText, title: title);
+          final parseResult = await Isolate.run(
+            () => parseAndMapPdfKit(nativeText, title, linePageMap),
+          );
+          final nativeResult = parseResult.script;
 
           if (_isGoodParse(nativeResult)) {
-            // Map source page onto parsed lines. Forward cursor: parsed lines
-            // are in document order, so restarting the raw-line scan from 0
-            // for every line (the old behavior) was O(N·M).
-            final rawLines = nativeText.split('\n');
-            var rawSearchStart = 0;
-            final taggedLines = nativeResult.lines.map((line) {
-              final pageInfo = _findSourcePageFrom(
-                line.text,
-                rawLines,
-                linePageMap,
-                rawSearchStart,
-              );
-              if (pageInfo != null) {
-                rawSearchStart = pageInfo.rawLineIndex + 1;
-              }
-              return line.copyWith(
-                sourcePage: () => pageInfo?.page,
-                sourceLineOnPage: () => pageInfo?.lineOnPage,
-              );
-            }).toList();
+            final taggedLines = parseResult.lines;
 
             debugPrint(
               'PDF import: Using PDFKit result '
@@ -225,7 +209,7 @@ class ScriptImportService {
   ///
   /// PDFKit preserves all text layers including Folger FTLN line numbers,
   /// running headers, and page numbers that confuse the script parser.
-  String _cleanPdfKitText(String text) {
+  static String _cleanPdfKitText(String text) {
     var cleaned = text;
 
     // Remove Folger FTLN line numbers (e.g., "FTLN 0042", "FTLN 0043 30")
@@ -290,8 +274,10 @@ class ScriptImportService {
     final firstCounts = <String, int>{};
     final lastCounts = <String, int>{};
     for (final page in pages) {
-      final texts =
-          page.lines.map((l) => l.text.trim()).where((t) => t.isNotEmpty).toList();
+      final texts = page.lines
+          .map((l) => l.text.trim())
+          .where((t) => t.isNotEmpty)
+          .toList();
       if (texts.isEmpty) continue;
       final fk = _furnitureKey(texts.first);
       final lk = _furnitureKey(texts.last);
@@ -326,8 +312,10 @@ class ScriptImportService {
     if (wide.isEmpty) return null;
     wide.sort();
     final cutoff = wide[(wide.length * 0.15).floor()] - 0.10;
-    final cands =
-        lines.where((l) => l.width < 0.30 && l.left < cutoff).map((l) => l.left).toList();
+    final cands = lines
+        .where((l) => l.width < 0.30 && l.left < cutoff)
+        .map((l) => l.left)
+        .toList();
     if (cands.length < 4) return null; // no consistent margin column
     cands.sort();
     if (cands.last - cands.first > 0.12) return null; // not tightly clustered
@@ -359,9 +347,10 @@ class ScriptImportService {
       // quality (Android has no Paddle plugin yet — every import there is
       // the ML Kit fallback), and debugPrint never reaches debug reports.
       DebugLogService.instance.log(
-          LogCategory.general,
-          'PDF OCR: PaddleOCR unavailable ($e) — falling back to '
-          '${Platform.isMacOS ? 'Vision' : 'ML Kit'}');
+        LogCategory.general,
+        'PDF OCR: PaddleOCR unavailable ($e) — falling back to '
+        '${Platform.isMacOS ? 'Vision' : 'ML Kit'}',
+      );
       paddleResult = null;
     }
 
@@ -486,8 +475,12 @@ class ScriptImportService {
             // Respect the view's offset/length: toByteData may return a
             // view into a larger buffer, and asUint8List() on the bare
             // buffer would append trailing garbage that breaks OCR.
-            await tempFile.writeAsBytes(byteData.buffer
-                .asUint8List(byteData.offsetInBytes, byteData.lengthInBytes));
+            await tempFile.writeAsBytes(
+              byteData.buffer.asUint8List(
+                byteData.offsetInBytes,
+                byteData.lengthInBytes,
+              ),
+            );
 
             final inputImage = InputImage.fromFilePath(tempFile.path);
             final recognized = await textRecognizer.processImage(inputImage);
@@ -528,9 +521,11 @@ class ScriptImportService {
 
     lastImportFailedPages = failedPages;
     if (failedPages > 0) {
-      DebugLogService.instance.logError(LogCategory.error,
-          'PDF OCR: $failedPages page(s) failed — imported script is missing '
-          'their content');
+      DebugLogService.instance.logError(
+        LogCategory.error,
+        'PDF OCR: $failedPages page(s) failed — imported script is missing '
+        'their content',
+      );
     }
 
     final rawText = buffer.toString();
@@ -545,7 +540,76 @@ class ScriptImportService {
     // the UI isolate froze the import spinner right after the native OCR
     // finished. Everything captured/returned is plain data.
     return Isolate.run(
-        () => parseAndMapOcr(rawText, title, lineConfidences, linePageMap));
+      () => parseAndMapOcr(rawText, title, lineConfidences, linePageMap),
+    );
+  }
+
+  /// Parse PDFKit text and map parsed lines to source pages without performing
+  /// an unbounded raw-line scan for every miss. Runs entirely in a worker
+  /// isolate from the production import path.
+  @visibleForTesting
+  static ({ParsedScript script, List<ScriptLine> lines}) parseAndMapPdfKit(
+    String nativeText,
+    String title,
+    Map<int, int> linePageMap,
+  ) {
+    final cleanedText = _cleanPdfKitText(nativeText);
+    final script = ScriptParser().parse(cleanedText, title: title);
+    final rawLines = nativeText.split('\n');
+    const searchWindow = 150;
+    var cursor = 0;
+    final parsedCount = script.lines.length;
+    final rawCount = rawLines.length;
+
+    final tagged = <ScriptLine>[];
+    for (var parsedIndex = 0; parsedIndex < parsedCount; parsedIndex++) {
+      final line = script.lines[parsedIndex];
+      if (line.text.trim().isEmpty) {
+        tagged.add(line);
+        continue;
+      }
+      final estimate = parsedCount == 0
+          ? 0
+          : (parsedIndex * rawCount / parsedCount).round();
+      // Preserve document order: never let repeated dialogue rematch a raw
+      // occurrence before the last confirmed source line. Prefer the nearby
+      // forward window, then use the proportional estimate only to jump
+      // farther ahead after a miss.
+      final forwardEnd = math.min(rawCount, cursor + searchWindow);
+      var best = OcrHighlightMatcher.bestMatch(
+        line.text,
+        rawLines,
+        start: cursor,
+        end: forwardEnd,
+      );
+      if (best == null) {
+        final fallbackStart = math.max(cursor, estimate - 40);
+        final fallbackEnd = math.min(
+          rawCount,
+          math.max(cursor, estimate) + searchWindow,
+        );
+        best = OcrHighlightMatcher.bestMatch(
+          line.text,
+          rawLines,
+          start: fallbackStart,
+          end: fallbackEnd,
+        );
+      }
+      final rawIndex = best?.index;
+      if (rawIndex == null || linePageMap[rawIndex] == null) {
+        tagged.add(line);
+        continue;
+      }
+      cursor = rawIndex + 1;
+      tagged.add(
+        line.copyWith(
+          sourcePage: () => linePageMap[rawIndex],
+          // Preserve the PDFKit contract; OCR imports provide an exact line.
+          sourceLineOnPage: () => 0,
+        ),
+      );
+    }
+    return (script: script, lines: tagged);
   }
 
   /// Parse OCR'd [rawText] and map per-raw-line OCR confidence + source page
@@ -562,6 +626,7 @@ class ScriptImportService {
     String rawText,
     String title,
     Map<int, double> lineConfidences,
+
     Map<int, int> linePageMap,
   ) {
     final script = ScriptParser().parse(rawText, title: title);
@@ -622,23 +687,35 @@ class ScriptImportService {
       // flagged lines). Scoring comes from OcrHighlightMatcher, the same
       // code the viewer uses, so a mapped page is a page the viewer can
       // find the line on BY CONSTRUCTION.
-      final estimate =
-          parsedCount == 0 ? 0 : (parsedIdx * rawCount / parsedCount).round();
-      // Window spans BOTH anchors, with slack behind the earlier one. The
-      // cursor alone was a hard floor: one false strong match jumped it
-      // ahead and every later line was unfindable (the document-order
-      // estimate can't overshoot that way, so it pulls the window back).
-      final lowAnchor = math.min(cursor, estimate);
-      final highAnchor = math.max(cursor, estimate);
-      final rawStart = math.max(0, lowAnchor - 40);
-      final windowEnd = highAnchor + searchWindow;
-      final limit = windowEnd < rawLines.length ? windowEnd : rawLines.length;
-      final best = OcrHighlightMatcher.bestMatch(
+      final estimate = parsedCount == 0
+          ? 0
+          : (parsedIdx * rawCount / parsedCount).round();
+      // Search two independently bounded neighborhoods. Joining cursor and
+      // estimate into one interval becomes O(N²) after a bad forward match.
+      // On equal scores, prefer the proportional anchor: it is independent of
+      // cursor drift and lets later lines recover.
+      final cursorBest = OcrHighlightMatcher.bestMatch(
         line.text,
         rawLinesOriginal,
-        start: rawStart,
-        end: limit,
+        start: math.max(0, cursor - 40),
+        end: math.min(rawLines.length, cursor + searchWindow),
       );
+      final estimateBest = OcrHighlightMatcher.bestMatch(
+        line.text,
+        rawLinesOriginal,
+        start: math.max(0, estimate - 40),
+        end: math.min(rawLines.length, estimate + searchWindow),
+      );
+      final best = cursorBest == null
+          ? estimateBest
+          : estimateBest == null
+          ? cursorBest
+          : estimateBest.score > cursorBest.score ||
+                (estimateBest.score == cursorBest.score &&
+                    (estimateBest.index - estimate).abs() <
+                        (cursorBest.index - estimate).abs())
+          ? estimateBest
+          : cursorBest;
       final matchStart = best?.index;
       if (matchStart == null) return line;
 
@@ -661,8 +738,9 @@ class ScriptImportService {
         ocrConfidence: avgConf != null ? () => avgConf : null,
         sourcePage: page != null ? () => page : null,
         // Real position within the page (1-based), not the old constant 0.
-        sourceLineOnPage:
-            page != null ? () => _lineOnPage(linePageMap, matchStart!) : null,
+        sourceLineOnPage: page != null
+            ? () => _lineOnPage(linePageMap, matchStart)
+            : null,
       );
     }).toList();
 
@@ -670,6 +748,7 @@ class ScriptImportService {
     // a page holds ~40 lines, so the neighbor's page is right (or off by
     // one, and the viewer pages). Confidence is NOT inherited — the page is
     // navigation, not provenance.
+    _keepMonotonicPageAnchors(updatedLines);
     _inheritMissingPages(updatedLines);
 
     if (updatedLines.isNotEmpty) {
@@ -734,25 +813,60 @@ class ScriptImportService {
     }
   }
 
-  ({int page, int lineOnPage, int rawLineIndex})? _findSourcePageFrom(
-    String parsedText,
-    List<String> rawLines,
-    Map<int, int> linePageMap,
-    int startIndex,
-  ) {
-    final searchText = parsedText.trim().toLowerCase();
-    if (searchText.isEmpty) return null;
-
-    for (var i = startIndex; i < rawLines.length; i++) {
-      final rawTrimmed = rawLines[i].trim().toLowerCase();
-      if (rawTrimmed.isEmpty) continue;
-      final page = linePageMap[i];
-      if (page == null) continue;
-      if (rawTrimmed.contains(searchText) || searchText.contains(rawTrimmed)) {
-        return (page: page, lineOnPage: 0, rawLineIndex: i);
+  /// Discard out-of-order fuzzy matches, retaining the longest nondecreasing
+  /// sequence of page anchors. A cumulative max is unsafe: one false match
+  /// far ahead would smear that page across the rest of the document. Dropped
+  /// anchors are filled from their retained neighbors below.
+  static void _keepMonotonicPageAnchors(List<ScriptLine> lines) {
+    final lineIndexes = <int>[];
+    final pages = <int>[];
+    for (var i = 0; i < lines.length; i++) {
+      final page = lines[i].sourcePage;
+      if (page != null) {
+        lineIndexes.add(i);
+        pages.add(page);
       }
     }
-    return null;
+    if (pages.length < 2) return;
+
+    final tails = <int>[];
+    final tailsAt = <int>[];
+    final previous = List<int>.filled(pages.length, -1);
+    for (var i = 0; i < pages.length; i++) {
+      var low = 0;
+      var high = tails.length;
+      while (low < high) {
+        final mid = low + ((high - low) >> 1);
+        if (tails[mid] <= pages[i]) {
+          low = mid + 1;
+        } else {
+          high = mid;
+        }
+      }
+      if (low > 0) previous[i] = tailsAt[low - 1];
+      if (low == tails.length) {
+        tails.add(pages[i]);
+        tailsAt.add(i);
+      } else {
+        tails[low] = pages[i];
+        tailsAt[low] = i;
+      }
+    }
+
+    final retained = <int>{};
+    var node = tailsAt.last;
+    while (node >= 0) {
+      retained.add(lineIndexes[node]);
+      node = previous[node];
+    }
+    for (final lineIndex in lineIndexes) {
+      if (!retained.contains(lineIndex)) {
+        lines[lineIndex] = lines[lineIndex].copyWith(
+          sourcePage: () => null,
+          sourceLineOnPage: () => null,
+        );
+      }
+    }
   }
 
   /// Estimate OCR confidence for a line based on text heuristics.
@@ -774,10 +888,7 @@ class ScriptImportService {
     var score = 1.0;
 
     // 1. Ratio of alphanumeric + common punctuation vs junk characters
-    final cleanChars = trimmed.replaceAll(
-      _validCharRe,
-      '',
-    );
+    final cleanChars = trimmed.replaceAll(_validCharRe, '');
     final junkRatio = cleanChars.length / trimmed.length;
     if (junkRatio > 0.3)
       score -= 0.4;
@@ -820,8 +931,7 @@ class ScriptImportService {
     if (_quadRepeatRe.hasMatch(trimmed)) {
       score -= 0.3;
     } else if (_tripleRepeatRe.hasMatch(trimmed.toLowerCase())) {
-      final triples =
-          _tripleRepeatRe.allMatches(trimmed.toLowerCase()).length;
+      final triples = _tripleRepeatRe.allMatches(trimmed.toLowerCase()).length;
       if (triples > 1) score -= 0.15;
     }
 

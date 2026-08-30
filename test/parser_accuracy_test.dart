@@ -42,11 +42,17 @@ void main() {
   }
 
   void expectCharacterLines(
-      ParsedScript script, String name, int min, int max) {
+    ParsedScript script,
+    String name,
+    int min,
+    int max,
+  ) {
     final char = script.characters.where((c) => c.name.contains(name));
     if (char.isEmpty) {
-      fail('Character "$name" not found. '
-          'Characters: ${script.characters.map((c) => c.name).toList()}');
+      fail(
+        'Character "$name" not found. '
+        'Characters: ${script.characters.map((c) => c.name).toList()}',
+      );
     }
     final lines = char.first.lineCount;
     expect(
@@ -89,13 +95,20 @@ void main() {
       expectCharacterExists(s, 'BOTTOM');
     });
 
-    test('Tempest — known failure (abbreviated names)', () {
-      final s = parseFile('shakespeare_tempest.txt');
-      if (s == null) return;
-      // This Gutenberg edition uses _Pros._ abbreviations — parser can't handle
-      expect(s.characters.length, lessThan(10),
-          reason: 'Known failure: abbreviated character names');
-    }, skip: 'Gutenberg #23042 uses abbreviated names (_Pros._, _Mir._)');
+    test(
+      'Tempest — known failure (abbreviated names)',
+      () {
+        final s = parseFile('shakespeare_tempest.txt');
+        if (s == null) return;
+        // This Gutenberg edition uses _Pros._ abbreviations — parser can't handle
+        expect(
+          s.characters.length,
+          lessThan(10),
+          reason: 'Known failure: abbreviated character names',
+        );
+      },
+      skip: 'Gutenberg #23042 uses abbreviated names (_Pros._, _Mir._)',
+    );
 
     test('Othello — 5 acts, ~15 chars, Iago/Othello lead', () {
       final s = parseFile('shakespeare_othello.txt');
@@ -201,14 +214,18 @@ void main() {
   });
 
   group('Other classics', () {
-    test('Cyrano — 5 acts, ~25 chars, Cyrano leads', () {
-      final s = parseFile('rostand_cyrano_de_bergerac.txt');
-      if (s == null) return;
-      // Parser finds too many due to stage direction noise, but Cyrano is top
-      expect(s.acts.length, 5);
-      expectCharacterExists(s, 'CYRANO');
-      expect(s.characters.first.name, contains('CYRANO'));
-    }, timeout: const Timeout(Duration(minutes: 3)));
+    test(
+      'Cyrano — 5 acts, ~25 chars, Cyrano leads',
+      () {
+        final s = parseFile('rostand_cyrano_de_bergerac.txt');
+        if (s == null) return;
+        // Parser finds too many due to stage direction noise, but Cyrano is top
+        expect(s.acts.length, 5);
+        expectCharacterExists(s, 'CYRANO');
+        expect(s.characters.first.name, contains('CYRANO'));
+      },
+      timeout: const Timeout(Duration(minutes: 3)),
+    );
 
     test('Doctor Faustus — Faustus found', () {
       final s = parseFile('marlowe_doctor_faustus.txt');
@@ -241,62 +258,48 @@ void main() {
     });
   });
 
-  // Comprehensive stats dump for documentation
-  test('Generate parser accuracy report', () {
-    final files = scriptsDir
-        .listSync()
-        .whereType<File>()
-        .where((f) => f.path.endsWith('.txt') &&
-            !f.path.contains('folger_converted') &&
-            !f.path.contains('pg37431'))
-        .toList()
-      ..sort((a, b) => a.path.compareTo(b.path));
+  test('every accuracy-corpus fixture parses into an ordered script', () {
+    final files =
+        scriptsDir
+            .listSync()
+            .whereType<File>()
+            .where(
+              (file) =>
+                  file.path.endsWith('.txt') &&
+                  !file.path.contains('folger_converted') &&
+                  !file.path.contains('pg37431'),
+            )
+            .toList()
+          ..sort((a, b) => a.path.compareTo(b.path));
 
-    final report = StringBuffer();
-    report.writeln('# Parser Accuracy Report');
-    report.writeln('');
-    report.writeln(
-        '| Play | Characters | Dialogue Lines | Acts | Scenes | Top Character | Top Lines |');
-    report.writeln(
-        '|------|-----------|---------------|------|--------|---------------|-----------|');
-
+    expect(files, isNotEmpty, reason: 'accuracy corpus must not be empty');
     for (final file in files) {
-      final filename = file.path.split('/').last;
-      try {
-        final text = file.readAsStringSync();
-        final parser = ScriptParser();
-        final result = parser.parse(text, title: filename);
-
-        final dialogueCount = result.lines
-            .where((l) => l.lineType == LineType.dialogue)
-            .length;
-        final topChar =
-            result.characters.isNotEmpty ? result.characters.first : null;
-
-        report.writeln(
-            '| ${filename.replaceAll('.txt', '').replaceAll('_', ' ')} '
-            '| ${result.characters.length} '
-            '| $dialogueCount '
-            '| ${result.acts.length} '
-            '| ${result.scenes.length} '
-            '| ${topChar?.name ?? "?"} '
-            '| ${topChar?.lineCount ?? 0} |');
-      } catch (e) {
-        report.writeln('| ${filename.replaceAll('.txt', '')} '
-            '| ERROR | - | - | - | $e | - |');
-      }
+      final filename = file.uri.pathSegments.last;
+      final result = ScriptParser().parse(
+        file.readAsStringSync(),
+        title: filename,
+      );
+      final dialogue = result.lines
+          .where((line) => line.lineType == LineType.dialogue)
+          .toList();
+      expect(dialogue, isNotEmpty, reason: '$filename produced no dialogue');
+      expect(
+        result.characters,
+        isNotEmpty,
+        reason: '$filename produced no characters',
+      );
+      expect(
+        result.lines.map((line) => line.orderIndex),
+        orderedEquals(
+          List<int>.generate(result.lines.length, (index) => index),
+        ),
+        reason: '$filename line ordering is not contiguous',
+      );
+      expect(
+        result.lines.map((line) => line.id).toSet(),
+        hasLength(result.lines.length),
+        reason: '$filename produced duplicate line ids',
+      );
     }
-
-    report.writeln('');
-    // No timestamp: the report is git-tracked, and a timestamp made every
-    // extended test run dirty the working tree with a meaningless diff.
-
-    // Write report to file
-    File('sample-scripts/PARSER_ACCURACY_REPORT.md')
-        .writeAsStringSync(report.toString());
-
-    // Also print to console
-    // ignore: avoid_print
-    print(report.toString());
   });
 }

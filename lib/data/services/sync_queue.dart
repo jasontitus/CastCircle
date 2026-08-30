@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:collection';
 import 'dart:convert';
 import 'dart:io';
 
@@ -7,6 +8,7 @@ import 'package:flutter/foundation.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 
+import '../database/app_database.dart';
 import 'debug_log_service.dart';
 import 'supabase_service.dart';
 
@@ -16,45 +18,69 @@ class SyncJob {
   final String productionId;
   final String characterName;
   final String lineId;
+
+  /// Immutable Drift recording-row identity. Null only for queues persisted by
+  /// app versions that predate this field.
+  final String? recordingId;
   final String localPath;
   final int durationMs;
   final DateTime createdAt;
-
-  /// When the audio was actually recorded (used for freshness comparison
-  /// on other devices). Falls back to [createdAt].
   final DateTime recordedAt;
   int retryCount;
+
+  /// Set as soon as the bytes upload succeeds. Persisting this before later
+  /// metadata work prevents retries from uploading the same bytes again.
+  String? remoteUrl;
+  bool cloudMetadataSaved;
+
+  /// Uploaded objects superseded before metadata commit. Kept with the
+  /// replacement job until the server-side cleanup outbox accepts them.
+  final List<String> orphanedRemoteUrls;
 
   SyncJob({
     required this.id,
     required this.productionId,
     required this.characterName,
     required this.lineId,
+    this.recordingId,
     required this.localPath,
     required this.durationMs,
     required this.createdAt,
     DateTime? recordedAt,
     this.retryCount = 0,
-  }) : recordedAt = recordedAt ?? createdAt;
+    this.remoteUrl,
+    this.cloudMetadataSaved = false,
+    List<String>? orphanedRemoteUrls,
+  }) : recordedAt = recordedAt ?? createdAt,
+       orphanedRemoteUrls = orphanedRemoteUrls ?? [];
+
+  String get queueKey => '$productionId/$lineId';
 
   Map<String, dynamic> toJson() => {
-        'id': id,
-        'productionId': productionId,
-        'characterName': characterName,
-        'lineId': lineId,
-        'localPath': localPath,
-        'durationMs': durationMs,
-        'createdAt': createdAt.toIso8601String(),
-        'recordedAt': recordedAt.toIso8601String(),
-        'retryCount': retryCount,
-      };
+    'id': id,
+    'productionId': productionId,
+    'characterName': characterName,
+    'lineId': lineId,
+    'recordingId': recordingId,
+    'localPath': localPath,
+    'durationMs': durationMs,
+    'createdAt': createdAt.toIso8601String(),
+    'recordedAt': recordedAt.toIso8601String(),
+    'retryCount': retryCount,
+    'remoteUrl': remoteUrl,
+    'cloudMetadataSaved': cloudMetadataSaved,
+    'orphanedRemoteUrls': orphanedRemoteUrls,
+  };
 
   static SyncJob? fromJson(Map<String, dynamic> json) {
     final id = json['id'] as String?;
     final productionId = json['productionId'] as String?;
     final lineId = json['lineId'] as String?;
     final localPath = json['localPath'] as String?;
-    if (id == null || productionId == null || lineId == null || localPath == null) {
+    if (id == null ||
+        productionId == null ||
+        lineId == null ||
+        localPath == null) {
       return null;
     }
     return SyncJob(
@@ -62,30 +88,30 @@ class SyncJob {
       productionId: productionId,
       characterName: json['characterName'] as String? ?? '',
       lineId: lineId,
+      recordingId: json['recordingId'] as String?,
       localPath: localPath,
       durationMs: json['durationMs'] as int? ?? 0,
       createdAt:
-          DateTime.tryParse(json['createdAt'] as String? ?? '') ?? DateTime.now(),
+          DateTime.tryParse(json['createdAt'] as String? ?? '') ??
+          DateTime.now(),
       recordedAt: DateTime.tryParse(json['recordedAt'] as String? ?? ''),
-      // Persisted retries start fresh: the failure may have been transient
-      // (the app was likely killed mid-flight), so give the job its full
-      // retry budget on the next launch.
-      retryCount: 0,
+      retryCount: json['retryCount'] as int? ?? 0,
+      remoteUrl: json['remoteUrl'] as String?,
+      cloudMetadataSaved: json['cloudMetadataSaved'] as bool? ?? false,
+      orphanedRemoteUrls:
+          (json['orphanedRemoteUrls'] as List?)?.whereType<String>().toList() ??
+          [],
     );
   }
+
+  SyncJob snapshot() => SyncJob.fromJson(toJson())!;
 }
 
-/// Abstraction over the cloud upload calls so the queue can be tested
-/// without a live Supabase client.
 abstract class RecordingUploader {
-  /// Whether uploads can proceed (e.g. signed in).
   bool get isReady;
-
-  /// Upload the audio file and return its remote URL.
   Future<String> upload(SyncJob job);
-
-  /// Persist recording metadata after a successful upload.
   Future<void> saveMetadata(SyncJob job, String remoteUrl);
+  Future<void> discardUpload(SyncJob job, String remoteUrl);
 }
 
 class _SupabaseUploader implements RecordingUploader {
@@ -96,14 +122,13 @@ class _SupabaseUploader implements RecordingUploader {
   }
 
   @override
-  Future<String> upload(SyncJob job) {
-    return SupabaseService.instance.uploadRecording(
-      productionId: job.productionId,
-      characterName: job.characterName,
-      lineId: job.lineId,
-      audioFile: File(job.localPath),
-    );
-  }
+  Future<String> upload(SyncJob job) =>
+      SupabaseService.instance.uploadRecording(
+        productionId: job.productionId,
+        characterName: job.characterName,
+        lineId: job.lineId,
+        audioFile: File(job.localPath),
+      );
 
   @override
   Future<void> saveMetadata(SyncJob job, String remoteUrl) {
@@ -117,382 +142,653 @@ class _SupabaseUploader implements RecordingUploader {
       recordedAt: job.recordedAt,
     );
   }
+
+  @override
+  Future<void> discardUpload(SyncJob job, String remoteUrl) {
+    final supa = SupabaseService.instance;
+    return supa.discardRecordingUpload(
+      productionId: job.productionId,
+      lineId: job.lineId,
+      userId: supa.currentUser!.id,
+      audioUrl: remoteUrl,
+    );
+  }
+}
+
+enum PersistedSyncJobState { pending, failed }
+
+class PersistedSyncJob {
+  final SyncJob job;
+  final PersistedSyncJobState state;
+
+  const PersistedSyncJob(this.job, this.state);
+}
+
+/// O(1)-per-transition durability boundary used by [SyncQueue].
+abstract class SyncQueuePersistence {
+  Future<List<PersistedSyncJob>> load();
+  Future<void> upsert(SyncJob job, PersistedSyncJobState state);
+  Future<void> delete(String queueKey);
+  Future<void> clear();
+}
+
+class _DatabaseSyncQueuePersistence implements SyncQueuePersistence {
+  _DatabaseSyncQueuePersistence(this._db);
+
+  final AppDatabase _db;
+  bool _legacyChecked = false;
+
+  @override
+  Future<List<PersistedSyncJob>> load() async {
+    await _migrateLegacyFile();
+    final rows = await _db.loadSyncQueueRows();
+    return [
+      for (final row in rows)
+        if (SyncJob.fromJson(
+              Map<String, dynamic>.from(jsonDecode(row.payload) as Map),
+            )
+            case final job?)
+          PersistedSyncJob(
+            job,
+            row.state == PersistedSyncJobState.failed.name
+                ? PersistedSyncJobState.failed
+                : PersistedSyncJobState.pending,
+          ),
+    ];
+  }
+
+  @override
+  Future<void> upsert(SyncJob job, PersistedSyncJobState state) =>
+      _db.upsertSyncQueueRow(
+        SyncQueueRow(
+          key: job.queueKey,
+          payload: jsonEncode(job.toJson()),
+          state: state.name,
+          remoteUrl: job.remoteUrl,
+        ),
+      );
+
+  @override
+  Future<void> delete(String queueKey) => _db.deleteSyncQueueRow(queueKey);
+
+  @override
+  Future<void> clear() => _db.clearSyncQueueRows();
+
+  Future<void> _migrateLegacyFile() async {
+    if (_legacyChecked) return;
+    final dir = await getApplicationSupportDirectory();
+    final file = File(p.join(dir.path, 'sync_queue.json'));
+    if (!await file.exists()) {
+      _legacyChecked = true;
+      return;
+    }
+
+    late final Map decoded;
+    try {
+      final value = jsonDecode(await file.readAsString());
+      if (value is! Map) throw const FormatException('queue root is not a map');
+      decoded = value;
+    } catch (error) {
+      DebugLogService.instance.logError(
+        LogCategory.error,
+        'SyncQueue: legacy queue file corrupt',
+        error,
+      );
+      try {
+        await file.rename('${file.path}.corrupt');
+      } catch (renameError) {
+        DebugLogService.instance.logError(
+          LogCategory.error,
+          'SyncQueue: could not preserve corrupt legacy queue',
+          renameError,
+        );
+      }
+      _legacyChecked = true;
+      return;
+    }
+
+    // Database errors deliberately escape without renaming the source. A later
+    // retry can import it; classifying an I/O failure as corrupt would lose the
+    // only durable copy of offline recordings.
+    for (final entry in <(dynamic, PersistedSyncJobState)>[
+      (decoded['pending'], PersistedSyncJobState.pending),
+      (decoded['failed'], PersistedSyncJobState.failed),
+    ]) {
+      for (final raw in entry.$1 is List ? entry.$1 as List : const []) {
+        if (raw is! Map) continue;
+        final job = SyncJob.fromJson(Map<String, dynamic>.from(raw));
+        if (job != null) {
+          await _db.insertSyncQueueRowIfAbsent(
+            SyncQueueRow(
+              key: job.queueKey,
+              payload: jsonEncode(job.toJson()),
+              state: entry.$2.name,
+              remoteUrl: job.remoteUrl,
+            ),
+          );
+        }
+      }
+    }
+    await file.rename('${file.path}.migrated');
+    _legacyChecked = true;
+  }
+}
+
+/// Test-only legacy store. Production uses keyed Drift rows above.
+class _JsonSyncQueuePersistence implements SyncQueuePersistence {
+  _JsonSyncQueuePersistence(this.path);
+
+  final String path;
+  final Map<String, PersistedSyncJob> _rows = {};
+  bool _loaded = false;
+
+  @override
+  Future<List<PersistedSyncJob>> load() async {
+    if (_loaded) return _rows.values.toList();
+    _loaded = true;
+    final file = File(path);
+    if (!await file.exists()) return const [];
+    final decoded = jsonDecode(await file.readAsString());
+    if (decoded is! Map) throw const FormatException('queue root is not a map');
+    for (final entry in <(dynamic, PersistedSyncJobState)>[
+      (decoded['pending'], PersistedSyncJobState.pending),
+      (decoded['failed'], PersistedSyncJobState.failed),
+    ]) {
+      for (final raw in entry.$1 is List ? entry.$1 as List : const []) {
+        if (raw is! Map) continue;
+        final job = SyncJob.fromJson(Map<String, dynamic>.from(raw));
+        if (job != null) _rows[job.queueKey] = PersistedSyncJob(job, entry.$2);
+      }
+    }
+    return _rows.values.toList();
+  }
+
+  @override
+  Future<void> upsert(SyncJob job, PersistedSyncJobState state) async {
+    await load();
+    _rows[job.queueKey] = PersistedSyncJob(job.snapshot(), state);
+    await _write();
+  }
+
+  @override
+  Future<void> delete(String queueKey) async {
+    await load();
+    _rows.remove(queueKey);
+    await _write();
+  }
+
+  @override
+  Future<void> clear() async {
+    _loaded = true;
+    _rows.clear();
+    await _write();
+  }
+
+  Future<void> _write() async {
+    final snapshot = jsonEncode({
+      'pending': [
+        for (final row in _rows.values)
+          if (row.state == PersistedSyncJobState.pending) row.job.toJson(),
+      ],
+      'failed': [
+        for (final row in _rows.values)
+          if (row.state == PersistedSyncJobState.failed) row.job.toJson(),
+      ],
+    });
+    final tmp = File('$path.tmp');
+    await tmp.parent.create(recursive: true);
+    await tmp.writeAsString(snapshot, flush: true);
+    await tmp.rename(path);
+  }
+}
+
+class _NoopSyncQueuePersistence implements SyncQueuePersistence {
+  @override
+  Future<void> clear() async {}
+  @override
+  Future<void> delete(String queueKey) async {}
+  @override
+  Future<List<PersistedSyncJob>> load() async => const [];
+  @override
+  Future<void> upsert(SyncJob job, PersistedSyncJobState state) async {}
+}
+
+class _PersistenceMutation {
+  final int generation;
+  final SyncJob? job;
+  final PersistedSyncJobState? state;
+  final bool clear;
+
+  const _PersistenceMutation.upsert(this.generation, this.job, this.state)
+    : clear = false;
+  const _PersistenceMutation.delete(this.generation)
+    : job = null,
+      state = null,
+      clear = false;
+  const _PersistenceMutation.clear(this.generation)
+    : job = null,
+      state = null,
+      clear = true;
 }
 
 /// Offline-first sync queue for uploading recordings to Supabase.
-///
-/// Recordings are saved locally first (source of truth), then queued
-/// for upload when connectivity is available. Failed uploads are
-/// retried with exponential backoff.
 class SyncQueue {
   SyncQueue._()
-      : _uploader = _SupabaseUploader(),
-        _persistToDisk = true;
+    : _uploader = _SupabaseUploader(),
+      _persistence = _DatabaseSyncQueuePersistence(AppDatabase()),
+      _persistenceRetryDelay = const Duration(seconds: 2);
 
   @visibleForTesting
-  SyncQueue.forTesting(this._uploader, {String? persistPath})
-      : _persistToDisk = persistPath != null,
-        _persistPathOverride = persistPath;
+  SyncQueue.forTesting(
+    this._uploader, {
+    String? persistPath,
+    SyncQueuePersistence? persistence,
+    Duration persistenceRetryDelay = const Duration(milliseconds: 10),
+  }) : _persistence =
+           persistence ??
+           (persistPath == null
+               ? _NoopSyncQueuePersistence()
+               : _JsonSyncQueuePersistence(persistPath)),
+       _persistenceRetryDelay = persistenceRetryDelay;
 
   static final instance = SyncQueue._();
 
   final RecordingUploader _uploader;
+  final SyncQueuePersistence _persistence;
+  final Duration _persistenceRetryDelay;
   final _dlog = DebugLogService.instance;
 
   final List<SyncJob> _pending = [];
   final List<SyncJob> _failed = [];
+  final LinkedHashMap<String, _PersistenceMutation> _mutations =
+      LinkedHashMap();
   Timer? _retryTimer;
+  Timer? _persistenceRetryTimer;
   StreamSubscription? _connectivitySub;
   bool _processing = false;
-
-  // ── Persistence ────────────────────────────────────────
-  //
-  // Jobs are tiny JSON (the audio files already live on disk), but they used
-  // to exist only in RAM: recording 20 lines on the train and force-quitting
-  // lost every queued upload. The queue file is rewritten on every mutation
-  // and reloaded in [start()].
-  final bool _persistToDisk;
-  String? _persistPathOverride;
+  Future<void>? _processingFuture;
   bool _loaded = false;
-  Future<void>? _persistChain;
-
-  Future<String> _persistPath() async {
-    if (_persistPathOverride != null) return _persistPathOverride!;
-    final dir = await getApplicationSupportDirectory();
-    return p.join(dir.path, 'sync_queue.json');
-  }
-
-  /// Run [action] serialized against all other queue-file access. Every load
-  /// AND write goes through this one chain — a restore racing a write used to
-  /// read a freshly-overwritten file and lose the previous run's jobs.
-  Future<void> _serializedFileAccess(Future<void> Function() action) {
-    final next = (_persistChain ?? Future.value()).then((_) => action());
-    _persistChain = next;
-    return next;
-  }
-
-  /// Serialize pending + failed to disk. The first write always runs the
-  /// restore first — otherwise an enqueue that lands before start()'s restore
-  /// would overwrite the file and lose the previous run's queued jobs.
-  void _persist() {
-    if (!_persistToDisk) return;
-    _serializedFileAccess(() async {
-      try {
-        await _loadPersisted();
-        final snapshot = jsonEncode({
-          'pending': _pending.map((j) => j.toJson()).toList(),
-          'failed': _failed.map((j) => j.toJson()).toList(),
-        });
-        // Write-to-temp + rename: writeAsString in place can leave a
-        // truncated file on crash, and the next launch's failed parse
-        // would then let an empty in-memory queue clobber every queued
-        // upload. rename() on the same volume is atomic.
-        final path = await _persistPath();
-        final tmp = File('$path.tmp');
-        await tmp.writeAsString(snapshot, flush: true);
-        await tmp.rename(path);
-      } catch (e) {
-        _dlog.logError(LogCategory.error, 'SyncQueue: persist failed', e);
-      }
-    });
-  }
-
-  /// Restore persisted jobs via the serialized chain (safe against writes).
-  Future<void> _restorePersisted() =>
-      _persistToDisk ? _serializedFileAccess(_loadPersisted) : Future.value();
-
-  /// Load persisted jobs (app restart). Jobs whose local audio file no longer
-  /// exists are dropped; a job for a line that was re-enqueued live before the
-  /// load finished is superseded by the live (newer) one. Only call from
-  /// within [_serializedFileAccess].
-  Future<void> _loadPersisted() async {
-    if (!_persistToDisk || _loaded) return;
-    _loaded = true;
-    try {
-      final file = File(await _persistPath());
-      if (!file.existsSync()) return;
-      late final dynamic data;
-      try {
-        data = jsonDecode(await file.readAsString());
-      } catch (e) {
-        // Corrupt queue file (e.g. crash mid-write on an old build). Move it
-        // aside instead of leaving it in place, where the next persist from
-        // an empty queue would silently destroy the evidence.
-        _dlog.logError(
-            LogCategory.error, 'SyncQueue: queue file corrupt — set aside', e);
-        try {
-          await file.rename('${file.path}.corrupt');
-        } catch (_) {}
-        return;
-      }
-      if (data is! Map) return;
-      final restored = <SyncJob>[
-        ...((data['pending'] as List? ?? [])
-            .whereType<Map>()
-            .map((j) => SyncJob.fromJson(Map<String, dynamic>.from(j)))
-            .whereType<SyncJob>()),
-        ...((data['failed'] as List? ?? [])
-            .whereType<Map>()
-            .map((j) => SyncJob.fromJson(Map<String, dynamic>.from(j)))
-            .whereType<SyncJob>()),
-      ];
-      var kept = 0;
-      // Set-index the live jobs once instead of scanning both lists per
-      // restored job (quadratic at startup as the queue grows).
-      final queuedKeys = {
-        for (final j in _pending) '${j.productionId}/${j.lineId}',
-        for (final j in _failed) '${j.productionId}/${j.lineId}',
-      };
-      for (final job in restored) {
-        if (!File(job.localPath).existsSync()) continue;
-        final key = '${job.productionId}/${job.lineId}';
-        if (!queuedKeys.add(key)) continue; // live job is newer — it wins
-        _pending.add(job);
-        kept++;
-      }
-      if (kept > 0) {
-        _dlog.log(LogCategory.network,
-            'SyncQueue: restored $kept queued upload(s) from a previous run');
-        _persist();
-      }
-    } catch (e) {
-      _dlog.logError(LogCategory.error, 'SyncQueue: restore failed', e);
-    }
-  }
-
-  /// Test hook: wait for restore + any in-flight persist writes.
-  @visibleForTesting
-  Future<void> flushPersistence() async {
-    await _restorePersisted();
-    await (_persistChain ?? Future.value());
-  }
+  Future<void>? _loadFuture;
+  Future<void>? _persistFuture;
+  int _dirtyGeneration = 0;
+  int _durableGeneration = 0;
+  Object? _lastPersistenceError;
+  int _persistenceFailureCount = 0;
 
   List<SyncJob> get pending => List.unmodifiable(_pending);
   List<SyncJob> get failed => List.unmodifiable(_failed);
   int get pendingCount => _pending.length + _failed.length;
+  Object? get lastPersistenceError => _lastPersistenceError;
+  bool get persistenceHealthy =>
+      _lastPersistenceError == null && _mutations.isEmpty;
+  int get dirtyGeneration => _dirtyGeneration;
+  int get durableGeneration => _durableGeneration;
 
-  /// Called after a successful upload with (productionId, lineId, remoteUrl).
-  /// Used to persist the remote URL on the local recording so the app
-  /// knows the upload completed.
-  void Function(String productionId, String lineId, String remoteUrl)?
-      onUploaded;
-
-  /// Called when a job is abandoned after exhausting all retries.
+  Future<void> Function(SyncJob job, String remoteUrl)? onUploaded;
   void Function(SyncJob job, Object error)? onGaveUp;
 
-  /// Start monitoring connectivity and processing the queue. Also restores
-  /// jobs persisted by a previous run (uploads killed with the app).
   void start() {
-    _connectivitySub?.cancel();
+    final previous = _connectivitySub;
+    if (previous != null) unawaited(previous.cancel());
     _connectivitySub = Connectivity().onConnectivityChanged.listen((results) {
-      final hasConnection = results.any((r) => r != ConnectivityResult.none);
-      if (hasConnection && !_processing) {
-        _processQueue();
+      if (results.any((result) => result != ConnectivityResult.none)) {
+        unawaited(_resumeAfterPersistence());
       }
     });
-    unawaited(_restorePersisted().then((_) {
-      if (_pending.isNotEmpty && !_processing) _processQueue();
-    }));
+    unawaited(_resumeAfterPersistence());
   }
 
-  /// Stop monitoring and cancel pending retries.
+  Future<void> _resumeAfterPersistence() async {
+    await _drainPersistence();
+    if (_loaded && !_processing) await _processQueue();
+  }
+
   void stop() {
-    _connectivitySub?.cancel();
+    final subscription = _connectivitySub;
+    if (subscription != null) unawaited(subscription.cancel());
     _connectivitySub = null;
     _retryTimer?.cancel();
     _retryTimer = null;
+    _persistenceRetryTimer?.cancel();
+    _persistenceRetryTimer = null;
   }
 
-  /// Enqueue a recording for upload.
-  ///
-  /// If a job for the same production/line is already queued (pending or
-  /// failed), it is replaced — the newest take wins and retry counts reset.
   void enqueue({
     required String productionId,
     required String characterName,
     required String lineId,
+    String? recordingId,
     required String localPath,
     required int durationMs,
     DateTime? recordedAt,
   }) {
-    bool sameLine(SyncJob j) =>
-        j.productionId == productionId && j.lineId == lineId;
-    final replaced = _pending.any(sameLine) || _failed.any(sameLine);
+    bool sameLine(SyncJob job) =>
+        job.productionId == productionId && job.lineId == lineId;
+    final priorJobs = [..._pending.where(sameLine), ..._failed.where(sameLine)];
+    final replaced = priorJobs.isNotEmpty;
+    final orphanedRemoteUrls = <String>{
+      for (final prior in priorJobs) ...prior.orphanedRemoteUrls,
+      for (final prior in priorJobs)
+        if (prior.remoteUrl != null && !prior.cloudMetadataSaved)
+          prior.remoteUrl!,
+    };
     _pending.removeWhere(sameLine);
     _failed.removeWhere(sameLine);
 
-    _pending.add(SyncJob(
-      id: '${productionId}_${lineId}_${DateTime.now().millisecondsSinceEpoch}',
+    final now = DateTime.now();
+    final job = SyncJob(
+      id: '${productionId}_${lineId}_${now.millisecondsSinceEpoch}',
       productionId: productionId,
       characterName: characterName,
       lineId: lineId,
+      recordingId: recordingId,
       localPath: localPath,
       durationMs: durationMs,
-      createdAt: DateTime.now(),
+      createdAt: now,
       recordedAt: recordedAt,
-    ));
+      orphanedRemoteUrls: orphanedRemoteUrls.toList(),
+    );
+    _pending.add(job);
+    _queueUpsert(job, PersistedSyncJobState.pending);
 
     _dlog.log(
-        LogCategory.network,
-        'SyncQueue: queued upload line=$lineId char="$characterName" '
-        '${durationMs}ms${replaced ? ' (replaced prior take)' : ''} '
-        '— ${_pending.length} pending, ${_failed.length} failed');
-    _persist();
-
-    if (!_processing) _processQueue();
+      LogCategory.network,
+      'SyncQueue: queued upload line=$lineId durationMs=$durationMs'
+      '${replaced ? ' (replaced prior take)' : ''}',
+    );
+    if (!_processing) unawaited(_processQueue());
   }
 
-  /// Process all pending jobs immediately. Exposed for tests; production
-  /// code relies on [enqueue]/connectivity triggers.
   @visibleForTesting
   Future<void> processQueue() => _processQueue();
 
-  Future<void> _processQueue() async {
-    if (_processing || _pending.isEmpty) return;
+  Future<void> _processQueue() {
+    final existing = _processingFuture;
+    if (existing != null) return existing;
     _processing = true;
-
-    if (!_uploader.isReady) {
-      _dlog.log(
-          LogCategory.network,
-          'SyncQueue: not uploading — cloud not ready (offline or signed out); '
-          '${_pending.length} pending will retry in 30s');
+    late final Future<void> processing;
+    processing = _runProcessQueue().whenComplete(() {
       _processing = false;
-      // Signing in on a stable connection fires no connectivity event, so
-      // poll until the uploader becomes ready.
-      _retryTimer?.cancel();
-      _retryTimer = Timer(const Duration(seconds: 30), _processQueue);
-      return;
-    }
+      if (identical(_processingFuture, processing)) {
+        _processingFuture = null;
+      }
+    });
+    _processingFuture = processing;
+    return processing;
+  }
 
-    _dlog.log(LogCategory.network,
-        'SyncQueue: processing ${_pending.length} pending upload(s)');
-
-    while (_pending.isNotEmpty) {
-      final job = _pending.first;
-
-      // Set only on a genuinely successful upload; the callback runs AFTER the
-      // try below (see the note at the call site).
-      String? uploadedUrl;
-
-      try {
-        final file = File(job.localPath);
-        if (!file.existsSync()) {
-          // File deleted locally — drop the job
-          _dlog.log(LogCategory.network,
-              'SyncQueue: dropped line=${job.lineId} — local file gone (${job.localPath})');
-          _pending.remove(job);
-          _persist();
-          continue;
-        }
-
-        final sizeKb = (file.lengthSync() / 1024).toStringAsFixed(0);
-        _dlog.log(
-            LogCategory.network,
-            'SyncQueue: uploading line=${job.lineId} char="${job.characterName}" '
-            '${sizeKb}KB (attempt ${job.retryCount + 1})');
-        final url = await _uploader.upload(job);
-        await _uploader.saveMetadata(job, url);
-
-        // enqueue() may have replaced this job with a newer take while the
-        // upload was in flight — remove() then misses, and the newer take's
-        // local recording must NOT be stamped with this stale URL (a non-null
-        // remoteUrl would exclude it from every future sync).
-        final superseded = !_pending.remove(job);
-        _persist();
-        _dlog.log(
-            LogCategory.network,
-            'SyncQueue: uploaded line=${job.lineId} → $url'
-            '${superseded ? ' (superseded by a newer take, not marking local)' : ''}');
-        if (!superseded) uploadedUrl = url;
-      } catch (e) {
-        final superseded = !_pending.remove(job);
-        _persist();
-        if (superseded) {
-          // A newer take for this line is already queued; let it drive the
-          // retry instead of resurrecting this job.
-          _dlog.log(
-              LogCategory.network,
-              'SyncQueue: upload failed line=${job.lineId} but a newer take '
-              'is queued — dropping the old job');
-          continue;
-        }
-        job.retryCount++;
-
-        if (job.retryCount < 5) {
-          _dlog.logError(
-              LogCategory.network,
-              'SyncQueue: upload failed line=${job.lineId} '
-              '(attempt ${job.retryCount}/5, will retry)',
-              e);
-          _failed.add(job);
-          _persist();
-        } else {
-          _dlog.logError(
-              LogCategory.network,
-              'SyncQueue: GAVE UP on line=${job.lineId} after 5 attempts — '
-              'this recording will not reach castmates until re-recorded',
-              e);
-          onGaveUp?.call(job, e);
-        }
+  Future<void> _runProcessQueue() async {
+    try {
+      await _restorePersisted();
+      await _drainPersistence();
+      if (_mutations.isNotEmpty) return;
+      if (_pending.isEmpty) {
+        _scheduleUploadRetry();
+        return;
       }
 
-      // Outside the upload try ON PURPOSE. This callback does real work (a
-      // Drift write to stamp the remote URL); when it threw from inside the
-      // try, a SUCCESSFUL upload was reported as a failure — remove() had
-      // already taken the job off _pending, so the catch decided it had been
-      // superseded and logged "a newer take is queued — dropping the old job".
-      if (uploadedUrl != null) {
+      if (!_uploader.isReady) {
+        _retryTimer?.cancel();
+        _retryTimer = Timer(
+          const Duration(seconds: 30),
+          () => unawaited(_processQueue()),
+        );
+        return;
+      }
+
+      queueLoop:
+      while (_pending.isNotEmpty) {
+        final job = _pending.first;
+        Object? failure;
         try {
-          onUploaded?.call(job.productionId, job.lineId, uploadedUrl);
-        } catch (e) {
-          _dlog.logError(
-              LogCategory.error,
-              'SyncQueue: line=${job.lineId} uploaded fine, but recording the '
-              'remote URL locally failed — the next sync will re-upload it',
-              e);
+          while (job.orphanedRemoteUrls.isNotEmpty) {
+            final orphanedUrl = job.orphanedRemoteUrls.first;
+            await _uploader.discardUpload(job, orphanedUrl);
+            if (!_pending.contains(job)) continue queueLoop;
+            job.orphanedRemoteUrls.removeAt(0);
+            _queueUpsert(job, PersistedSyncJobState.pending);
+            await _drainPersistence();
+            if (_mutations.isNotEmpty) return;
+          }
+
+          if (job.remoteUrl == null && !File(job.localPath).existsSync()) {
+            _pending.remove(job);
+            _queueDelete(job.queueKey);
+            await _drainPersistence();
+            continue;
+          }
+
+          if (job.remoteUrl == null) {
+            final url = await _uploader.upload(job);
+            if (!_pending.contains(job)) {
+              SyncJob? replacement;
+              for (final candidate in _pending) {
+                if (candidate.queueKey == job.queueKey) {
+                  replacement = candidate;
+                  break;
+                }
+              }
+              if (replacement == null) {
+                await _uploader.discardUpload(job, url);
+              } else {
+                if (!replacement.orphanedRemoteUrls.contains(url)) {
+                  replacement.orphanedRemoteUrls.add(url);
+                }
+                _queueUpsert(replacement, PersistedSyncJobState.pending);
+                await _drainPersistence();
+                if (_mutations.isNotEmpty) return;
+              }
+              continue;
+            }
+            job.remoteUrl = url;
+            job.cloudMetadataSaved = false;
+            _queueUpsert(job, PersistedSyncJobState.pending);
+            await _drainPersistence();
+            if (_mutations.isNotEmpty) return;
+          }
+
+          if (!job.cloudMetadataSaved) {
+            await _uploader.saveMetadata(job, job.remoteUrl!);
+            if (!_pending.contains(job)) continue;
+            job.cloudMetadataSaved = true;
+            _queueUpsert(job, PersistedSyncJobState.pending);
+            await _drainPersistence();
+            if (_mutations.isNotEmpty) return;
+          }
+
+          await onUploaded?.call(job, job.remoteUrl!);
+        } catch (error) {
+          failure = error;
         }
-      }
-    }
 
-    _processing = false;
+        if (!_pending.remove(job)) continue;
+        if (failure == null) {
+          _queueDelete(job.queueKey);
+          await _drainPersistence();
+          _dlog.log(
+            LogCategory.network,
+            'SyncQueue: settled line=${job.lineId} → ${job.remoteUrl}',
+          );
+          continue;
+        }
 
-    // An enqueue() that landed between the loop's last emptiness check and
-    // the flag reset above saw _processing == true and skipped its kick —
-    // pick those jobs up now.
-    if (_pending.isNotEmpty) {
-      scheduleMicrotask(_processQueue);
-      return;
-    }
-
-    // Schedule retry for failed jobs with exponential backoff
-    if (_failed.isNotEmpty) {
-      final nextRetry = _failed.first;
-      final delay = Duration(seconds: 2 << nextRetry.retryCount.clamp(0, 4));
-      _dlog.log(
+        job.retryCount++;
+        _failed.add(job);
+        _queueUpsert(job, PersistedSyncJobState.failed);
+        await _drainPersistence();
+        _dlog.logError(
           LogCategory.network,
-          'SyncQueue: ${_failed.length} failed upload(s); retrying in '
-          '${delay.inSeconds}s');
-      _retryTimer?.cancel();
-      _retryTimer = Timer(delay, () {
-        _pending.addAll(_failed);
-        _failed.clear();
-        _processQueue();
-      });
+          'SyncQueue: ${job.remoteUrl == null ? 'upload' : 'post-upload persistence'} '
+          'failed line=${job.lineId} (attempt ${job.retryCount}/5)',
+          failure,
+        );
+        if (job.retryCount >= 5) onGaveUp?.call(job, failure);
+      }
+    } catch (error) {
+      _lastPersistenceError = error;
+      _schedulePersistenceRetry();
+    }
+
+    // Persistence owns the retry cadence while any generation is dirty.
+    // Never hot-loop upload processing around its bounded backoff.
+    if (_mutations.isNotEmpty) return;
+
+    if (_pending.isNotEmpty) {
+      scheduleMicrotask(() => unawaited(_processQueue()));
+    } else {
+      _scheduleUploadRetry();
     }
   }
 
-  /// Immediately retry failed jobs without waiting for the backoff timer.
-  /// For tests.
+  void _scheduleUploadRetry() {
+    final retryable = _failed.where((job) => job.retryCount < 5).toList();
+    if (retryable.isEmpty) return;
+    final delay = Duration(
+      seconds: 2 << retryable.first.retryCount.clamp(0, 4),
+    );
+    _retryTimer?.cancel();
+    _retryTimer = Timer(delay, () {
+      for (final job in retryable) {
+        if (_failed.remove(job)) _pending.add(job);
+      }
+      unawaited(_processQueue());
+    });
+  }
+
   @visibleForTesting
   Future<void> retryNow() {
     _retryTimer?.cancel();
     _retryTimer = null;
+    for (final job in _failed) {
+      if (job.retryCount >= 5) job.retryCount = 0;
+    }
     _pending.addAll(_failed);
     _failed.clear();
     return _processQueue();
   }
 
-  /// Clear all queue state. For tests.
+  Future<void> _restorePersisted() {
+    if (_loaded) return Future.value();
+    final existing = _loadFuture;
+    if (existing != null) return existing;
+    final loading = _loadPersisted();
+    _loadFuture = loading;
+    return loading.catchError((Object error) {
+      if (identical(_loadFuture, loading)) _loadFuture = null;
+      throw error;
+    });
+  }
+
+  Future<void> _loadPersisted() async {
+    final rows = await _persistence.load();
+    final liveKeys = {
+      for (final job in _pending) job.queueKey,
+      for (final job in _failed) job.queueKey,
+    };
+    for (final row in rows) {
+      final job = row.job;
+      if (!liveKeys.add(job.queueKey)) continue;
+      if (job.remoteUrl == null && !File(job.localPath).existsSync()) {
+        _queueDelete(job.queueKey);
+        continue;
+      }
+      (row.state == PersistedSyncJobState.failed ? _failed : _pending).add(job);
+    }
+    _loaded = true;
+  }
+
+  void _queueUpsert(SyncJob job, PersistedSyncJobState state) {
+    final generation = ++_dirtyGeneration;
+    _mutations[job.queueKey] = _PersistenceMutation.upsert(
+      generation,
+      job.snapshot(),
+      state,
+    );
+    unawaited(_drainPersistence());
+  }
+
+  void _queueDelete(String key) {
+    final generation = ++_dirtyGeneration;
+    _mutations[key] = _PersistenceMutation.delete(generation);
+    unawaited(_drainPersistence());
+  }
+
+  Future<void> _drainPersistence() {
+    return _persistFuture ??= _runPersistence().whenComplete(() {
+      _persistFuture = null;
+    });
+  }
+
+  Future<void> _runPersistence() async {
+    try {
+      await _restorePersisted();
+      while (_mutations.isNotEmpty) {
+        final entry = _mutations.entries.first;
+        final mutation = entry.value;
+        try {
+          if (mutation.clear) {
+            await _persistence.clear();
+          } else if (mutation.job == null) {
+            await _persistence.delete(entry.key);
+          } else {
+            await _persistence.upsert(mutation.job!, mutation.state!);
+          }
+        } catch (error) {
+          _lastPersistenceError = error;
+          _schedulePersistenceRetry();
+          return;
+        }
+        if (identical(_mutations[entry.key], mutation)) {
+          _mutations.remove(entry.key);
+        }
+        _durableGeneration = mutation.generation > _durableGeneration
+            ? mutation.generation
+            : _durableGeneration;
+      }
+      _lastPersistenceError = null;
+      _persistenceFailureCount = 0;
+      _persistenceRetryTimer?.cancel();
+      _persistenceRetryTimer = null;
+    } catch (error) {
+      _lastPersistenceError = error;
+      _schedulePersistenceRetry();
+    }
+  }
+
+  void _schedulePersistenceRetry() {
+    _persistenceFailureCount++;
+    _dlog.logError(
+      LogCategory.error,
+      'SyncQueue: persistence unavailable; queue remains dirty',
+      _lastPersistenceError,
+    );
+    _persistenceRetryTimer?.cancel();
+    final exponent = _persistenceFailureCount < 5
+        ? _persistenceFailureCount
+        : 5;
+    final delay = _persistenceRetryDelay * (1 << exponent);
+    _persistenceRetryTimer = Timer(delay, () async {
+      await _drainPersistence();
+      if (_mutations.isEmpty && !_processing) unawaited(_processQueue());
+    });
+  }
+
+  /// Attempts to make the latest queue generation durable and reports failure
+  /// instead of silently treating an in-memory queue as persisted.
+  @visibleForTesting
+  Future<void> flushPersistence() async {
+    await _restorePersisted();
+    _persistenceRetryTimer?.cancel();
+    _persistenceRetryTimer = null;
+    await _drainPersistence();
+    if (_mutations.isNotEmpty) {
+      throw StateError(
+        'Sync queue is not durable through generation $_dirtyGeneration: '
+        '$_lastPersistenceError',
+      );
+    }
+  }
+
   @visibleForTesting
   void reset() {
     _pending.clear();
@@ -500,9 +796,11 @@ class SyncQueue {
     _retryTimer?.cancel();
     _retryTimer = null;
     _processing = false;
-    // Mark loaded so the persist below writes the CLEARED state instead of
-    // first re-importing the very file we're clearing.
     _loaded = true;
-    _persist();
+    final generation = ++_dirtyGeneration;
+    _mutations
+      ..clear()
+      ..['__clear__'] = _PersistenceMutation.clear(generation);
+    unawaited(_drainPersistence());
   }
 }

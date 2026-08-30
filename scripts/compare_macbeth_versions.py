@@ -10,9 +10,11 @@ Usage:
     python3 scripts/compare_macbeth_versions.py
 """
 
+from difflib import SequenceMatcher
+from pathlib import Path
 import re
 import sys
-from pathlib import Path
+from typing import Optional
 
 SAMPLE_DIR = Path(__file__).parent.parent / 'sample-scripts'
 
@@ -46,13 +48,69 @@ def get_dialogue_blocks(text: str) -> list[tuple[str, str]]:
     return blocks
 
 
+DialogueBlock = tuple[str, str]
+AlignedBlock = tuple[str, Optional[DialogueBlock], Optional[DialogueBlock]]
+
+
+def _block_key(block: DialogueBlock) -> tuple[str, str]:
+    """Build a stable cue key while ignoring punctuation-only edition changes."""
+    character, text = block
+    normalized_character = re.sub(r"[^a-z0-9]", "", character.casefold())
+    normalized_words = re.findall(r"[a-z0-9]+", text.casefold())
+    return normalized_character, " ".join(normalized_words[:8])
+
+
+def align_dialogue_blocks(
+    left: list[DialogueBlock],
+    right: list[DialogueBlock],
+) -> list[AlignedBlock]:
+    """Sequence-align dialogue, exposing edition insertions and deletions."""
+    matcher = SequenceMatcher(
+        None,
+        [_block_key(block) for block in left],
+        [_block_key(block) for block in right],
+        autojunk=False,
+    )
+    aligned: list[AlignedBlock] = []
+    for tag, left_start, left_end, right_start, right_end in matcher.get_opcodes():
+        left_slice = left[left_start:left_end]
+        right_slice = right[right_start:right_end]
+        if tag == "equal":
+            aligned.extend(
+                ("match", left_block, right_block)
+                for left_block, right_block in zip(left_slice, right_slice)
+            )
+            continue
+        if tag == "delete":
+            aligned.extend(("delete", block, None) for block in left_slice)
+            continue
+        if tag == "insert":
+            aligned.extend(("insert", None, block) for block in right_slice)
+            continue
+
+        paired_count = min(len(left_slice), len(right_slice))
+        aligned.extend(
+            ("replace", left_slice[index], right_slice[index])
+            for index in range(paired_count)
+        )
+        aligned.extend(
+            ("delete", block, None)
+            for block in left_slice[paired_count:]
+        )
+        aligned.extend(
+            ("insert", None, block)
+            for block in right_slice[paired_count:]
+        )
+    return aligned
+
+
 def main():
     # Load Gutenberg TXT
     gut_path = SAMPLE_DIR / 'macbeth-pg1533-images-3.txt'
     if not gut_path.exists():
         print(f"Error: {gut_path} not found")
         sys.exit(1)
-    gutenberg = gut_path.read_text()
+    gutenberg = gut_path.read_text(encoding="utf-8")
 
     # Load Folger converted text
     fol_path = SAMPLE_DIR / 'macbeth_folger_converted.txt'
@@ -70,7 +128,7 @@ def main():
             print(result.stderr)
             sys.exit(1)
 
-    folger = fol_path.read_text()
+    folger = fol_path.read_text(encoding="utf-8")
 
     # Compare characters
     gut_chars = get_characters(gutenberg)
@@ -117,16 +175,28 @@ def main():
     print(f"\n--- Scene 1 Dialogue Comparison ---")
     gut_blocks = get_dialogue_blocks(gutenberg)
     fol_blocks = get_dialogue_blocks(folger)
+    aligned_blocks = align_dialogue_blocks(gut_blocks, fol_blocks)
 
-    # Find Scene 1 blocks (first 10 in both)
     print(f"\n{'#':>3}  {'Gutenberg':30s}  {'Folger':30s}  Match")
-    print(f"{'─'*3}  {'─'*30}  {'─'*30}  {'─'*5}")
-    for i in range(min(12, len(gut_blocks), len(fol_blocks))):
-        gc, gt = gut_blocks[i]
-        fc, ft = fol_blocks[i]
-        char_match = "✓" if gc == fc else "≠"
-        text_sim = "~" if gt[:20] == ft[:20] else "≠"
-        print(f"{i+1:3d}  {gc + ': ' + gt[:20]:30s}  {fc + ': ' + ft[:20]:30s}  {char_match}{text_sim}")
+    print(f"{'─'*3}  {'─'*30}  {'─'*30}  {'─'*8}")
+    for index, (status, gut_block, fol_block) in enumerate(aligned_blocks[:12], 1):
+        gut_display = (
+            f"{gut_block[0]}: {gut_block[1][:20]}" if gut_block else "—"
+        )
+        fol_display = (
+            f"{fol_block[0]}: {fol_block[1][:20]}" if fol_block else "—"
+        )
+        if status == "match":
+            marker = "✓~"
+        elif status == "delete":
+            marker = "GUT only"
+        elif status == "insert":
+            marker = "FOL only"
+        else:
+            marker = "≠"
+        print(
+            f"{index:3d}  {gut_display:30s}  {fol_display:30s}  {marker}"
+        )
 
     # Summary
     print(f"\n--- Summary ---")

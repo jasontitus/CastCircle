@@ -49,8 +49,7 @@ class _ProductionHubScreenState extends ConsumerState<ProductionHubScreen> {
     final saved = prefs.getString('rehearsal_character_${production.id}');
     if (saved != null && mounted) {
       final script = ref.read(currentScriptProvider);
-      if (script != null &&
-          script.characters.any((c) => c.name == saved)) {
+      if (script != null && script.characters.any((c) => c.name == saved)) {
         ref.read(rehearsalCharacterProvider.notifier).state = saved;
         return;
       }
@@ -128,15 +127,15 @@ class _ProductionHubScreenState extends ConsumerState<ProductionHubScreen> {
         content: Text(
           Platform.isAndroid
               ? 'CastCircle uses on-device AI for natural-sounding voices and '
-                  'to follow your lines as you speak during rehearsal. '
-                  'Download the models now (one-time) for the best '
-                  'experience.\n\n'
-                  'Without them, rehearsal audio and live line matching '
-                  'won\'t be available.'
+                    'to follow your lines as you speak during rehearsal. '
+                    'Download the models now (one-time) for the best '
+                    'experience.\n\n'
+                    'Without them, rehearsal audio and live line matching '
+                    'won\'t be available.'
               : 'CastCircle uses on-device AI for natural-sounding voices '
-                  'during rehearsal. Download the voice models now (~180 MB, '
-                  'one-time) for the best experience.\n\n'
-                  'Without them, rehearsal audio won\'t be available.',
+                    'during rehearsal. Download the voice models now (~180 MB, '
+                    'one-time) for the best experience.\n\n'
+                    'Without them, rehearsal audio won\'t be available.',
         ),
         actions: [
           TextButton(
@@ -163,10 +162,10 @@ class _ProductionHubScreenState extends ConsumerState<ProductionHubScreen> {
     final script = ref.watch(currentScriptProvider);
     final myCharacter = ref.watch(rehearsalCharacterProvider);
 
-    debugPrint('ProductionHub.build: production=${production?.title}, script=${script?.lines.length} lines, char=$myCharacter');
-
     if (production == null) {
-      debugPrint('ProductionHub.build: production is NULL — showing placeholder');
+      debugPrint(
+        'ProductionHub.build: production is NULL — showing placeholder',
+      );
       return Scaffold(
         appBar: AppBar(title: const Text('Production')),
         body: const Center(child: Text('No production selected')),
@@ -216,21 +215,29 @@ class _ProductionHubScreenState extends ConsumerState<ProductionHubScreen> {
                 _checkModels();
               },
               child: Padding(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 16,
+                  vertical: 12,
+                ),
                 child: Row(
                   children: [
-                    Icon(Icons.download,
-                        color: theme.colorScheme.onTertiaryContainer),
+                    Icon(
+                      Icons.download,
+                      color: theme.colorScheme.onTertiaryContainer,
+                    ),
                     const SizedBox(width: 12),
                     Expanded(
-                      child: Text('AI models not downloaded — tap to download',
-                          style: theme.textTheme.bodySmall?.copyWith(
-                              color:
-                                  theme.colorScheme.onTertiaryContainer)),
+                      child: Text(
+                        'AI models not downloaded — tap to download',
+                        style: theme.textTheme.bodySmall?.copyWith(
+                          color: theme.colorScheme.onTertiaryContainer,
+                        ),
+                      ),
                     ),
-                    Icon(Icons.chevron_right,
-                        color: theme.colorScheme.onTertiaryContainer),
+                    Icon(
+                      Icons.chevron_right,
+                      color: theme.colorScheme.onTertiaryContainer,
+                    ),
                   ],
                 ),
               ),
@@ -246,45 +253,49 @@ class _ProductionHubScreenState extends ConsumerState<ProductionHubScreen> {
             children: [
               // Character dropdown (hidden in listen mode)
               if (mode != RehearsalMode.readthrough)
-              DropdownButtonFormField<String>(
-                value: script.characters.any((c) => c.name == myCharacter)
-                    ? myCharacter
-                    : null,
-                decoration: const InputDecoration(
-                  border: OutlineInputBorder(),
-                  contentPadding:
-                      EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                  hintText: 'Select your character',
-                  labelText: 'I am rehearsing as',
-                  isDense: true,
-                ),
-                items: script.characters.map((char) {
-                  final color = AppTheme.colorForCharacter(char.colorIndex);
-                  return DropdownMenuItem(
-                    value: char.name,
-                    child: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        CircleAvatar(
-                          backgroundColor: color,
-                          radius: 8,
-                        ),
-                        const SizedBox(width: 8),
-                        Flexible(child: Text(char.name, overflow: TextOverflow.ellipsis)),
-                        const SizedBox(width: 8),
-                        Text(
-                          '${char.lineCount} lines',
-                          style: theme.textTheme.bodySmall,
-                        ),
-                      ],
+                DropdownButtonFormField<String>(
+                  value: script.characters.any((c) => c.name == myCharacter)
+                      ? myCharacter
+                      : null,
+                  decoration: const InputDecoration(
+                    border: OutlineInputBorder(),
+                    contentPadding: EdgeInsets.symmetric(
+                      horizontal: 12,
+                      vertical: 8,
                     ),
-                  );
-                }).toList(),
-                onChanged: (value) {
-                  ref.read(rehearsalCharacterProvider.notifier).state = value;
-                  _saveCharacterChoice(value);
-                },
-              ),
+                    hintText: 'Select your character',
+                    labelText: 'I am rehearsing as',
+                    isDense: true,
+                  ),
+                  items: script.characters.map((char) {
+                    final color = AppTheme.colorForCharacter(char.colorIndex);
+                    return DropdownMenuItem(
+                      value: char.name,
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          CircleAvatar(backgroundColor: color, radius: 8),
+                          const SizedBox(width: 8),
+                          Flexible(
+                            child: Text(
+                              char.name,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ),
+                          const SizedBox(width: 8),
+                          Text(
+                            '${char.lineCount} lines',
+                            style: theme.textTheme.bodySmall,
+                          ),
+                        ],
+                      ),
+                    );
+                  }).toList(),
+                  onChanged: (value) {
+                    ref.read(rehearsalCharacterProvider.notifier).state = value;
+                    _saveCharacterChoice(value);
+                  },
+                ),
               const SizedBox(height: 12),
               // Mode toggle + fast mode
               Row(
@@ -328,8 +339,8 @@ class _ProductionHubScreenState extends ConsumerState<ProductionHubScreen> {
                         ? 'Fast mode ON'
                         : 'Fast mode OFF',
                     onPressed: () {
-                      ref.read(fastModeEnabledProvider.notifier).state =
-                          !ref.read(fastModeEnabledProvider);
+                      ref.read(fastModeEnabledProvider.notifier).state = !ref
+                          .read(fastModeEnabledProvider);
                     },
                   ),
                 ],
@@ -353,8 +364,7 @@ class _ProductionHubScreenState extends ConsumerState<ProductionHubScreen> {
             height: 48,
             child: ListView(
               scrollDirection: Axis.horizontal,
-              padding:
-                  const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
               children: [
                 FilterChip(
                   label: const Text('All Acts'),
@@ -362,23 +372,24 @@ class _ProductionHubScreenState extends ConsumerState<ProductionHubScreen> {
                   onSelected: (_) => setState(() => _filterAct = null),
                 ),
                 const SizedBox(width: 8),
-                ...script.acts.map((act) => Padding(
-                      padding: const EdgeInsets.only(right: 8),
-                      child: FilterChip(
-                        label: Text(act),
-                        selected: _filterAct == act,
-                        onSelected: (_) => setState(
-                            () => _filterAct = _filterAct == act ? null : act),
+                ...script.acts.map(
+                  (act) => Padding(
+                    padding: const EdgeInsets.only(right: 8),
+                    child: FilterChip(
+                      label: Text(act),
+                      selected: _filterAct == act,
+                      onSelected: (_) => setState(
+                        () => _filterAct = _filterAct == act ? null : act,
                       ),
-                    )),
+                    ),
+                  ),
+                ),
               ],
             ),
           ),
 
         // ── Scene cards (scrollable) ──
-        Expanded(
-          child: _buildSceneList(context, script, myCharacter),
-        ),
+        Expanded(child: _buildSceneList(context, script, myCharacter)),
       ],
     );
   }
@@ -388,7 +399,9 @@ class _ProductionHubScreenState extends ConsumerState<ProductionHubScreen> {
 
   /// scene.id → (dialogue count, my-line count), one pass per scene.
   Map<String, (int, int)> _memoSceneCounts(
-      ParsedScript script, String? myCharacter) {
+    ParsedScript script,
+    String? myCharacter,
+  ) {
     final key = (script.lines, script.scenes, myCharacter);
     if (_sceneCountsCache != null &&
         identical(_sceneCountsKey?.$1, key.$1) &&
@@ -444,8 +457,7 @@ class _ProductionHubScreenState extends ConsumerState<ProductionHubScreen> {
         final scene = scenes[index];
         final isMyScene =
             myCharacter != null && scene.characters.contains(myCharacter);
-        final (totalDialogue, myLineCount) =
-            sceneCounts[scene.id] ?? (0, 0);
+        final (totalDialogue, myLineCount) = sceneCounts[scene.id] ?? (0, 0);
 
         return Card(
           margin: const EdgeInsets.only(bottom: 12),
@@ -456,17 +468,15 @@ class _ProductionHubScreenState extends ConsumerState<ProductionHubScreen> {
               context.push('/rehearsal');
             },
             child: Container(
-              padding:
-                  const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
               decoration: BoxDecoration(
                 border: Border(
                   left: BorderSide(
                     color: isMyScene
                         ? Theme.of(context).colorScheme.primary
-                        : Theme.of(context)
-                            .colorScheme
-                            .outline
-                            .withValues(alpha: 0.3),
+                        : Theme.of(
+                            context,
+                          ).colorScheme.outline.withValues(alpha: 0.3),
                     width: 4,
                   ),
                 ),
@@ -479,21 +489,20 @@ class _ProductionHubScreenState extends ConsumerState<ProductionHubScreen> {
                       Expanded(
                         child: Text(
                           scene.sceneName,
-                          style: Theme.of(context)
-                              .textTheme
-                              .titleMedium
+                          style: Theme.of(context).textTheme.titleMedium
                               ?.copyWith(fontWeight: FontWeight.bold),
                         ),
                       ),
                       if (isMyScene)
                         Chip(
                           label: Text('$myLineCount lines'),
-                          backgroundColor:
-                              Theme.of(context).colorScheme.primaryContainer,
+                          backgroundColor: Theme.of(
+                            context,
+                          ).colorScheme.primaryContainer,
                           labelStyle: TextStyle(
-                            color: Theme.of(context)
-                                .colorScheme
-                                .onPrimaryContainer,
+                            color: Theme.of(
+                              context,
+                            ).colorScheme.onPrimaryContainer,
                             fontSize: 12,
                           ),
                           visualDensity: VisualDensity.compact,
@@ -504,23 +513,21 @@ class _ProductionHubScreenState extends ConsumerState<ProductionHubScreen> {
                     const SizedBox(height: 4),
                     Row(
                       children: [
-                        Icon(Icons.place,
-                            size: 14,
-                            color: Theme.of(context)
-                                .colorScheme
-                                .onSurface
-                                .withValues(alpha: 0.5)),
+                        Icon(
+                          Icons.place,
+                          size: 14,
+                          color: Theme.of(
+                            context,
+                          ).colorScheme.onSurface.withValues(alpha: 0.5),
+                        ),
                         const SizedBox(width: 4),
                         Text(
                           scene.location,
-                          style: Theme.of(context)
-                              .textTheme
-                              .bodySmall
+                          style: Theme.of(context).textTheme.bodySmall
                               ?.copyWith(
-                                color: Theme.of(context)
-                                    .colorScheme
-                                    .onSurface
-                                    .withValues(alpha: 0.6),
+                                color: Theme.of(
+                                  context,
+                                ).colorScheme.onSurface.withValues(alpha: 0.6),
                               ),
                         ),
                       ],
@@ -539,7 +546,9 @@ class _ProductionHubScreenState extends ConsumerState<ProductionHubScreen> {
                       final isMe = charName == myCharacter;
                       return Container(
                         padding: const EdgeInsets.symmetric(
-                            horizontal: 8, vertical: 2),
+                          horizontal: 8,
+                          vertical: 2,
+                        ),
                         decoration: BoxDecoration(
                           color: isMe
                               ? color.withValues(alpha: 0.3)
@@ -554,8 +563,9 @@ class _ProductionHubScreenState extends ConsumerState<ProductionHubScreen> {
                           style: TextStyle(
                             fontSize: 11,
                             color: color,
-                            fontWeight:
-                                isMe ? FontWeight.bold : FontWeight.normal,
+                            fontWeight: isMe
+                                ? FontWeight.bold
+                                : FontWeight.normal,
                           ),
                         ),
                       );
@@ -565,11 +575,10 @@ class _ProductionHubScreenState extends ConsumerState<ProductionHubScreen> {
                   Text(
                     '$totalDialogue lines total',
                     style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                          color: Theme.of(context)
-                              .colorScheme
-                              .onSurface
-                              .withValues(alpha: 0.4),
-                        ),
+                      color: Theme.of(
+                        context,
+                      ).colorScheme.onSurface.withValues(alpha: 0.4),
+                    ),
                   ),
                 ],
               ),
@@ -601,20 +610,17 @@ class _ProductionHubScreenState extends ConsumerState<ProductionHubScreen> {
                 Text(
                   production.title,
                   style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                        color: Theme.of(context)
-                            .colorScheme
-                            .onPrimaryContainer,
-                      ),
+                    color: Theme.of(context).colorScheme.onPrimaryContainer,
+                  ),
                 ),
                 const SizedBox(height: 4),
                 Text(
                   production.status.name.toUpperCase(),
                   style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                        color: Theme.of(context)
-                            .colorScheme
-                            .onPrimaryContainer
-                            .withValues(alpha: 0.7),
-                      ),
+                    color: Theme.of(
+                      context,
+                    ).colorScheme.onPrimaryContainer.withValues(alpha: 0.7),
+                  ),
                 ),
               ],
             ),
@@ -713,9 +719,9 @@ class _ProductionHubScreenState extends ConsumerState<ProductionHubScreen> {
       child: Text(
         title,
         style: Theme.of(context).textTheme.labelSmall?.copyWith(
-              color: Theme.of(context).colorScheme.primary,
-              fontWeight: FontWeight.bold,
-            ),
+          color: Theme.of(context).colorScheme.primary,
+          fontWeight: FontWeight.bold,
+        ),
       ),
     );
   }
@@ -741,10 +747,9 @@ class _ProductionHubScreenState extends ConsumerState<ProductionHubScreen> {
             Icon(
               Icons.description_outlined,
               size: 80,
-              color: Theme.of(context)
-                  .colorScheme
-                  .primary
-                  .withValues(alpha: 0.5),
+              color: Theme.of(
+                context,
+              ).colorScheme.primary.withValues(alpha: 0.5),
             ),
             const SizedBox(height: 24),
             Text(
@@ -755,11 +760,10 @@ class _ProductionHubScreenState extends ConsumerState<ProductionHubScreen> {
             Text(
               'Import a script to start rehearsing.',
               style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                    color: Theme.of(context)
-                        .colorScheme
-                        .onSurface
-                        .withValues(alpha: 0.6),
-                  ),
+                color: Theme.of(
+                  context,
+                ).colorScheme.onSurface.withValues(alpha: 0.6),
+              ),
             ),
             const SizedBox(height: 24),
             FilledButton.icon(
@@ -781,15 +785,16 @@ class _ProductionHubScreenState extends ConsumerState<ProductionHubScreen> {
       if (context.mounted) {
         ScaffoldMessenger.of(context).showAutoToast(
           const SnackBar(
-              content: Text('Script pushed to cloud'),
-              duration: Duration(seconds: 2)),
+            content: Text('Script pushed to cloud'),
+            duration: Duration(seconds: 2),
+          ),
         );
       }
     } catch (e) {
       if (context.mounted) {
-        ScaffoldMessenger.of(context).showAutoToast(
-          SnackBar(content: Text('Push failed: $e')),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showAutoToast(SnackBar(content: Text('Push failed: $e')));
       }
     }
   }
@@ -802,20 +807,25 @@ class _ProductionHubScreenState extends ConsumerState<ProductionHubScreen> {
       final cloudLines = await fetchCloudScriptLines(production.id);
       if (cloudLines == null || cloudLines.isEmpty) {
         if (context.mounted) {
-          ScaffoldMessenger.of(context).showAutoToast(
-            const SnackBar(content: Text('No script in cloud')),
-          );
+          ScaffoldMessenger.of(
+            context,
+          ).showAutoToast(const SnackBar(content: Text('No script in cloud')));
         }
         return;
       }
 
       final cloudScript = await buildParsedScriptWithCloudScenes(
-          production.title, cloudLines, production.id);
+        production.title,
+        cloudLines,
+        production.id,
+      );
       final localScript = ref.read(currentScriptProvider);
 
       if (localScript != null &&
-          diffScriptLines(localScript.lines, cloudScript.lines)
-              .every((diff) => diff.type == DiffType.unchanged)) {
+          diffScriptLines(
+            localScript.lines,
+            cloudScript.lines,
+          ).every((diff) => diff.type == DiffType.unchanged)) {
         if (context.mounted) {
           ScaffoldMessenger.of(context).showAutoToast(
             const SnackBar(content: Text('Local script is already up to date')),
@@ -836,9 +846,9 @@ class _ProductionHubScreenState extends ConsumerState<ProductionHubScreen> {
 
       if (!shouldReplaceLocal) {
         if (context.mounted) {
-          ScaffoldMessenger.of(context).showAutoToast(
-            const SnackBar(content: Text('Kept local script')),
-          );
+          ScaffoldMessenger.of(
+            context,
+          ).showAutoToast(const SnackBar(content: Text('Kept local script')));
         }
         return;
       }
@@ -852,14 +862,15 @@ class _ProductionHubScreenState extends ConsumerState<ProductionHubScreen> {
       if (context.mounted) {
         ScaffoldMessenger.of(context).showAutoToast(
           SnackBar(
-              content: Text('Loaded ${cloudLines.length} lines from cloud')),
+            content: Text('Loaded ${cloudLines.length} lines from cloud'),
+          ),
         );
       }
     } catch (e) {
       if (context.mounted) {
-        ScaffoldMessenger.of(context).showAutoToast(
-          SnackBar(content: Text('Sync failed: $e')),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showAutoToast(SnackBar(content: Text('Sync failed: $e')));
       }
     }
   }
@@ -906,9 +917,9 @@ class _ProductionHubScreenState extends ConsumerState<ProductionHubScreen> {
       );
     } catch (e) {
       if (!context.mounted) return;
-      ScaffoldMessenger.of(context).showAutoToast(
-        SnackBar(content: Text('Export failed: $e')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showAutoToast(SnackBar(content: Text('Export failed: $e')));
     }
   }
 }

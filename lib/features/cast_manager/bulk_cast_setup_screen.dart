@@ -12,7 +12,6 @@ import '../../data/models/script_models.dart';
 import '../../data/services/contact_picker_service.dart';
 import '../../data/services/debug_log_service.dart';
 import '../../data/services/deep_link_service.dart';
-import '../../data/services/supabase_service.dart';
 import '../../providers/production_providers.dart';
 import '../../core/toast.dart';
 
@@ -97,12 +96,12 @@ class _BulkCastSetupScreenState extends ConsumerState<BulkCastSetupScreen> {
             valueListenable: _filledTick,
             builder: (context, _, __) =>
                 unassigned.every((c) => _nameFor(c.name).text.trim().isEmpty)
-                    ? const SizedBox.shrink()
-                    : TextButton.icon(
-                        onPressed: _saving ? null : _saveAndShowInvites,
-                        icon: const Icon(Icons.check),
-                        label: const Text('Save'),
-                      ),
+                ? const SizedBox.shrink()
+                : TextButton.icon(
+                    onPressed: _saving ? null : _saveAndShowInvites,
+                    icon: const Icon(Icons.check),
+                    label: const Text('Save'),
+                  ),
           ),
         ],
       ),
@@ -248,79 +247,61 @@ class _BulkCastSetupScreenState extends ConsumerState<BulkCastSetupScreen> {
   Future<void> _pickContact(String charName) async {
     try {
       final contact = await ContactPickerService.instance.pickContact();
-      if (contact == null) return;
+      if (!mounted || contact == null) return;
 
       _nameFor(charName).text = contact.displayName;
       _contactFor(charName).text = contact.phone ?? contact.email ?? '';
       setState(() {});
-    } catch (e) {
-      debugPrint('Contact pick failed: $e');
+    } catch (_, stack) {
+      DebugLogService.instance.logError(
+        LogCategory.general,
+        'Contact picker failed',
+        null,
+        stack,
+      );
     }
   }
 
-  /// Characters whose cloud invitation failed in the last save — their join
-  /// links won't resolve until re-saved online.
+  /// Characters whose cloud invitation remains in the durable retry outbox.
+  /// These survive restarts and retry automatically after connectivity.
   final List<String> _failedCloudInvites = [];
 
   Future<void> _saveCastAssignments() async {
     final production = ref.read(currentProductionProvider);
     if (production == null) return;
-
-    final supa = SupabaseService.instance;
+    final notifier = ref.read(castMembersProvider.notifier);
     _failedCloudInvites.clear();
 
+    final localMembers = <CastMemberModel>[];
     for (final entry in _nameControllers.entries) {
-      final charName = entry.key;
       final name = entry.value.text.trim();
       if (name.isEmpty) continue;
-
-      final contact = _contactFor(charName).text.trim();
-
-      // Create in Supabase first so we can use its ID locally
-      String memberId = const Uuid().v4();
-      if (supa.isSignedIn) {
-        try {
-          final row = await supa.createCastInvitation(
-            productionId: production.id,
-            characterName: charName,
-            displayName: name,
-            contactInfo: contact.isNotEmpty ? contact : null,
-            role: 'actor',
-          );
-          memberId = row['id'] as String;
-        } catch (e) {
-          // The invite link for this character will point at a cloud row that
-          // doesn't exist — record it so the save summary can say so.
-          _failedCloudInvites.add(charName);
-          DebugLogService.instance.logError(LogCategory.network,
-              'Cloud cast invitation failed for "$name" ($charName)', e);
-        }
-      }
-
-      final member = CastMemberModel(
-        id: memberId,
-        productionId: production.id,
-        characterName: charName,
-        displayName: name,
-        contactInfo: contact.isNotEmpty ? contact : null,
-        role: CastRole.primary,
-        invitedAt: DateTime.now(),
+      final contact = _contactFor(entry.key).text.trim();
+      localMembers.add(
+        CastMemberModel(
+          id: const Uuid().v4(),
+          productionId: production.id,
+          characterName: entry.key,
+          displayName: name,
+          contactInfo: contact.isEmpty ? null : contact,
+          role: CastRole.primary,
+          invitedAt: DateTime.now(),
+        ),
       );
-
-      await ref.read(castMembersProvider.notifier).save(member);
     }
+
+    // One transaction persists local members and stable-id retry owners. The
+    // app-scoped pending-invitation notifier performs bounded cloud retries on
+    // startup and connectivity, so this screen never races a second sender.
+    await notifier.savePendingInvitations(localMembers);
+    final pending = await notifier.pendingInvitations();
+    _failedCloudInvites.addAll(
+      pending.map((invitation) => invitation.characterName),
+    );
   }
 
   Future<void> _saveAndShowInvites() async {
-    // Dismiss keyboard before showing the invite sheet
     FocusScope.of(context).unfocus();
-
-    setState(() => _saving = true);
-    await _saveCastAssignments();
-    setState(() => _saving = false);
-
-    if (!mounted) return;
-
     final saved = _filledCount;
     if (saved == 0) {
       ScaffoldMessenger.of(context).showAutoToast(
@@ -331,21 +312,41 @@ class _BulkCastSetupScreenState extends ConsumerState<BulkCastSetupScreen> {
       return;
     }
 
-    if (_failedCloudInvites.isNotEmpty) {
-      ScaffoldMessenger.of(context).showAutoToast(SnackBar(
-        content: Text('$saved actor(s) saved, but cloud invitations failed '
-            'for: ${_failedCloudInvites.join(', ')}. Their join links won\'t '
-            'work — re-save when back online.'),
-        duration: const Duration(seconds: 8),
-      ));
-    } else {
-      ScaffoldMessenger.of(
-        context,
-      ).showAutoToast(SnackBar(content: Text('$saved actor(s) saved')));
+    setState(() => _saving = true);
+    try {
+      await _saveCastAssignments();
+      if (!mounted) return;
+      if (_failedCloudInvites.isNotEmpty) {
+        ScaffoldMessenger.of(context).showAutoToast(
+          SnackBar(
+            content: Text(
+              '$saved actor(s) saved. Invitations remain pending '
+              'for: ${_failedCloudInvites.join(', ')}. They will retry '
+              'automatically when the connection returns.',
+            ),
+            duration: const Duration(seconds: 8),
+          ),
+        );
+      } else {
+        ScaffoldMessenger.of(
+          context,
+        ).showAutoToast(SnackBar(content: Text('$saved actor(s) saved')));
+      }
+      _showInviteLinksSheet();
+    } catch (_, stack) {
+      if (!mounted) return;
+      DebugLogService.instance.logError(
+        LogCategory.general,
+        'Bulk cast save failed',
+        null,
+        stack,
+      );
+      ScaffoldMessenger.of(context).showAutoToast(
+        const SnackBar(content: Text('Actors could not be saved. Try again.')),
+      );
+    } finally {
+      if (mounted) setState(() => _saving = false);
     }
-
-    // Show invite links sheet so director can share individually
-    _showInviteLinksSheet();
   }
 
   void _showInviteLinksSheet() {
@@ -355,11 +356,15 @@ class _BulkCastSetupScreenState extends ConsumerState<BulkCastSetupScreen> {
     if (joinCode.isEmpty) {
       // Every link would be castcircle://join?code= — rejected by the join
       // screen. Better no sheet than a sheet of dead links.
-      ScaffoldMessenger.of(context).showAutoToast(const SnackBar(
-        content: Text('This production has no join code yet — invite links '
-            'need one. Try again once the production has synced.'),
-        duration: Duration(seconds: 6),
-      ));
+      ScaffoldMessenger.of(context).showAutoToast(
+        const SnackBar(
+          content: Text(
+            'This production has no join code yet — invite links '
+            'need one. Try again once the production has synced.',
+          ),
+          duration: Duration(seconds: 6),
+        ),
+      );
       return;
     }
 

@@ -55,15 +55,38 @@ class KokoroOnnxService {
   /// new voices). Source: sherpa-onnx model docs. The English voices the app
   /// offers all live in 0-27.
   static const voiceIds = <String, int>{
-    'af_alloy': 0, 'af_aoede': 1, 'af_bella': 2, 'af_heart': 3,
-    'af_jessica': 4, 'af_kore': 5, 'af_nicole': 6, 'af_nova': 7,
-    'af_river': 8, 'af_sarah': 9, 'af_sky': 10,
-    'am_adam': 11, 'am_echo': 12, 'am_eric': 13, 'am_fenrir': 14,
-    'am_liam': 15, 'am_michael': 16, 'am_onyx': 17, 'am_puck': 18,
+    'af_alloy': 0,
+    'af_aoede': 1,
+    'af_bella': 2,
+    'af_heart': 3,
+    'af_jessica': 4,
+    'af_kore': 5,
+    'af_nicole': 6,
+    'af_nova': 7,
+    'af_river': 8,
+    'af_sarah': 9,
+    'af_sky': 10,
+    'am_adam': 11,
+    'am_echo': 12,
+    'am_eric': 13,
+    'am_fenrir': 14,
+    'am_liam': 15,
+    'am_michael': 16,
+    'am_onyx': 17,
+    'am_puck': 18,
     'am_santa': 19,
-    'bf_alice': 20, 'bf_emma': 21, 'bf_isabella': 22, 'bf_lily': 23,
-    'bm_daniel': 24, 'bm_fable': 25, 'bm_george': 26, 'bm_lewis': 27,
+    'bf_alice': 20,
+    'bf_emma': 21,
+    'bf_isabella': 22,
+    'bf_lily': 23,
+    'bm_daniel': 24,
+    'bm_fable': 25,
+    'bm_george': 26,
+    'bm_lewis': 27,
   };
+
+  /// Resolve a persisted/product voice ID without silently changing speakers.
+  static int? speakerIdForVoice(String voice) => voiceIds[voice];
 
   // Incremented by stop(); a start that began before the stop must not
   // resurrect state afterwards.
@@ -96,16 +119,19 @@ class KokoroOnnxService {
     final ready = Completer<bool>();
     late final Isolate spawned;
     try {
-      spawned = await Isolate.spawn(_isolateMain, _IsolateArgs(
-        sendPort: fromIsolate.sendPort,
-        model: paths.model,
-        voices: paths.voices,
-        tokens: paths.tokens,
-        dataDir: paths.dataDir,
-        lexicon: paths.lexicon,
-        tmpDir: tmpDir,
-        cancelBelowAddr: _cancelBelow.address,
-      ));
+      spawned = await Isolate.spawn(
+        _isolateMain,
+        _IsolateArgs(
+          sendPort: fromIsolate.sendPort,
+          model: paths.model,
+          voices: paths.voices,
+          tokens: paths.tokens,
+          dataDir: paths.dataDir,
+          lexicon: paths.lexicon,
+          tmpDir: tmpDir,
+          cancelBelowAddr: _cancelBelow.address,
+        ),
+      );
     } catch (e) {
       _dlog.logError(LogCategory.tts, 'KokoroOnnx: isolate spawn failed', e);
       fromIsolate.close();
@@ -119,57 +145,66 @@ class KokoroOnnxService {
     }
     _isolate = spawned;
 
-    _sub = fromIsolate.listen((msg) {
-      if (epoch != _epoch) return; // stopped since — ignore everything
-      if (msg is SendPort) {
-        _toIsolate = msg;
-      } else if (msg is Map) {
-        if (msg['ready'] == true && !ready.isCompleted) {
-          ready.complete(true);
-        } else if (msg.containsKey('initError')) {
-          _dlog.logError(LogCategory.tts, 'KokoroOnnx: ${msg['initError']}');
-          if (!ready.isCompleted) ready.complete(false);
-        } else if (msg.containsKey('seq')) {
-          final req = _inFlight;
-          _inFlight = null;
-          if (req != null && req.seq == msg['seq']) {
-            if (msg.containsKey('error')) {
-              _dlog.logError(
-                  LogCategory.tts, 'KokoroOnnx synth failed: ${msg['error']}');
-              req.completer.complete(null);
-            } else if (msg['aborted'] == true) {
-              req.completer.complete(null);
-            } else {
-              req.completer.complete(msg['path'] as String?);
+    _sub = fromIsolate.listen(
+      (msg) {
+        if (epoch != _epoch) return; // stopped since — ignore everything
+        if (msg is SendPort) {
+          _toIsolate = msg;
+        } else if (msg is Map) {
+          if (msg['ready'] == true && !ready.isCompleted) {
+            ready.complete(true);
+          } else if (msg.containsKey('initError')) {
+            _dlog.logError(LogCategory.tts, 'KokoroOnnx: ${msg['initError']}');
+            if (!ready.isCompleted) ready.complete(false);
+          } else if (msg.containsKey('seq')) {
+            final req = _inFlight;
+            _inFlight = null;
+            if (req != null && req.seq == msg['seq']) {
+              if (msg.containsKey('error')) {
+                _dlog.logError(
+                  LogCategory.tts,
+                  'KokoroOnnx synth failed: ${msg['error']}',
+                );
+                req.completer.complete(null);
+              } else if (msg['aborted'] == true) {
+                req.completer.complete(null);
+              } else {
+                req.completer.complete(msg['path'] as String?);
+              }
             }
+            _pump();
           }
-          _pump();
         }
-      }
-    }, onDone: () {
-      // The isolate died on its own (native crash in sherpa, OS kill): the
-      // port stream just ends. Without this, every in-flight and queued
-      // synthesize() awaits its completer forever and TTS silently hangs.
-      if (epoch != _epoch) return;
-      _dlog.logError(LogCategory.tts,
-          'KokoroOnnx: synthesis isolate died — failing pending requests');
-      final inFlight = _inFlight;
-      _inFlight = null;
-      if (inFlight != null && !inFlight.completer.isCompleted) {
-        inFlight.completer.complete(null);
-      }
-      for (final req in _queue) {
-        if (!req.completer.isCompleted) req.completer.complete(null);
-      }
-      _queue.clear();
-      _toIsolate = null;
-      if (!ready.isCompleted) ready.complete(false);
-    });
+      },
+      onDone: () {
+        // The isolate died on its own (native crash in sherpa, OS kill): the
+        // port stream just ends. Without this, every in-flight and queued
+        // synthesize() awaits its completer forever and TTS silently hangs.
+        if (epoch != _epoch) return;
+        _dlog.logError(
+          LogCategory.tts,
+          'KokoroOnnx: synthesis isolate died — failing pending requests',
+        );
+        final inFlight = _inFlight;
+        _inFlight = null;
+        if (inFlight != null && !inFlight.completer.isCompleted) {
+          inFlight.completer.complete(null);
+        }
+        for (final req in _queue) {
+          if (!req.completer.isCompleted) req.completer.complete(null);
+        }
+        _queue.clear();
+        _toIsolate = null;
+        if (!ready.isCompleted) ready.complete(false);
+      },
+    );
 
     // Model load reads ~180 MB from disk — allow a slow first open (cold
     // flash on a low-end phone, or an emulator's qcow, can exceed a minute).
-    final ok = await ready.future
-        .timeout(const Duration(seconds: 150), onTimeout: () => false);
+    final ok = await ready.future.timeout(
+      const Duration(seconds: 150),
+      onTimeout: () => false,
+    );
     if (epoch != _epoch) return false; // stopped while loading
     if (!ok) {
       _dlog.logError(LogCategory.tts, 'KokoroOnnx: engine failed to start');
@@ -188,8 +223,17 @@ class KokoroOnnxService {
   /// spoken): it cancels older queued urgent requests and aborts the current
   /// generation so it runs next. Prefetches are non-urgent: they queue behind
   /// everything and are the natural casualty of an urgent arrival.
-  Future<String?> synthesize(String rawText,
-      {required String voice, double speed = 1.0, bool urgent = false}) async {
+  Future<String?> synthesize(
+    String rawText, {
+    required String voice,
+    double speed = 1.0,
+    bool urgent = false,
+  }) async {
+    final sid = speakerIdForVoice(voice);
+    if (sid == null) {
+      _dlog.logError(LogCategory.tts, 'KokoroOnnx: unknown voice ID "$voice"');
+      return null;
+    }
     // Fix the heteronyms espeak-ng reads wrong ("Long live the King" as
     // /laɪv/) BEFORE the cache key is computed, so the key follows what will
     // actually be spoken: applying it later would keep serving the
@@ -206,7 +250,8 @@ class KokoroOnnxService {
       // removing this would silently turn pruning into FIFO). Async and
       // unawaited: a metadata write has no business on the play path.
       unawaited(
-          File(cachePath).setLastModified(DateTime.now()).catchError((_) {}));
+        File(cachePath).setLastModified(DateTime.now()).catchError((_) {}),
+      );
       return cachePath;
     }
 
@@ -216,7 +261,7 @@ class KokoroOnnxService {
     final req = _Req(
       seq: _nextSeq++,
       text: text,
-      sid: voiceIds[voice] ?? voiceIds['af_heart']!,
+      sid: sid,
       speed: speed,
       urgent: urgent,
     );
@@ -265,8 +310,9 @@ class KokoroOnnxService {
         _cacheDirPath = dir;
         _schedulePrune(dir);
       }
-      final key =
-          crypto.sha1.convert(utf8.encode('$text|$voice|$speed')).toString();
+      final key = crypto.sha1
+          .convert(utf8.encode('$text|$voice|$speed'))
+          .toString();
       return '$dir/$key.wav';
     } catch (_) {
       return null; // cacheless operation is always safe
@@ -283,38 +329,42 @@ class KokoroOnnxService {
     // NB: the closure runs in a fresh isolate — no singletons (DebugLog) in
     // there; the summary comes back as the return value and is logged here.
     Isolate.run<int>(() {
-      try {
-        const maxBytes = 150 * 1024 * 1024;
-        const lowWater = 100 * 1024 * 1024;
-        final entries = <(File, DateTime, int)>[];
-        var total = 0;
-        for (final e in Directory(dir).listSync()) {
-          if (e is! File) continue;
-          final stat = e.statSync();
-          entries.add((e, stat.modified, stat.size));
-          total += stat.size;
-        }
-        if (total <= maxBytes) return 0;
-        entries.sort((a, b) => a.$2.compareTo(b.$2)); // oldest first
-        var removed = 0;
-        for (final (file, _, size) in entries) {
-          if (total <= lowWater) break;
           try {
-            file.deleteSync();
-            total -= size;
-            removed++;
-          } catch (_) {}
-        }
-        return removed;
-      } catch (_) {
-        return 0;
-      }
-    }).then((removed) {
-      if (removed > 0) {
-        DebugLogService.instance.log(LogCategory.tts,
-            'KokoroOnnx: pruned $removed cached WAVs (cache was over 150MB)');
-      }
-    }).catchError((_) {});
+            const maxBytes = 150 * 1024 * 1024;
+            const lowWater = 100 * 1024 * 1024;
+            final entries = <(File, DateTime, int)>[];
+            var total = 0;
+            for (final e in Directory(dir).listSync()) {
+              if (e is! File) continue;
+              final stat = e.statSync();
+              entries.add((e, stat.modified, stat.size));
+              total += stat.size;
+            }
+            if (total <= maxBytes) return 0;
+            entries.sort((a, b) => a.$2.compareTo(b.$2)); // oldest first
+            var removed = 0;
+            for (final (file, _, size) in entries) {
+              if (total <= lowWater) break;
+              try {
+                file.deleteSync();
+                total -= size;
+                removed++;
+              } catch (_) {}
+            }
+            return removed;
+          } catch (_) {
+            return 0;
+          }
+        })
+        .then((removed) {
+          if (removed > 0) {
+            DebugLogService.instance.log(
+              LogCategory.tts,
+              'KokoroOnnx: pruned $removed cached WAVs (cache was over 150MB)',
+            );
+          }
+        })
+        .catchError((_) {});
   }
 
   /// Send the next queued request if the isolate is idle.
@@ -397,22 +447,24 @@ Future<void> _isolateMain(_IsolateArgs args) async {
   sherpa.OfflineTts tts;
   try {
     sherpa.initBindings();
-    tts = sherpa.OfflineTts(sherpa.OfflineTtsConfig(
-      model: sherpa.OfflineTtsModelConfig(
-        kokoro: sherpa.OfflineTtsKokoroModelConfig(
-          model: args.model,
-          voices: args.voices,
-          tokens: args.tokens,
-          dataDir: args.dataDir,
-          lexicon: args.lexicon,
-          // No dictDir: jieba is zh-only and excluded from the shipped pack.
+    tts = sherpa.OfflineTts(
+      sherpa.OfflineTtsConfig(
+        model: sherpa.OfflineTtsModelConfig(
+          kokoro: sherpa.OfflineTtsKokoroModelConfig(
+            model: args.model,
+            voices: args.voices,
+            tokens: args.tokens,
+            dataDir: args.dataDir,
+            lexicon: args.lexicon,
+            // No dictDir: jieba is zh-only and excluded from the shipped pack.
+          ),
+          // Synthesis is the pacing item during rehearsal (RTF ≈ 0.9 on a
+          // mid-range phone at 4 threads vs 1.34 at 2) — use the cores.
+          numThreads: 4,
+          debug: false,
         ),
-        // Synthesis is the pacing item during rehearsal (RTF ≈ 0.9 on a
-        // mid-range phone at 4 threads vs 1.34 at 2) — use the cores.
-        numThreads: 4,
-        debug: false,
       ),
-    ));
+    );
   } catch (e) {
     args.sendPort.send({'initError': 'OfflineTts init failed: $e'});
     return;
@@ -500,8 +552,11 @@ void _writeWav(String path, Float32List samples, int rate) {
   b.setUint32(40, n * 2, Endian.little);
   for (var i = 0; i < n; i++) {
     final v = (samples[i] * 32767).round();
-    b.setInt16(44 + i * 2, v < -32768 ? -32768 : (v > 32767 ? 32767 : v),
-        Endian.little);
+    b.setInt16(
+      44 + i * 2,
+      v < -32768 ? -32768 : (v > 32767 ? 32767 : v),
+      Endian.little,
+    );
   }
   File(path).writeAsBytesSync(b.buffer.asUint8List());
 }

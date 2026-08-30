@@ -17,8 +17,7 @@ enum LogCategory {
   firebase('FIR', '🔥'),
   general('GEN', '📋'),
   ai('AI', '✨'),
-  error('ERR', '❌'),
-  ;
+  error('ERR', '❌');
 
   const LogCategory(this.tag, this.icon);
   final String tag;
@@ -52,7 +51,9 @@ class LogEntry {
       final tagEnd = line.indexOf('] ', isoEnd);
       if (tagEnd < 0) return null;
       final tag = line.substring(isoEnd + 2, tagEnd);
-      final message = line.substring(tagEnd + 2);
+      final message = DebugLogService.redactForSupportLog(
+        line.substring(tagEnd + 2),
+      );
       final category = LogCategory.values.firstWhere(
         (c) => c.tag == tag,
         orElse: () => LogCategory.general,
@@ -83,6 +84,78 @@ class DebugLogService {
   static const int maxEntries = 500;
   static const _flushInterval = Duration(seconds: 30);
   static const _memoryInterval = Duration(seconds: 10);
+  static final _sensitiveKeyValue = RegExp(
+    r'''(?:"?)\b(join[_ -]?code|code|actor(?:[_ -]?name)?|contact(?:[_ -]?(?:info|name))?|char(?:acter)?(?:[_ -]?name)?|display[_ -]?name|name|production[_ -]?(?:title|name)|title|dialogue|heard|script(?:[_ -]?(?:text|content))?|(?:local[_ -]?|storage[_ -]?|object[_ -]?)?path|raw[_ -]?(?:uri|url)|uri)(?:"?)\s*[:=]\s*(?:"[^"]*"|'[^']*'|[^,\s}\])]+)''',
+    caseSensitive: false,
+  );
+  static final _sensitiveDatabaseTuple = RegExp(
+    r'\b(join[_ -]?code|code|actor[_ -]?name|contact[_ -]?info|character[_ -]?name|display[_ -]?name|production[_ -]?title)\b\)?\s*=\s*\([^)]*\)',
+    caseSensitive: false,
+  );
+  static final _uriWithQuery = RegExp(
+    r'\b([a-z][a-z0-9+.-]*://[^\s?#]+)\?[^\s#]*(?:#[^\s]*)?',
+    caseSensitive: false,
+  );
+  static final _email = RegExp(
+    r'\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b',
+    caseSensitive: false,
+  );
+  static final _localPath = RegExp(
+    r'''(?:file://)?(?:/Users/|/private/var/|/var/mobile/|/data/user/)[^\n"',;)\]}]+''',
+    caseSensitive: false,
+  );
+  static final _contentBearingMessage = RegExp(
+    r'\b(?:MY LINE|Playing|System TTS)\s*:[^\n]*',
+    caseSensitive: false,
+  );
+  static final _joinLookupSuccess = RegExp(
+    r'\bJoin lookup succeeded[^\n]*',
+    caseSensitive: false,
+  );
+  static final _storageObjectMessage = RegExp(
+    r'\bStorage (?:upload(?: FAILED)?\s*(?:→|->)|download\s*(?:←|<-))\s*[^\n]*',
+    caseSensitive: false,
+  );
+  static final _castIdentityError = RegExp(
+    r'\b(?:Cloud cast invitation failed for|Unassign failed for)\b[^\n]*',
+    caseSensitive: false,
+  );
+  static final _productionIdentityMessage = RegExp(
+    r'\b(?:ProductionsNotifier\.add:\s*"|_submitProduction:\s*(?:starting for\b|background cloud create failed\b))[^\n]*',
+    caseSensitive: false,
+  );
+  static final _freeFormProductionIdentity = RegExp(
+    r'\b(?:Join: success — opening production|Delete refused for|Cloud delete failed for|Leave failed for)\b[^\n]*',
+    caseSensitive: false,
+  );
+  static final _characterRenameIdentity = RegExp(
+    r'\b(?:Voice config rename|Cloud cast rename|Cast rename)\b[^\n]*',
+    caseSensitive: false,
+  );
+  static final _quotedJoinCharacter = RegExp(
+    r'\bas\s+"[^"]*"',
+    caseSensitive: false,
+  );
+  static final _recordingCharacterIdentity = RegExp(
+    r'\bRecordingSync:\s*(?:(?:uploaded|downloaded)\s+\S+|realtime\s+—\s+new recording for\s+\S+)\s+\([^)]*\)',
+    caseSensitive: false,
+  );
+  static final _restoredProductionTitles = RegExp(
+    r'\bRestored \d+ production\(s\) from the cloud\s+\([^\n]*\)',
+    caseSensitive: false,
+  );
+  static final _pdfHighlightTarget = RegExp(
+    r'\bHighlight p\d+:[^\n]*',
+    caseSensitive: false,
+  );
+  static final _legacyCloudIdentityMessage = RegExp(
+    r'\b(?:RPC success:|RPC cast success:|Renamed cast member|Join: self-joined)[^\n]*',
+    caseSensitive: false,
+  );
+  static void _debugInternalFailure(String operation, Object error) {
+    if (!kDebugMode) return;
+    debugPrint('$operation failed: ${redactForSupportLog(error.toString())}');
+  }
 
   final List<LogEntry> _entries = [];
   final List<LogEntry> _pendingFlush = [];
@@ -124,10 +197,12 @@ class DebugLogService {
     // share it), so we log the full version+build. Best-effort; never blocks.
     try {
       final info = await PackageInfo.fromPlatform();
-      log(LogCategory.general,
-          'app build: ${info.version}+${info.buildNumber} (${info.packageName})');
+      log(
+        LogCategory.general,
+        'app build: ${info.version}+${info.buildNumber} (${info.packageName})',
+      );
     } catch (e) {
-      debugPrint('PackageInfo failed: $e');
+      _debugInternalFailure('PackageInfo', e);
     }
     await _logMemory();
   }
@@ -136,7 +211,10 @@ class DebugLogService {
   void startMemoryMonitoring() {
     _memoryTimer?.cancel();
     _memoryTimer = Timer.periodic(_memoryInterval, (_) => _logMemory());
-    log(LogCategory.memory, 'Memory monitoring started (${_memoryInterval.inSeconds}s interval)');
+    log(
+      LogCategory.memory,
+      'Memory monitoring started (${_memoryInterval.inSeconds}s interval)',
+    );
   }
 
   /// Stop periodic memory monitoring.
@@ -145,12 +223,19 @@ class DebugLogService {
     _memoryTimer = null;
   }
 
-  /// Log a message.
+  /// Log a message after applying the support-log privacy boundary.
+  ///
+  /// Call sites should still emit opaque IDs, counts, and status rather than
+  /// private values. This final pass prevents credential-bearing structured
+  /// fields, raw deep-link queries, contact email addresses, and local paths
+  /// from reaching the persistent/exportable log when an SDK exception
+  /// includes them unexpectedly.
   void log(LogCategory category, String message) {
+    final safeMessage = redactForSupportLog(message);
     final entry = LogEntry(
       timestamp: DateTime.now(),
       category: category,
-      message: message,
+      message: safeMessage,
       isError: category == LogCategory.error,
     );
 
@@ -161,8 +246,9 @@ class DebugLogService {
       _entries.removeAt(0);
     }
 
-    // Also print to console in debug mode
-    debugPrint('[${category.tag}] $message');
+    if (kDebugMode) {
+      debugPrint('[${category.tag}] $safeMessage');
+    }
 
     // Persist this entry to disk synchronously, right now. A buffered/periodic
     // flush loses the last steps when the app is hard-killed (e.g. an OOM
@@ -170,6 +256,55 @@ class DebugLogService {
     // know how far it got. The append is tiny; the synchronous cost is dwarfed
     // by whatever heavy work is being logged around.
     _appendSync(entry);
+  }
+
+  @visibleForTesting
+  static String redactForSupportLog(String message) {
+    return message
+        .replaceAll(_contentBearingMessage, '[CONTENT REDACTED]')
+        .replaceAll(_joinLookupSuccess, 'Join lookup succeeded')
+        .replaceAll(_storageObjectMessage, 'Storage object [PATH REDACTED]')
+        .replaceAll(_castIdentityError, 'Cast operation failed')
+        .replaceAll(
+          _productionIdentityMessage,
+          'Production operation [METADATA REDACTED]',
+        )
+        .replaceAll(
+          _freeFormProductionIdentity,
+          'Production operation [METADATA REDACTED]',
+        )
+        .replaceAll(
+          _characterRenameIdentity,
+          'Character rename failed [METADATA REDACTED]',
+        )
+        .replaceAll(_quotedJoinCharacter, 'as [CHARACTER REDACTED]')
+        .replaceAll(
+          _recordingCharacterIdentity,
+          'RecordingSync: recording operation [METADATA REDACTED]',
+        )
+        .replaceAll(
+          _restoredProductionTitles,
+          'Restored productions from the cloud [METADATA REDACTED]',
+        )
+        .replaceAll(_pdfHighlightTarget, 'Highlight [METADATA REDACTED]')
+        .replaceAll(
+          _legacyCloudIdentityMessage,
+          'Cloud operation [METADATA REDACTED]',
+        )
+        .replaceAllMapped(
+          _uriWithQuery,
+          (match) => '${match.group(1)}?[REDACTED]',
+        )
+        .replaceAllMapped(
+          _sensitiveDatabaseTuple,
+          (match) => '${match.group(1)}=[REDACTED]',
+        )
+        .replaceAllMapped(
+          _sensitiveKeyValue,
+          (match) => '${match.group(1)}=[REDACTED]',
+        )
+        .replaceAll(_email, '[EMAIL REDACTED]')
+        .replaceAll(_localPath, '[PATH REDACTED]');
   }
 
   /// Append a single entry to the on-disk log immediately. Before [init] sets
@@ -184,15 +319,21 @@ class DebugLogService {
       // No flush: an fsync per entry on the CALLER'S thread (often the UI
       // isolate mid-rehearsal) costs milliseconds each. The OS buffers the
       // append; the periodic _flushTimer and crash reports cover durability.
-      File(path).writeAsStringSync('${entry.toLine()}\n',
-          mode: FileMode.append);
+      File(
+        path,
+      ).writeAsStringSync('${entry.toLine()}\n', mode: FileMode.append);
     } catch (e) {
-      debugPrint('Log append failed: $e');
+      _debugInternalFailure('Log append', e);
     }
   }
 
   /// Log an error with optional stack trace.
-  void logError(LogCategory category, String message, [Object? error, StackTrace? stack]) {
+  void logError(
+    LogCategory category,
+    String message, [
+    Object? error,
+    StackTrace? stack,
+  ]) {
     final errorMsg = error != null ? '$message: $error' : message;
     log(LogCategory.error, '[${category.tag}] $errorMsg');
     if (stack != null) {
@@ -203,7 +344,9 @@ class DebugLogService {
   /// Get current memory usage from native.
   Future<Map<String, int>> getMemoryUsage() async {
     try {
-      final result = await _channel.invokeMapMethod<String, dynamic>('getMemoryUsage');
+      final result = await _channel.invokeMapMethod<String, dynamic>(
+        'getMemoryUsage',
+      );
       if (result != null) {
         _lastPhysicalMB = result['physicalFootprintMB'] as int? ?? 0;
         _lastAvailableMB = result['availableMemoryMB'] as int? ?? 0;
@@ -216,7 +359,7 @@ class DebugLogService {
     } on MissingPluginException {
       // Not on iOS or plugin not registered
     } catch (e) {
-      debugPrint('Memory monitor error: $e');
+      _debugInternalFailure('Memory monitor', e);
     }
     return {};
   }
@@ -266,7 +409,7 @@ class DebugLogService {
       await file.writeAsString('$lines\n', mode: FileMode.append);
       _pendingFlush.clear();
     } catch (e) {
-      debugPrint('Log flush failed: $e');
+      _debugInternalFailure('Log flush', e);
     }
   }
 
@@ -285,21 +428,21 @@ class DebugLogService {
           ? recentLines.length - maxEntries
           : 0;
 
+      final loadedEntries = <LogEntry>[];
       for (var i = start; i < recentLines.length; i++) {
         final entry = LogEntry.fromLine(recentLines[i]);
         if (entry != null) {
           _entries.add(entry);
+          loadedEntries.add(entry);
         }
       }
 
-      // Truncate file if it's gotten too large (> 200KB)
-      final stat = await file.stat();
-      if (stat.size > 200 * 1024) {
-        final keepLines = _entries.map((e) => e.toLine()).join('\n');
-        await file.writeAsString('$keepLines\n');
-      }
+      // Rewrite on every load so upgrades remove sensitive values written by
+      // older app versions, not merely hide them from the in-memory export.
+      final keepLines = loadedEntries.map((e) => e.toLine()).join('\n');
+      await file.writeAsString(keepLines.isEmpty ? '' : '$keepLines\n');
     } catch (e) {
-      debugPrint('Log load failed: $e');
+      _debugInternalFailure('Log load', e);
     }
   }
 

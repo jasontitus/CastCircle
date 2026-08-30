@@ -1,5 +1,6 @@
 import 'dart:io';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
@@ -19,6 +20,17 @@ import '../../providers/production_providers.dart';
 import '../script_import/pdf_page_view.dart';
 import 'validation_panel.dart';
 import '../../core/toast.dart';
+
+@visibleForTesting
+String scriptPersistOutcomeMessage(ScriptPersistStatus status) =>
+    switch (status) {
+      ScriptPersistStatus.nothingToSave => 'No script available to sync',
+      ScriptPersistStatus.cloudSkipped =>
+        'Script saved locally; cloud sync was skipped',
+      ScriptPersistStatus.cloudSynced => 'Script synced to cloud',
+      ScriptPersistStatus.cloudFailed =>
+        'Script saved locally, but cloud sync failed',
+    };
 
 class ScriptEditorScreen extends ConsumerStatefulWidget {
   const ScriptEditorScreen({super.key});
@@ -76,8 +88,7 @@ class _ScriptEditorScreenState extends ConsumerState<ScriptEditorScreen> {
     if (production == null) return;
     try {
       final docsDir = await getApplicationDocumentsDirectory();
-      final candidate =
-          p.join(docsDir.path, 'scripts', '${production.id}.pdf');
+      final candidate = p.join(docsDir.path, 'scripts', '${production.id}.pdf');
       if (File(candidate).existsSync() && mounted) {
         setState(() => _resolvedPdfPath = candidate);
       }
@@ -162,7 +173,8 @@ class _ScriptEditorScreenState extends ConsumerState<ScriptEditorScreen> {
                         final url = productionId.isNotEmpty
                             ? 'https://castcircle-app.web.app?production=$productionId'
                             : 'https://castcircle-app.web.app';
-                        final text = 'Edit "$productionName" on the web:\n'
+                        final text =
+                            'Edit "$productionName" on the web:\n'
                             '$url\n'
                             '${email.isNotEmpty ? '\nSign in with: $email' : ''}';
                         Share.share(
@@ -183,15 +195,20 @@ class _ScriptEditorScreenState extends ConsumerState<ScriptEditorScreen> {
             icon: const Icon(Icons.cloud_upload_outlined),
             tooltip: 'Sync to cloud',
             onPressed: () async {
-              await persistScript(ref);
-              if (context.mounted) {
-                ScaffoldMessenger.of(context).showAutoToast(
-                  const SnackBar(
-                    content: Text('Script synced to cloud'),
-                    duration: Duration(seconds: 1),
-                  ),
-                );
+              String message;
+              try {
+                final result = await persistScript(ref);
+                message = scriptPersistOutcomeMessage(result.status);
+              } catch (_) {
+                message = 'Script could not be saved';
               }
+              if (!context.mounted) return;
+              ScaffoldMessenger.of(context).showAutoToast(
+                SnackBar(
+                  content: Text(message),
+                  duration: const Duration(seconds: 2),
+                ),
+              );
             },
           ),
           IconButton(
@@ -202,13 +219,14 @@ class _ScriptEditorScreenState extends ConsumerState<ScriptEditorScreen> {
             tooltip: _showDirections
                 ? 'Hide stage directions'
                 : 'Show stage directions',
-            onPressed: () =>
-                setState(() => _showDirections = !_showDirections),
+            onPressed: () => setState(() => _showDirections = !_showDirections),
           ),
           IconButton(
             icon: Icon(
               Icons.swap_vert,
-              color: _reorderMode ? Theme.of(context).colorScheme.primary : null,
+              color: _reorderMode
+                  ? Theme.of(context).colorScheme.primary
+                  : null,
             ),
             tooltip: _reorderMode ? 'Done reordering' : 'Reorder lines',
             onPressed: () => setState(() => _reorderMode = !_reorderMode),
@@ -267,16 +285,23 @@ class _ScriptEditorScreenState extends ConsumerState<ScriptEditorScreen> {
               children: [
                 FilterChip(
                   label: const Text('All'),
-                  selected: _selectedCharacter == null && !_showLowConfidenceOnly,
-                  onSelected: (_) =>
-                      setState(() { _selectedCharacter = null; _showLowConfidenceOnly = false; }),
+                  selected:
+                      _selectedCharacter == null && !_showLowConfidenceOnly,
+                  onSelected: (_) => setState(() {
+                    _selectedCharacter = null;
+                    _showLowConfidenceOnly = false;
+                  }),
                 ),
                 const SizedBox(width: 8),
                 if (lowOcrCount > 0)
                   Padding(
                     padding: const EdgeInsets.only(right: 8),
                     child: FilterChip(
-                      avatar: Icon(Icons.warning_amber_rounded, size: 16, color: Colors.amber.shade700),
+                      avatar: Icon(
+                        Icons.warning_amber_rounded,
+                        size: 16,
+                        color: Colors.amber.shade700,
+                      ),
                       label: Text('Low OCR ($lowOcrCount)'),
                       selected: _showLowConfidenceOnly,
                       selectedColor: Colors.amber.shade100,
@@ -286,23 +311,24 @@ class _ScriptEditorScreenState extends ConsumerState<ScriptEditorScreen> {
                       }),
                     ),
                   ),
-                ...script.characters.map((char) => Padding(
-                      padding: const EdgeInsets.only(right: 8),
-                      child: FilterChip(
-                        avatar: CircleAvatar(
-                          backgroundColor: charColors[char.name],
-                          radius: 8,
-                        ),
-                        label: Text(char.name),
-                        selected: _selectedCharacter == char.name,
-                        onSelected: (_) => setState(() {
-                          _selectedCharacter =
-                              _selectedCharacter == char.name
-                                  ? null
-                                  : char.name;
-                        }),
+                ...script.characters.map(
+                  (char) => Padding(
+                    padding: const EdgeInsets.only(right: 8),
+                    child: FilterChip(
+                      avatar: CircleAvatar(
+                        backgroundColor: charColors[char.name],
+                        radius: 8,
                       ),
-                    )),
+                      label: Text(char.name),
+                      selected: _selectedCharacter == char.name,
+                      onSelected: (_) => setState(() {
+                        _selectedCharacter = _selectedCharacter == char.name
+                            ? null
+                            : char.name;
+                      }),
+                    ),
+                  ),
+                ),
               ],
             ),
           ),
@@ -321,15 +347,15 @@ class _ScriptEditorScreenState extends ConsumerState<ScriptEditorScreen> {
                   Text(
                     'Showing low-confidence OCR lines',
                     style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                          color: Colors.amber.shade700,
-                        ),
+                      color: Colors.amber.shade700,
+                    ),
                   )
                 else if (_selectedCharacter != null)
                   Text(
                     'Showing $_selectedCharacter only',
                     style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                          color: charColors[_selectedCharacter],
-                        ),
+                      color: charColors[_selectedCharacter],
+                    ),
                   ),
               ],
             ),
@@ -341,13 +367,21 @@ class _ScriptEditorScreenState extends ConsumerState<ScriptEditorScreen> {
               color: Theme.of(context).colorScheme.tertiaryContainer,
               child: Row(
                 children: [
-                  Icon(Icons.swap_vert, size: 16,
-                      color: Theme.of(context).colorScheme.onTertiaryContainer),
+                  Icon(
+                    Icons.swap_vert,
+                    size: 16,
+                    color: Theme.of(context).colorScheme.onTertiaryContainer,
+                  ),
                   const SizedBox(width: 8),
                   Expanded(
-                    child: Text('Long press and drag to reorder',
-                        style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                            color: Theme.of(context).colorScheme.onTertiaryContainer)),
+                    child: Text(
+                      'Long press and drag to reorder',
+                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                        color: Theme.of(
+                          context,
+                        ).colorScheme.onTertiaryContainer,
+                      ),
+                    ),
                   ),
                   TextButton(
                     onPressed: () => setState(() => _reorderMode = false),
@@ -381,10 +415,14 @@ class _ScriptEditorScreenState extends ConsumerState<ScriptEditorScreen> {
                                     )
                                   : null,
                               child: GestureDetector(
-                                onTap: () => setState(() => _selectedLine = line),
+                                onTap: () =>
+                                    setState(() => _selectedLine = line),
                                 child: AbsorbPointer(
                                   child: _buildLineCard(
-                                      context, line, charColors),
+                                    context,
+                                    line,
+                                    charColors,
+                                  ),
                                 ),
                               ),
                             );
@@ -396,7 +434,11 @@ class _ScriptEditorScreenState extends ConsumerState<ScriptEditorScreen> {
                       Expanded(
                         flex: 2,
                         child: _selectedLine != null
-                            ? _buildDetailPanel(context, _selectedLine!, charColors)
+                            ? _buildDetailPanel(
+                                context,
+                                _selectedLine!,
+                                charColors,
+                              )
                             : Center(
                                 child: Text(
                                   'Select a line to edit',
@@ -412,29 +454,33 @@ class _ScriptEditorScreenState extends ConsumerState<ScriptEditorScreen> {
                     ],
                   )
                 : _reorderMode && _selectedCharacter == null
-                    ? ReorderableListView.builder(
-                        padding: const EdgeInsets.symmetric(horizontal: 16),
-                        itemCount: filteredLines.length,
-                        onReorder: (oldIndex, newIndex) {
-                          _reorderLines(
-                              script, filteredLines, oldIndex, newIndex);
-                        },
-                        itemBuilder: (context, index) {
-                          return _buildLineCard(
-                            context, filteredLines[index], charColors,
-                            key: ValueKey(filteredLines[index].id),
-                            showDragHandle: true,
-                          );
-                        },
-                      )
-                    : ListView.builder(
-                        padding: const EdgeInsets.symmetric(horizontal: 16),
-                        itemCount: filteredLines.length,
-                        itemBuilder: (context, index) {
-                          return _buildLineCard(
-                              context, filteredLines[index], charColors);
-                        },
-                      ),
+                ? ReorderableListView.builder(
+                    padding: const EdgeInsets.symmetric(horizontal: 16),
+                    itemCount: filteredLines.length,
+                    onReorder: (oldIndex, newIndex) {
+                      _reorderLines(script, filteredLines, oldIndex, newIndex);
+                    },
+                    itemBuilder: (context, index) {
+                      return _buildLineCard(
+                        context,
+                        filteredLines[index],
+                        charColors,
+                        key: ValueKey(filteredLines[index].id),
+                        showDragHandle: true,
+                      );
+                    },
+                  )
+                : ListView.builder(
+                    padding: const EdgeInsets.symmetric(horizontal: 16),
+                    itemCount: filteredLines.length,
+                    itemBuilder: (context, index) {
+                      return _buildLineCard(
+                        context,
+                        filteredLines[index],
+                        charColors,
+                      );
+                    },
+                  ),
           ),
         ],
       ),
@@ -449,7 +495,10 @@ class _ScriptEditorScreenState extends ConsumerState<ScriptEditorScreen> {
   ) {
     final production = ref.read(currentProductionProvider);
     final pdfPath = _effectivePdfPath(production);
-    final hasPdf = pdfPath != null && line.sourcePage != null && File(pdfPath).existsSync();
+    final hasPdf =
+        pdfPath != null &&
+        line.sourcePage != null &&
+        File(pdfPath).existsSync();
     final textController = _detailControllerFor(line);
 
     return Padding(
@@ -466,22 +515,30 @@ class _ScriptEditorScreenState extends ConsumerState<ScriptEditorScreen> {
                   radius: 6,
                 ),
                 const SizedBox(width: 8),
-                Text(line.character,
-                    style: TextStyle(
-                      fontWeight: FontWeight.bold,
-                      color: charColors[line.character],
-                    )),
+                Text(
+                  line.character,
+                  style: TextStyle(
+                    fontWeight: FontWeight.bold,
+                    color: charColors[line.character],
+                  ),
+                ),
                 const SizedBox(width: 8),
               ],
-              Text('Line #${line.orderIndex}  ${line.pageLineRef}',
-                  style: Theme.of(context).textTheme.bodySmall),
+              Text(
+                'Line #${line.orderIndex}  ${line.pageLineRef}',
+                style: Theme.of(context).textTheme.bodySmall,
+              ),
               if (line.ocrConfidence != null && line.ocrConfidence! < 0.85) ...[
                 const SizedBox(width: 8),
-                Icon(Icons.warning_amber_rounded,
-                    size: 16, color: Colors.amber.shade700),
-                Text(' ${(line.ocrConfidence! * 100).toInt()}%',
-                    style: TextStyle(
-                        fontSize: 12, color: Colors.amber.shade700)),
+                Icon(
+                  Icons.warning_amber_rounded,
+                  size: 16,
+                  color: Colors.amber.shade700,
+                ),
+                Text(
+                  ' ${(line.ocrConfidence! * 100).toInt()}%',
+                  style: TextStyle(fontSize: 12, color: Colors.amber.shade700),
+                ),
               ],
             ],
           ),
@@ -496,7 +553,9 @@ class _ScriptEditorScreenState extends ConsumerState<ScriptEditorScreen> {
                 child: Container(
                   decoration: BoxDecoration(
                     border: Border.all(
-                        color: Theme.of(context).colorScheme.outline, width: 0.5),
+                      color: Theme.of(context).colorScheme.outline,
+                      width: 0.5,
+                    ),
                     borderRadius: BorderRadius.circular(8),
                   ),
                   child: PdfPageView(
@@ -551,7 +610,7 @@ class _ScriptEditorScreenState extends ConsumerState<ScriptEditorScreen> {
       script.lines,
       _selectedCharacter,
       _showDirections,
-      _showLowConfidenceOnly
+      _showLowConfidenceOnly,
     );
     if (_filteredCache != null &&
         identical(_filteredKey?.$1, key.$1) &&
@@ -605,8 +664,12 @@ class _ScriptEditorScreenState extends ConsumerState<ScriptEditorScreen> {
     return out;
   }
 
-  void _reorderLines(ParsedScript script, List<ScriptLine> filteredLines,
-      int oldIndex, int newIndex) {
+  void _reorderLines(
+    ParsedScript script,
+    List<ScriptLine> filteredLines,
+    int oldIndex,
+    int newIndex,
+  ) {
     if (newIndex > oldIndex) newIndex--;
     if (oldIndex == newIndex) return;
 
@@ -662,9 +725,9 @@ class _ScriptEditorScreenState extends ConsumerState<ScriptEditorScreen> {
           padding: const EdgeInsets.symmetric(vertical: 16),
           child: Text(
             line.text,
-            style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                  fontWeight: FontWeight.bold,
-                ),
+            style: Theme.of(
+              context,
+            ).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.bold),
           ),
         );
 
@@ -673,20 +736,18 @@ class _ScriptEditorScreenState extends ConsumerState<ScriptEditorScreen> {
           key: key,
           padding: const EdgeInsets.symmetric(vertical: 4),
           child: Card(
-            color: Theme.of(context)
-                .colorScheme
-                .surfaceContainerHighest
-                .withValues(alpha: 0.5),
+            color: Theme.of(
+              context,
+            ).colorScheme.surfaceContainerHighest.withValues(alpha: 0.5),
             child: Padding(
               padding: const EdgeInsets.all(12),
               child: Text(
                 line.text,
                 style: TextStyle(
                   fontStyle: FontStyle.italic,
-                  color: Theme.of(context)
-                      .colorScheme
-                      .onSurface
-                      .withValues(alpha: 0.6),
+                  color: Theme.of(
+                    context,
+                  ).colorScheme.onSurface.withValues(alpha: 0.6),
                 ),
               ),
             ),
@@ -727,13 +788,12 @@ class _ScriptEditorScreenState extends ConsumerState<ScriptEditorScreen> {
                       child: Text(
                         line.pageLineRef,
                         style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                              color: Theme.of(context)
-                                  .colorScheme
-                                  .onSurface
-                                  .withValues(alpha: 0.35),
-                              fontSize: 10,
-                              fontFeatures: [const FontFeature.tabularFigures()],
-                            ),
+                          color: Theme.of(
+                            context,
+                          ).colorScheme.onSurface.withValues(alpha: 0.35),
+                          fontSize: 10,
+                          fontFeatures: [const FontFeature.tabularFigures()],
+                        ),
                       ),
                     ),
                     // Character color bar
@@ -782,10 +842,9 @@ class _ScriptEditorScreenState extends ConsumerState<ScriptEditorScreen> {
                               style: TextStyle(
                                 fontStyle: FontStyle.italic,
                                 fontSize: 12,
-                                color: Theme.of(context)
-                                    .colorScheme
-                                    .onSurface
-                                    .withValues(alpha: 0.5),
+                                color: Theme.of(
+                                  context,
+                                ).colorScheme.onSurface.withValues(alpha: 0.5),
                               ),
                             ),
                           Text(line.text),
@@ -795,12 +854,13 @@ class _ScriptEditorScreenState extends ConsumerState<ScriptEditorScreen> {
                     if (showDragHandle)
                       Padding(
                         padding: const EdgeInsets.only(left: 4),
-                        child: Icon(Icons.drag_handle,
-                            size: 20,
-                            color: Theme.of(context)
-                                .colorScheme
-                                .onSurface
-                                .withValues(alpha: 0.3)),
+                        child: Icon(
+                          Icons.drag_handle,
+                          size: 20,
+                          color: Theme.of(
+                            context,
+                          ).colorScheme.onSurface.withValues(alpha: 0.3),
+                        ),
                       ),
                   ],
                 ),
@@ -821,7 +881,8 @@ class _ScriptEditorScreenState extends ConsumerState<ScriptEditorScreen> {
     final charNames = script?.characters.map((c) => c.name).toList() ?? [];
     var selectedChar = line.character;
     final newCharController = TextEditingController();
-    var isNewChar = !charNames.contains(selectedChar) && selectedChar.isNotEmpty;
+    var isNewChar =
+        !charNames.contains(selectedChar) && selectedChar.isNotEmpty;
 
     // Check if we have a PDF source page to show
     final pdfPath = _effectivePdfPath(production);
@@ -842,8 +903,7 @@ class _ScriptEditorScreenState extends ConsumerState<ScriptEditorScreen> {
       // review sheet). The sheet has explicit pop buttons + tap-outside.
       enableDrag: !hasPdfPage,
       constraints: hasPdfPage
-          ? BoxConstraints(
-              maxHeight: MediaQuery.of(context).size.height * 0.92)
+          ? BoxConstraints(maxHeight: MediaQuery.of(context).size.height * 0.92)
           : null,
       builder: (context) {
         return StatefulBuilder(
@@ -877,14 +937,18 @@ class _ScriptEditorScreenState extends ConsumerState<ScriptEditorScreen> {
                       },
                       itemBuilder: (context) => [
                         const PopupMenuItem(
-                            value: 'dialogue', child: Text('Dialogue')),
+                          value: 'dialogue',
+                          child: Text('Dialogue'),
+                        ),
                         const PopupMenuItem(
-                            value: 'stageDirection',
-                            child: Text('Stage Direction')),
+                          value: 'stageDirection',
+                          child: Text('Stage Direction'),
+                        ),
                         const PopupMenuItem(
-                            value: 'header', child: Text('Header')),
-                        const PopupMenuItem(
-                            value: 'song', child: Text('Song')),
+                          value: 'header',
+                          child: Text('Header'),
+                        ),
+                        const PopupMenuItem(value: 'song', child: Text('Song')),
                       ],
                     ),
                     IconButton(
@@ -896,8 +960,11 @@ class _ScriptEditorScreenState extends ConsumerState<ScriptEditorScreen> {
                       },
                     ),
                     IconButton(
-                      icon: const Icon(Icons.delete_outline,
-                          size: 20, color: Colors.red),
+                      icon: const Icon(
+                        Icons.delete_outline,
+                        size: 20,
+                        color: Colors.red,
+                      ),
                       tooltip: 'Delete line',
                       onPressed: () {
                         _deleteLine(current);
@@ -934,89 +1001,105 @@ class _ScriptEditorScreenState extends ConsumerState<ScriptEditorScreen> {
                   // Walk-through over the remaining low-OCR lines, same as
                   // the import review sheet — for the far more common case
                   // of cleaning up a script AFTER the import was accepted.
-                  Builder(builder: (innerContext) {
-                    final flagged = _lowOcrLines();
-                    final at = flagged.indexWhere((l) => l.id == current.id);
-                    void goTo(ScriptLine next) {
-                      setModalState(() {
-                        current = next;
-                        textController.text = next.text;
-                        selectedChar = next.character;
-                        isNewChar = !charNames.contains(selectedChar) &&
-                            selectedChar.isNotEmpty;
-                      });
-                    }
+                  Builder(
+                    builder: (innerContext) {
+                      final flagged = _lowOcrLines();
+                      final at = flagged.indexWhere((l) => l.id == current.id);
+                      void goTo(ScriptLine next) {
+                        setModalState(() {
+                          current = next;
+                          textController.text = next.text;
+                          selectedChar = next.character;
+                          isNewChar =
+                              !charNames.contains(selectedChar) &&
+                              selectedChar.isNotEmpty;
+                        });
+                      }
 
-                    return Padding(
-                      padding: const EdgeInsets.only(top: 4),
-                      child: Wrap(
-                        alignment: WrapAlignment.spaceEvenly,
-                        crossAxisAlignment: WrapCrossAlignment.center,
-                        spacing: 4,
-                        runSpacing: 4,
-                        children: [
-                          TextButton.icon(
-                            onPressed:
-                                at > 0 ? () => goTo(flagged[at - 1]) : null,
-                            icon: const Icon(Icons.chevron_left),
-                            label: const Text('Prev'),
-                          ),
-                          if (at >= 0)
-                            Text(
-                              'Low OCR ${at + 1} of ${flagged.length}',
-                              style:
-                                  Theme.of(innerContext).textTheme.labelSmall,
+                      return Padding(
+                        padding: const EdgeInsets.only(top: 4),
+                        child: Wrap(
+                          alignment: WrapAlignment.spaceEvenly,
+                          crossAxisAlignment: WrapCrossAlignment.center,
+                          spacing: 4,
+                          runSpacing: 4,
+                          children: [
+                            TextButton.icon(
+                              onPressed: at > 0
+                                  ? () => goTo(flagged[at - 1])
+                                  : null,
+                              icon: const Icon(Icons.chevron_left),
+                              label: const Text('Prev'),
                             ),
-                          TextButton.icon(
-                            icon: const Icon(Icons.delete_outline, size: 18),
-                            label: const Text('Remove'),
-                            style: TextButton.styleFrom(
-                              foregroundColor:
-                                  Theme.of(innerContext).colorScheme.error,
+                            if (at >= 0)
+                              Text(
+                                'Low OCR ${at + 1} of ${flagged.length}',
+                                style: Theme.of(
+                                  innerContext,
+                                ).textTheme.labelSmall,
+                              ),
+                            TextButton.icon(
+                              icon: const Icon(Icons.delete_outline, size: 18),
+                              label: const Text('Remove'),
+                              style: TextButton.styleFrom(
+                                foregroundColor: Theme.of(
+                                  innerContext,
+                                ).colorScheme.error,
+                              ),
+                              onPressed: () {
+                                _deleteLine(current);
+                                final remaining = _lowOcrLines();
+                                if (remaining.isEmpty) {
+                                  Navigator.pop(context);
+                                } else {
+                                  goTo(
+                                    remaining[at.clamp(
+                                      0,
+                                      remaining.length - 1,
+                                    )],
+                                  );
+                                }
+                              },
                             ),
-                            onPressed: () {
-                              _deleteLine(current);
-                              final remaining = _lowOcrLines();
-                              if (remaining.isEmpty) {
-                                Navigator.pop(context);
-                              } else {
-                                goTo(remaining[
-                                    at.clamp(0, remaining.length - 1)]);
-                              }
-                            },
-                          ),
-                          TextButton.icon(
-                            icon: const Icon(Icons.check_circle_outline,
-                                size: 18),
-                            label: const Text('Looks right'),
-                            onPressed: () {
-                              // Keep any typed correction, then clear the
-                              // flag and land on the next flagged line.
-                              final typed = textController.text.trim();
-                              if (typed.isNotEmpty && typed != current.text) {
-                                _updateLine(current, selectedChar, typed);
-                              }
-                              _clearOcrFlag(current);
-                              final remaining = _lowOcrLines();
-                              if (remaining.isEmpty) {
-                                Navigator.pop(context);
-                              } else {
-                                goTo(remaining[
-                                    at.clamp(0, remaining.length - 1)]);
-                              }
-                            },
-                          ),
-                          FilledButton.icon(
-                            onPressed: at >= 0 && at < flagged.length - 1
-                                ? () => goTo(flagged[at + 1])
-                                : null,
-                            icon: const Icon(Icons.chevron_right),
-                            label: const Text('Next'),
-                          ),
-                        ],
-                      ),
-                    );
-                  }),
+                            TextButton.icon(
+                              icon: const Icon(
+                                Icons.check_circle_outline,
+                                size: 18,
+                              ),
+                              label: const Text('Looks right'),
+                              onPressed: () {
+                                // Keep any typed correction, then clear the
+                                // flag and land on the next flagged line.
+                                final typed = textController.text.trim();
+                                if (typed.isNotEmpty && typed != current.text) {
+                                  _updateLine(current, selectedChar, typed);
+                                }
+                                _clearOcrFlag(current);
+                                final remaining = _lowOcrLines();
+                                if (remaining.isEmpty) {
+                                  Navigator.pop(context);
+                                } else {
+                                  goTo(
+                                    remaining[at.clamp(
+                                      0,
+                                      remaining.length - 1,
+                                    )],
+                                  );
+                                }
+                              },
+                            ),
+                            FilledButton.icon(
+                              onPressed: at >= 0 && at < flagged.length - 1
+                                  ? () => goTo(flagged[at + 1])
+                                  : null,
+                              icon: const Icon(Icons.chevron_right),
+                              label: const Text('Next'),
+                            ),
+                          ],
+                        ),
+                      );
+                    },
+                  ),
                   const SizedBox(height: 8),
                 ],
 
@@ -1031,10 +1114,10 @@ class _ScriptEditorScreenState extends ConsumerState<ScriptEditorScreen> {
                       isDense: true,
                     ),
                     items: [
-                      ...charNames.map((name) => DropdownMenuItem(
-                            value: name,
-                            child: Text(name),
-                          )),
+                      ...charNames.map(
+                        (name) =>
+                            DropdownMenuItem(value: name, child: Text(name)),
+                      ),
                       const DropdownMenuItem(
                         value: '__new__',
                         child: Text('+ New character...'),
@@ -1076,12 +1159,17 @@ class _ScriptEditorScreenState extends ConsumerState<ScriptEditorScreen> {
                     labelText: 'Line text',
                     border: const OutlineInputBorder(),
                     isDense: true,
-                    suffixIcon: current.ocrConfidence != null &&
+                    suffixIcon:
+                        current.ocrConfidence != null &&
                             current.ocrConfidence! < 0.85
                         ? Tooltip(
-                            message: 'OCR confidence: ${(current.ocrConfidence! * 100).toInt()}%',
-                            child: Icon(Icons.warning_amber_rounded,
-                                color: Colors.amber.shade700, size: 20),
+                            message:
+                                'OCR confidence: ${(current.ocrConfidence! * 100).toInt()}%',
+                            child: Icon(
+                              Icons.warning_amber_rounded,
+                              color: Colors.amber.shade700,
+                              size: 20,
+                            ),
                           )
                         : null,
                   ),
@@ -1147,8 +1235,8 @@ class _ScriptEditorScreenState extends ConsumerState<ScriptEditorScreen> {
       if (l.id == line.id) {
         return l.copyWith(
           lineType: newType,
-          character: newType == LineType.stageDirection ||
-                  newType == LineType.header
+          character:
+              newType == LineType.stageDirection || newType == LineType.header
               ? ''
               : l.character,
         );
@@ -1171,8 +1259,10 @@ class _ScriptEditorScreenState extends ConsumerState<ScriptEditorScreen> {
         content: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            const Text('Place your cursor where you want to split, '
-                'then tap Split.'),
+            const Text(
+              'Place your cursor where you want to split, '
+              'then tap Split.',
+            ),
             const SizedBox(height: 12),
             TextField(
               controller: controller,
@@ -1283,8 +1373,7 @@ class _ScriptEditorScreenState extends ConsumerState<ScriptEditorScreen> {
     if (script == null) return;
     AnalyticsService.instance.logScriptEdited(action: 'delete_line');
 
-    final updatedLines =
-        script.lines.where((l) => l.id != line.id).toList();
+    final updatedLines = script.lines.where((l) => l.id != line.id).toList();
     _rebuildScript(script, updatedLines);
   }
 
@@ -1306,12 +1395,14 @@ class _ScriptEditorScreenState extends ConsumerState<ScriptEditorScreen> {
     final characters = charCounts.entries.toList()
       ..sort((a, b) => b.value.compareTo(a.value));
     final charList = characters
-        .map((e) => ScriptCharacter(
-              name: e.key,
-              colorIndex: colorIdx++,
-              lineCount: e.value,
-              gender: existingGenders[e.key] ?? CharacterGender.female,
-            ))
+        .map(
+          (e) => ScriptCharacter(
+            name: e.key,
+            colorIndex: colorIdx++,
+            lineCount: e.value,
+            gender: existingGenders[e.key] ?? CharacterGender.female,
+          ),
+        )
         .toList();
 
     ref.read(currentScriptProvider.notifier).state = ParsedScript(
@@ -1321,8 +1412,11 @@ class _ScriptEditorScreenState extends ConsumerState<ScriptEditorScreen> {
       // Positional scene ranges must follow line insertions/deletions or
       // rehearsal plays the wrong slice (see ParsedScript.remapScenes).
       // A no-op when the edit didn't change line count or order.
-      scenes:
-          ParsedScript.remapScenes(script.scenes, script.lines, updatedLines),
+      scenes: ParsedScript.remapScenes(
+        script.scenes,
+        script.lines,
+        updatedLines,
+      ),
       rawText: script.rawText,
     );
     // Editor mutations used to live in memory only — an app kill, or
@@ -1355,16 +1449,17 @@ class _ScriptEditorScreenState extends ConsumerState<ScriptEditorScreen> {
       for (final c in script.characters) c.name: c.gender,
     };
     var colorIdx = 0;
-    final characters = charCounts.entries
-        .toList()
+    final characters = charCounts.entries.toList()
       ..sort((a, b) => b.value.compareTo(a.value));
     final charList = characters
-        .map((e) => ScriptCharacter(
-              name: e.key,
-              colorIndex: colorIdx++,
-              lineCount: e.value,
-              gender: existingGenders[e.key] ?? CharacterGender.female,
-            ))
+        .map(
+          (e) => ScriptCharacter(
+            name: e.key,
+            colorIndex: colorIdx++,
+            lineCount: e.value,
+            gender: existingGenders[e.key] ?? CharacterGender.female,
+          ),
+        )
         .toList();
 
     ref.read(currentScriptProvider.notifier).state = ParsedScript(
@@ -1374,30 +1469,16 @@ class _ScriptEditorScreenState extends ConsumerState<ScriptEditorScreen> {
       // Positional scene ranges must follow line insertions/deletions or
       // rehearsal plays the wrong slice (see ParsedScript.remapScenes).
       // A no-op when the edit didn't change line count or order.
-      scenes:
-          ParsedScript.remapScenes(script.scenes, script.lines, updatedLines),
+      scenes: ParsedScript.remapScenes(
+        script.scenes,
+        script.lines,
+        updatedLines,
+      ),
       rawText: script.rawText,
     );
     // Editor mutations used to live in memory only — an app kill, or
     // simply opening another production, silently discarded them.
     scheduleScriptSave(ref);
-  }
-
-  Future<void> _syncToCloud(BuildContext context) async {
-    try {
-      await pushScriptToCloud(ref);
-      if (context.mounted) {
-        ScaffoldMessenger.of(context).showAutoToast(
-          const SnackBar(content: Text('Script pushed to cloud')),
-        );
-      }
-    } catch (e) {
-      if (context.mounted) {
-        ScaffoldMessenger.of(context).showAutoToast(
-          SnackBar(content: Text('Cloud sync failed: $e')),
-        );
-      }
-    }
   }
 
   Future<void> _export(
@@ -1415,8 +1496,10 @@ class _ScriptEditorScreenState extends ConsumerState<ScriptEditorScreen> {
           fileName = '${_safeName(script.title)}.md';
           break;
         case 'character':
-          content =
-              ScriptExporter.toCharacterLines(script, _selectedCharacter!);
+          content = ScriptExporter.toCharacterLines(
+            script,
+            _selectedCharacter!,
+          );
           fileName =
               '${_safeName(script.title)}_${_safeName(_selectedCharacter!)}.txt';
           break;
@@ -1452,9 +1535,9 @@ class _ScriptEditorScreenState extends ConsumerState<ScriptEditorScreen> {
       );
     } catch (e) {
       if (!context.mounted) return;
-      ScaffoldMessenger.of(context).showAutoToast(
-        SnackBar(content: Text('Export failed: $e')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showAutoToast(SnackBar(content: Text('Export failed: $e')));
     }
   }
 

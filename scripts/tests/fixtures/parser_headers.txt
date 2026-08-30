@@ -1,0 +1,8 @@
+ACT I
+MARY. Opening line.
+ACT I must remain part of Mary's speech.
+Scene 2 begins in the same speech.
+SCENE II. The drawing room.
+KITTY. After the scene header.
+ACT 3 days have passed.
+Scene 2: don't leave me.

@@ -80,7 +80,7 @@ void main() {
     // Parse the full Hamlet script so every screen has realistic content.
     final rawHamlet = await rootBundle.loadString(_hamletAssetPath);
     final importer = ScriptImportService();
-    final hamlet = importer.importFromText(rawHamlet, title: 'Hamlet');
+    final hamlet = await importer.importFromText(rawHamlet, title: 'Hamlet');
     final production = Production(
       id: const Uuid().v4(),
       title: 'Hamlet',
@@ -107,7 +107,8 @@ void main() {
     // Seed production + script through Riverpod. This skips the file-picker
     // flow which isn't drivable from widget tests.
     final container = ProviderScope.containerOf(
-        tester.element(find.byType(CastCircleApp)));
+      tester.element(find.byType(CastCircleApp)),
+    );
     await container.read(productionsProvider.notifier).add(production);
     container.read(currentProductionProvider.notifier).state = production;
     container.read(currentScriptProvider.notifier).state = hamlet;

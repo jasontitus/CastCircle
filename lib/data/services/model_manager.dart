@@ -1,4 +1,6 @@
+import 'dart:async';
 import 'dart:io';
+import 'dart:convert';
 
 import 'package:archive/archive_io.dart';
 // ignore: depend_on_referenced_packages
@@ -10,16 +12,41 @@ import 'package:path/path.dart' as p;
 import 'debug_log_service.dart';
 import 'model_download_service.dart';
 
+/// One file whose exact bytes are required by the shipped Kokoro engine.
+class KokoroPackArtifact {
+  const KokoroPackArtifact(this.relativePath, this.sizeBytes, this.sha256);
+
+  final String relativePath;
+  final int sizeBytes;
+  final String sha256;
+
+  Map<String, Object> toJson() => {
+    'path': relativePath,
+    'size': sizeBytes,
+    'sha256': sha256,
+  };
+}
+
 /// Manages downloading and caching of on-device ML models.
 ///
 /// Kokoro is downloaded as a .tar.bz2 archive (600+ files including
 /// espeak-ng-data). Extraction runs in a separate isolate using streaming
 /// I/O to avoid OOM and main-thread watchdog kills.
 class ModelManager {
-  ModelManager._();
+  ModelManager._() : _activePackStagingPaths = {};
+
+  @visibleForTesting
+  ModelManager.forTesting(
+    String modelsDirectory, {
+    Set<String> activePackStagingPaths = const {},
+  }) : _modelsDir = modelsDirectory,
+       _activePackStagingPaths = {...activePackStagingPaths};
+
   static final instance = ModelManager._();
 
   String? _modelsDir;
+  final Set<String> _activePackStagingPaths;
+  Future<void> _kokoroCriticalTail = Future<void>.value();
 
   /// Base directory for all cached models.
   Future<String> get modelsDir async {
@@ -47,39 +74,238 @@ class ModelManager {
   /// Superseded model dirs reclaimed on the next download/readiness check —
   /// the old fp32 pack is 600 MB of dead disk once the fp16 pack is in use.
   static const _legacyKokoroDirs = ['kokoro-multi-lang-v1_0'];
+  static const _kokoroManifestFile = '.castcircle-pack.json';
+  static const _kokoroEspeakDataDir = 'espeak-ng-data';
 
+  /// Exact runtime inputs from the archive pinned by [_kokoroArchiveSha256].
+  ///
+  /// Extraction verifies every hash once before publish. Normal readiness
+  /// checks compare the completion manifest and exact sizes, avoiding a
+  /// repeated 180 MB hash scan while still detecting interrupted extraction,
+  /// truncation, or a pack from a different release.
+  static const kokoroRequiredArtifacts = <KokoroPackArtifact>[
+    KokoroPackArtifact(
+      'model.fp16.onnx',
+      163493590,
+      '7983eb4baa16c3b9a81832afd570e5bec06da12538f89b58d32c5c9ed11a00d9',
+    ),
+    KokoroPackArtifact(
+      'voices.bin',
+      27678720,
+      '8a77c0d397026208d22211f37670b5b3b11e03f190756b25a1d24041fced82a9',
+    ),
+    KokoroPackArtifact(
+      'tokens.txt',
+      687,
+      '6ebb6bb288f20f3ae8d004d3c2ca27697da27c037d75e81a60e2a6a663f95425',
+    ),
+    KokoroPackArtifact(
+      'lexicon-us-en.txt',
+      5956885,
+      '7daaab53a181be9885b853a8582bf1838186317e5dadacbcef9c426d6fa0da14',
+    ),
+    KokoroPackArtifact(
+      'lexicon-gb-en.txt',
+      6366635,
+      'c4cbb37316f62210dff52718a7afcaae24f50c032cc75ab47ae67b831d1049e7',
+    ),
+    KokoroPackArtifact(
+      'espeak-ng-data/phontab',
+      55796,
+      '886f3fa402cb0ba73d483aa8ad000af47a6b7cc06293c75a97913fba68a530f6',
+    ),
+    KokoroPackArtifact(
+      'espeak-ng-data/phonindex',
+      39074,
+      '3ca7b8fa3b42624e4b0f152707e7a39245fce569aa99ea47c055d9e622fcf0c4',
+    ),
+    KokoroPackArtifact(
+      'espeak-ng-data/phondata',
+      550424,
+      '4e0288957874029a8c3c9f41a8f517ad4bf18127046decbdd4b9d1d6807ce3a3',
+    ),
+    KokoroPackArtifact(
+      'espeak-ng-data/intonations',
+      2040,
+      '3f8af65fd3eda9759a10f021d61361c120871f463515229c925995c7f90918cc',
+    ),
+    KokoroPackArtifact(
+      'espeak-ng-data/en_dict',
+      166944,
+      '71bd330ba8a2e3e8076e631508208ef49449d6147c17b7bd2b4b1e1468292e35',
+    ),
+    KokoroPackArtifact(
+      'espeak-ng-data/lang/gmw/en',
+      140,
+      '4605d5330801de3641c6e366d15f129ea1f5ffbce8722642aba01ace07ab9c83',
+    ),
+    KokoroPackArtifact(
+      'espeak-ng-data/lang/gmw/en-US',
+      257,
+      '41534c2a22df5dd4f1052ff9e1a33a3ea7bff5a26b5c02bdad5ba8ddb7524704',
+    ),
+    KokoroPackArtifact(
+      'espeak-ng-data/lang/gmw/en-GB-x-rp',
+      249,
+      'd0625af7f58561b1b8cf96fd7f93eee6553bcb3eadb9020ae0757bf96e5115e5',
+    ),
+  ];
+
+  static String get kokoroManifestJson => jsonEncode({
+    'model': _kokoroModelName,
+    'archiveSha256': _kokoroArchiveSha256,
+    'artifacts': kokoroRequiredArtifacts
+        .map((artifact) => artifact.toJson())
+        .toList(),
+  });
 
   // ── Kokoro TTS ─────────────────────────────────────────
 
-  /// Check if Kokoro model is downloaded and extracted.
-  Future<bool> isKokoroReady() async {
+  Future<String?> kokoroProblem() =>
+      _withKokoroCriticalSection(_kokoroProblemLocked);
+
+  Future<String?> _kokoroProblemLocked() async {
     final dir = await modelsDir;
-    final modelDir = p.join(dir, _kokoroModelName);
-    return await File(p.join(modelDir, _kokoroModelFile)).exists() &&
-        await File(p.join(modelDir, 'voices.bin')).exists() &&
-        await File(p.join(modelDir, 'tokens.txt')).exists() &&
-        await File(p.join(modelDir, 'lexicon-us-en.txt')).exists();
+    final modelsRoot = Directory(dir);
+    final modelDir = Directory(p.join(dir, _kokoroModelName));
+    await _runKokoroReconciliation(modelsRoot, modelDir);
+
+    final problem = await _kokoroPackProblem(
+      modelDir,
+      requireManifest: true,
+      verifyHashes: false,
+    );
+    if (problem != 'verification manifest missing') return problem;
+
+    // One-time upgrade for packs installed before completion manifests were
+    // introduced. Full-hash the pinned runtime inputs once; only exact known
+    // bytes earn the marker and avoid an unnecessary 180 MB redownload.
+    final legacyProblem = await _kokoroPackProblem(
+      modelDir,
+      requireManifest: false,
+      verifyHashes: true,
+    );
+    if (legacyProblem != null) return legacyProblem;
+    await _writeKokoroManifest(modelDir);
+    await _runKokoroReconciliation(modelsRoot, modelDir);
+    return null;
   }
+
+  Future<T> _withKokoroCriticalSection<T>(Future<T> Function() operation) {
+    final result = Completer<T>();
+    _kokoroCriticalTail = _kokoroCriticalTail.then((_) async {
+      try {
+        result.complete(await operation());
+      } catch (error, stackTrace) {
+        result.completeError(error, stackTrace);
+      }
+    });
+    return result.future;
+  }
+
+  Future<void> _runKokoroReconciliation(
+    Directory modelsRoot,
+    Directory active,
+  ) async {
+    if (!await active.exists()) {
+      await _restoreInterruptedPublish(modelsRoot, active);
+    }
+    final activeProblem = await _kokoroPackProblem(
+      active,
+      requireManifest: true,
+      verifyHashes: false,
+    );
+    if (activeProblem != null || !await modelsRoot.exists()) return;
+
+    final obsolete = <Directory>[];
+    await for (final entry in modelsRoot.list(followLinks: false)) {
+      if (entry is! Directory) continue;
+      final name = p.basename(entry.path);
+      if (name.startsWith('$_kokoroModelName.previous-') ||
+          name.startsWith('.kokoro_staging_')) {
+        obsolete.add(entry);
+      }
+    }
+    for (final directory in obsolete) {
+      if (_activePackStagingPaths.contains(directory.path)) continue;
+      try {
+        if (await directory.exists()) {
+          await directory.delete(recursive: true);
+        }
+      } catch (e) {
+        // Leave it discoverable: the next readiness call retries cleanup.
+        DebugLogService.instance.logError(
+          LogCategory.error,
+          'ModelManager: deferred Kokoro artifact cleanup failed',
+          e,
+        );
+      }
+    }
+  }
+
+  Future<void> _restoreInterruptedPublish(
+    Directory modelsRoot,
+    Directory active,
+  ) async {
+    if (!await modelsRoot.exists() || await active.exists()) return;
+    final backups = <Directory>[];
+    await for (final entry in modelsRoot.list(followLinks: false)) {
+      if (entry is Directory &&
+          p.basename(entry.path).startsWith('$_kokoroModelName.previous-')) {
+        backups.add(entry);
+      }
+    }
+    backups.sort((a, b) => b.path.compareTo(a.path));
+    for (final backup in backups) {
+      final problem = await _kokoroPackProblem(
+        backup,
+        requireManifest: true,
+        verifyHashes: false,
+      );
+      if (problem != null) continue;
+      try {
+        await backup.rename(active.path);
+        DebugLogService.instance.log(
+          LogCategory.general,
+          'ModelManager: restored verified pack after interrupted publish',
+        );
+        return;
+      } catch (e) {
+        DebugLogService.instance.logError(
+          LogCategory.error,
+          'ModelManager: could not restore interrupted Kokoro publish',
+          e,
+        );
+        return;
+      }
+    }
+  }
+
+  /// Check if the exact verified Kokoro pack is installed.
+  Future<bool> isKokoroReady() async => await kokoroProblem() == null;
 
   /// Get paths to Kokoro model files. Returns null if not downloaded.
   /// [lexicon] is the comma-separated list sherpa expects.
   Future<
-      ({
-        String model,
-        String voices,
-        String tokens,
-        String dataDir,
-        String lexicon,
-      })?> getKokoroPaths() async {
-    if (!await isKokoroReady()) return null;
+    ({
+      String model,
+      String voices,
+      String tokens,
+      String dataDir,
+      String lexicon,
+    })?
+  >
+  getKokoroPaths() async {
+    if (await kokoroProblem() != null) return null;
     final dir = await modelsDir;
     final modelDir = p.join(dir, _kokoroModelName);
     return (
       model: p.join(modelDir, _kokoroModelFile),
       voices: p.join(modelDir, 'voices.bin'),
       tokens: p.join(modelDir, 'tokens.txt'),
-      dataDir: p.join(modelDir, 'espeak-ng-data'),
-      lexicon: '${p.join(modelDir, 'lexicon-us-en.txt')},'
+      dataDir: p.join(modelDir, _kokoroEspeakDataDir),
+      lexicon:
+          '${p.join(modelDir, 'lexicon-us-en.txt')},'
           '${p.join(modelDir, 'lexicon-gb-en.txt')}',
     );
   }
@@ -104,10 +330,8 @@ class ModelManager {
   Future<void> downloadKokoro({
     void Function(String file, double progress)? onProgress,
   }) async {
-    // Free the superseded fp32 pack first — 600 MB, and preflight headroom
-    // for the new download.
-    await _reclaimLegacyKokoro();
     if (await isKokoroReady()) {
+      await _reclaimLegacyKokoro();
       onProgress?.call('kokoro', 1.0);
       return;
     }
@@ -119,6 +343,7 @@ class ModelManager {
       (progress) => onProgress?.call('$_kokoroModelName.tar.bz2', progress),
       expectedSha256: _kokoroArchiveSha256,
     );
+    await _reclaimLegacyKokoro();
   }
 
   // ── Download all ───────────────────────────────────────
@@ -174,64 +399,188 @@ class ModelManager {
     String url,
     String destDir,
     void Function(double progress)? onProgress, {
-    String? expectedSha256,
+    required String expectedSha256,
   }) async {
-    final tmpDir = await getTemporaryDirectory();
+    final downloadDir = await (await getTemporaryDirectory()).createTemp(
+      'kokoro_download_',
+    );
     final archiveName = p.basename(Uri.parse(url).path);
-    final archivePath = p.join(tmpDir.path, archiveName);
-
-    // Remove stale archive from interrupted download
-    try {
-      if (await File(archivePath).exists()) await File(archivePath).delete();
-    } catch (_) {}
-
-    // Download the archive
-    await _downloadFile(url, archivePath, (progress) {
-      // Download is 80% of the work, extraction is 20%
-      onProgress?.call(progress * 0.8);
-    });
-
-    // Verify archive downloaded correctly
+    final archivePath = p.join(downloadDir.path, archiveName);
     final archiveFile = File(archivePath);
-    final archiveSize = await archiveFile.length();
-    debugPrint('Archive downloaded: ${(archiveSize / 1024 / 1024).toStringAsFixed(1)} MB');
-    if (archiveSize < 1000) {
-      throw Exception('Archive too small ($archiveSize bytes) — download likely failed');
-    }
+    Directory? stagingRoot;
 
-    // Integrity: these bytes get extracted and fed straight into native
-    // inference code — a truncated or tampered archive must fail HERE, not
-    // manifest as a mysterious crash later.
-    if (expectedSha256 != null) {
+    try {
+      await _downloadFile(url, archivePath, (progress) {
+        onProgress?.call(progress * 0.8);
+      });
+
+      final archiveSize = await archiveFile.length();
+      debugPrint(
+        'Archive downloaded: ${(archiveSize / 1024 / 1024).toStringAsFixed(1)} MB',
+      );
       final digest = await crypto.sha256.bind(archiveFile.openRead()).first;
       final actual = digest.toString().toLowerCase();
       if (actual != expectedSha256.toLowerCase()) {
+        throw Exception(
+          'Archive failed verification (sha256 $actual != '
+          'expected ${expectedSha256.toLowerCase()}) — it was discarded, '
+          'please try again',
+        );
+      }
+
+      // Never extract over the active pack. A failed or interrupted extraction
+      // remains isolated here and cannot turn a working installation partial.
+      final modelsRoot = Directory(destDir);
+      await modelsRoot.create(recursive: true);
+      stagingRoot = await _createLeasedStagingRoot(modelsRoot);
+      debugPrint('Extracting archive to ${stagingRoot.path} ...');
+      onProgress?.call(0.85);
+      await compute(_extractArchiveStreaming, (archivePath, stagingRoot.path));
+
+      final stagedModel = Directory(p.join(stagingRoot.path, _kokoroModelName));
+      final problem = await _kokoroPackProblem(
+        stagedModel,
+        requireManifest: false,
+        verifyHashes: true,
+      );
+      if (problem != null) {
+        throw Exception(
+          'Extracted Kokoro pack failed verification ($problem) — '
+          'the working model was kept',
+        );
+      }
+      await _writeKokoroManifest(stagedModel);
+
+      await _publishVerifiedKokoroPack(
+        stagedModel,
+        Directory(p.join(destDir, _kokoroModelName)),
+      );
+      onProgress?.call(1.0);
+      debugPrint('Kokoro archive verified and published successfully');
+    } finally {
+      if (await downloadDir.exists()) {
         try {
-          await archiveFile.delete();
-        } catch (_) {}
-        throw Exception('Archive failed verification (sha256 $actual != '
-            'expected $expectedSha256) — it was discarded, please try again');
+          await downloadDir.delete(recursive: true);
+        } catch (e) {
+          DebugLogService.instance.logError(
+            LogCategory.error,
+            'ModelManager: could not remove archive staging directory',
+            e,
+          );
+        }
+      }
+      final staging = stagingRoot;
+      if (staging != null) {
+        try {
+          if (await staging.exists()) {
+            await staging.delete(recursive: true);
+          }
+        } catch (e) {
+          DebugLogService.instance.logError(
+            LogCategory.error,
+            'ModelManager: could not remove extraction staging directory',
+            e,
+          );
+        } finally {
+          _activePackStagingPaths.remove(staging.path);
+        }
+      }
+    }
+  }
+
+  static Future<String?> _kokoroPackProblem(
+    Directory modelDir, {
+    required bool requireManifest,
+    required bool verifyHashes,
+  }) async {
+    if (!await modelDir.exists()) return 'pack directory missing';
+
+    final dataDir = Directory(p.join(modelDir.path, _kokoroEspeakDataDir));
+    if (!await dataDir.exists()) return '$_kokoroEspeakDataDir missing';
+
+    if (requireManifest) {
+      final marker = File(p.join(modelDir.path, _kokoroManifestFile));
+      if (!await marker.exists()) return 'verification manifest missing';
+      try {
+        final decoded = jsonDecode(await marker.readAsString());
+        final expected = jsonDecode(kokoroManifestJson);
+        if (jsonEncode(decoded) != jsonEncode(expected)) {
+          return 'verification manifest does not match $_kokoroModelName';
+        }
+      } catch (e) {
+        return 'verification manifest unreadable: $e';
       }
     }
 
-    // Extract in a separate isolate using streaming I/O
-    debugPrint('Extracting archive to $destDir ...');
-    onProgress?.call(0.85);
-    try {
-      await compute(_extractArchiveStreaming, (archivePath, destDir));
-    } catch (e) {
-      debugPrint('Archive extraction failed: $e');
-      rethrow;
-    } finally {
-      // Delete the ~180 MB archive on failure too — repeated failed
-      // extractions (e.g. disk full) used to accumulate these.
-      try {
-        await File(archivePath).delete();
-      } catch (_) {}
+    for (final artifact in kokoroRequiredArtifacts) {
+      final file = File(p.join(modelDir.path, artifact.relativePath));
+      if (!await file.exists()) return '${artifact.relativePath} missing';
+      final actualSize = await file.length();
+      if (actualSize != artifact.sizeBytes) {
+        return '${artifact.relativePath} size $actualSize B != '
+            '${artifact.sizeBytes} B';
+      }
+      if (verifyHashes) {
+        final digest = await crypto.sha256.bind(file.openRead()).first;
+        final actualHash = digest.toString().toLowerCase();
+        if (actualHash != artifact.sha256) {
+          return '${artifact.relativePath} sha256 $actualHash != '
+              '${artifact.sha256}';
+        }
+      }
     }
+    return null;
+  }
 
-    onProgress?.call(1.0);
-    debugPrint('Archive extracted successfully');
+  static Future<void> _writeKokoroManifest(Directory modelDir) async {
+    final marker = File(p.join(modelDir.path, _kokoroManifestFile));
+    final stagedMarker = File('${marker.path}.tmp');
+    await stagedMarker.writeAsString(kokoroManifestJson, flush: true);
+    await stagedMarker.rename(marker.path);
+  }
+
+  Future<Directory> _createLeasedStagingRoot(Directory modelsRoot) =>
+      _withKokoroCriticalSection(() async {
+        final staging = await modelsRoot.createTemp('.kokoro_staging_');
+        _activePackStagingPaths.add(staging.path);
+        return staging;
+      });
+
+  Future<void> _publishVerifiedKokoroPack(Directory staged, Directory active) =>
+      _withKokoroCriticalSection(
+        () => _publishVerifiedKokoroPackLocked(staged, active),
+      );
+
+  Future<void> _publishVerifiedKokoroPackLocked(
+    Directory staged,
+    Directory active,
+  ) async {
+    Directory? backup;
+    if (await active.exists()) {
+      backup = Directory(
+        '${active.path}.previous-${DateTime.now().microsecondsSinceEpoch}',
+      );
+      await active.rename(backup.path);
+    }
+    try {
+      await staged.rename(active.path);
+    } catch (e) {
+      if (backup != null && await backup.exists() && !await active.exists()) {
+        await backup.rename(active.path);
+      }
+      rethrow;
+    }
+    if (backup != null && await backup.exists()) {
+      try {
+        await backup.delete(recursive: true);
+      } catch (e) {
+        DebugLogService.instance.logError(
+          LogCategory.error,
+          'ModelManager: verified pack active but old pack cleanup failed',
+          e,
+        );
+      }
+    }
   }
 
   /// Streaming archive extraction — runs in an isolate.
@@ -314,18 +663,24 @@ class ModelManager {
             // https→http hop would put the model bytes we then execute-as-data
             // on the wire in the clear, open to tampering.
             if (target.scheme != 'https') {
-              final msg = 'Model download refused: redirect to a non-HTTPS URL '
+              final msg =
+                  'Model download refused: redirect to a non-HTTPS URL '
                   '(${target.scheme}://${target.host})';
               DebugLogService.instance.logError(LogCategory.network, msg);
               throw Exception(msg);
             }
             if (redirectsLeft <= 0) {
-              final msg = 'Model download refused: too many redirects from $url';
+              final msg =
+                  'Model download refused: too many redirects from $url';
               DebugLogService.instance.logError(LogCategory.network, msg);
               throw Exception(msg);
             }
-            await _downloadFile(target.toString(), localPath, onProgress,
-                redirectsLeft: redirectsLeft - 1);
+            await _downloadFile(
+              target.toString(),
+              localPath,
+              onProgress,
+              redirectsLeft: redirectsLeft - 1,
+            );
             return;
           }
         }
@@ -358,7 +713,8 @@ class ModelManager {
       await tmpFile.rename(localPath);
       onProgress?.call(1.0);
       debugPrint(
-          'Downloaded: ${p.basename(localPath)} (${(bytesReceived / 1024 / 1024).toStringAsFixed(1)} MB)');
+        'Downloaded: ${p.basename(localPath)} (${(bytesReceived / 1024 / 1024).toStringAsFixed(1)} MB)',
+      );
     } finally {
       client.close();
     }

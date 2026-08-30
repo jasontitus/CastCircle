@@ -39,7 +39,7 @@ void main() {
     final db = AppDatabase();
     final rawHamlet = await rootBundle.loadString(_hamletAssetPath);
     final importer = ScriptImportService();
-    final hamlet = importer.importFromText(rawHamlet, title: 'Hamlet');
+    final hamlet = await importer.importFromText(rawHamlet, title: 'Hamlet');
     final production = Production(
       id: const Uuid().v4(),
       title: 'Hamlet',
@@ -62,7 +62,8 @@ void main() {
 
     // Seed production + script.
     final container = ProviderScope.containerOf(
-        tester.element(find.byType(CastCircleApp)));
+      tester.element(find.byType(CastCircleApp)),
+    );
     await container.read(productionsProvider.notifier).add(production);
     container.read(currentProductionProvider.notifier).state = production;
     container.read(currentScriptProvider.notifier).state = hamlet;
@@ -73,11 +74,11 @@ void main() {
     container.read(rehearsalModeProvider.notifier).state =
         RehearsalMode.cuePractice;
     if (hamlet.scenes.isNotEmpty) {
-      container.read(selectedSceneProvider.notifier).state =
-          hamlet.scenes.firstWhere(
-        (s) => s.characters.contains('HAMLET'),
-        orElse: () => hamlet.scenes.first,
-      );
+      container.read(selectedSceneProvider.notifier).state = hamlet.scenes
+          .firstWhere(
+            (s) => s.characters.contains('HAMLET'),
+            orElse: () => hamlet.scenes.first,
+          );
     }
 
     // Navigate to production hub (so the recording starts on a "real" screen)

@@ -10,6 +10,7 @@ import 'package:path_provider/path_provider.dart';
 
 import '../../core/responsive.dart';
 import '../../data/models/script_models.dart';
+import '../../data/models/production_models.dart';
 import '../../data/services/analytics_service.dart';
 import '../../data/services/debug_log_service.dart';
 import '../../data/services/paddle_ocr_channel.dart';
@@ -37,6 +38,48 @@ class _ScriptImportScreenState extends ConsumerState<ScriptImportScreen> {
   /// True while [_importedPdfPath] points at the staging copy in the temp dir,
   /// i.e. before the user accepted the import. See [_commitStagedPdf].
   bool _pdfPendingCommit = false;
+  bool _dialectSaving = false;
+  String? _dialectError;
+  String? _pendingDialect;
+  int _dialectGeneration = 0;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _restorePendingDialect();
+    });
+  }
+
+  Future<void> _restorePendingDialect() async {
+    final production = ref.read(currentProductionProvider);
+    if (production == null) return;
+    final generation = _dialectGeneration;
+    try {
+      final pending = await VoiceConfigService.instance
+          .getPendingVoiceCloudSync(production.id);
+      if (!mounted ||
+          generation != _dialectGeneration ||
+          pending?.locale == null) {
+        return;
+      }
+      setState(() {
+        _pendingDialect = pending!.locale;
+        _dialectError = 'Dialect saved on this device but has not synced.';
+      });
+    } catch (_, stack) {
+      if (!mounted || generation != _dialectGeneration) return;
+      DebugLogService.instance.logError(
+        LogCategory.error,
+        'Pending dialect sync could not be read',
+        null,
+        stack,
+      );
+      setState(() {
+        _dialectError = 'Pending dialect sync could not be read.';
+      });
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -325,7 +368,7 @@ class _ScriptImportScreenState extends ConsumerState<ScriptImportScreen> {
   Widget _buildDialectSelector(BuildContext context) {
     final production = ref.watch(currentProductionProvider);
     if (production == null) return const SizedBox.shrink();
-    final label = _localeLabels[production.locale] ?? production.locale;
+    final pending = _dialectSaving;
 
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
@@ -358,30 +401,119 @@ class _ScriptImportScreenState extends ConsumerState<ScriptImportScreen> {
                   .map((e) => ButtonSegment(value: e.key, label: Text(e.value)))
                   .toList(),
               selected: {production.locale},
-              onSelectionChanged: (selected) {
-                final locale = selected.first;
-                final updated = production.copyWith(locale: locale);
-                ref.read(productionsProvider.notifier).update(updated);
-                ref.read(currentProductionProvider.notifier).state = updated;
-                final presetId = locale == 'en-GB'
-                    ? 'victorian_english'
-                    : 'modern_american';
-                VoiceConfigService.instance.setPreset(production.id, presetId);
-                // Sync locale and voice preset to cloud
-                final supa = SupabaseService.instance;
-                if (supa.isSignedIn) {
-                  supa.saveLocale(productionId: production.id, locale: locale);
-                  supa.saveVoicePreset(
-                    productionId: production.id,
-                    presetId: presetId,
-                  );
-                }
-              },
+              onSelectionChanged: pending
+                  ? null
+                  : (selected) => _setDialect(production, selected.first),
             ),
           ),
+          if (pending) ...[
+            const SizedBox(height: 8),
+            const LinearProgressIndicator(),
+          ],
+          if (_dialectError != null) ...[
+            const SizedBox(height: 8),
+            Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    _dialectError!,
+                    style: TextStyle(
+                      color: Theme.of(context).colorScheme.error,
+                      fontSize: 12,
+                    ),
+                  ),
+                ),
+                TextButton(
+                  onPressed: pending || _pendingDialect == null
+                      ? null
+                      : () => _setDialect(production, _pendingDialect!),
+                  child: const Text('Retry'),
+                ),
+              ],
+            ),
+          ],
         ],
       ),
     );
+  }
+
+  Future<void> _setDialect(Production production, String locale) async {
+    final generation = ++_dialectGeneration;
+    final presetId = locale == 'en-GB'
+        ? 'victorian_english'
+        : 'modern_american';
+    final updated = production.copyWith(locale: locale);
+    final productions = ref.read(productionsProvider.notifier);
+    final voiceConfig = VoiceConfigService.instance;
+    final supa = SupabaseService.instance;
+    var productionSaved = false;
+    var presetSaved = false;
+
+    // Keep the selector responsive, but do not describe the optimistic value
+    // as synced until every local and cloud write has completed.
+    ref.read(currentProductionProvider.notifier).state = updated;
+    setState(() {
+      _dialectSaving = true;
+      _dialectError = null;
+      _pendingDialect = locale;
+    });
+
+    try {
+      // Persist desired convergence first. A process death between either
+      // local write still leaves enough information to finish the operation.
+      await voiceConfig.markVoiceCloudSyncPending(
+        production.id,
+        presetId: presetId,
+        locale: locale,
+      );
+      await productions.update(updated);
+      productionSaved = true;
+      await voiceConfig.setPreset(production.id, presetId);
+      presetSaved = true;
+      if (!supa.isSignedIn) {
+        if (!mounted || generation != _dialectGeneration) return;
+        setState(() {
+          _dialectSaving = false;
+          _dialectError = 'Dialect saved on this device; sign in to sync it.';
+        });
+        return;
+      }
+      await Future.wait([
+        supa.saveLocale(productionId: production.id, locale: locale),
+        supa.saveVoicePreset(productionId: production.id, presetId: presetId),
+      ]);
+      await voiceConfig.clearPendingVoiceCloudSyncIfMatches(
+        production.id,
+        presetId: presetId,
+        locale: locale,
+      );
+      if (!mounted || generation != _dialectGeneration) return;
+      setState(() {
+        _dialectSaving = false;
+        _pendingDialect = null;
+      });
+    } catch (_, stack) {
+      if (!mounted || generation != _dialectGeneration) return;
+      if (!productionSaved) {
+        ref.read(currentProductionProvider.notifier).state = production;
+      }
+      DebugLogService.instance.logError(
+        productionSaved && presetSaved
+            ? LogCategory.network
+            : LogCategory.error,
+        'Script dialect persistence failed',
+        null,
+        stack,
+      );
+      setState(() {
+        _dialectSaving = false;
+        _dialectError = !productionSaved
+            ? 'Dialect could not be saved on this device.'
+            : !presetSaved
+            ? 'Dialect saved, but its voice preset could not be saved.'
+            : 'Dialect saved on this device but has not synced.';
+      });
+    }
   }
 
   /// Banner surfacing low-OCR lines flagged for review. Hidden when the import
@@ -442,7 +574,10 @@ class _ScriptImportScreenState extends ConsumerState<ScriptImportScreen> {
         // later scene, which rehearsal (linesInScene) would then play from
         // the wrong part of the script.
         scenes: ParsedScript.remapScenes(
-            script.scenes, script.lines, result.lines),
+          script.scenes,
+          script.lines,
+          result.lines,
+        ),
         // Recount characters from the surviving lines: a character whose
         // only lines were removed in review used to linger in the preview's
         // cast list with a stale line count until the next DB reload.
@@ -455,7 +590,9 @@ class _ScriptImportScreenState extends ConsumerState<ScriptImportScreen> {
   /// Rebuild the character list from [lines], preserving gender (and keeping
   /// colorIndex stable by list position, like the parser does).
   static List<ScriptCharacter> _recountCharacters(
-      List<ScriptCharacter> existing, List<ScriptLine> lines) {
+    List<ScriptCharacter> existing,
+    List<ScriptLine> lines,
+  ) {
     final genders = {for (final c in existing) c.name: c.gender};
     final counts = <String, int>{};
     for (final line in lines) {
@@ -583,13 +720,21 @@ class _ScriptImportScreenState extends ConsumerState<ScriptImportScreen> {
       context.push('/production');
     } catch (e, stack) {
       DebugLogService.instance.logError(
-          LogCategory.general, 'Accepting imported script failed', e, stack);
+        LogCategory.general,
+        'Accepting imported script failed',
+        e,
+        stack,
+      );
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showAutoToast(SnackBar(
-        content: Text("Couldn't save the imported script — it has NOT been "
-            'added to this production. $e'),
-        duration: const Duration(seconds: 8),
-      ));
+      ScaffoldMessenger.of(context).showAutoToast(
+        SnackBar(
+          content: Text(
+            "Couldn't save the imported script — it has NOT been "
+            'added to this production. $e',
+          ),
+          duration: const Duration(seconds: 8),
+        ),
+      );
     } finally {
       // Or the button sticks on "Saving..." forever after a failure.
       if (mounted) setState(() => _saving = false);
@@ -607,8 +752,10 @@ class _ScriptImportScreenState extends ConsumerState<ScriptImportScreen> {
     if (production == null) {
       // Shouldn't happen — staging only starts with a production open — but
       // dropping the PDF without a word would break the page viewer later.
-      DebugLogService.instance.logError(LogCategory.general,
-          'Staged PDF not committed — no production is open');
+      DebugLogService.instance.logError(
+        LogCategory.general,
+        'Staged PDF not committed — no production is open',
+      );
       return;
     }
 
@@ -624,8 +771,11 @@ class _ScriptImportScreenState extends ConsumerState<ScriptImportScreen> {
       await File(staged).delete();
     } catch (e) {
       // Only a leftover temp file — the import itself succeeded.
-      DebugLogService.instance
-          .logError(LogCategory.general, 'Staged PDF cleanup failed', e);
+      DebugLogService.instance.logError(
+        LogCategory.general,
+        'Staged PDF cleanup failed',
+        e,
+      );
     }
 
     if (!mounted) return;
@@ -689,16 +839,21 @@ class _ScriptImportScreenState extends ConsumerState<ScriptImportScreen> {
           if (!mounted) return;
           _importedPdfPath = stagedPath;
           _pdfPendingCommit = true;
-          DebugLogService.instance.log(LogCategory.general,
-              'Import: PDF staged for page viewer ($stagedPath)');
+          DebugLogService.instance.log(
+            LogCategory.general,
+            'Import: PDF staged for page viewer ($stagedPath)',
+          );
         } catch (e) {
           // The picked file itself usually survives in tmp — use it so the
           // review's page viewer still works this session.
           _importedPdfPath = filePath;
           _pdfPendingCommit = true;
-          DebugLogService.instance.logError(LogCategory.general,
-              'Import: PDF staging copy failed — page viewer will use the '
-              'picked file directly', e);
+          DebugLogService.instance.logError(
+            LogCategory.general,
+            'Import: PDF staging copy failed — page viewer will use the '
+            'picked file directly',
+            e,
+          );
         }
 
         setState(() {
@@ -710,16 +865,23 @@ class _ScriptImportScreenState extends ConsumerState<ScriptImportScreen> {
         // is silently missing scenes — warn now, not at rehearsal.
         final failed = service.lastImportFailedPages;
         if (failed > 0) {
-          ScaffoldMessenger.of(context).showAutoToast(SnackBar(
-            content: Text('$failed page(s) couldn\'t be read — parts of the '
-                'script may be missing. Check the preview against the PDF.'),
-            duration: const Duration(seconds: 8),
-          ));
+          ScaffoldMessenger.of(context).showAutoToast(
+            SnackBar(
+              content: Text(
+                '$failed page(s) couldn\'t be read — parts of the '
+                'script may be missing. Check the preview against the PDF.',
+              ),
+              duration: const Duration(seconds: 8),
+            ),
+          );
         }
       } on UnimplementedError catch (e) {
         // ML Kit not available — show helpful message
-        DebugLogService.instance
-            .logError(LogCategory.general, 'PDF import unavailable', e);
+        DebugLogService.instance.logError(
+          LogCategory.general,
+          'PDF import unavailable',
+          e,
+        );
         if (!mounted) return;
         setState(() {
           _error =
@@ -734,8 +896,12 @@ class _ScriptImportScreenState extends ConsumerState<ScriptImportScreen> {
         WakelockPlus.disable();
       }
     } catch (e, stack) {
-      DebugLogService.instance
-          .logError(LogCategory.general, 'PDF import failed', e, stack);
+      DebugLogService.instance.logError(
+        LogCategory.general,
+        'PDF import failed',
+        e,
+        stack,
+      );
       if (!mounted) return;
       setState(() {
         _error = 'Failed to import PDF: $e';
@@ -771,8 +937,12 @@ class _ScriptImportScreenState extends ConsumerState<ScriptImportScreen> {
         _loading = false;
       });
     } catch (e, stack) {
-      DebugLogService.instance
-          .logError(LogCategory.general, 'Markdown import failed', e, stack);
+      DebugLogService.instance.logError(
+        LogCategory.general,
+        'Markdown import failed',
+        e,
+        stack,
+      );
       if (!mounted) return;
       setState(() {
         _error = 'Failed to import markdown: $e';
@@ -808,8 +978,12 @@ class _ScriptImportScreenState extends ConsumerState<ScriptImportScreen> {
         _loading = false;
       });
     } catch (e, stack) {
-      DebugLogService.instance
-          .logError(LogCategory.general, 'Text import failed', e, stack);
+      DebugLogService.instance.logError(
+        LogCategory.general,
+        'Text import failed',
+        e,
+        stack,
+      );
       if (!mounted) return;
       setState(() {
         _error = 'Failed to import script: $e';

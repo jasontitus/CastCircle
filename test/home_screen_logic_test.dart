@@ -75,4 +75,12 @@ void main() {
       );
     });
   });
+
+  group('productionInvitesAvailable', () {
+    test('allows invites only after cloud creation leaves the outbox', () {
+      expect(productionInvitesAvailable(null), isTrue);
+      expect(productionInvitesAvailable('pending'), isFalse);
+      expect(productionInvitesAvailable('failed'), isFalse);
+    });
+  });
 }

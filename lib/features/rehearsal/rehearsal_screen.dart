@@ -34,6 +34,7 @@ import '../../data/services/voice_config_service.dart';
 import '../../data/services/audio_level_service.dart';
 import '../../data/services/playback_session.dart';
 import '../../providers/production_providers.dart';
+import '../../main.dart' show databaseProvider;
 import '../../features/settings/settings_screen.dart';
 import 'rehearsal_history_screen.dart';
 import '../../core/toast.dart';
@@ -48,8 +49,9 @@ enum RehearsalState {
 }
 
 /// Provider tracking the rehearsal engine state.
-final rehearsalStateProvider =
-    StateProvider<RehearsalState>((ref) => RehearsalState.ready);
+final rehearsalStateProvider = StateProvider<RehearsalState>(
+  (ref) => RehearsalState.ready,
+);
 
 /// Current line index within the scene.
 final currentLineIndexProvider = StateProvider<int>((ref) => 0);
@@ -67,7 +69,7 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
   final AudioPlayer _player = AudioPlayer();
   final TtsService _tts = TtsService.instance;
   final SttService _stt = SttService.instance;
-  final SttAdaptationService _sttAdapt = SttAdaptationService.instance;
+  late final SttAdaptationService _sttAdapt;
   final SttVocabularyService _sttVocab = SttVocabularyService.instance;
   String? _activeAdapter; // per-actor or per-production LoRA adapter path
   final GlobalKey _currentLineKey = GlobalKey();
@@ -88,7 +90,8 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
   final ValueNotifier<double> _micLevel = ValueNotifier(0.0);
   String _lastRecognizedRaw = ''; // last uncorrected transcript, for learning
   bool _matchConfirmed = false; // guards double-advance from timer + VAD
-  bool _showJumpBackHint = false; // Set in initState based on how many times shown
+  bool _showJumpBackHint =
+      false; // Set in initState based on how many times shown
 
   // Rehearsal audio capture: record the user's lines for later use
   final Map<String, _CapturedLine> _capturedAudio = {};
@@ -162,6 +165,12 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
   /// time — without ever requiring quiet.
   Timer? _strongMatchDeadline;
 
+  /// Invalidates delayed recognition/timer callbacks whenever the active line
+  /// changes or the session pauses. A state check alone is insufficient:
+  /// jump/restart can put a different line back into listeningForMe while an
+  /// old callback is still waiting for audio-session release.
+  int _lineGeneration = 0;
+
   /// Latched true the moment the line's ending appears at the tail of the
   /// transcript. Under noise the recognizer appends garbage AFTER the
   /// actor's final words, so the ending stops being the "last two words"
@@ -186,8 +195,10 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
   // production+scene+character+mode so a force-quit (or just leaving) doesn't
   // drop the actor back to the top of the scene next time.
   Timer? _progressSaveTimer;
+
   /// Force-dismisses the resume toast (see _showResumeSnackBar).
   Timer? _toastTimer;
+
   /// One 'first result' log per line (see onResult).
   bool _loggedFirstResultForLine = false;
   // When listening for the current line began — used to sanity-check a
@@ -206,10 +217,12 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
   // doing nothing on every one of their lines.
   bool _sttInitFailed = false;
   bool _sttUnavailableNoticeShown = false;
+  String? _voiceConfigurationWarning;
 
   @override
   void initState() {
     super.initState();
+    _sttAdapt = SttAdaptationService(ref.read(databaseProvider));
     _scrollController = ScrollController();
     WidgetsBinding.instance.addObserver(this);
 
@@ -219,7 +232,7 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
     WidgetsBinding.instance.addPostFrameCallback((_) {
       ref.read(currentLineIndexProvider.notifier).state = 0;
       ref.read(rehearsalStateProvider.notifier).state = RehearsalState.ready;
-      _initAudio();
+      unawaited(_initAudio());
     });
 
     // Listen for playback completion to auto-advance (real recordings only)
@@ -283,13 +296,16 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
     // Use per-character locale if set, otherwise production default
     var locale = production?.locale ?? 'en-US';
     if (production != null && myCharacter != null) {
-      final charLocale = await VoiceConfigService.instance
-          .getLocale(production.id, myCharacter);
+      final charLocale = await VoiceConfigService.instance.getLocale(
+        production.id,
+        myCharacter,
+      );
       if (charLocale != null) locale = charLocale;
     }
 
     // Set system TTS locale and assign voices
     await _tts.setLocale(locale);
+    if (!mounted) return;
     await _assignVoices(production, script, locale);
     if (!mounted) return;
 
@@ -325,7 +341,11 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
     if (script != null && scene != null) {
       final dialogueLines = _getRehearsalLines(script, scene, myCharacter);
       resumeIdx = await _loadProgressCheckpoint(
-          production, scene, myCharacter, dialogueLines.length);
+        production,
+        scene,
+        myCharacter,
+        dialogueLines.length,
+      );
       if (!mounted) return;
     }
 
@@ -338,8 +358,9 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
         myCharacter != null &&
         scene != null) {
       final dialogueLines = _getRehearsalLines(script, scene, myCharacter);
-      final firstMyIdx =
-          dialogueLines.indexWhere((l) => l.isForCharacter(myCharacter));
+      final firstMyIdx = dialogueLines.indexWhere(
+        (l) => l.isForCharacter(myCharacter),
+      );
       if (firstMyIdx > 0) {
         // Start 3 lines before actor's first line (minimum 0)
         final startIdx = (firstMyIdx - 3).clamp(0, dialogueLines.length - 1);
@@ -376,8 +397,8 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
       final device = ui.PlatformDispatcher.instance.locale;
       final sttLocale =
           device.languageCode == 'en' && device.countryCode != null
-              ? '${device.languageCode}-${device.countryCode}'
-              : 'en-US';
+          ? '${device.languageCode}-${device.countryCode}'
+          : 'en-US';
       _initSttDeferred(production, myCharacter, script, sttLocale);
     }
   }
@@ -396,17 +417,22 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
       reason = 'AI voices aren\'t supported on this device yet';
     } else if (await ModelDownloadService.instance.isKokoroReady()) {
       reason = 'the AI voice model failed to load';
-      _dlog.logError(LogCategory.tts,
-          'Kokoro model is downloaded but did not load — using system voices');
+      _dlog.logError(
+        LogCategory.tts,
+        'Kokoro model is downloaded but did not load — using system voices',
+      );
     } else {
-      reason = 'the AI voice model isn\'t downloaded '
+      reason =
+          'the AI voice model isn\'t downloaded '
           '(Settings → AI Models)';
     }
     if (!mounted) return;
-    ScaffoldMessenger.of(context).showAutoToast(SnackBar(
-      content: Text('Using system voices — $reason.'),
-      duration: const Duration(seconds: 6),
-    ));
+    ScaffoldMessenger.of(context).showAutoToast(
+      SnackBar(
+        content: Text('Using system voices — $reason.'),
+        duration: const Duration(seconds: 6),
+      ),
+    );
   }
 
   Future<void> _initSttDeferred(
@@ -427,26 +453,31 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
       // The core feature (line matching) is dead without STT — say so instead
       // of leaving the actor wondering why nothing reacts to their voice.
       _sttInitFailed = true;
-      _dlog.logError(LogCategory.stt,
-          'Rehearsal: STT init failed — line matching disabled this session');
-      ScaffoldMessenger.of(context).showAutoToast(const SnackBar(
-        content: Text('Speech recognition unavailable — your lines won\'t be '
+      _dlog.logError(
+        LogCategory.stt,
+        'Rehearsal: STT init failed — line matching disabled this session',
+      );
+      ScaffoldMessenger.of(context).showAutoToast(
+        const SnackBar(
+          content: Text(
+            'Speech recognition unavailable — your lines won\'t be '
             'matched automatically. Check microphone & speech recognition '
-            'permissions in Settings, then restart rehearsal.'),
-        duration: Duration(seconds: 10),
-      ));
+            'permissions in Settings, then restart rehearsal.',
+          ),
+          duration: Duration(seconds: 10),
+        ),
+      );
     }
 
     // Build STT vocabulary from script for correction
     if (script != null && production != null) {
       _sttVocab.buildFromScript(production.id, script.lines);
     }
-
     // Check for per-actor or per-production STT adapter
     if (production != null && myCharacter != null) {
       _activeAdapter = _sttAdapt.getBestAdapter(production.id, myCharacter);
       if (_activeAdapter != null) {
-        debugPrint('Rehearsal: Using adapted STT model: $_activeAdapter');
+        debugPrint('Rehearsal: custom STT adaptation enabled');
       }
     }
   }
@@ -459,7 +490,11 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
   // production+scene+character+mode (mode matters because Cue Practice uses a
   // filtered line list with a different index space) and resume on re-entry.
 
-  String? _progressKey(dynamic production, ScriptScene scene, String? character) {
+  String? _progressKey(
+    dynamic production,
+    ScriptScene scene,
+    String? character,
+  ) {
     final pid = production?.id;
     if (pid == null) return null;
     final mode = ref.read(rehearsalModeProvider).name;
@@ -469,7 +504,11 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
   /// Reads a saved checkpoint for the current scene. Returns the resume index
   /// only when it's a meaningful mid-scene position; expires stale checkpoints.
   Future<int?> _loadProgressCheckpoint(
-      dynamic production, ScriptScene scene, String? character, int lineCount) async {
+    dynamic production,
+    ScriptScene scene,
+    String? character,
+    int lineCount,
+  ) async {
     final key = _progressKey(production, scene, character);
     if (key == null) return null;
     final prefs = await SharedPreferences.getInstance();
@@ -498,15 +537,20 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
     // Seed the cache while we're definitely mounted.
     _lastLineIndex = ref.read(currentLineIndexProvider);
     _persistKey = _currentProgressKey();
-    _progressSub = ref.listenManual<int>(currentLineIndexProvider, (prev, next) {
+    _progressSub = ref.listenManual<int>(currentLineIndexProvider, (
+      prev,
+      next,
+    ) {
       // Refresh the cache from inside the (mounted) listener so the debounce
       // timer and dispose() can persist without reading ref after unmount.
       _lastLineIndex = next;
       _persistKey = _currentProgressKey() ?? _persistKey;
       // Debounce: advancing fires rapidly during a readthrough.
       _progressSaveTimer?.cancel();
-      _progressSaveTimer =
-          Timer(const Duration(milliseconds: 600), () => _persistProgress(next));
+      _progressSaveTimer = Timer(
+        const Duration(milliseconds: 600),
+        () => _persistProgress(next),
+      );
     });
   }
 
@@ -531,7 +575,9 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
       await prefs.remove(key);
     } else {
       await prefs.setString(
-          key, '$idx|${DateTime.now().millisecondsSinceEpoch}');
+        key,
+        '$idx|${DateTime.now().millisecondsSinceEpoch}',
+      );
     }
   }
 
@@ -556,18 +602,39 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
     final messenger = ScaffoldMessenger.of(context);
     messenger
       ..hideCurrentSnackBar()
-      ..showAutoToast(SnackBar(
-        content: Text('Resumed at line ${idx + 1}'),
-        behavior: SnackBarBehavior.floating,
-        margin: const EdgeInsets.fromLTRB(16, 0, 16, 24),
-        duration: const Duration(seconds: 3),
-      ));
+      ..showAutoToast(
+        SnackBar(
+          content: Text('Resumed at line ${idx + 1}'),
+          behavior: SnackBarBehavior.floating,
+          margin: const EdgeInsets.fromLTRB(16, 0, 16, 24),
+          duration: const Duration(seconds: 3),
+        ),
+      );
     _toastTimer?.cancel();
     _toastTimer = Timer(const Duration(seconds: 3), () {
       // Not `mounted`-guarded on the messenger: it outlives this screen, and
       // hiding a snackbar that already went away is a no-op.
       messenger.hideCurrentSnackBar();
     });
+  }
+
+  void _invalidateLineSession() {
+    _lineGeneration++;
+    _silenceTimer?.cancel();
+    _silenceTimer = null;
+    _matchConfirmTimer?.cancel();
+    _matchConfirmTimer = null;
+    _strongMatchDeadline?.cancel();
+    _strongMatchDeadline = null;
+  }
+
+  bool _isCurrentLineSession(int generation) =>
+      mounted && generation == _lineGeneration;
+  void _releasePrefetchedAudio() {
+    for (final preparedChunks in _ttsPrefetch.values) {
+      unawaited(_tts.releasePreparedKokoro(preparedChunks));
+    }
+    _ttsPrefetch.clear();
   }
 
   @override
@@ -593,11 +660,9 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
     WakelockPlus.disable(); // Allow screen to sleep again
     _dlog.stopMemoryMonitoring();
     _dlog.log(LogCategory.rehearsal, 'Rehearsal ended');
-    _silenceTimer?.cancel();
-    _matchConfirmTimer?.cancel();
-    _strongMatchDeadline?.cancel();
+    _invalidateLineSession();
     _toastTimer?.cancel();
-    _ttsPrefetch.clear();
+    _releasePrefetchedAudio();
     _micLevel.dispose();
     _recognizedText.dispose();
     _matchScore.dispose();
@@ -642,7 +707,25 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
     if (production != null) {
       // Batch-load overrides and genders in one go
       final genderOverrides = await voiceConfig.getGenders(production.id);
-      final overrides = await voiceConfig.getOverrides(production.id);
+      Map<String, CharacterVoiceConfig> overrides;
+      try {
+        overrides = await voiceConfig.getOverrides(production.id);
+      } on VoiceOverridesCorruptException catch (error, stack) {
+        _dlog.logError(
+          LogCategory.rehearsal,
+          'Rehearsal using default voices because overrides are unreadable',
+          error,
+          stack,
+        );
+        if (!mounted) return;
+        setState(() {
+          _voiceConfigurationWarning =
+              'Saved character voice overrides could not be read. This '
+              'rehearsal is using default voices, and the saved settings '
+              'were left unchanged.';
+        });
+        overrides = const {};
+      }
       final preset = await voiceConfig.getPreset(production.id, locale: locale);
 
       // Compute adjacency-aware default assignments
@@ -670,9 +753,14 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
           speed = preset.defaultSpeed;
         }
 
-        _tts.assignVoice(char.name, i,
-            voiceId: voiceId, speed: speed, locale: locale,
-            isMale: gender == CharacterGender.male);
+        _tts.assignVoice(
+          char.name,
+          i,
+          voiceId: voiceId,
+          speed: speed,
+          locale: locale,
+          isMale: gender == CharacterGender.male,
+        );
       }
     } else {
       // No production — still use adjacency-aware assignment with defaults
@@ -684,8 +772,13 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
       );
       for (var i = 0; i < script.characters.length; i++) {
         final char = script.characters[i];
-        _tts.assignVoice(char.name, i, voiceId: autoAssignment[char.name],
-            locale: locale, isMale: char.gender == CharacterGender.male);
+        _tts.assignVoice(
+          char.name,
+          i,
+          voiceId: autoAssignment[char.name],
+          locale: locale,
+          isMale: char.gender == CharacterGender.male,
+        );
       }
     }
   }
@@ -695,7 +788,7 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
     // Drop any prefetched TTS audio when the line set changes (different scene)
     // so we never play stale paths for a line that no longer exists.
     ref.listen<ScriptScene?>(selectedSceneProvider, (prev, next) {
-      if (prev != next) _ttsPrefetch.clear();
+      if (prev != next) _releasePrefetchedAudio();
     });
 
     final script = ref.watch(currentScriptProvider);
@@ -733,23 +826,33 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
       body: SafeArea(
         child: Column(
           children: [
-            Consumer(builder: (context, ref, _) {
-              final currentIdx = ref.watch(currentLineIndexProvider);
-              final rehearsalState = ref.watch(rehearsalStateProvider);
-              final progress = dialogueLines.isEmpty
-                  ? 0.0
-                  : currentIdx / dialogueLines.length;
-              return Column(children: [
-                _buildTopBar(context, scene, progress, rehearsalState, mode),
-                LinearProgressIndicator(
-                  value: progress,
-                  backgroundColor: Colors.grey[900],
-                  color: isMyLineAt(currentIdx)
-                      ? Theme.of(context).colorScheme.primary
-                      : Colors.grey[600],
-                ),
-              ]);
-            }),
+            Consumer(
+              builder: (context, ref, _) {
+                final currentIdx = ref.watch(currentLineIndexProvider);
+                final rehearsalState = ref.watch(rehearsalStateProvider);
+                final progress = dialogueLines.isEmpty
+                    ? 0.0
+                    : currentIdx / dialogueLines.length;
+                return Column(
+                  children: [
+                    _buildTopBar(
+                      context,
+                      scene,
+                      progress,
+                      rehearsalState,
+                      mode,
+                    ),
+                    LinearProgressIndicator(
+                      value: progress,
+                      backgroundColor: Colors.grey[900],
+                      color: isMyLineAt(currentIdx)
+                          ? Theme.of(context).colorScheme.primary
+                          : Colors.grey[600],
+                    ),
+                  ],
+                );
+              },
+            ),
             // Session-start voice pre-roll progress (see _preRollVoices).
             ValueListenableBuilder<(int, int)?>(
               valueListenable: _preparingVoices,
@@ -759,8 +862,10 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
                 return Container(
                   width: double.infinity,
                   color: Colors.grey[900],
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 20,
+                    vertical: 10,
+                  ),
                   child: Row(
                     children: [
                       SizedBox(
@@ -782,56 +887,102 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
                 );
               },
             ),
+            if (_voiceConfigurationWarning case final warning?)
+              Container(
+                width: double.infinity,
+                color: Colors.amber.shade900,
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 20,
+                  vertical: 10,
+                ),
+                child: Text(
+                  warning,
+                  style: const TextStyle(color: Colors.white),
+                  textAlign: TextAlign.center,
+                ),
+              ),
             Expanded(
               // Rebuilds only when completion flips, not per advance.
-              child: Consumer(builder: (context, ref, _) {
-                final isComplete = ref.watch(currentLineIndexProvider
-                    .select((i) => i >= dialogueLines.length));
-                return isComplete
-                    ? _buildCompletionView(context, scene, dialogueLines.length)
-                    : _buildScriptView(
-                        context, script, dialogueLines, myCharacter);
-              }),
+              child: Consumer(
+                builder: (context, ref, _) {
+                  final isComplete = ref.watch(
+                    currentLineIndexProvider.select(
+                      (i) => i >= dialogueLines.length,
+                    ),
+                  );
+                  return isComplete
+                      ? _buildCompletionView(
+                          context,
+                          scene,
+                          dialogueLines.length,
+                        )
+                      : _buildScriptView(
+                          context,
+                          script,
+                          dialogueLines,
+                          myCharacter,
+                        );
+                },
+              ),
             ),
             // Match feedback for STT. Listens instead of reading the field so
             // a new partial result repaints this bar alone.
-            Consumer(builder: (context, ref, _) {
-              final onMyLine = ref.watch(
-                  currentLineIndexProvider.select((i) => isMyLineAt(i)));
-              if (!onMyLine) return const SizedBox.shrink();
-              return ValueListenableBuilder<bool>(
-                valueListenable: _showMatchFeedback,
-                builder: (context, show, _) => show
-                    ? _buildMatchFeedback(context)
-                    : const SizedBox.shrink(),
-              );
-            }),
+            Consumer(
+              builder: (context, ref, _) {
+                final onMyLine = ref.watch(
+                  currentLineIndexProvider.select((i) => isMyLineAt(i)),
+                );
+                if (!onMyLine) return const SizedBox.shrink();
+                return ValueListenableBuilder<bool>(
+                  valueListenable: _showMatchFeedback,
+                  builder: (context, show, _) => show
+                      ? _buildMatchFeedback(context)
+                      : const SizedBox.shrink(),
+                );
+              },
+            ),
             // AirPods / Action Button hint
             if (_showJumpBackHint)
-              Consumer(builder: (context, ref, _) {
-                final isComplete = ref.watch(currentLineIndexProvider
-                    .select((i) => i >= dialogueLines.length));
-                return isComplete
-                    ? const SizedBox.shrink()
-                    : _buildJumpBackHint(context);
-              }),
-            Consumer(builder: (context, ref, _) {
-              final currentIdx = ref.watch(currentLineIndexProvider);
-              final rehearsalState = ref.watch(rehearsalStateProvider);
-              return _buildControls(
-                context, rehearsalState, isMyLineAt(currentIdx),
-                currentIdx >= dialogueLines.length,
-                currentIdx, dialogueLines.length, jumpBackLines,
-              );
-            }),
+              Consumer(
+                builder: (context, ref, _) {
+                  final isComplete = ref.watch(
+                    currentLineIndexProvider.select(
+                      (i) => i >= dialogueLines.length,
+                    ),
+                  );
+                  return isComplete
+                      ? const SizedBox.shrink()
+                      : _buildJumpBackHint(context);
+                },
+              ),
+            Consumer(
+              builder: (context, ref, _) {
+                final currentIdx = ref.watch(currentLineIndexProvider);
+                final rehearsalState = ref.watch(rehearsalStateProvider);
+                return _buildControls(
+                  context,
+                  rehearsalState,
+                  isMyLineAt(currentIdx),
+                  currentIdx >= dialogueLines.length,
+                  currentIdx,
+                  dialogueLines.length,
+                  jumpBackLines,
+                );
+              },
+            ),
           ],
         ),
       ),
     );
   }
 
-  Widget _buildTopBar(BuildContext context, ScriptScene scene, double progress,
-      RehearsalState rehearsalState, RehearsalMode mode) {
+  Widget _buildTopBar(
+    BuildContext context,
+    ScriptScene scene,
+    double progress,
+    RehearsalState rehearsalState,
+    RehearsalMode mode,
+  ) {
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
       child: Row(
@@ -878,34 +1029,45 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
           ),
           // Text size +/- (useful on iPad)
           IconButton(
-            icon: const Icon(Icons.text_decrease, color: Colors.white54, size: 18),
+            icon: const Icon(
+              Icons.text_decrease,
+              color: Colors.white54,
+              size: 18,
+            ),
             padding: EdgeInsets.zero,
             constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
             tooltip: 'Smaller text',
             onPressed: () {
               final current = ref.read(rehearsalFontSizeProvider);
               if (current > 12) {
-                ref.read(rehearsalFontSizeProvider.notifier).state = current - 2;
+                ref.read(rehearsalFontSizeProvider.notifier).state =
+                    current - 2;
               }
             },
           ),
           IconButton(
-            icon: const Icon(Icons.text_increase, color: Colors.white54, size: 18),
+            icon: const Icon(
+              Icons.text_increase,
+              color: Colors.white54,
+              size: 18,
+            ),
             padding: EdgeInsets.zero,
             constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
             tooltip: 'Larger text',
             onPressed: () {
               final current = ref.read(rehearsalFontSizeProvider);
               if (current < 36) {
-                ref.read(rehearsalFontSizeProvider.notifier).state = current + 2;
+                ref.read(rehearsalFontSizeProvider.notifier).state =
+                    current + 2;
               }
             },
           ),
           // Fast mode toggle
           GestureDetector(
             onTap: () {
-              ref.read(fastModeEnabledProvider.notifier).state =
-                  !ref.read(fastModeEnabledProvider);
+              ref.read(fastModeEnabledProvider.notifier).state = !ref.read(
+                fastModeEnabledProvider,
+              );
             },
             child: Container(
               padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
@@ -919,19 +1081,24 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
               child: Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  Icon(Icons.bolt,
+                  Icon(
+                    Icons.bolt,
+                    color: ref.watch(fastModeEnabledProvider)
+                        ? Colors.amber
+                        : Colors.white30,
+                    size: 14,
+                  ),
+                  const SizedBox(width: 2),
+                  Text(
+                    'FAST',
+                    style: TextStyle(
                       color: ref.watch(fastModeEnabledProvider)
                           ? Colors.amber
                           : Colors.white30,
-                      size: 14),
-                  const SizedBox(width: 2),
-                  Text('FAST',
-                      style: TextStyle(
-                          color: ref.watch(fastModeEnabledProvider)
-                              ? Colors.amber
-                              : Colors.white30,
-                          fontSize: 9,
-                          fontWeight: FontWeight.bold)),
+                      fontSize: 9,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
                 ],
               ),
             ),
@@ -945,9 +1112,14 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
                 color: Colors.teal.withValues(alpha: 0.2),
                 borderRadius: BorderRadius.circular(8),
               ),
-              child: const Text('READ',
-                  style: TextStyle(color: Colors.teal, fontSize: 9,
-                      fontWeight: FontWeight.bold)),
+              child: const Text(
+                'READ',
+                style: TextStyle(
+                  color: Colors.teal,
+                  fontSize: 9,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
             ),
           if (mode == RehearsalMode.cuePractice)
             Container(
@@ -957,9 +1129,14 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
                 color: Colors.blue.withValues(alpha: 0.2),
                 borderRadius: BorderRadius.circular(8),
               ),
-              child: const Text('CUE',
-                  style: TextStyle(color: Colors.blue, fontSize: 9,
-                      fontWeight: FontWeight.bold)),
+              child: const Text(
+                'CUE',
+                style: TextStyle(
+                  color: Colors.blue,
+                  fontSize: 9,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
             ),
           // Blind rehearsal badge
           if (ref.watch(hideMyLinesProvider))
@@ -970,9 +1147,14 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
                 color: Colors.purple.withValues(alpha: 0.2),
                 borderRadius: BorderRadius.circular(8),
               ),
-              child: const Text('BLIND',
-                  style: TextStyle(color: Colors.purple, fontSize: 9,
-                      fontWeight: FontWeight.bold)),
+              child: const Text(
+                'BLIND',
+                style: TextStyle(
+                  color: Colors.purple,
+                  fontSize: 9,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
             ),
           // Adapted STT badge
           if (_activeAdapter != null)
@@ -983,9 +1165,14 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
                 color: Colors.green.withValues(alpha: 0.2),
                 borderRadius: BorderRadius.circular(8),
               ),
-              child: const Text('AI',
-                  style: TextStyle(color: Colors.green, fontSize: 9,
-                      fontWeight: FontWeight.bold)),
+              child: const Text(
+                'AI',
+                style: TextStyle(
+                  color: Colors.green,
+                  fontSize: 9,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
             ),
           // State indicator
           _buildStateChip(rehearsalState),
@@ -1076,7 +1263,8 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
       itemCount: dialogueLines.length,
       itemBuilder: (context, index) {
         final line = dialogueLines[index];
-        final isMe = mode != RehearsalMode.readthrough &&
+        final isMe =
+            mode != RehearsalMode.readthrough &&
             myCharacter != null &&
             line.isForCharacter(myCharacter);
 
@@ -1089,162 +1277,175 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
         // Each row watches ONLY its own derived booleans: on a line advance
         // exactly the outgoing and incoming rows rebuild (their selects
         // flip); every other realized row's subscriptions are unchanged.
-        return Consumer(builder: (context, ref, _) {
-        final isCurrent =
-            ref.watch(currentLineIndexProvider.select((i) => i == index));
-        final isPast =
-            ref.watch(currentLineIndexProvider.select((i) => index < i));
-        // Only the current row shows state-dependent chrome (mic pulse /
-        // speaker icon), so only it subscribes to the STT state flips.
-        final rehearsalState = isCurrent
-            ? ref.watch(rehearsalStateProvider)
-            : RehearsalState.ready;
-        final fontSize = isCurrent ? baseFontSize : baseFontSize - 3;
-        final color = charIdx >= 0
-            ? AppTheme.colorForCharacter(charIdx)
-            : Colors.grey;
+        return Consumer(
+          builder: (context, ref, _) {
+            final isCurrent = ref.watch(
+              currentLineIndexProvider.select((i) => i == index),
+            );
+            final isPast = ref.watch(
+              currentLineIndexProvider.select((i) => index < i),
+            );
+            // Only the current row shows state-dependent chrome (mic pulse /
+            // speaker icon), so only it subscribes to the STT state flips.
+            final rehearsalState = isCurrent
+                ? ref.watch(rehearsalStateProvider)
+                : RehearsalState.ready;
+            final fontSize = isCurrent ? baseFontSize : baseFontSize - 3;
+            final color = charIdx >= 0
+                ? AppTheme.colorForCharacter(charIdx)
+                : Colors.grey;
 
-        double opacity;
-        if (isCurrent) {
-          opacity = 1.0;
-        } else if (isPast) {
-          opacity = 0.25;
-        } else {
-          opacity = 0.5;
-        }
-        // Alpha baked into each color instead of an Opacity widget: a
-        // non-1.0 Opacity forces a saveLayer offscreen buffer PER ROW, and
-        // with cacheExtent building the whole scene every rebuild handed the
-        // raster thread hundreds of them.
-        Color dim(Color c) =>
-            opacity == 1.0 ? c : c.withValues(alpha: opacity);
+            double opacity;
+            if (isCurrent) {
+              opacity = 1.0;
+            } else if (isPast) {
+              opacity = 0.25;
+            } else {
+              opacity = 0.5;
+            }
+            // Alpha baked into each color instead of an Opacity widget: a
+            // non-1.0 Opacity forces a saveLayer offscreen buffer PER ROW, and
+            // with cacheExtent building the whole scene every rebuild handed the
+            // raster thread hundreds of them.
+            Color dim(Color c) =>
+                opacity == 1.0 ? c : c.withValues(alpha: opacity);
 
-        return Container(
-            key: isCurrent ? _currentLineKey : null,
-            margin: const EdgeInsets.symmetric(vertical: 6),
-            padding: const EdgeInsets.all(12),
-            decoration: BoxDecoration(
-              color: isCurrent
-                  ? (isMe
-                      ? Theme.of(context)
-                          .colorScheme
-                          .primary
-                          .withValues(alpha: 0.15)
-                      : Colors.grey[900])
-                  : Colors.transparent,
-              borderRadius: BorderRadius.circular(12),
-              border: isCurrent
-                  ? Border.all(
-                      color: isMe
-                          ? Theme.of(context).colorScheme.primary
-                          : Colors.grey[700]!,
-                      width: isMe ? 2 : 1,
-                    )
-                  : null,
-            ),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Row(
-                  children: [
-                    Container(
-                      width: 8,
-                      height: 8,
-                      decoration: BoxDecoration(
-                        color: dim(color),
-                        shape: BoxShape.circle,
+            return Container(
+              key: isCurrent ? _currentLineKey : null,
+              margin: const EdgeInsets.symmetric(vertical: 6),
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: isCurrent
+                    ? (isMe
+                          ? Theme.of(
+                              context,
+                            ).colorScheme.primary.withValues(alpha: 0.15)
+                          : Colors.grey[900])
+                    : Colors.transparent,
+                borderRadius: BorderRadius.circular(12),
+                border: isCurrent
+                    ? Border.all(
+                        color: isMe
+                            ? Theme.of(context).colorScheme.primary
+                            : Colors.grey[700]!,
+                        width: isMe ? 2 : 1,
+                      )
+                    : null,
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Container(
+                        width: 8,
+                        height: 8,
+                        decoration: BoxDecoration(
+                          color: dim(color),
+                          shape: BoxShape.circle,
+                        ),
                       ),
-                    ),
-                    const SizedBox(width: 8),
-                    Text(
-                      isMe ? 'YOU (${line.character})' : line.character,
-                      style: TextStyle(
-                        color: dim(color),
-                        fontWeight: FontWeight.bold,
-                        fontSize: 12,
+                      const SizedBox(width: 8),
+                      Text(
+                        isMe ? 'YOU (${line.character})' : line.character,
+                        style: TextStyle(
+                          color: dim(color),
+                          fontWeight: FontWeight.bold,
+                          fontSize: 12,
+                        ),
                       ),
-                    ),
-                    if (isCurrent && isMe) ...[
-                      const Spacer(),
-                      if (rehearsalState == RehearsalState.listeningForMe) ...[
-                        _pulsingMic(context),
-                      ] else ...[
-                        Icon(Icons.mic, size: 16,
-                            color: Theme.of(context).colorScheme.primary),
-                        const SizedBox(width: 4),
-                        Text('YOUR LINE',
-                          style: TextStyle(
+                      if (isCurrent && isMe) ...[
+                        const Spacer(),
+                        if (rehearsalState ==
+                            RehearsalState.listeningForMe) ...[
+                          _pulsingMic(context),
+                        ] else ...[
+                          Icon(
+                            Icons.mic,
+                            size: 16,
                             color: Theme.of(context).colorScheme.primary,
-                            fontSize: 10,
-                            fontWeight: FontWeight.bold,
                           ),
+                          const SizedBox(width: 4),
+                          Text(
+                            'YOUR LINE',
+                            style: TextStyle(
+                              color: Theme.of(context).colorScheme.primary,
+                              fontSize: 10,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                        ],
+                      ],
+                      if (isCurrent &&
+                          !isMe &&
+                          rehearsalState == RehearsalState.playingOther) ...[
+                        const Spacer(),
+                        Icon(
+                          Icons.volume_up,
+                          size: 14,
+                          color: Colors.green[400],
                         ),
                       ],
                     ],
-                    if (isCurrent && !isMe &&
-                        rehearsalState == RehearsalState.playingOther) ...[
-                      const Spacer(),
-                      Icon(Icons.volume_up, size: 14, color: Colors.green[400]),
-                    ],
-                  ],
-                ),
-                const SizedBox(height: 6),
-                if (line.stageDirection.isNotEmpty)
-                  Padding(
-                    padding: const EdgeInsets.only(bottom: 4),
-                    child: Text(
-                      '(${line.stageDirection})',
-                      style: TextStyle(
-                        fontStyle: FontStyle.italic,
-                        color: dim(Colors.grey[600]!),
-                        fontSize: 13,
+                  ),
+                  const SizedBox(height: 6),
+                  if (line.stageDirection.isNotEmpty)
+                    Padding(
+                      padding: const EdgeInsets.only(bottom: 4),
+                      child: Text(
+                        '(${line.stageDirection})',
+                        style: TextStyle(
+                          fontStyle: FontStyle.italic,
+                          color: dim(Colors.grey[600]!),
+                          fontSize: 13,
+                        ),
                       ),
                     ),
-                  ),
-                // Hide the actor's upcoming lines in blind mode
-                if (hideMyLines && isMe && !isPast)
-                  Text(
-                    'Say your line...',
-                    style: TextStyle(
-                      color: dim(Colors.grey[600]!),
-                      fontSize: fontSize,
-                      height: 1.4,
-                      fontStyle: FontStyle.italic,
+                  // Hide the actor's upcoming lines in blind mode
+                  if (hideMyLines && isMe && !isPast)
+                    Text(
+                      'Say your line...',
+                      style: TextStyle(
+                        color: dim(Colors.grey[600]!),
+                        fontSize: fontSize,
+                        height: 1.4,
+                        fontStyle: FontStyle.italic,
+                      ),
+                    )
+                  else
+                    Text(
+                      line.text,
+                      style: TextStyle(
+                        color: dim(Colors.white),
+                        fontSize: fontSize,
+                        height: 1.4,
+                      ),
                     ),
-                  )
-                else
-                  Text(
-                    line.text,
-                    style: TextStyle(
-                      color: dim(Colors.white),
-                      fontSize: fontSize,
-                      height: 1.4,
-                    ),
-                  ),
-                // Show recognized text under current line if listening.
-                // Only the current line subscribes, so a partial result
-                // repaints one Text instead of every built list item.
-                if (isCurrent && isMe)
-                  ValueListenableBuilder<String>(
-                    valueListenable: _recognizedText,
-                    builder: (context, recognized, _) => recognized.isEmpty
-                        ? const SizedBox.shrink()
-                        : Padding(
-                            padding: const EdgeInsets.only(top: 8),
-                            child: Text(
-                              recognized,
-                              style: TextStyle(
-                                color: Colors.grey[400],
-                                fontSize: 14,
-                                fontStyle: FontStyle.italic,
+                  // Show recognized text under current line if listening.
+                  // Only the current line subscribes, so a partial result
+                  // repaints one Text instead of every built list item.
+                  if (isCurrent && isMe)
+                    ValueListenableBuilder<String>(
+                      valueListenable: _recognizedText,
+                      builder: (context, recognized, _) => recognized.isEmpty
+                          ? const SizedBox.shrink()
+                          : Padding(
+                              padding: const EdgeInsets.only(top: 8),
+                              child: Text(
+                                recognized,
+                                style: TextStyle(
+                                  color: Colors.grey[400],
+                                  fontSize: 14,
+                                  fontStyle: FontStyle.italic,
+                                ),
                               ),
                             ),
-                          ),
-                  ),
-              ],
-            ),
+                    ),
+                ],
+              ),
+            );
+          },
         );
-        });
       },
     );
     // Cap the reading column on tablets so script lines stay comfortably
@@ -1271,12 +1472,18 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
           child: Row(
             mainAxisSize: MainAxisSize.min,
             children: [
-              Icon(Icons.mic,
-                  size: 16 + 3 * intensity,
-                  color: Color.lerp(
-                      Colors.orange[300], Colors.orange[600], intensity)),
+              Icon(
+                Icons.mic,
+                size: 16 + 3 * intensity,
+                color: Color.lerp(
+                  Colors.orange[300],
+                  Colors.orange[600],
+                  intensity,
+                ),
+              ),
               const SizedBox(width: 4),
-              Text('LISTENING...',
+              Text(
+                'LISTENING...',
                 style: TextStyle(
                   color: Colors.orange[400],
                   fontSize: 10,
@@ -1328,12 +1535,15 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
   }
 
   Widget _buildCompletionView(
-      BuildContext context, ScriptScene scene, int totalLines) {
+    BuildContext context,
+    ScriptScene scene,
+    int totalLines,
+  ) {
     final completedLines = _lineAttempts.where((a) => !a.skipped).length;
     final avgScore = _lineAttempts.isEmpty
         ? 0.0
         : _lineAttempts.fold<double>(0, (s, a) => s + a.bestScore) /
-            _lineAttempts.length;
+              _lineAttempts.length;
     final struggled = _lineAttempts.where((a) => a.bestScore < 0.7).toList();
     final duration = DateTime.now().difference(_sessionStartedAt);
 
@@ -1344,11 +1554,11 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
           mainAxisSize: MainAxisSize.min,
           children: [
             Icon(
-              avgScore >= 0.8
-                  ? Icons.emoji_events
-                  : Icons.check_circle_outline,
+              avgScore >= 0.8 ? Icons.emoji_events : Icons.check_circle_outline,
               size: 80,
-              color: avgScore >= 0.8 ? Colors.amber : Theme.of(context).colorScheme.primary,
+              color: avgScore >= 0.8
+                  ? Colors.amber
+                  : Theme.of(context).colorScheme.primary,
             ),
             const SizedBox(height: 24),
             const Text(
@@ -1370,14 +1580,21 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
             Row(
               mainAxisAlignment: MainAxisAlignment.spaceEvenly,
               children: [
-                _completionStat('${(avgScore * 100).toInt()}%', 'Score',
-                    avgScore >= 0.8 ? Colors.green : Colors.orange),
-                _completionStat('$completedLines/$totalLines', 'Lines',
-                    Colors.white70),
                 _completionStat(
-                    '${duration.inMinutes}m ${duration.inSeconds.remainder(60)}s',
-                    'Time',
-                    Colors.white70),
+                  '${(avgScore * 100).toInt()}%',
+                  'Score',
+                  avgScore >= 0.8 ? Colors.green : Colors.orange,
+                ),
+                _completionStat(
+                  '$completedLines/$totalLines',
+                  'Lines',
+                  Colors.white70,
+                ),
+                _completionStat(
+                  '${duration.inMinutes}m ${duration.inSeconds.remainder(60)}s',
+                  'Time',
+                  Colors.white70,
+                ),
               ],
             ),
             // Struggled lines
@@ -1388,25 +1605,38 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
                 decoration: BoxDecoration(
                   color: Colors.orange.withValues(alpha: 0.1),
                   borderRadius: BorderRadius.circular(12),
-                  border: Border.all(color: Colors.orange.withValues(alpha: 0.3)),
+                  border: Border.all(
+                    color: Colors.orange.withValues(alpha: 0.3),
+                  ),
                 ),
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    const Text('Lines to practice:',
-                        style: TextStyle(color: Colors.orange,
-                            fontWeight: FontWeight.bold, fontSize: 13)),
+                    const Text(
+                      'Lines to practice:',
+                      style: TextStyle(
+                        color: Colors.orange,
+                        fontWeight: FontWeight.bold,
+                        fontSize: 13,
+                      ),
+                    ),
                     const SizedBox(height: 8),
-                    ...struggled.take(5).map((a) => Padding(
-                          padding: const EdgeInsets.only(bottom: 4),
-                          child: Text(
-                            '- ${a.lineText}',
-                            maxLines: 2,
-                            overflow: TextOverflow.ellipsis,
-                            style: TextStyle(
-                                color: Colors.grey[400], fontSize: 12),
+                    ...struggled
+                        .take(5)
+                        .map(
+                          (a) => Padding(
+                            padding: const EdgeInsets.only(bottom: 4),
+                            child: Text(
+                              '- ${a.lineText}',
+                              maxLines: 2,
+                              overflow: TextOverflow.ellipsis,
+                              style: TextStyle(
+                                color: Colors.grey[400],
+                                fontSize: 12,
+                              ),
+                            ),
                           ),
-                        )),
+                        ),
                   ],
                 ),
               ),
@@ -1421,7 +1651,10 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
                 icon: const Icon(Icons.upload),
                 label: Text('Save ${_capturedAudio.length} Recorded Lines'),
                 style: FilledButton.styleFrom(
-                  padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 16),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 32,
+                    vertical: 16,
+                  ),
                   textStyle: const TextStyle(fontSize: 16),
                   backgroundColor: Colors.green,
                 ),
@@ -1433,8 +1666,10 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
               icon: const Icon(Icons.replay),
               label: const Text('Run Again'),
               style: FilledButton.styleFrom(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 32, vertical: 16),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 32,
+                  vertical: 16,
+                ),
                 textStyle: const TextStyle(fontSize: 18),
               ),
             ),
@@ -1463,12 +1698,16 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
   Widget _completionStat(String value, String label, Color color) {
     return Column(
       children: [
-        Text(value,
-            style: TextStyle(
-                color: color, fontSize: 22, fontWeight: FontWeight.bold)),
+        Text(
+          value,
+          style: TextStyle(
+            color: color,
+            fontSize: 22,
+            fontWeight: FontWeight.bold,
+          ),
+        ),
         const SizedBox(height: 4),
-        Text(label,
-            style: TextStyle(color: Colors.grey[600], fontSize: 12)),
+        Text(label, style: TextStyle(color: Colors.grey[600], fontSize: 12)),
       ],
     );
   }
@@ -1542,7 +1781,8 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
                     ref.read(rehearsalModeProvider) == RehearsalMode.cuePractice
                         ? 2
                         : jumpBackLines,
-                    totalLines)
+                    totalLines,
+                  )
                 : null,
           ),
           _controlButton(
@@ -1595,15 +1835,18 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
         // sees we're no longer in playingOther and won't double-advance.
         ref.read(rehearsalStateProvider.notifier).state = RehearsalState.ready;
         _tts.stop(reason: 'skipOtherLine');
-        try { _player.stop(); } catch (_) {}
+        try {
+          _player.stop();
+        } catch (_) {}
         _advanceLine(totalLines);
       case RehearsalState.listeningForMe:
         // Accept whatever was said and advance (manual skip)
         // Discard pending transcription to avoid delayed callbacks
         _stt.stop(discard: true);
         _recordCurrentLineAttempt(
-            skipped: _matchScore.value <
-                (ref.read(matchThresholdProvider) / 100.0));
+          skipped:
+              _matchScore.value < (ref.read(matchThresholdProvider) / 100.0),
+        );
         _advanceLine(totalLines);
       case RehearsalState.paused:
       case RehearsalState.sceneComplete:
@@ -1621,8 +1864,8 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
     final color = onTap == null
         ? Colors.grey[700]
         : primary
-            ? Theme.of(context).colorScheme.primary
-            : Colors.white70;
+        ? Theme.of(context).colorScheme.primary
+        : Colors.white70;
 
     return GestureDetector(
       onTap: onTap,
@@ -1634,15 +1877,14 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
             height: primary ? 56 : 44,
             decoration: BoxDecoration(
               color: primary
-                  ? Theme.of(context)
-                      .colorScheme
-                      .primary
-                      .withValues(alpha: 0.2)
+                  ? Theme.of(context).colorScheme.primary.withValues(alpha: 0.2)
                   : Colors.grey[850],
               shape: BoxShape.circle,
               border: primary
                   ? Border.all(
-                      color: Theme.of(context).colorScheme.primary, width: 2)
+                      color: Theme.of(context).colorScheme.primary,
+                      width: 2,
+                    )
                   : null,
             ),
             child: Icon(icon, color: color, size: primary ? 28 : 22),
@@ -1666,7 +1908,10 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
   /// if enabled. In cue-to-cue mode, only the actor's lines plus one cue
   /// line before each are included.
   List<ScriptLine> _getRehearsalLines(
-      ParsedScript script, ScriptScene scene, String? myCharacter) {
+    ParsedScript script,
+    ScriptScene scene,
+    String? myCharacter,
+  ) {
     final mode = ref.read(rehearsalModeProvider);
     final key = (identityHashCode(script), scene.id, myCharacter, mode);
     if (_rehearsalLinesCache != null && _rehearsalLinesKey == key) {
@@ -1674,8 +1919,9 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
     }
 
     final sceneLines = script.linesInScene(scene);
-    final allDialogue =
-        sceneLines.where((l) => l.lineType == LineType.dialogue).toList();
+    final allDialogue = sceneLines
+        .where((l) => l.lineType == LineType.dialogue)
+        .toList();
 
     List<ScriptLine> result;
     if (mode != RehearsalMode.cuePractice || myCharacter == null) {
@@ -1724,8 +1970,10 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
     // Delayed callbacks (inter-line pacing, advance, jump-back) land here after
     // the user may have tapped Pause — honor it instead of resuming playback.
     if (ref.read(rehearsalStateProvider) == RehearsalState.paused) {
-      _dlog.log(LogCategory.rehearsal,
-          'processCurrentLine: paused — not starting the next line');
+      _dlog.log(
+        LogCategory.rehearsal,
+        'processCurrentLine: paused — not starting the next line',
+      );
       return;
     }
     _processingLine = true;
@@ -1739,22 +1987,28 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
     final currentIdx = ref.read(currentLineIndexProvider);
 
     if (script == null || scene == null) {
-      _dlog.log(LogCategory.rehearsal,
-          'processCurrentLine: script=${script != null} scene=${scene != null}');
+      _dlog.log(
+        LogCategory.rehearsal,
+        'processCurrentLine: script=${script != null} scene=${scene != null}',
+      );
       return;
     }
 
     final sceneLines = script.linesInScene(scene);
-    _dlog.log(LogCategory.rehearsal,
-        'processCurrentLine: scene="${scene.sceneName}" '
-        'start=${scene.startLineIndex} end=${scene.endLineIndex} '
-        'totalLines=${script.lines.length} sceneLines=${sceneLines.length}');
+    _dlog.log(
+      LogCategory.rehearsal,
+      'processCurrentLine: start=${scene.startLineIndex} '
+      'end=${scene.endLineIndex} totalLines=${script.lines.length} '
+      'sceneLines=${sceneLines.length}',
+    );
 
     final dialogueLines = _getRehearsalLines(script, scene, myCharacter);
 
-    _dlog.log(LogCategory.rehearsal,
-        'processCurrentLine: dialogueLines=${dialogueLines.length} '
-        'currentIdx=$currentIdx char=$myCharacter');
+    _dlog.log(
+      LogCategory.rehearsal,
+      'processCurrentLine: dialogueLines=${dialogueLines.length} '
+      'currentIdx=$currentIdx',
+    );
 
     if (currentIdx >= dialogueLines.length) {
       _completeScene(dialogueLines);
@@ -1764,7 +2018,8 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
     final line = dialogueLines[currentIdx];
     final mode = ref.read(rehearsalModeProvider);
     // In readthrough mode, no line is "mine" — all lines are played via TTS.
-    final isMyLine = mode != RehearsalMode.readthrough &&
+    final isMyLine =
+        mode != RehearsalMode.readthrough &&
         myCharacter != null &&
         line.isForCharacter(myCharacter);
 
@@ -1772,7 +2027,8 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
     final production = ref.read(currentProductionProvider);
     _mediaControl.updateNowPlaying(
       title: production?.title ?? scene.sceneName,
-      character: '${line.character}: ${line.text.length > 60 ? '${line.text.substring(0, 57)}...' : line.text}',
+      character:
+          '${line.character}: ${line.text.length > 60 ? '${line.text.substring(0, 57)}...' : line.text}',
     );
 
     // Always scroll to the current line so the actor can see it
@@ -1783,11 +2039,15 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
     _currentBestScore = 0.0;
 
     if (isMyLine) {
-      _dlog.log(LogCategory.rehearsal, 'MY LINE: ${line.character} → "${line.text.length > 40 ? '${line.text.substring(0, 37)}...' : line.text}"');
+      _dlog.log(
+        LogCategory.rehearsal,
+        'Actor line started textLength=${line.text.length}',
+      );
       // While the actor reads their line, synthesize the next other-character
       // line's Kokoro audio in the background so playback starts instantly.
       _prefetchLineAudio(
-          _nextOtherLine(dialogueLines, currentIdx, myCharacter, mode));
+        _nextOtherLine(dialogueLines, currentIdx, myCharacter, mode),
+      );
       _startListeningForMyLine(line);
     } else {
       _playOtherLine(line);
@@ -1800,6 +2060,7 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
   /// history, drop the resume checkpoint, and offer to save recordings.
   void _completeScene(List<ScriptLine> dialogueLines) {
     // Clear any lingering toast so it can't sit on top of the summary.
+    _invalidateLineSession();
     _toastTimer?.cancel();
     if (mounted) ScaffoldMessenger.of(context).hideCurrentSnackBar();
     ref.read(rehearsalStateProvider.notifier).state =
@@ -1821,7 +2082,8 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
   ) {
     for (var i = currentIdx + 1; i < dialogueLines.length; i++) {
       final l = dialogueLines[i];
-      final isMine = mode != RehearsalMode.readthrough &&
+      final isMine =
+          mode != RehearsalMode.readthrough &&
           myCharacter != null &&
           l.isForCharacter(myCharacter);
       if (!isMine) return l;
@@ -1839,7 +2101,8 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
     // Skip if this is the actor's line — those aren't played via TTS.
     final mode = ref.read(rehearsalModeProvider);
     final myCharacter = ref.read(rehearsalCharacterProvider);
-    final isMine = mode != RehearsalMode.readthrough &&
+    final isMine =
+        mode != RehearsalMode.readthrough &&
         myCharacter != null &&
         line.isForCharacter(myCharacter);
     if (isMine) return;
@@ -1847,7 +2110,8 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
     // If a real recording exists (primary, or understudy fallback), it's played
     // directly rather than via TTS — so warm the loudness cache instead so
     // volume normalization adds no latency when the line plays.
-    final rec = ref.read(recordingsProvider)[line.id] ??
+    final rec =
+        ref.read(recordingsProvider)[line.id] ??
         (ref.read(understudyFallbackProvider)
             ? ref.read(understudyRecordingsProvider)[line.id]
             : null);
@@ -1875,8 +2139,10 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
     // playback consumes in-flight work chunk by chunk. speak() handles a
     // chunk future resolving null (failed/cancelled prefetch) by
     // re-synthesizing that chunk on demand.
-    final chunkFutures =
-        _tts.prepareKokoro(line.text, character: voiceCharacter);
+    final chunkFutures = _tts.prepareKokoro(
+      line.text,
+      character: voiceCharacter,
+    );
     if (chunkFutures != null) _ttsPrefetch[line.id] = chunkFutures;
   }
 
@@ -1902,7 +2168,8 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
       ...ref.read(recordingsProvider).keys,
       ...ref.read(understudyRecordingsProvider).keys,
     };
-    if (recIds.isEmpty) return; // nothing synced yet — re-check on the next line
+    if (recIds.isEmpty)
+      return; // nothing synced yet — re-check on the next line
     _orphanWarningChecked = true;
 
     final scriptIds = script.lines.map((l) => l.id).toSet();
@@ -1910,17 +2177,19 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
     if (orphaned == 0) return;
 
     _dlog.logError(
-        LogCategory.rehearsal,
-        'Orphaned recordings: $orphaned/${recIds.length} shared recordings have '
-        'line IDs not in this script — they will NOT play (script version mismatch)');
+      LogCategory.rehearsal,
+      'Orphaned recordings: $orphaned/${recIds.length} shared recordings have '
+      'line IDs not in this script — they will NOT play (script version mismatch)',
+    );
     if (mounted) {
       ScaffoldMessenger.of(context).showAutoToast(
         SnackBar(
           duration: const Duration(seconds: 6),
           content: Text(
-              "$orphaned shared recording(s) don't match this script version — "
-              "you'll hear computer voices for them. Re-sync the script so the "
-              "whole cast shares the same lines."),
+            "$orphaned shared recording(s) don't match this script version — "
+            "you'll hear computer voices for them. Re-sync the script so the "
+            "whole cast shares the same lines.",
+          ),
         ),
       );
     }
@@ -1988,10 +2257,21 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
       }).ignore();
     }
     try {
-      await Future.wait(futures.map((f) => f.catchError((_) => null)))
-          .timeout(const Duration(seconds: 30));
-    } catch (_) {
-      // Timeout or failure — start anyway; speak() re-synthesizes on demand.
+      await Future.wait(
+        futures.map(
+          (future) => future.catchError((error, stack) {
+            _dlog.logError(
+              LogCategory.tts,
+              'Voice pre-roll item failed',
+              error,
+              stack,
+            );
+            return null;
+          }),
+        ),
+      ).timeout(const Duration(seconds: 30));
+    } on TimeoutException catch (error, stack) {
+      _dlog.logError(LogCategory.tts, 'Voice pre-roll timed out', error, stack);
     }
     finished = true;
     showTimer.cancel();
@@ -2014,8 +2294,10 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
 
     _maybeWarnOrphanedRecordings();
 
-    _dlog.log(LogCategory.rehearsal,
-        'Playing: ${line.character} — "${line.text.length > 40 ? '${line.text.substring(0, 37)}...' : line.text}"');
+    _dlog.log(
+      LogCategory.rehearsal,
+      'Other line playback started textLength=${line.text.length}',
+    );
 
     final fastMode = ref.read(fastModeEnabledProvider);
     final speed = fastMode
@@ -2034,16 +2316,20 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
         await _player.setFilePath(recording.localPath);
         await _player.setSpeed(speed);
         // Normalize loudness so castmates' recordings don't jump in volume.
-        await _player
-            .setVolume(await AudioLevelService.instance.volumeFor(recording.localPath));
+        await _player.setVolume(
+          await AudioLevelService.instance.volumeFor(recording.localPath),
+        );
         await _player.play();
         return;
       } catch (e) {
         // Fall through to understudy — but leave a trace: a corrupt file or
         // session error here is why an actor hears TTS instead of their
         // castmate, and it was undiagnosable without a log.
-        _dlog.logError(LogCategory.rehearsal,
-            'Recording playback failed for ${line.id}, falling back', e);
+        _dlog.logError(
+          LogCategory.rehearsal,
+          'Recording playback failed for ${line.id}, falling back',
+          e,
+        );
       }
     }
 
@@ -2052,20 +2338,25 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
     if (understudyFallback) {
       final understudyRecordings = ref.read(understudyRecordingsProvider);
       final understudyRecording = understudyRecordings[line.id];
-
       if (understudyRecording != null) {
         try {
           await PlaybackSession.ensurePlayback();
           await _player.setFilePath(understudyRecording.localPath);
           await _player.setSpeed(speed);
-          await _player.setVolume(await AudioLevelService.instance
-              .volumeFor(understudyRecording.localPath));
+          await _player.setVolume(
+            await AudioLevelService.instance.volumeFor(
+              understudyRecording.localPath,
+            ),
+          );
           await _player.play();
           return;
         } catch (e) {
           // Fall through to TTS (logged for the same reason as above).
-          _dlog.logError(LogCategory.rehearsal,
-              'Understudy playback failed for ${line.id}, falling back', e);
+          _dlog.logError(
+            LogCategory.rehearsal,
+            'Understudy playback failed for ${line.id}, falling back',
+            e,
+          );
         }
       }
     }
@@ -2076,16 +2367,21 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
         ? line.multiCharacters.first
         : line.character;
     _tts.setCharacterSpeed(voiceCharacter, speed);
-    _dlog.log(LogCategory.tts,
-        'Fast mode: ${ref.read(fastModeEnabledProvider)}, speed=$speed for $voiceCharacter');
+    _dlog.log(
+      LogCategory.tts,
+      'Fast mode: ${ref.read(fastModeEnabledProvider)}, speed=$speed',
+    );
     // Prefetched (possibly still in flight) — hand the chunk futures to
     // speak(), which starts playback on the first resolved chunk and
     // re-synthesizes any chunk whose prefetch failed or was cancelled.
     final prefetched = _ttsPrefetch.remove(line.id);
     if (prefetched != null) {
       _dlog.log(LogCategory.tts, 'Kokoro: playing prefetched audio');
-      await _tts.speak(line.text,
-          character: voiceCharacter, precomputedChunks: prefetched);
+      await _tts.speak(
+        line.text,
+        character: voiceCharacter,
+        precomputedChunks: prefetched,
+      );
     } else {
       await _tts.speak(line.text, character: voiceCharacter);
     }
@@ -2141,10 +2437,13 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
     // This prevents double-advance when _tts.stop() is called explicitly
     // (e.g., during skip/advance) from triggering this handler.
     if (rehearsalState != RehearsalState.playingOther) {
-      _dlog.log(LogCategory.rehearsal,
-          'onOtherLineFinished ignored (state=${rehearsalState.name})');
+      _dlog.log(
+        LogCategory.rehearsal,
+        'onOtherLineFinished ignored (state=${rehearsalState.name})',
+      );
       return;
     }
+    _invalidateLineSession();
     _dlog.log(LogCategory.rehearsal, 'Other line finished, advancing');
 
     final script = ref.read(currentScriptProvider);
@@ -2170,7 +2469,8 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
     // so there's no awkward pause. Only add pacing delay between other lines.
     final nextLine = dialogueLines[currentIdx + 1];
     final mode = ref.read(rehearsalModeProvider);
-    final isNextMine = mode != RehearsalMode.readthrough &&
+    final isNextMine =
+        mode != RehearsalMode.readthrough &&
         myCharacter != null &&
         nextLine.isForCharacter(myCharacter);
 
@@ -2183,14 +2483,16 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
       final delayMs = fastMode
           ? ref.read(fastModeLineDelayProvider)
           : ref.read(lineDelayProvider);
+      final generation = _lineGeneration;
       Future.delayed(Duration(milliseconds: delayMs), () {
-        if (mounted) _processCurrentLine();
+        if (_isCurrentLineSession(generation)) _processCurrentLine();
       });
     }
   }
 
   /// Start STT listening for the actor's line.
   Future<void> _startListeningForMyLine(ScriptLine line) async {
+    final generation = _lineGeneration;
     ref.read(rehearsalStateProvider.notifier).state =
         RehearsalState.listeningForMe;
     _clearMatchFeedback();
@@ -2199,6 +2501,7 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
     // Without this, the audioPlayer holds the session in playback mode
     // and STT silently fails to start recording.
     await _tts.releaseAudioSession();
+    if (!_isCurrentLineSession(generation)) return;
 
     // Haptic feedback: it's your turn
     HapticFeedback.mediumImpact();
@@ -2208,7 +2511,7 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
     // castmates), so on Android we record the line and advance on mic-silence
     // instead of live word-matching.
     if (Platform.isAndroid) {
-      await _startRecordOnlyCapture(line);
+      await _startRecordOnlyCapture(line, generation);
       return;
     }
 
@@ -2218,10 +2521,14 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
     if (!_stt.isAvailable && !_sttInitFailed) {
       _dlog.log(LogCategory.rehearsal, 'Waiting for STT init...');
       // Poll briefly — STT init typically takes 1-3 seconds
-      for (var i = 0; i < 50 && !_stt.isAvailable && mounted; i++) {
+      for (
+        var i = 0;
+        i < 50 && !_stt.isAvailable && _isCurrentLineSession(generation);
+        i++
+      ) {
         await Future.delayed(const Duration(milliseconds: 100));
       }
-      if (!mounted) return;
+      if (!_isCurrentLineSession(generation)) return;
     }
 
     final available = _stt.isAvailable;
@@ -2231,11 +2538,15 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
       _dlog.log(LogCategory.rehearsal, 'STT not available, manual advance');
       if (!_sttUnavailableNoticeShown) {
         _sttUnavailableNoticeShown = true;
-        ScaffoldMessenger.of(context).showAutoToast(const SnackBar(
-          content: Text('Speech recognition isn\'t available — tap the '
-              'forward arrow to advance past your lines.'),
-          duration: Duration(seconds: 6),
-        ));
+        ScaffoldMessenger.of(context).showAutoToast(
+          const SnackBar(
+            content: Text(
+              'Speech recognition isn\'t available — tap the '
+              'forward arrow to advance past your lines.',
+            ),
+            duration: Duration(seconds: 6),
+          ),
+        );
       }
       ref.read(rehearsalStateProvider.notifier).state = RehearsalState.ready;
       return;
@@ -2257,7 +2568,8 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
     // words. Keep hints focused — flooding with script-wide vocabulary
     // (character names, etc.) dilutes the signal and confuses the recognizer.
     final cleanLine = line.text.replaceAll(RegExp("[^\\w\\s']"), '');
-    final wordHints = cleanLine.split(RegExp(r'\s+'))
+    final wordHints = cleanLine
+        .split(RegExp(r'\s+'))
         .where((w) => w.length > 1)
         .toSet()
         .toList();
@@ -2268,7 +2580,7 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
     // Also stamp the listening ceiling for this line (see _listenStartedAt).
     _listenStartedAt = DateTime.now();
     _listenMaxWait = _maxListenFor(line);
-    _resetSilenceTimer(line);
+    _resetSilenceTimer(line, generation);
 
     // Live mic level for the listening indicator (smoothed in SttService).
     // ValueNotifier, not setState: only the mic chip repaints per event.
@@ -2277,13 +2589,13 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
     // producing sparse partials (field case: one partial then nothing) let it
     // fire mid-read and cut the actor off at 22-57% scores.
     _stt.onLevel = (level) {
-      if (!mounted) return;
+      if (!_isCurrentLineSession(generation)) return;
       if (ref.read(rehearsalStateProvider) != RehearsalState.listeningForMe) {
         return;
       }
       _micLevel.value = level;
       if (level >= SttService.silenceThreshold) {
-        _resetSilenceTimer(line);
+        _resetSilenceTimer(line, generation);
       }
     };
 
@@ -2292,7 +2604,7 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
     // pause window instead of waiting the full 1.2s no-new-results debounce.
     // The debounce timer below stays as a fallback (e.g. if level events stop).
     _stt.onSilence = (silence) {
-      if (!mounted) return;
+      if (!_isCurrentLineSession(generation)) return;
       if (ref.read(rehearsalStateProvider) != RehearsalState.listeningForMe) {
         return;
       }
@@ -2304,9 +2616,10 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
 
     await _stt.listen(
       continuous: true,
-      onResult: (recognized) => _handleRecognizedForLine(line, recognized),
+      onResult: (recognized) =>
+          _handleRecognizedForLine(line, recognized, generation),
       onDone: () {
-        if (!mounted) return;
+        if (!_isCurrentLineSession(generation)) return;
         // Listening ended but no match — stay on this line, let user retry or skip
         if (ref.read(rehearsalStateProvider) == RehearsalState.listeningForMe) {
           ref.read(rehearsalStateProvider.notifier).state =
@@ -2315,9 +2628,10 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
       },
       vocabularyHints: vocabHints,
     );
+    if (!_isCurrentLineSession(generation)) return;
 
     // Start audio capture AFTER listen() — the audio engine must be running
-    _startCaptureForLine(line);
+    await _startCaptureForLine(line, generation);
   }
 
   /// Shared per-result matching pipeline: vocabulary correction → score →
@@ -2325,9 +2639,12 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
   /// recognizer on iOS/macOS ([SttService.listen]) and by the on-device
   /// streaming recognizer on Android ([LiveAsrService.onPartial]) — both
   /// deliver cumulative transcripts of the current utterance.
-  void _handleRecognizedForLine(ScriptLine line, String recognized) {
-    if (!mounted) return;
-    // Ignore stale results if we've moved past this line
+  void _handleRecognizedForLine(
+    ScriptLine line,
+    String recognized,
+    int generation,
+  ) {
+    if (!_isCurrentLineSession(generation)) return;
     if (ref.read(rehearsalStateProvider) != RehearsalState.listeningForMe) {
       return;
     }
@@ -2336,7 +2653,7 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
     final myCharacter = ref.read(rehearsalCharacterProvider);
 
     // Reset silence timer on each new result
-    _resetSilenceTimer(line);
+    _resetSilenceTimer(line, generation);
     _lastRecognizedRaw = recognized;
 
     // Apply vocabulary correction before scoring
@@ -2357,9 +2674,12 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
     // only meaningful score changes, to stay readable.
     if (!_loggedFirstResultForLine) {
       _loggedFirstResultForLine = true;
-      _dlog.log(LogCategory.stt,
-          'first result: heard="${corrected.length > 60 ? '${corrected.substring(0, 57)}...' : corrected}" '
-          'score=${(score * 100).toStringAsFixed(0)}% threshold=${(threshold * 100).toStringAsFixed(0)}%');
+      _dlog.log(
+        LogCategory.stt,
+        'first result: heardLength=${corrected.length} '
+        'score=${(score * 100).toStringAsFixed(0)}% '
+        'threshold=${(threshold * 100).toStringAsFixed(0)}%',
+      );
     }
     // Notifiers, not setState: partial results arrive several times a
     // second and setState here rebuilt the whole screen — including the
@@ -2381,24 +2701,23 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
     // mic-silence.)
     // Latch on every partial: the ending is only briefly the transcript's
     // tail before trailing noise words displace it.
-    if (!_lineEndingHeard &&
-        SttService.heardLineEnding(line.text, corrected)) {
+    if (!_lineEndingHeard && SttService.heardLineEnding(line.text, corrected)) {
       _lineEndingHeard = true;
     }
 
     if (score >= threshold) {
       _matchConfirmTimer?.cancel();
-      final confirmMs =
-          score >= _fullLineMatchThreshold ? _fastConfirmMs : 1200;
+      final confirmMs = score >= _fullLineMatchThreshold
+          ? _fastConfirmMs
+          : 1200;
       _quietStreak = 0; // fresh evidence of speech — restart the quiet count
       _matchConfirmTimer = Timer(Duration(milliseconds: confirmMs), () {
-        _confirmIfActorQuiet(line);
+        _confirmIfActorQuiet(line, generation);
       });
       // Arm once per line; new partials must NOT reset it (that would be
       // the same starvation again). Fires only when completion is proven.
-      _strongMatchDeadline ??=
-          Timer(const Duration(milliseconds: 1500), () {
-        _confirmDespiteNoise(line);
+      _strongMatchDeadline ??= Timer(const Duration(milliseconds: 1500), () {
+        _confirmDespiteNoise(line, generation);
       });
     } else {
       // Score dropped below threshold (e.g., new words recognized that
@@ -2415,9 +2734,9 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
   /// enough elapsed time to have physically read the words. Otherwise it
   /// re-polls; a paraphrased ending never satisfies it and falls back to
   /// the quiet/silence paths as before.
-  void _confirmDespiteNoise(ScriptLine line) {
+  void _confirmDespiteNoise(ScriptLine line, int generation) {
     _strongMatchDeadline = null;
-    if (!mounted || _matchConfirmed) return;
+    if (!_isCurrentLineSession(generation) || _matchConfirmed) return;
     if (ref.read(rehearsalStateProvider) != RehearsalState.listeningForMe) {
       return;
     }
@@ -2425,25 +2744,29 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
     if (_matchScore.value < threshold) return; // below-threshold arm cancels
 
     final spokenText = TtsService.stripStageDirections(line.text);
-    final wordCount =
-        spokenText.isEmpty ? 0 : spokenText.split(RegExp(r'\s+')).length;
-    final plausible = DateTime.now().difference(_listeningStartedAt) >=
+    final wordCount = spokenText.isEmpty
+        ? 0
+        : spokenText.split(RegExp(r'\s+')).length;
+    final plausible =
+        DateTime.now().difference(_listeningStartedAt) >=
         Duration(milliseconds: 200 * wordCount);
-    final tailHeard = _lineEndingHeard ||
+    final tailHeard =
+        _lineEndingHeard ||
         SttService.heardLineEnding(line.text, _recognizedText.value);
 
     if (tailHeard && plausible) {
       _dlog.log(
-          LogCategory.stt,
-          'confirming despite continued input (noisy room): '
-          'score=${(_matchScore.value * 100).toStringAsFixed(0)}%');
+        LogCategory.stt,
+        'confirming despite continued input (noisy room): '
+        'score=${(_matchScore.value * 100).toStringAsFixed(0)}%',
+      );
       _confirmLineMatch(line);
       return;
     }
     // Over threshold but not provably finished (mid-line crossing, or a
     // paraphrased ending) — keep watching until it is.
     _strongMatchDeadline = Timer(const Duration(milliseconds: 800), () {
-      _confirmDespiteNoise(line);
+      _confirmDespiteNoise(line, generation);
     });
   }
 
@@ -2463,7 +2786,8 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
   ///     ending, so never wait forever).
   Duration _requiredAdvanceSilence(ScriptLine line) {
     final base = ref.read(rehearsalAdvanceSilenceMsProvider);
-    final tailHeard = _lineEndingHeard ||
+    final tailHeard =
+        _lineEndingHeard ||
         SttService.heardLineEnding(line.text, _recognizedText.value);
     return Duration(milliseconds: tailHeard ? base : (base + 2000));
   }
@@ -2487,8 +2811,8 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
   /// (~450 ms), so a breath can't end a line the actor can't have finished.
   int _quietStreak = 0;
 
-  void _confirmIfActorQuiet(ScriptLine line) {
-    if (!mounted || _matchConfirmed) return;
+  void _confirmIfActorQuiet(ScriptLine line, int generation) {
+    if (!_isCurrentLineSession(generation) || _matchConfirmed) return;
     if (ref.read(rehearsalStateProvider) != RehearsalState.listeningForMe) {
       return;
     }
@@ -2496,7 +2820,7 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
       _quietStreak = 0;
       _matchConfirmTimer?.cancel();
       _matchConfirmTimer = Timer(const Duration(milliseconds: 300), () {
-        _confirmIfActorQuiet(line);
+        _confirmIfActorQuiet(line, generation);
       });
       return;
     }
@@ -2505,12 +2829,14 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
     // they mustn't inflate the reading-time floor either — "(crossing to the
     // window, softly)" would otherwise make a short line look under-read.
     final spokenText = TtsService.stripStageDirections(line.text);
-    final wordCount =
-        spokenText.isEmpty ? 0 : spokenText.split(RegExp(r'\s+')).length;
+    final wordCount = spokenText.isEmpty
+        ? 0
+        : spokenText.split(RegExp(r'\s+')).length;
     final minPlausible = Duration(milliseconds: 200 * wordCount);
     final plausible =
         DateTime.now().difference(_listeningStartedAt) >= minPlausible;
-    final tailHeard = _lineEndingHeard ||
+    final tailHeard =
+        _lineEndingHeard ||
         SttService.heardLineEnding(line.text, _recognizedText.value);
 
     // Quiet needed before confirming, in ~150 ms samples:
@@ -2523,7 +2849,7 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
     if (_quietStreak < needed) {
       _matchConfirmTimer?.cancel();
       _matchConfirmTimer = Timer(const Duration(milliseconds: 150), () {
-        _confirmIfActorQuiet(line);
+        _confirmIfActorQuiet(line, generation);
       });
       return;
     }
@@ -2535,9 +2861,10 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
   /// speech detected"), which reads to the actor as "it just sat there".
   void _logLineOutcome(String how) {
     _dlog.log(
-        LogCategory.stt,
-        'line ended ($how): '
-        '${_loggedFirstResultForLine ? 'score=${(_matchScore.value * 100).toStringAsFixed(0)}%' : 'NO recognition results at all'}');
+      LogCategory.stt,
+      'line ended ($how): '
+      '${_loggedFirstResultForLine ? 'score=${(_matchScore.value * 100).toStringAsFixed(0)}%' : 'NO recognition results at all'}',
+    );
   }
 
   /// The actor finished their line and the match held — stop listening,
@@ -2563,7 +2890,8 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
     // Learn from this successful attempt
     final production = ref.read(currentProductionProvider);
     final myCharacter = ref.read(rehearsalCharacterProvider);
-    if (production != null && myCharacter != null &&
+    if (production != null &&
+        myCharacter != null &&
         _lastRecognizedRaw.isNotEmpty) {
       _sttVocab.learnFromAttempt(
         productionId: production.id,
@@ -2586,10 +2914,11 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
 
   /// Reset the silence timer. When no new STT results arrive for
   /// [_silenceTimeout], auto-advance with whatever score we have.
-  void _resetSilenceTimer(ScriptLine line) {
+  void _resetSilenceTimer(ScriptLine line, int generation) {
+    if (!_isCurrentLineSession(generation)) return;
     _silenceTimer?.cancel();
     _silenceTimer = Timer(_silenceTimeout, () {
-      if (!mounted) return;
+      if (!_isCurrentLineSession(generation)) return;
       final state = ref.read(rehearsalStateProvider);
       if (state != RehearsalState.listeningForMe) return;
 
@@ -2599,11 +2928,14 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
       // above the threshold too, and an unbounded re-arm loop left the
       // actor stranded with no fallback at all.
       final started = _listenStartedAt;
-      final pastCeiling = started != null &&
+      final pastCeiling =
+          started != null &&
           DateTime.now().difference(started) > _listenMaxWait;
       if (!pastCeiling && _stt.inputLevel >= SttService.silenceThreshold) {
         _silenceTimer = Timer(const Duration(milliseconds: 500), () {
-          if (mounted) _resetSilenceTimer(line);
+          if (_isCurrentLineSession(generation)) {
+            _resetSilenceTimer(line, generation);
+          }
         });
         return;
       }
@@ -2611,12 +2943,16 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
       if (pastCeiling && mounted) {
         // Make the rescue visible — a silent advance after a long noisy
         // wait reads as random. (never-silently-fail)
-        ScaffoldMessenger.of(context).showAutoToast(const SnackBar(
-          content: Text("Couldn't confirm your line — advancing. If this "
+        ScaffoldMessenger.of(context).showAutoToast(
+          const SnackBar(
+            content: Text(
+              "Couldn't confirm your line — advancing. If this "
               'keeps happening, the room may be too noisy for line '
-              'matching.'),
-          duration: Duration(seconds: 5),
-        ));
+              'matching.',
+            ),
+            duration: Duration(seconds: 5),
+          ),
+        );
       }
       _logLineOutcome(pastCeiling ? 'noise-capped timeout' : 'silence timeout');
       _stopCaptureForLine(line);
@@ -2637,10 +2973,7 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
   }
 
   void _advanceLine(int totalLines) {
-    _silenceTimer?.cancel();
-    _matchConfirmTimer?.cancel();
-    _strongMatchDeadline?.cancel();
-    _strongMatchDeadline = null;
+    _invalidateLineSession();
     // Stop any in-progress audio capture before advancing
     if (_isCapturingAudio) {
       _stt.stopRecording(); // fire-and-forget, file will be finalized
@@ -2648,7 +2981,9 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
     }
     _tts.stop(reason: 'advanceLine');
     _stt.stop(discard: true);
-    try { _player.stop(); } catch (_) {}
+    try {
+      _player.stop();
+    } catch (_) {}
 
     final current = ref.read(currentLineIndexProvider);
     if (current + 1 >= totalLines) {
@@ -2658,9 +2993,11 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
       final script = ref.read(currentScriptProvider);
       final scene = ref.read(selectedSceneProvider);
       final myCharacter = ref.read(rehearsalCharacterProvider);
-      _completeScene(script != null && scene != null
-          ? _getRehearsalLines(script, scene, myCharacter)
-          : const []);
+      _completeScene(
+        script != null && scene != null
+            ? _getRehearsalLines(script, scene, myCharacter)
+            : const [],
+      );
       _scrollToCurrentLine();
       return;
     }
@@ -2673,19 +3010,21 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
 
     // Auto-play next line after minimal delay
     if (_autoPlay) {
+      final generation = _lineGeneration;
       Future.delayed(const Duration(milliseconds: 100), () {
-        if (mounted) _processCurrentLine();
+        if (_isCurrentLineSession(generation)) _processCurrentLine();
       });
     }
   }
 
   void _jumpBack(int jumpCount, int totalLines) {
     if (totalLines <= 0) return;
-    _silenceTimer?.cancel();
-    _matchConfirmTimer?.cancel();
+    _invalidateLineSession();
     _tts.stop(reason: 'jumpBack');
     _stt.stop(discard: true);
-    try { _player.stop(); } catch (_) {}
+    try {
+      _player.stop();
+    } catch (_) {}
 
     final current = ref.read(currentLineIndexProvider);
     final newIdx = (current - jumpCount).clamp(0, totalLines - 1);
@@ -2698,20 +3037,21 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
     // Haptic on jump back
     HapticFeedback.heavyImpact();
 
-    // Auto-play from new position
     if (_autoPlay) {
+      final generation = _lineGeneration;
       Future.delayed(const Duration(milliseconds: 300), () {
-        if (mounted) _processCurrentLine();
+        if (_isCurrentLineSession(generation)) _processCurrentLine();
       });
     }
   }
 
   void _restartScene() {
-    _silenceTimer?.cancel();
-    _matchConfirmTimer?.cancel();
+    _invalidateLineSession();
     _tts.stop(reason: 'restartScene');
     _stt.stop(discard: true);
-    try { _player.stop(); } catch (_) {}
+    try {
+      _player.stop();
+    } catch (_) {}
 
     ref.read(currentLineIndexProvider.notifier).state = 0;
     ref.read(rehearsalStateProvider.notifier).state = RehearsalState.ready;
@@ -2735,8 +3075,9 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
     );
 
     if (_autoPlay) {
+      final generation = _lineGeneration;
       Future.delayed(const Duration(milliseconds: 400), () {
-        if (mounted) _processCurrentLine();
+        if (_isCurrentLineSession(generation)) _processCurrentLine();
       });
     }
   }
@@ -2751,25 +3092,28 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
         state != RehearsalState.ready) {
       return; // not mid-rehearsal (complete/paused) — nothing to pause
     }
-    _silenceTimer?.cancel();
-    _matchConfirmTimer?.cancel();
+    _invalidateLineSession();
     if (_isCapturingAudio) {
       _stt.stopRecording(); // finalize whatever was captured
       _isCapturingAudio = false;
     }
     _tts.stop(reason: 'audioInterruption');
     _stt.stop(discard: true);
-    try { _player.pause(); } catch (_) {}
+    try {
+      _player.pause();
+    } catch (_) {}
     ref.read(rehearsalStateProvider.notifier).state = RehearsalState.paused;
     _dlog.log(LogCategory.rehearsal, 'Rehearsal paused: $reason');
-    ScaffoldMessenger.of(context).showAutoToast(SnackBar(
-      content: Text('$reason — rehearsal paused. Tap Resume to continue.'),
-      duration: const Duration(seconds: 5),
-    ));
+    ScaffoldMessenger.of(context).showAutoToast(
+      SnackBar(
+        content: Text('$reason — rehearsal paused. Tap Resume to continue.'),
+        duration: const Duration(seconds: 5),
+      ),
+    );
   }
 
   void _togglePause(int totalLines) {
-    _silenceTimer?.cancel();
+    _invalidateLineSession();
     final current = ref.read(rehearsalStateProvider);
     if (current == RehearsalState.paused) {
       ref.read(rehearsalStateProvider.notifier).state = RehearsalState.ready;
@@ -2777,7 +3121,9 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
     } else {
       _tts.stop(reason: 'pause');
       _stt.stop(discard: true);
-      try { _player.pause(); } catch (_) {}
+      try {
+        _player.pause();
+      } catch (_) {}
       ref.read(rehearsalStateProvider.notifier).state = RehearsalState.paused;
     }
   }
@@ -2789,7 +3135,7 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
     _jumpBackInProgress = true;
     // Release the lock after a short delay so rapid taps are coalesced
     Future.delayed(const Duration(milliseconds: 500), () {
-      _jumpBackInProgress = false;
+      if (mounted) _jumpBackInProgress = false;
     });
     final script = ref.read(currentScriptProvider);
     final scene = ref.read(selectedSceneProvider);
@@ -2798,7 +3144,9 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
     final dialogueLines = _getRehearsalLines(script, scene, mc);
     final mode = ref.read(rehearsalModeProvider);
 
-    if (mc != null && mode != RehearsalMode.readthrough && dialogueLines.length > 1) {
+    if (mc != null &&
+        mode != RehearsalMode.readthrough &&
+        dialogueLines.length > 1) {
       // Find the actor's PREVIOUS cue line (not the one they're
       // currently on, but the one before that), then go 2 lines
       // before it so they hear the full cue leading in.
@@ -2834,9 +3182,11 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
       if (current == 0) return; // first line — nothing to jump back to
       final jumpCount = (current - target).clamp(1, current);
 
-      _dlog.log(LogCategory.rehearsal,
-          'Jump back: current=$current, myLine=$myLine, '
-          'prevMyLine=$prevMyLine, target=$target, jump=$jumpCount');
+      _dlog.log(
+        LogCategory.rehearsal,
+        'Jump back: current=$current, myLine=$myLine, '
+        'prevMyLine=$prevMyLine, target=$target, jump=$jumpCount',
+      );
 
       _jumpBack(jumpCount, dialogueLines.length);
     } else {
@@ -2868,15 +3218,17 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
 
   /// Record an attempt for the given line.
   void _recordAttempt(ScriptLine line, {required bool skipped}) {
-    _lineAttempts.add(LineAttempt(
-      lineId: line.id,
-      lineText: line.text.length > 80
-          ? '${line.text.substring(0, 77)}...'
-          : line.text,
-      attemptCount: _currentAttemptCount,
-      bestScore: _currentBestScore,
-      skipped: skipped,
-    ));
+    _lineAttempts.add(
+      LineAttempt(
+        lineId: line.id,
+        lineText: line.text.length > 80
+            ? '${line.text.substring(0, 77)}...'
+            : line.text,
+        attemptCount: _currentAttemptCount,
+        bestScore: _currentBestScore,
+        skipped: skipped,
+      ),
+    );
   }
 
   /// Record attempt for the current line (used when manually advancing).
@@ -2906,7 +3258,8 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
   /// the same live word-matching iOS gets. When the ASR model isn't
   /// downloaded, degrades to the old record-only behavior: advance once the
   /// actor has spoken and gone quiet.
-  Future<void> _startRecordOnlyCapture(ScriptLine line) async {
+  Future<void> _startRecordOnlyCapture(ScriptLine line, int generation) async {
+    if (!_isCurrentLineSession(generation)) return;
     _currentAttemptCount++;
     _matchConfirmed = false;
     _matchScore.value = 0.0;
@@ -2932,7 +3285,7 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
     } else {
       asrStarted = true;
     }
-    if (!mounted) return;
+    if (!_isCurrentLineSession(generation)) return;
     final liveMatching = asrStarted == true;
     _liveMatchingActive = liveMatching;
 
@@ -2941,30 +3294,34 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
     // while it's merely still loading.
     if (asrStarted == false && !_liveAsrNoticeShown) {
       _liveAsrNoticeShown = true;
-      ScaffoldMessenger.of(context).showAutoToast(SnackBar(
-        content: const Text('Download "Live Line Matching" and rehearsal '
-            'will follow your lines as you speak them.'),
-        duration: const Duration(seconds: 8),
-        action: SnackBarAction(
-          label: 'Download',
-          onPressed: () {
-            if (mounted) context.push('/ai-models');
-          },
+      ScaffoldMessenger.of(context).showAutoToast(
+        SnackBar(
+          content: const Text(
+            'Download "Live Line Matching" and rehearsal '
+            'will follow your lines as you speak them.',
+          ),
+          duration: const Duration(seconds: 8),
+          action: SnackBarAction(
+            label: 'Download',
+            onPressed: () {
+              if (mounted) context.push('/ai-models');
+            },
+          ),
         ),
-      ));
+      );
     }
 
     // Mic level for the listening indicator. While the actor is audibly
     // speaking, push the hard-cap silence timer back so a long line isn't cut
     // off even when recognition produces nothing.
     _stt.onLevel = (level) {
-      if (!mounted) return;
+      if (!_isCurrentLineSession(generation)) return;
       if (ref.read(rehearsalStateProvider) != RehearsalState.listeningForMe) {
         return;
       }
       _micLevel.value = level;
       if (level >= SttService.silenceThreshold) {
-        _resetSilenceTimer(line);
+        _resetSilenceTimer(line, generation);
       }
     };
 
@@ -2974,13 +3331,12 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
     // signal there is.
     final threshold = ref.read(matchThresholdProvider) / 100.0;
     _stt.onSilence = (silence) {
-      if (!mounted) return;
+      if (!_isCurrentLineSession(generation)) return;
       if (ref.read(rehearsalStateProvider) != RehearsalState.listeningForMe) {
         return;
       }
       if (_liveMatchingActive) {
         if (_matchScore.value < threshold) return;
-        // Same line-ending tier as iOS: a mid-line pause must not advance.
         if (silence >= _requiredAdvanceSilence(line)) {
           _confirmLineMatch(line);
         }
@@ -2993,7 +3349,8 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
     };
 
     void attachMatching() {
-      liveAsr.onPartial = (text) => _handleRecognizedForLine(line, text);
+      liveAsr.onPartial = (text) =>
+          _handleRecognizedForLine(line, text, generation);
       SttChannel.instance.onPcm = liveAsr.feedPcm;
       liveAsr.startUtterance();
     }
@@ -3003,23 +3360,33 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
     } else if (asrStarted == null) {
       // Still loading — upgrade this line to live matching when it's ready,
       // if the actor is still on it and the mic is still capturing.
-      unawaited(asrFuture.then((_) {
-        if (asrStarted != true || !mounted || !_isCapturingAudio) return;
-        if (ref.read(rehearsalStateProvider) != RehearsalState.listeningForMe) {
-          return;
-        }
-        _dlog.log(LogCategory.stt, 'LiveASR: attached mid-line');
-        _liveMatchingActive = true;
-        attachMatching();
-      }));
+      unawaited(
+        asrFuture.then((_) {
+          if (asrStarted != true ||
+              !_isCurrentLineSession(generation) ||
+              !_isCapturingAudio) {
+            return;
+          }
+          if (ref.read(rehearsalStateProvider) !=
+              RehearsalState.listeningForMe) {
+            return;
+          }
+          _dlog.log(LogCategory.stt, 'LiveASR: attached mid-line');
+          _liveMatchingActive = true;
+          attachMatching();
+        }),
+      );
     }
 
     final dir = await getTemporaryDirectory();
     final path = p.join(dir.path, 'rehearsal_${line.id}.m4a');
-    _dlog.log(LogCategory.rehearsal,
-        'Capture(Android): starting for ${line.id.substring(0, 8)}... '
-        '(live matching: $liveMatching)');
+    _dlog.log(
+      LogCategory.rehearsal,
+      'Capture(Android): starting for ${line.id.substring(0, 8)}... '
+      '(live matching: $liveMatching)',
+    );
     final started = await _stt.startLineCapture(path);
+    if (!_isCurrentLineSession(generation)) return;
     if (started) {
       _isCapturingAudio = true;
       // Hard fallback so a silent/never-ending mic still advances.
@@ -3027,16 +3394,19 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
       // stale stamp from the previous line would trip pastCeiling instantly.
       _listenStartedAt = DateTime.now();
       _listenMaxWait = _maxListenFor(line);
-      _resetSilenceTimer(line);
+      _resetSilenceTimer(line, generation);
     } else {
       // Never silent: tell the user recording didn't happen.
       _dlog.logError(
-          LogCategory.error, 'Capture(Android): recording failed to start');
+        LogCategory.error,
+        'Capture(Android): recording failed to start',
+      );
       if (mounted) {
         ScaffoldMessenger.of(context).showAutoToast(
           const SnackBar(
             content: Text(
-                "Couldn't record your line — check microphone permission in Settings."),
+              "Couldn't record your line — check microphone permission in Settings.",
+            ),
           ),
         );
       }
@@ -3044,19 +3414,17 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
     }
   }
 
-  Future<void> _startCaptureForLine(ScriptLine line) async {
+  Future<void> _startCaptureForLine(ScriptLine line, int generation) async {
     try {
       final dir = await getTemporaryDirectory();
+      if (!_isCurrentLineSession(generation)) return;
       final path = p.join(dir.path, 'rehearsal_${line.id}.m4a');
-      // Capture paths are deterministic per line and survive across sessions.
-      // Clear any previous take now so a failed capture can never pass off
-      // last session's audio as this one.
-      try {
-        final stale = File(path);
-        if (stale.existsSync()) stale.deleteSync();
-      } catch (_) {}
-      _dlog.log(LogCategory.rehearsal, 'Capture: starting for ${line.id.substring(0, 8)}...');
+      _dlog.log(
+        LogCategory.rehearsal,
+        'Capture: starting for ${line.id.substring(0, 8)}...',
+      );
       final ok = await _stt.startRecording(path);
+      if (!_isCurrentLineSession(generation)) return;
       _dlog.log(LogCategory.rehearsal, 'Capture: startRecording returned $ok');
       if (ok) {
         _isCapturingAudio = true;
@@ -3064,11 +3432,15 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
         // Never silent: recording didn't start, so the actor isn't being
         // captured — surface it instead of carrying on as if we are.
         _dlog.logError(
-            LogCategory.error, 'Capture: startRecording returned false');
+          LogCategory.error,
+          'Capture: startRecording returned false',
+        );
         if (mounted) {
           ScaffoldMessenger.of(context).showAutoToast(
             const SnackBar(
-              content: Text("Couldn't record your line — check microphone access."),
+              content: Text(
+                "Couldn't record your line — check microphone access.",
+              ),
             ),
           );
         }
@@ -3076,9 +3448,9 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
     } catch (e) {
       _dlog.logError(LogCategory.error, 'Capture: start exception', e);
       if (mounted) {
-        ScaffoldMessenger.of(context).showAutoToast(
-          SnackBar(content: Text('Recording error: $e')),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showAutoToast(SnackBar(content: Text('Recording error: $e')));
       }
     }
   }
@@ -3106,18 +3478,30 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
         final durationMs = result['durationMs'] as int? ?? 0;
         final fileExists = path != null && File(path).existsSync();
         final fileSize = fileExists ? File(path).lengthSync() : 0;
-        _dlog.log(LogCategory.rehearsal,
-            'Capture: stopped — ${durationMs}ms, ${fileSize}B, exists=$fileExists');
+        _dlog.log(
+          LogCategory.rehearsal,
+          'Capture: stopped — ${durationMs}ms, ${fileSize}B, exists=$fileExists',
+        );
         if (path != null && durationMs > 500 && fileExists && fileSize > 100) {
-          _capturedAudio[line.id] = _CapturedLine(path: path, durationMs: durationMs);
-          _dlog.log(LogCategory.rehearsal,
-              'Capture: saved ${line.id.substring(0, 8)}... (${durationMs}ms, ${fileSize ~/ 1024}KB)');
+          _capturedAudio[line.id] = _CapturedLine(
+            path: path,
+            durationMs: durationMs,
+          );
+          _dlog.log(
+            LogCategory.rehearsal,
+            'Capture: saved ${line.id.substring(0, 8)}... (${durationMs}ms, ${fileSize ~/ 1024}KB)',
+          );
         } else {
-          _dlog.log(LogCategory.rehearsal,
-              'Capture: DISCARDED (too short or empty)');
+          _dlog.log(
+            LogCategory.rehearsal,
+            'Capture: DISCARDED (too short or empty)',
+          );
         }
       } else {
-        _dlog.log(LogCategory.rehearsal, 'Capture: stopRecording returned null');
+        _dlog.log(
+          LogCategory.rehearsal,
+          'Capture: stopRecording returned null',
+        );
       }
     } catch (e) {
       _dlog.logError(LogCategory.error, 'Capture: stop exception', e);
@@ -3182,8 +3566,10 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
     if (character.isEmpty) {
       // Without a character the cloud storage path would be malformed
       // ({prod}//{line}.m4a) and other devices couldn't resolve it.
-      _dlog.log(LogCategory.rehearsal,
-          'Save captures skipped: no rehearsal character set');
+      _dlog.log(
+        LogCategory.rehearsal,
+        'Save captures skipped: no rehearsal character set',
+      );
       return;
     }
 
@@ -3221,6 +3607,7 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
           productionId: production.id,
           characterName: character,
           lineId: lineId,
+          recordingId: recording.id,
           localPath: destPath,
           durationMs: captured.durationMs,
           recordedAt: recording.recordedAt,
@@ -3250,7 +3637,9 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
 
   void _purgeRehearsalCaptures() {
     for (final captured in _capturedAudio.values) {
-      try { File(captured.path).deleteSync(); } catch (_) {}
+      try {
+        File(captured.path).deleteSync();
+      } catch (_) {}
     }
     _capturedAudio.clear();
   }
@@ -3270,7 +3659,7 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
     final avgScore = _lineAttempts.isEmpty
         ? 0.0
         : _lineAttempts.fold<double>(0, (s, a) => s + a.bestScore) /
-            _lineAttempts.length;
+              _lineAttempts.length;
 
     final session = RehearsalSession(
       id: DateTime.now().millisecondsSinceEpoch.toString(),

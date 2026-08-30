@@ -1,3 +1,7 @@
+import 'dart:io';
+
+import 'package:castcircle/data/database/app_database.dart';
+import 'package:drift/native.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:castcircle/data/services/stt_adaptation_service.dart';
 
@@ -30,13 +34,17 @@ void main() {
         productionId: 'prod-1',
         samples: [
           TrainingSample(
-            audioPath: '/a.m4a', transcript: 'Line 1',
-            character: 'HAMLET', durationMs: 10000,
+            audioPath: '/a.m4a',
+            transcript: 'Line 1',
+            character: 'HAMLET',
+            durationMs: 10000,
             recordedAt: DateTime.now(),
           ),
           TrainingSample(
-            audioPath: '/b.m4a', transcript: 'Line 2',
-            character: 'HAMLET', durationMs: 5000,
+            audioPath: '/b.m4a',
+            transcript: 'Line 2',
+            character: 'HAMLET',
+            durationMs: 5000,
             recordedAt: DateTime.now(),
           ),
         ],
@@ -47,17 +55,22 @@ void main() {
 
     test('readiness scales from 0 to 1 based on 300s target', () {
       final empty = const SttProfile(
-        actorId: 'X', productionId: 'p', samples: [],
+        actorId: 'X',
+        productionId: 'p',
+        samples: [],
       );
       expect(empty.readiness, 0.0);
 
       // 150s = 50% ready
       final half = SttProfile(
-        actorId: 'X', productionId: 'p',
+        actorId: 'X',
+        productionId: 'p',
         samples: [
           TrainingSample(
-            audioPath: '/a.m4a', transcript: 'L',
-            character: 'X', durationMs: 150000,
+            audioPath: '/a.m4a',
+            transcript: 'L',
+            character: 'X',
+            durationMs: 150000,
             recordedAt: DateTime.now(),
           ),
         ],
@@ -67,11 +80,14 @@ void main() {
 
     test('readiness caps at 1.0', () {
       final profile = SttProfile(
-        actorId: 'X', productionId: 'p',
+        actorId: 'X',
+        productionId: 'p',
         samples: [
           TrainingSample(
-            audioPath: '/a.m4a', transcript: 'L',
-            character: 'X', durationMs: 600000, // 10 minutes
+            audioPath: '/a.m4a',
+            transcript: 'L',
+            character: 'X',
+            durationMs: 600000, // 10 minutes
             recordedAt: DateTime.now(),
           ),
         ],
@@ -81,11 +97,14 @@ void main() {
 
     test('hasEnoughData requires 60s minimum', () {
       final notEnough = SttProfile(
-        actorId: 'X', productionId: 'p',
+        actorId: 'X',
+        productionId: 'p',
         samples: [
           TrainingSample(
-            audioPath: '/a.m4a', transcript: 'L',
-            character: 'X', durationMs: 30000, // 30s
+            audioPath: '/a.m4a',
+            transcript: 'L',
+            character: 'X',
+            durationMs: 30000, // 30s
             recordedAt: DateTime.now(),
           ),
         ],
@@ -93,11 +112,14 @@ void main() {
       expect(notEnough.hasEnoughData, isFalse);
 
       final enough = SttProfile(
-        actorId: 'X', productionId: 'p',
+        actorId: 'X',
+        productionId: 'p',
         samples: [
           TrainingSample(
-            audioPath: '/a.m4a', transcript: 'L',
-            character: 'X', durationMs: 65000, // 65s
+            audioPath: '/a.m4a',
+            transcript: 'L',
+            character: 'X',
+            durationMs: 65000, // 65s
             recordedAt: DateTime.now(),
           ),
         ],
@@ -132,10 +154,23 @@ void main() {
 
   group('SttAdaptationService', () {
     late SttAdaptationService service;
+    late AppDatabase database;
+    late Directory documentsDirectory;
 
-    setUp(() {
-      // Use the singleton but clear state by accessing it fresh
-      service = SttAdaptationService.instance;
+    setUp(() async {
+      documentsDirectory = await Directory.systemTemp.createTemp(
+        'castcircle_stt_test_',
+      );
+      database = AppDatabase.forTesting(NativeDatabase.memory());
+      service = SttAdaptationService(
+        database,
+        documentsDirectory: () async => documentsDirectory,
+      );
+    });
+
+    tearDown(() async {
+      await database.close();
+      await documentsDirectory.delete(recursive: true);
     });
 
     test('getActorProfile returns default for unknown actor', () {
@@ -151,21 +186,37 @@ void main() {
       expect(profile.samples, isEmpty);
     });
 
-    test('addSample populates both actor and production profiles', () {
-      service.addSample(
-        productionId: 'test-prod',
-        actorId: 'ELIZABETH',
-        audioPath: '/test/audio.m4a',
-        transcript: 'What a fine assembly tonight.',
-        durationMs: 5000,
-      );
+    test(
+      'addSample persists one normalized sample without pooled duplication',
+      () async {
+        await service.addSample(
+          productionId: 'test-prod',
+          actorId: 'ELIZABETH',
+          audioPath: '/test/audio.m4a',
+          transcript: 'What a fine assembly tonight.',
+          durationMs: 5000,
+        );
+        await service.addSample(
+          productionId: 'test-prod',
+          actorId: 'ELIZABETH',
+          audioPath: '/test/audio.m4a',
+          transcript: 'Corrected transcript.',
+          durationMs: 6000,
+        );
 
-      final actorProfile = service.getActorProfile('test-prod', 'ELIZABETH');
-      expect(actorProfile.samples.length, greaterThanOrEqualTo(1));
+        final actorProfile = service.getActorProfile('test-prod', 'ELIZABETH');
+        final prodProfile = service.getProductionProfile('test-prod');
+        final stored = await database.loadSttSamples('test-prod');
 
-      final prodProfile = service.getProductionProfile('test-prod');
-      expect(prodProfile.samples.length, greaterThanOrEqualTo(1));
-    });
+        expect(actorProfile.samples, hasLength(1));
+        expect(actorProfile.samples.single.transcript, 'Corrected transcript.');
+        expect(prodProfile.samples, hasLength(1));
+        expect(prodProfile.totalAudioSeconds, 6);
+        expect(stored, hasLength(1));
+        expect(stored.single.actorId, 'ELIZABETH');
+        expect(stored.single.durationMs, 6000);
+      },
+    );
 
     test('recommendStrategy returns notReady with no data', () {
       final strategy = service.recommendStrategy('empty-prod');
@@ -180,23 +231,29 @@ void main() {
 
   group('SttAdaptationStatus', () {
     test('has all expected values', () {
-      expect(SttAdaptationStatus.values, containsAll([
-        SttAdaptationStatus.needsData,
-        SttAdaptationStatus.readyToTrain,
-        SttAdaptationStatus.training,
-        SttAdaptationStatus.trained,
-        SttAdaptationStatus.failed,
-      ]));
+      expect(
+        SttAdaptationStatus.values,
+        containsAll([
+          SttAdaptationStatus.needsData,
+          SttAdaptationStatus.readyToTrain,
+          SttAdaptationStatus.training,
+          SttAdaptationStatus.trained,
+          SttAdaptationStatus.failed,
+        ]),
+      );
     });
   });
 
   group('TrainingStrategy', () {
     test('has all expected values', () {
-      expect(TrainingStrategy.values, containsAll([
-        TrainingStrategy.perActor,
-        TrainingStrategy.perProduction,
-        TrainingStrategy.notReady,
-      ]));
+      expect(
+        TrainingStrategy.values,
+        containsAll([
+          TrainingStrategy.perActor,
+          TrainingStrategy.perProduction,
+          TrainingStrategy.notReady,
+        ]),
+      );
     });
   });
 }

@@ -1,6 +1,7 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:castcircle/data/models/script_models.dart';
 import 'package:castcircle/data/services/script_parser.dart';
+import 'package:castcircle/data/services/script_import_service.dart';
 
 void main() {
   group('ScriptParser full pipeline', () {
@@ -18,7 +19,10 @@ DARCY. I have been meditating on the very great pleasure which a pair of fine ey
 ''';
       final script = parser.parse(rawText, title: 'P&P Test');
       expect(script.title, 'P&P Test');
-      expect(script.lines.where((l) => l.lineType == LineType.dialogue).length, 2);
+      expect(
+        script.lines.where((l) => l.lineType == LineType.dialogue).length,
+        2,
+      );
 
       final chars = script.characters.map((c) => c.name).toSet();
       expect(chars, contains('ELIZABETH'));
@@ -36,7 +40,9 @@ ACT II
 DARCY. Second act line.
 ''';
       final script = parser.parse(rawText);
-      final headers = script.lines.where((l) => l.lineType == LineType.header).toList();
+      final headers = script.lines
+          .where((l) => l.lineType == LineType.header)
+          .toList();
       expect(headers.length, 2);
       expect(headers[0].text, 'ACT I');
       expect(headers[1].text, 'ACT II');
@@ -55,7 +61,9 @@ SCENE 2
 DARCY. Second scene line.
 ''';
       final script = parser.parse(rawText);
-      final lines = script.lines.where((l) => l.lineType == LineType.dialogue).toList();
+      final lines = script.lines
+          .where((l) => l.lineType == LineType.dialogue)
+          .toList();
       expect(lines.length, 2);
     });
 
@@ -84,7 +92,9 @@ mortified mine.
 DARCY. Indeed.
 ''';
       final script = parser.parse(rawText);
-      final lines = script.lines.where((l) => l.lineType == LineType.dialogue).toList();
+      final lines = script.lines
+          .where((l) => l.lineType == LineType.dialogue)
+          .toList();
       expect(lines.length, 2);
       // First line should contain the full continuation
       expect(lines[0].text, contains('forgive'));
@@ -104,7 +114,9 @@ ELIZABETH. A real line of dialogue here.
 Jon Jory 12
 ''';
       final script = parser.parse(rawText);
-      final lines = script.lines.where((l) => l.lineType == LineType.dialogue).toList();
+      final lines = script.lines
+          .where((l) => l.lineType == LineType.dialogue)
+          .toList();
       expect(lines.length, 1);
       expect(lines.first.character, 'ELIZABETH');
     });
@@ -114,7 +126,9 @@ Jon Jory 12
 ELIZABETH. I could | easily forgive~ his pride°.
 ''';
       final script = parser.parse(rawText);
-      final line = script.lines.firstWhere((l) => l.lineType == LineType.dialogue);
+      final line = script.lines.firstWhere(
+        (l) => l.lineType == LineType.dialogue,
+      );
       expect(line.text, isNot(contains('|')));
       expect(line.text, isNot(contains('~')));
       expect(line.text, isNot(contains('°')));
@@ -125,7 +139,9 @@ ELIZABETH. I could | easily forgive~ his pride°.
 ELIZABETH. (sarcastically:) How delightful.
 ''';
       final script = parser.parse(rawText);
-      final line = script.lines.firstWhere((l) => l.lineType == LineType.dialogue);
+      final line = script.lines.firstWhere(
+        (l) => l.lineType == LineType.dialogue,
+      );
       expect(line.stageDirection, 'sarcastically');
       expect(line.text, 'How delightful.');
     });
@@ -144,17 +160,90 @@ DARCY. Welcome to Netherfield.
       expect(script.scenes.length, greaterThanOrEqualTo(1));
     });
 
-    test('character aliases normalize names', () {
-      parser.characterAliases['LIZZY'] = 'ELIZABETH';
+    test('constructor-seeded character aliases normalize names', () {
+      final seededParser = ScriptParser(
+        characterAliases: const {'LIZZY': 'ELIZABETH'},
+      );
       const rawText = '''
 ELIZABETH. First line.
 
 LIZZY. Same character.
 ''';
-      final script = parser.parse(rawText);
+      final script = seededParser.parse(rawText);
       final chars = script.characters.map((c) => c.name).toSet();
       expect(chars, contains('ELIZABETH'));
       // LIZZY should have been normalized to ELIZABETH
+    });
+
+    test('reusing a parser cannot leak document-derived state', () {
+      const first = '''
+ELIZABETH. First line.
+ELIZABETH. Second line.
+LIZZY. OCR alias.
+''';
+      const second = '''
+LIZZY. A distinct actor in this unrelated play.
+DARCY. A second actor.
+''';
+
+      final reused = ScriptParser();
+      reused.parse(first, title: 'First');
+      final reusedSecond = reused.parse(second, title: 'Second');
+      final freshSecond = ScriptParser().parse(second, title: 'Second');
+
+      expect(
+        reusedSecond.lines
+            .map((line) => (line.character, line.text, line.lineType))
+            .toList(),
+        freshSecond.lines
+            .map((line) => (line.character, line.text, line.lineType))
+            .toList(),
+      );
+      expect(
+        reusedSecond.characters.map((character) => character.name).toList(),
+        freshSecond.characters.map((character) => character.name).toList(),
+      );
+      expect(reused.knownCharacters, isNot(contains('ELIZABETH')));
+    });
+
+    test('app-scoped import service isolates sequential documents', () async {
+      const first = '''
+ELIZABETH. First line.
+ELIZABETH. Second line.
+LIZZY. OCR alias.
+''';
+      const second = '''
+LIZZY. A distinct actor in this unrelated play.
+DARCY. A second actor.
+''';
+      final service = ScriptImportService();
+
+      await service.importFromText(first, title: 'First');
+      final reusedResult = await service.importFromText(
+        second,
+        title: 'Second',
+      );
+      final freshResult = await ScriptImportService().importFromText(
+        second,
+        title: 'Second',
+      );
+
+      expect(
+        reusedResult.lines.map(
+          (line) => (line.character, line.text, line.lineType),
+        ),
+        orderedEquals(
+          freshResult.lines.map(
+            (line) => (line.character, line.text, line.lineType),
+          ),
+        ),
+      );
+      expect(
+        reusedResult.characters.map((character) => character.name),
+        orderedEquals(
+          freshResult.characters.map((character) => character.name),
+        ),
+      );
     });
 
     test('characters sorted by line count descending', () {
@@ -181,25 +270,30 @@ ELIZABETH. She speaks.
 DARCY. He replies.
 ''';
       final script = parser.parse(rawText);
-      final elizabeth = script.characters.firstWhere((c) => c.name == 'ELIZABETH');
+      final elizabeth = script.characters.firstWhere(
+        (c) => c.name == 'ELIZABETH',
+      );
       final darcy = script.characters.firstWhere((c) => c.name == 'DARCY');
       expect(elizabeth.gender, CharacterGender.female);
       expect(darcy.gender, CharacterGender.male);
     });
 
-    test('title prefix characters skipped (MR, MRS are not standalone characters)', () {
-      const rawText = '''
+    test(
+      'title prefix characters skipped (MR, MRS are not standalone characters)',
+      () {
+        const rawText = '''
 MR. BENNET. I have the pleasure.
 MRS. BENNET. Oh my nerves!
 ''';
-      final script = parser.parse(rawText);
-      final charNames = script.characters.map((c) => c.name).toSet();
-      // MR and MRS should NOT appear as standalone characters
-      expect(charNames, isNot(contains('MR')));
-      expect(charNames, isNot(contains('MRS')));
-      expect(charNames, contains('MR. BENNET'));
-      expect(charNames, contains('MRS. BENNET'));
-    });
+        final script = parser.parse(rawText);
+        final charNames = script.characters.map((c) => c.name).toSet();
+        // MR and MRS should NOT appear as standalone characters
+        expect(charNames, isNot(contains('MR')));
+        expect(charNames, isNot(contains('MRS')));
+        expect(charNames, contains('MR. BENNET'));
+        expect(charNames, contains('MRS. BENNET'));
+      },
+    );
   });
 
   group('ScriptParser noise detection', () {
@@ -217,7 +311,9 @@ ELIZABETH. Before.
 DARCY. After.
 ''';
       final script = parser.parse(rawText);
-      final lines = script.lines.where((l) => l.lineType == LineType.dialogue).toList();
+      final lines = script.lines
+          .where((l) => l.lineType == LineType.dialogue)
+          .toList();
       expect(lines.length, 2);
     });
 
@@ -228,7 +324,9 @@ ELIZABETH. Before.
 DARCY. After.
 ''';
       final script = parser.parse(rawText);
-      final lines = script.lines.where((l) => l.lineType == LineType.dialogue).toList();
+      final lines = script.lines
+          .where((l) => l.lineType == LineType.dialogue)
+          .toList();
       expect(lines.length, 2);
     });
 
@@ -239,7 +337,9 @@ ELIZABETH. Real line.
 DARCY. Another real line.
 ''';
       final script = parser.parse(rawText);
-      final lines = script.lines.where((l) => l.lineType == LineType.dialogue).toList();
+      final lines = script.lines
+          .where((l) => l.lineType == LineType.dialogue)
+          .toList();
       expect(lines.length, 2);
     });
   });

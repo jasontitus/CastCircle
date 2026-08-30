@@ -250,7 +250,7 @@ packages:
     source: hosted
     version: "0.3.5+2"
   crypto:
-    dependency: transitive
+    dependency: "direct main"
     description:
       name: crypto
       sha256: c8ea0233063ba03258fbcf2ca4d6dadfefe14f02fab57702265467a19f27fadf
@@ -571,7 +571,7 @@ packages:
     source: hosted
     version: "2.0.2"
   http:
-    dependency: transitive
+    dependency: "direct dev"
     description:
       name: http
       sha256: "87721a4a50b19c7f1d49001e51409bddc46303966ce89a65af4f4e6004896412"
@@ -1397,7 +1397,7 @@ packages:
     source: hosted
     version: "1.4.1"
   supabase:
-    dependency: transitive
+    dependency: "direct dev"
     description:
       name: supabase
       sha256: ebae283b56df8a97491b8484aa34b60115c60bc612de24bd83b4918c85a14f31

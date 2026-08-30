@@ -1,136 +1,217 @@
 import 'dart:convert';
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
+import 'package:http/testing.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 
-/// Live test against the real Supabase REST API using raw HTTP.
-/// No Flutter plugins needed — runs on macOS.
-///
-/// Run with: flutter test test/supabase_join_test.dart
+import 'package:castcircle/data/services/supabase_service.dart';
+
 void main() {
+  const productionId = '11111111-1111-4111-8111-111111111111';
+  const memberId = '22222222-2222-4222-8222-222222222222';
 
-  // These tests hit the LIVE production Supabase: every run signs up a real
-  // throwaway account (polluting auth.users) and requires network. They are
-  // opt-in: RUN_SUPABASE_TESTS=1 flutter test --dart-define=RUN_SUPABASE_TESTS=1 ...
-  const optIn = bool.fromEnvironment('RUN_SUPABASE_TESTS') ||
-      String.fromEnvironment('RUN_SUPABASE_TESTS') == '1';
-  if (!optIn) {
-    test('skipped — live-Supabase tests are opt-in', () {
-      markTestSkipped('Set --dart-define=RUN_SUPABASE_TESTS=1 to run the '
-          'live join-flow tests against production Supabase.');
+  test(
+    'join lookup uses only the RPC and preserves the explicit contract',
+    () async {
+      final requests = <http.Request>[];
+      final service = _service((request) async {
+        requests.add(request);
+        expect(request.url.path, '/rest/v1/rpc/lookup_production_by_join_code');
+        expect(jsonDecode(request.body), {'lookup_code': 'ABC123'});
+        return _json({
+          'id': productionId,
+          'title': 'Seeded play',
+          'organizer_id': '33333333-3333-4333-8333-333333333333',
+          'join_code': 'ABC123',
+          'created_at': '2026-08-30T00:00:00Z',
+          'locale': 'en-US',
+          'voice_preset': 'warm_narrator',
+        });
+      });
+
+      final result = await service.lookupByJoinCode('abc123');
+
+      expect(result, isNotNull);
+      expect(result!.keys.toSet(), {
+        'id',
+        'title',
+        'organizer_id',
+        'join_code',
+        'created_at',
+        'locale',
+        'voice_preset',
+      });
+      expect(requests, hasLength(1));
+    },
+  );
+
+  test(
+    'invalid join code returns no production without a table fallback',
+    () async {
+      final paths = <String>[];
+      final service = _service((request) async {
+        paths.add(request.url.path);
+        return _json(null);
+      });
+
+      expect(await service.lookupByJoinCode('WRONG1'), isNull);
+      expect(paths, ['/rest/v1/rpc/lookup_production_by_join_code']);
+    },
+  );
+
+  test(
+    'authentication failure propagates without a direct lookup fallback',
+    () async {
+      final paths = <String>[];
+      final service = _service((request) async {
+        paths.add(request.url.path);
+        return _json({
+          'code': '42501',
+          'message': 'permission denied for function',
+        }, statusCode: 401);
+      });
+
+      await expectLater(service.lookupByJoinCode('ABC123'), throwsA(anything));
+      expect(paths, ['/rest/v1/rpc/lookup_production_by_join_code']);
+    },
+  );
+
+  test(
+    'pre-membership roster exposes is_claimed instead of user UUIDs',
+    () async {
+      final service = _service((request) async {
+        expect(request.url.path, '/rest/v1/rpc/fetch_cast_for_join');
+        return _json([
+          {
+            'id': memberId,
+            'character_name': 'Viola',
+            'role': 'actor',
+            'is_claimed': true,
+          },
+        ]);
+      });
+
+      final roster = await service.fetchCastMembers(
+        productionId,
+        joinCode: 'ABC123',
+      );
+
+      expect(roster.single.keys.toSet(), {
+        'id',
+        'character_name',
+        'role',
+        'is_claimed',
+      });
+      expect(roster.single['is_claimed'], isTrue);
+    },
+  );
+
+  test('member roster preserves full cast synchronization fields', () async {
+    final service = _service((request) async {
+      expect(jsonDecode(request.body), {'prod_id': productionId, 'code': ''});
+      return _json([
+        {
+          'id': memberId,
+          'production_id': productionId,
+          'character_name': 'Viola',
+          'display_name': 'Actor',
+          'role': 'actor',
+          'user_id': '99999999-9999-4999-8999-999999999999',
+          'contact_info': 'actor@example.test',
+          'invited_at': '2026-08-29T00:00:00Z',
+          'joined_at': '2026-08-30T00:00:00Z',
+          'is_claimed': true,
+        },
+      ]);
     });
-    return;
-  }
-  const supabaseUrl = 'https://vngpbmqymdaxxnvqptsk.supabase.co';
-  const anonKey = 'sb_publishable_f3YAIMI4GIEIPdDwnvfO3Q_stwSCxXI';
 
-  late String authToken;
+    final roster = await service.fetchCastMembers(productionId);
 
-  setUpAll(() async {
-    // Sign up a test user to get an auth token
-    final signUpResp = await http.post(
-      Uri.parse('$supabaseUrl/auth/v1/signup'),
-      headers: {
-        'apikey': anonKey,
-        'Content-Type': 'application/json',
-      },
-      body: jsonEncode({
-        'email':
-            'join_test_${DateTime.now().millisecondsSinceEpoch}@test.com',
-        'password': 'testtest123',
-      }),
-    );
-
-    final signUpData = jsonDecode(signUpResp.body);
-    authToken = signUpData['access_token'] as String? ?? anonKey;
-    print('Auth token length: ${authToken.length}');
+    expect(roster.single.keys.toSet(), {
+      'id',
+      'production_id',
+      'character_name',
+      'display_name',
+      'role',
+      'user_id',
+      'contact_info',
+      'invited_at',
+      'joined_at',
+      'is_claimed',
+    });
   });
 
-  Map<String, String> headers({bool authenticated = true}) => {
-        'apikey': anonKey,
-        'Authorization': 'Bearer ${authenticated ? authToken : anonKey}',
-        'Content-Type': 'application/json',
-      };
+  test(
+    'wrong-code invitation result fails and never attempts direct update',
+    () async {
+      final paths = <String>[];
+      final service = _service((request) async {
+        paths.add(request.url.path);
+        return _json('invalid_code');
+      });
 
-  test('RPC lookup_production_by_join_code with DHT6XT', () async {
-    final resp = await http.post(
-      Uri.parse('$supabaseUrl/rest/v1/rpc/lookup_production_by_join_code'),
-      headers: headers(),
-      body: jsonEncode({'lookup_code': 'DHT6XT'}),
-    );
+      await expectLater(
+        service.claimInvitation(castMemberId: memberId, joinCode: 'WRONG1'),
+        throwsA(isA<StateError>()),
+      );
+      expect(paths, ['/rest/v1/rpc/claim_cast_invitation']);
+    },
+  );
 
-    print('Status: ${resp.statusCode}');
-    print('Body: ${resp.body}');
+  test('claimed invitation succeeds only on explicit claimed result', () async {
+    final service = _service((request) async => _json('claimed'));
 
-    expect(resp.statusCode, 200);
-
-    final result = jsonDecode(resp.body);
-    print('Decoded type: ${result.runtimeType}');
-    print('Is Map: ${result is Map}');
-
-    expect(result, isA<Map>());
-    expect(result['title'], 'Macbeth');
-    expect(result['join_code'], 'DHT6XT');
+    await service.claimInvitation(castMemberId: memberId, joinCode: 'ABC123');
   });
 
-  test('RPC fetch_cast_for_join', () async {
-    // Get production ID first
-    final lookupResp = await http.post(
-      Uri.parse('$supabaseUrl/rest/v1/rpc/lookup_production_by_join_code'),
-      headers: headers(),
-      body: jsonEncode({'lookup_code': 'DHT6XT'}),
-    );
-    final prod = jsonDecode(lookupResp.body);
-    final prodId = prod['id'] as String;
+  test(
+    'join RPC failure propagates without direct cast_members insert',
+    () async {
+      final paths = <String>[];
+      final service = _service((request) async {
+        paths.add(request.url.path);
+        return _json({
+          'code': 'P0001',
+          'message': 'Invalid join code for this production',
+        }, statusCode: 400);
+      });
 
-    final castResp = await http.post(
-      Uri.parse('$supabaseUrl/rest/v1/rpc/fetch_cast_for_join'),
-      headers: headers(),
-      body: jsonEncode({'prod_id': prodId}),
-    );
-
-    print('Cast status: ${castResp.statusCode}');
-    print('Cast body: ${castResp.body}');
-    expect(castResp.statusCode, 200);
-  });
-
-  test('Direct query with authenticated user', () async {
-    final resp = await http.get(
-      Uri.parse(
-          '$supabaseUrl/rest/v1/productions?join_code=eq.DHT6XT&select=id,title,join_code'),
-      headers: headers(),
-    );
-
-    print('Direct status: ${resp.statusCode}');
-    print('Direct body: ${resp.body}');
-
-    final result = jsonDecode(resp.body);
-    print('Direct type: ${result.runtimeType}');
-    print('Direct length: ${result is List ? result.length : "not a list"}');
-  });
-
-  test('Simulate what supabase_flutter rpc() does', () async {
-    // supabase_flutter's rpc() calls PostgREST /rest/v1/rpc/<name>
-    // and parses the response. Let's see what type it would be.
-    final resp = await http.post(
-      Uri.parse('$supabaseUrl/rest/v1/rpc/lookup_production_by_join_code'),
-      headers: headers(),
-      body: jsonEncode({'lookup_code': 'DHT6XT'}),
-    );
-
-    final decoded = jsonDecode(resp.body);
-
-    // This is what supabase_flutter returns from rpc()
-    print('');
-    print('=== What the app sees ===');
-    print('Type: ${decoded.runtimeType}');
-    print('is Map: ${decoded is Map}');
-    print('is Map<String, dynamic>: ${decoded is Map<String, dynamic>}');
-    print('is List: ${decoded is List}');
-
-    if (decoded is Map) {
-      final cast = Map<String, dynamic>.from(decoded);
-      print('Successfully cast to Map<String, dynamic>');
-      print('Title: ${cast["title"]}');
-    }
-  });
+      await expectLater(
+        service.selfJoinProduction(
+          productionId: productionId,
+          characterName: 'Viola',
+          displayName: 'Actor',
+          joinCode: 'WRONG1',
+        ),
+        throwsA(anything),
+      );
+      expect(paths, ['/rest/v1/rpc/join_production']);
+    },
+  );
 }
+
+SupabaseService _service(
+  Future<http.Response> Function(http.Request request) handler,
+) {
+  final client = SupabaseClient(
+    'http://127.0.0.1:54321',
+    'local-test-key',
+    httpClient: MockClient((request) async {
+      final response = await handler(request);
+      return http.Response.bytes(
+        response.bodyBytes,
+        response.statusCode,
+        headers: response.headers,
+        request: request,
+      );
+    }),
+  );
+  return SupabaseService.forTesting(client);
+}
+
+http.Response _json(Object? body, {int statusCode = 200}) => http.Response(
+  jsonEncode(body),
+  statusCode,
+  headers: {'content-type': 'application/json'},
+);

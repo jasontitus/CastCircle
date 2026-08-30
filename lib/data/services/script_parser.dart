@@ -27,6 +27,23 @@ enum ScriptFormat {
 ///
 /// The organizer can always manually split/merge scenes in the editor.
 class ScriptParser {
+  ScriptParser({
+    Set<String> knownCharacters = const {},
+    Map<String, String> characterAliases = const {},
+    Map<String, List<String>> multiCharacterMap = const {},
+  }) : _seedKnownCharacters = Set.unmodifiable(knownCharacters),
+       _seedCharacterAliases = Map.unmodifiable(characterAliases),
+       _seedMultiCharacterMap = Map.unmodifiable({
+         for (final entry in multiCharacterMap.entries)
+           entry.key: List.unmodifiable(entry.value),
+       }) {
+    _resetDocumentState();
+  }
+
+  final Set<String> _seedKnownCharacters;
+  final Map<String, String> _seedCharacterAliases;
+  final Map<String, List<String>> _seedMultiCharacterMap;
+
   /// Known characters — populated during parsing from detected names,
   /// or pre-seeded by the organizer.
   final Set<String> knownCharacters = {};
@@ -72,8 +89,12 @@ class ScriptParser {
 
   // Noise patterns (page headers, footers, OCR artifacts)
   static final List<RegExp> _noisePatterns = [
-    RegExp(r'^\d+\s+\w+(\s+\w+){0,4}$'), // "12 Author Name" (page num + short text)
-    RegExp(r'^\w+(\s+\w+){0,4}\s+\d+$'), // "Author Name 12" (short text + page num)
+    RegExp(
+      r'^\d+\s+\w+(\s+\w+){0,4}$',
+    ), // "12 Author Name" (page num + short text)
+    RegExp(
+      r'^\w+(\s+\w+){0,4}\s+\d+$',
+    ), // "Author Name 12" (short text + page num)
     RegExp(r'^\d+$'), // bare page numbers
     RegExp(r'^[|}\s]+$'), // OCR artifacts
     RegExp(r'^\$[A-Za-z\s]+$'), // OCR noise
@@ -82,7 +103,10 @@ class ScriptParser {
     // Title-page / front-matter publishing credits — never dialogue.
     RegExp(r'^adapted by\b', caseSensitive: false),
     RegExp(r'^from the novel by\b', caseSensitive: false),
-    RegExp(r'\bjon jory\b', caseSensitive: false), // adapter credit, drop anywhere
+    RegExp(
+      r'\bjon jory\b',
+      caseSensitive: false,
+    ), // adapter credit, drop anywhere
   ];
 
   /// Patterns that indicate a scene transition in stage directions.
@@ -113,8 +137,33 @@ class ScriptParser {
     (pattern: r'Lady\s+Catherine', location: "Lady Catherine's"),
   ];
 
+  void _resetDocumentState() {
+    knownCharacters
+      ..clear()
+      ..addAll(_seedKnownCharacters);
+    characterAliases
+      ..clear()
+      ..addAll(_seedCharacterAliases);
+    multiCharacterMap
+      ..clear()
+      ..addAll({
+        for (final entry in _seedMultiCharacterMap.entries)
+          entry.key: List.of(entry.value),
+      });
+    _titleHeaders.clear();
+    _headerScrubPatterns.clear();
+    _format = ScriptFormat.standard;
+    _cuePatterns = null;
+    _cuePatternsCharCount = -1;
+    _cuePatternsFormat = null;
+  }
+
   /// Parse raw text into a [ParsedScript] with scenes.
   ParsedScript parse(String rawText, {String title = 'Untitled'}) {
+    // Every parse is a separate document. The service is app-scoped, so any
+    // detected aliases, joint cues, or running headers from the prior import
+    // must be discarded before this document influences detection.
+    _resetDocumentState();
     // Strip Project Gutenberg preamble/postamble if present
     rawText = _stripGutenbergWrapper(rawText);
 
@@ -166,8 +215,7 @@ class ScriptParser {
             charCounts[char] = (charCounts[char] ?? 0) + 1;
           }
         } else {
-          charCounts[line.character] =
-              (charCounts[line.character] ?? 0) + 1;
+          charCounts[line.character] = (charCounts[line.character] ?? 0) + 1;
         }
       }
     }
@@ -177,12 +225,14 @@ class ScriptParser {
     for (final entry
         in charCounts.entries.toList()
           ..sort((a, b) => b.value.compareTo(a.value))) {
-      characters.add(ScriptCharacter(
-        name: entry.key,
-        colorIndex: colorIdx++,
-        lineCount: entry.value,
-        gender: inferGender(entry.key, rawText: rawText),
-      ));
+      characters.add(
+        ScriptCharacter(
+          name: entry.key,
+          colorIndex: colorIdx++,
+          lineCount: entry.value,
+          gender: inferGender(entry.key, rawText: rawText),
+        ),
+      );
     }
 
     return ParsedScript(
@@ -265,9 +315,9 @@ class ScriptParser {
       if (t.startsWith('(') || t.startsWith('[')) continue; // direction
       if (RegExp(r'[.!?]$').hasMatch(t)) continue; // dialogue/refrain
       if (RegExp(
-              r'^(ACT|SCENE|ENTER|EXIT|EXEUNT|RE-ENTER|FLOURISH|ALARUM|SONG|MUSIC)\b',
-              caseSensitive: false)
-          .hasMatch(t)) {
+        r'^(ACT|SCENE|ENTER|EXIT|EXEUNT|RE-ENTER|FLOURISH|ALARUM|SONG|MUSIC)\b',
+        caseSensitive: false,
+      ).hasMatch(t)) {
         continue; // structure / unparenthesized stage business
       }
       if (t.endsWith(':') || t.endsWith('.')) continue; // cue-ish
@@ -277,7 +327,8 @@ class ScriptParser {
       if (_detectCharacterCue(t) != null) continue;
       final hasAdjacentDigits = RegExp(r'^\d+\s+|\s+\d+$').hasMatch(t);
       final norm = _normalizeForHeader(
-          t.replaceAll(RegExp(r'^\d+\s+|\s+\d+$'), ''));
+        t.replaceAll(RegExp(r'^\d+\s+|\s+\d+$'), ''),
+      );
       if (norm.length < 8 || !norm.contains(' ')) continue;
       counts[norm] = (counts[norm] ?? 0) + 1;
       rawForm[norm] ??= t.replaceAll(RegExp(r'^\d+\s+|\s+\d+$'), '').trim();
@@ -307,14 +358,17 @@ class ScriptParser {
     // detector doesn't parse) and Tempest's "Enter Ariel, and others"
     // (unparenthesized direction) both passed the shape rules — page-number
     // evidence is what neither had.
-    final candidates = counts.entries
-        .where((e) =>
-            e.value >= 3 &&
-            !isCharacterName(e.key) &&
-            documentWideSpread(e.key) &&
-            pageEvidence.contains(e.key))
-        .toList()
-      ..sort((a, b) => b.value.compareTo(a.value));
+    final candidates =
+        counts.entries
+            .where(
+              (e) =>
+                  e.value >= 3 &&
+                  !isCharacterName(e.key) &&
+                  documentWideSpread(e.key) &&
+                  pageEvidence.contains(e.key),
+            )
+            .toList()
+          ..sort((a, b) => b.value.compareTo(a.value));
     for (final e in candidates.take(3)) {
       _titleHeaders.add(e.key);
     }
@@ -341,8 +395,7 @@ class ScriptParser {
       final raw = rawForm[norm];
       if (raw == null || raw.isEmpty) continue;
       final words = raw.split(RegExp(r'\s+')).map(RegExp.escape).join(r'\s+');
-      _headerScrubPatterns
-          .add(RegExp('(\\d{1,4}\\s+)?$words(\\s+\\d{1,4})?'));
+      _headerScrubPatterns.add(RegExp('(\\d{1,4}\\s+)?$words(\\s+\\d{1,4})?'));
     }
   }
 
@@ -353,9 +406,7 @@ class ScriptParser {
     for (final re in _headerScrubPatterns) {
       out = out.replaceAll(re, ' ');
     }
-    return out == line
-        ? line
-        : out.replaceAll(RegExp(r'\s+'), ' ').trim();
+    return out == line ? line : out.replaceAll(RegExp(r'\s+'), ' ').trim();
   }
 
   /// Role words that ARE the whole character name in most plays — "KING",
@@ -365,24 +416,75 @@ class ScriptParser {
   /// Hamlet's KING and POLONIUS were being read in a woman's voice, which is
   /// how this was noticed.
   static const _maleRoles = {
-    'KING', 'PRINCE', 'DUKE', 'COUNT', 'EARL', 'BARON', 'EMPEROR',
-    'FATHER', 'SON', 'BROTHER', 'HUSBAND', 'WIDOWER', 'BOY', 'MAN',
-    'GENTLEMAN', 'SOLDIER', 'SERVANT_MALE', 'PRIEST', 'FRIAR', 'MONK',
-    'SQUIRE', 'KNIGHT', 'PAGE', 'GROOM', 'WAITER', 'BUTLER', 'FOOTMAN',
-    'HUNTSMAN', 'SHEPHERD', 'FISHERMAN', 'SAILOR', 'CAPTAIN', 'COLONEL',
-    'MAJOR', 'SERGEANT', 'CONSTABLE', 'INSPECTOR', 'DOCTOR_MALE',
+    'KING',
+    'PRINCE',
+    'DUKE',
+    'COUNT',
+    'EARL',
+    'BARON',
+    'EMPEROR',
+    'FATHER',
+    'SON',
+    'BROTHER',
+    'HUSBAND',
+    'WIDOWER',
+    'BOY',
+    'MAN',
+    'GENTLEMAN',
+    'SOLDIER',
+    'SERVANT_MALE',
+    'PRIEST',
+    'FRIAR',
+    'MONK',
+    'SQUIRE',
+    'KNIGHT',
+    'PAGE',
+    'GROOM',
+    'WAITER',
+    'BUTLER',
+    'FOOTMAN',
+    'HUNTSMAN',
+    'SHEPHERD',
+    'FISHERMAN',
+    'SAILOR',
+    'CAPTAIN',
+    'COLONEL',
+    'MAJOR',
+    'SERGEANT',
+    'CONSTABLE',
+    'INSPECTOR',
+    'DOCTOR_MALE',
   };
   static const _femaleRoles = {
-    'QUEEN', 'PRINCESS', 'DUCHESS', 'COUNTESS', 'EMPRESS', 'LADY',
-    'MOTHER', 'DAUGHTER', 'SISTER', 'WIFE', 'WIDOW', 'GIRL', 'WOMAN',
-    'GENTLEWOMAN', 'NURSE', 'MAID', 'MAIDSERVANT', 'HOUSEKEEPER',
-    'GOVERNESS', 'WAITRESS', 'ABBESS', 'NUN',
+    'QUEEN',
+    'PRINCESS',
+    'DUCHESS',
+    'COUNTESS',
+    'EMPRESS',
+    'LADY',
+    'MOTHER',
+    'DAUGHTER',
+    'SISTER',
+    'WIFE',
+    'WIDOW',
+    'GIRL',
+    'WOMAN',
+    'GENTLEWOMAN',
+    'NURSE',
+    'MAID',
+    'MAIDSERVANT',
+    'HOUSEKEEPER',
+    'GOVERNESS',
+    'WAITRESS',
+    'ABBESS',
+    'NUN',
   };
 
   /// Strip the decorations that wrap a role word in a cast list — "THE KING",
   /// "FIRST SOLDIER", "OLD MAN", "SECOND WOMAN", "KING 2".
   static final _roleDecorationRe = RegExp(
-      r'^(THE|A|AN|FIRST|SECOND|THIRD|FOURTH|1ST|2ND|3RD|4TH|OLD|YOUNG)\s+');
+    r'^(THE|A|AN|FIRST|SECOND|THIRD|FOURTH|1ST|2ND|3RD|4TH|OLD|YOUNG)\s+',
+  );
   static final _trailingIndexRe = RegExp(r'\s*[0-9IVX]+$');
 
   static String _roleCore(String upper) {
@@ -408,23 +510,37 @@ class ScriptParser {
     if (_maleRoles.contains(core)) return CharacterGender.male;
     if (_femaleRoles.contains(core)) return CharacterGender.female;
     // Male titles
-    if (upper.startsWith('MR ') || upper.startsWith('MR. ') ||
-        upper.startsWith('SIR ') || upper.startsWith('LORD ') ||
-        upper.startsWith('COLONEL ') || upper.startsWith('CAPTAIN ') ||
-        upper.startsWith('KING ') || upper.startsWith('PRINCE ') ||
-        upper.startsWith('DUKE ') || upper.startsWith('COUNT ') ||
-        upper.startsWith('REV ') || upper.startsWith('REV. ') ||
-        upper.startsWith('DR ') || upper.startsWith('DR. ') ||
-        upper.startsWith('FATHER ') || upper.startsWith('BROTHER ')) {
+    if (upper.startsWith('MR ') ||
+        upper.startsWith('MR. ') ||
+        upper.startsWith('SIR ') ||
+        upper.startsWith('LORD ') ||
+        upper.startsWith('COLONEL ') ||
+        upper.startsWith('CAPTAIN ') ||
+        upper.startsWith('KING ') ||
+        upper.startsWith('PRINCE ') ||
+        upper.startsWith('DUKE ') ||
+        upper.startsWith('COUNT ') ||
+        upper.startsWith('REV ') ||
+        upper.startsWith('REV. ') ||
+        upper.startsWith('DR ') ||
+        upper.startsWith('DR. ') ||
+        upper.startsWith('FATHER ') ||
+        upper.startsWith('BROTHER ')) {
       return CharacterGender.male;
     }
     // Female titles
-    if (upper.startsWith('MRS ') || upper.startsWith('MRS. ') ||
-        upper.startsWith('MS ') || upper.startsWith('MS. ') ||
-        upper.startsWith('MISS ') || upper.startsWith('LADY ') ||
-        upper.startsWith('QUEEN ') || upper.startsWith('PRINCESS ') ||
-        upper.startsWith('DUCHESS ') || upper.startsWith('COUNTESS ') ||
-        upper.startsWith('MOTHER ') || upper.startsWith('SISTER ')) {
+    if (upper.startsWith('MRS ') ||
+        upper.startsWith('MRS. ') ||
+        upper.startsWith('MS ') ||
+        upper.startsWith('MS. ') ||
+        upper.startsWith('MISS ') ||
+        upper.startsWith('LADY ') ||
+        upper.startsWith('QUEEN ') ||
+        upper.startsWith('PRINCESS ') ||
+        upper.startsWith('DUCHESS ') ||
+        upper.startsWith('COUNTESS ') ||
+        upper.startsWith('MOTHER ') ||
+        upper.startsWith('SISTER ')) {
       return CharacterGender.female;
     }
     return null;
@@ -435,17 +551,12 @@ class ScriptParser {
   ///   DARCY. (He crosses...)  → male
   ///   ELIZABETH. (She turns...) → female
   /// Returns null if no pronoun context found.
-  static CharacterGender? _inferGenderFromContext(
-      String name, String rawText) {
+  static CharacterGender? _inferGenderFromContext(String name, String rawText) {
     final escaped = RegExp.escape(name);
     // Only match pronouns INSIDE parentheses (stage directions), not dialogue.
     // Pattern: CHARNAME. (... he/she ...)
-    final malePattern = RegExp(
-      '$escaped\\.\\s*\\([^)]*\\b[Hh]e\\b[^)]*\\)',
-    );
-    final femalePattern = RegExp(
-      '$escaped\\.\\s*\\([^)]*\\b[Ss]he\\b[^)]*\\)',
-    );
+    final malePattern = RegExp('$escaped\\.\\s*\\([^)]*\\b[Hh]e\\b[^)]*\\)');
+    final femalePattern = RegExp('$escaped\\.\\s*\\([^)]*\\b[Ss]he\\b[^)]*\\)');
 
     final maleCount = malePattern.allMatches(rawText).length;
     final femaleCount = femalePattern.allMatches(rawText).length;
@@ -492,7 +603,12 @@ class ScriptParser {
     'ORLANDO', 'TOBY', 'ANDREW', 'MALVOLIO', 'SIMON', 'RALPH',
     'ROGER', 'JOSEPH', 'DANIEL', 'PHILIP', 'FRANK', 'ALFIE',
     'ARCHIE', 'ALBERT', 'ALFRED', 'FREDERICK', 'LEONARD', 'POLONIUS',
-    'BARNARDO', 'BERNARDO', 'MARCELLUS', 'FRANCISCO', 'ROSENCRANTZ', 'GUILDENSTERN',
+    'BARNARDO',
+    'BERNARDO',
+    'MARCELLUS',
+    'FRANCISCO',
+    'ROSENCRANTZ',
+    'GUILDENSTERN',
     'FORTINBRAS', 'OSRIC', 'VOLTEMAND', 'CORNELIUS', 'REYNALDO', 'LUCIANUS',
     'MERCUTIO', 'TYBALT', 'BENVOLIO', 'CAPULET', 'MONTAGUE', 'ESCALUS',
     'PARIS', 'BALTHASAR', 'GRATIANO', 'BASSANIO', 'LORENZO', 'LAUNCELOT',
@@ -531,7 +647,13 @@ class ScriptParser {
   /// These get captured by the regex when it backtracks on cast list entries
   /// like "MR. BENNET" (no trailing `. dialogue`).
   static const _titlePrefixes = {
-    'MR', 'MRS', 'MS', 'DR', 'MISS', 'REV', 'PROF',
+    'MR',
+    'MRS',
+    'MS',
+    'DR',
+    'MISS',
+    'REV',
+    'PROF',
   };
 
   /// Detect character names from the raw text.
@@ -612,16 +734,36 @@ class ScriptParser {
   /// Check if an ALL-CAPS name is actually a stage direction or header.
   static bool _isStageDirectionOrHeader(String name) {
     const skip = {
-      'ACT', 'SCENE', 'ENTER', 'EXIT', 'EXEUNT', 'ALARUM', 'ALARUMS',
-      'FLOURISH', 'THUNDER', 'LIGHTNING', 'FRONT MATTER', 'CONTENTS',
-      'SYNOPSIS', 'CHARACTERS IN THE PLAY', 'TEXTUAL INTRODUCTION',
-      'THE TRAGEDY OF MACBETH', 'THE END', 'FINIS',
-      'ACT 1', 'ACT 2', 'ACT 3', 'ACT 4', 'ACT 5',
+      'ACT',
+      'SCENE',
+      'ENTER',
+      'EXIT',
+      'EXEUNT',
+      'ALARUM',
+      'ALARUMS',
+      'FLOURISH',
+      'THUNDER',
+      'LIGHTNING',
+      'FRONT MATTER',
+      'CONTENTS',
+      'SYNOPSIS',
+      'CHARACTERS IN THE PLAY',
+      'TEXTUAL INTRODUCTION',
+      'THE TRAGEDY OF MACBETH',
+      'THE END',
+      'FINIS',
+      'ACT 1',
+      'ACT 2',
+      'ACT 3',
+      'ACT 4',
+      'ACT 5',
     };
     if (skip.contains(name)) return true;
     // Skip if it starts with Enter/Exit/Exeunt
-    if (name.startsWith('ENTER') || name.startsWith('EXIT') ||
-        name.startsWith('EXEUNT')) return true;
+    if (name.startsWith('ENTER') ||
+        name.startsWith('EXIT') ||
+        name.startsWith('EXEUNT'))
+      return true;
     return false;
   }
 
@@ -630,10 +772,7 @@ class ScriptParser {
   /// to filter noise; for small inputs, 1 occurrence is enough since
   /// format detection already confirmed title-case style.
   void _detectCharactersTitleCase(String rawText) {
-    final pattern = RegExp(
-      r'^\s*([A-Z][a-z]+)\.\s',
-      multiLine: true,
-    );
+    final pattern = RegExp(r'^\s*([A-Z][a-z]+)\.\s', multiLine: true);
     final counts = <String, int>{};
     for (final match in pattern.allMatches(rawText)) {
       final name = match.group(1)!.toUpperCase();
@@ -647,8 +786,10 @@ class ScriptParser {
       if (entry.value >= minOccurrences) {
         final name = entry.key;
         if (name.length < 2 || name.length > 50) continue;
-        if (RegExp(r'^(ACT|SCENE|SETTING|NOTE|PRODUCTION|ACTUS|SCENA|SCOENA)\b')
-            .hasMatch(name)) continue;
+        if (RegExp(
+          r'^(ACT|SCENE|SETTING|NOTE|PRODUCTION|ACTUS|SCENA|SCOENA)\b',
+        ).hasMatch(name))
+          continue;
         knownCharacters.add(name);
       }
     }
@@ -671,8 +812,10 @@ class ScriptParser {
     // Reject names that contain ". " followed by more text (e.g. "JANE. MI",
     // "ELIZABETH. E") — these are broken character cue + dialogue fragments
     if (RegExp(r'\.\s+[A-Z]').hasMatch(name) &&
-        !name.startsWith('MR') && !name.startsWith('MRS') &&
-        !name.startsWith('DR') && !name.startsWith('ST.') &&
+        !name.startsWith('MR') &&
+        !name.startsWith('MRS') &&
+        !name.startsWith('DR') &&
+        !name.startsWith('ST.') &&
         !name.startsWith('SIR')) {
       return;
     }
@@ -696,8 +839,9 @@ class ScriptParser {
   /// Strip Project Gutenberg preamble (before "*** START OF") and
   /// postamble (after "*** END OF") if present.
   static String _stripGutenbergWrapper(String text) {
-    final startMatch =
-        RegExp(r'\*\*\* ?START OF .+\*\*\*.*\n').firstMatch(text);
+    final startMatch = RegExp(
+      r'\*\*\* ?START OF .+\*\*\*.*\n',
+    ).firstMatch(text);
     if (startMatch != null) {
       text = text.substring(startMatch.end);
     }
@@ -749,14 +893,15 @@ class ScriptParser {
   static ScriptFormat _detectFormat(String rawText) {
     // Count lines matching each pattern
     // "NAME. dialogue" or "NAME: dialogue" or "NAME:"
-    final standardCount = RegExp(
-      r'^[A-Z][A-Z. ,]+[.:] \S',
-      multiLine: true,
-    ).allMatches(rawText).length +
-    RegExp(
-      r'^[A-Z][A-Z ]+:\s*$',
-      multiLine: true,
-    ).allMatches(rawText).length;
+    final standardCount =
+        RegExp(
+          r'^[A-Z][A-Z. ,]+[.:] \S',
+          multiLine: true,
+        ).allMatches(rawText).length +
+        RegExp(
+          r'^[A-Z][A-Z ]+:\s*$',
+          multiLine: true,
+        ).allMatches(rawText).length;
 
     final ownLineCount = RegExp(
       r'^[A-Z][A-Z. ]+\.?\s*$',
@@ -820,19 +965,37 @@ class ScriptParser {
     final toRemove = <String>{};
     final toAlias = <String, String>{};
 
-    // Count how often each character name appears as a cue in the raw text
-    final counts = <String, int>{};
-    for (final name in knownCharacters) {
-      final escaped = RegExp.escape(name);
-      counts[name] = RegExp('^$escaped\\.\\s', multiLine: true)
-          .allMatches(rawText)
-          .length;
+    // Count cues in one raw-text pass. Compiling/scanning one multiline regex
+    // per candidate made this O(characterCount × scriptLength).
+    final counts = {for (final name in knownCharacters) name: 0};
+    for (final rawLine in rawText.split('\n')) {
+      final line = rawLine.trim();
+      if (line.isEmpty) continue;
+      var searchStart = 0;
+      while (searchStart < line.length) {
+        final delimiter = line.indexOf('. ', searchStart);
+        if (delimiter < 0) break;
+        final candidate = line.substring(0, delimiter).trim();
+        if (counts.containsKey(candidate)) {
+          counts[candidate] = counts[candidate]! + 1;
+          break;
+        }
+        searchStart = delimiter + 2;
+      }
+      if (line.endsWith('.')) {
+        final ownLineCandidate = line.substring(0, line.length - 1).trim();
+        if (counts.containsKey(ownLineCandidate)) {
+          counts[ownLineCandidate] = counts[ownLineCandidate]! + 1;
+        }
+      }
     }
 
     for (final name in knownCharacters) {
       // 1. Strip trailing punctuation/dots from names ("LYDIA. .." → "LYDIA")
       final cleaned = name.replaceAll(RegExp(r'[.\s]+$'), '').trim();
-      if (cleaned != name && cleaned.isNotEmpty && knownCharacters.contains(cleaned)) {
+      if (cleaned != name &&
+          cleaned.isNotEmpty &&
+          knownCharacters.contains(cleaned)) {
         toAlias[name] = cleaned;
         toRemove.add(name);
         continue;
@@ -852,6 +1015,15 @@ class ScriptParser {
     // taking the first in set-iteration order sent "MRS, BENNET" (distance 1
     // from MRS. BENNET) to MR. BENNET (distance 2), swapping the speakers.
     final nameList = knownCharacters.toList();
+    // SymSpell-style deletion signatures give each rare cue a bounded set of
+    // plausible neighbors instead of comparing every character with every
+    // other character. Exact edit distance still decides the winner.
+    final fuzzyIndex = <String, Set<String>>{};
+    for (final candidate in nameList) {
+      for (final signature in _deletionSignatures(candidate, 3)) {
+        (fuzzyIndex[signature] ??= <String>{}).add(candidate);
+      }
+    }
     for (final name in nameList) {
       if (toRemove.contains(name)) continue;
       final nameCount = counts[name] ?? 0;
@@ -867,10 +1039,15 @@ class ScriptParser {
       String? best;
       var bestDist = maxDist + 1;
       var bestCount = -1;
-      for (final candidate in nameList) {
+      final candidatePool = <String>{};
+      for (final signature in _deletionSignatures(name, maxDist)) {
+        candidatePool.addAll(fuzzyIndex[signature] ?? const <String>{});
+      }
+      for (final candidate in candidatePool) {
         if (candidate == name || toRemove.contains(candidate)) continue;
         final candidateCount = counts[candidate] ?? 0;
-        if (candidateCount <= nameCount) continue; // Merge INTO more common name
+        if (candidateCount <= nameCount)
+          continue; // Merge INTO more common name
 
         // MR. BENNET and MRS. BENNET are edit-distance 1 but are two PEOPLE —
         // never fuzzy-merge names that differ only in their title.
@@ -879,7 +1056,7 @@ class ScriptParser {
         // real-but-rare characters from vanishing into lookalikes (ANNE→JANE).
         if (name[0] != candidate[0]) continue;
 
-        final dist = _editDistance(name, candidate);
+        final dist = _editDistanceWithin(name, candidate, maxDist);
         if (dist == 0 || dist > maxDist) continue;
         if (dist < bestDist ||
             (dist == bestDist && candidateCount > bestCount)) {
@@ -927,18 +1104,22 @@ class ScriptParser {
   /// 1. Prefix merging among known character names (POL→POLON, BAR→BARN)
   /// 2. Full names extracted from Enter/Exit stage directions
   void _resolveTitleCaseAbbreviations(String rawText) {
-    // 1. Prefix merging: merge shorter names into longer ones
+    // 1. Prefix merging: index every prefix once. In descending length order
+    // putIfAbsent preserves the old rule that the longest expansion wins.
     final byLength = knownCharacters.toList()
       ..sort((a, b) => b.length.compareTo(a.length));
-    for (var i = 0; i < byLength.length; i++) {
-      final longer = byLength[i];
+    final longestByPrefix = <String, String>{};
+    for (final longer in byLength) {
       if (characterAliases.containsKey(longer)) continue;
-      for (var j = i + 1; j < byLength.length; j++) {
-        final shorter = byLength[j];
-        if (characterAliases.containsKey(shorter)) continue;
-        if (longer.startsWith(shorter) && shorter.length >= 2) {
-          characterAliases[shorter] = longer;
-        }
+      for (var length = 2; length < longer.length; length++) {
+        longestByPrefix.putIfAbsent(longer.substring(0, length), () => longer);
+      }
+    }
+    for (final shorter in byLength) {
+      if (characterAliases.containsKey(shorter)) continue;
+      final longer = longestByPrefix[shorter];
+      if (longer != null && longer != shorter) {
+        characterAliases[shorter] = longer;
       }
     }
 
@@ -950,34 +1131,25 @@ class ScriptParser {
     final fullNames = <String>{};
     for (final match in enterPattern.allMatches(rawText)) {
       final text = match.group(1)!;
-      for (final word
-          in RegExp(r'\b([A-Z][a-z]{2,})\b').allMatches(text)) {
+      for (final word in RegExp(r'\b([A-Z][a-z]{2,})\b').allMatches(text)) {
         fullNames.add(word.group(1)!.toUpperCase());
       }
     }
 
-    // Map abbreviated character names → full names from stage directions
-    for (final abbrev in knownCharacters.toList()) {
-      if (characterAliases.containsKey(abbrev)) {
-        // Already aliased by prefix merging — check if the alias target
-        // itself can be resolved further
-        final current = characterAliases[abbrev]!;
-        for (final full in fullNames) {
-          if (full.startsWith(current) && full.length > current.length) {
-            characterAliases[current] = full;
-            knownCharacters.add(full);
-            break;
-          }
-        }
-      } else {
-        for (final full in fullNames) {
-          if (full.startsWith(abbrev) && full.length > abbrev.length) {
-            characterAliases[abbrev] = full;
-            knownCharacters.add(full);
-            break;
-          }
-        }
+    // Map prefixes once so resolving K cues is O(K + total full-name length),
+    // rather than scanning every stage-direction name for every cue.
+    final fullByPrefix = <String, String>{};
+    for (final full in fullNames) {
+      for (var length = 2; length < full.length; length++) {
+        fullByPrefix.putIfAbsent(full.substring(0, length), () => full);
       }
+    }
+    for (final abbrev in knownCharacters.toList()) {
+      final current = characterAliases[abbrev] ?? abbrev;
+      final full = fullByPrefix[current];
+      if (full == null || full.length <= current.length) continue;
+      characterAliases[current] = full;
+      knownCharacters.add(full);
     }
   }
 
@@ -1004,9 +1176,10 @@ class ScriptParser {
       final glued = _tryGluedMultiCharacterSplit(name);
       if (glued != null) {
         final escaped = RegExp.escape(name);
-        final count = RegExp('^$escaped\\.\\s', multiLine: true)
-            .allMatches(rawText)
-            .length;
+        final count = RegExp(
+          '^$escaped\\.\\s',
+          multiLine: true,
+        ).allMatches(rawText).length;
         if (count <= 2) {
           multiCharacterMap[name] = glued;
           for (final part in glued) {
@@ -1048,13 +1221,15 @@ class ScriptParser {
       for (final win in [k.length, k.length - 1]) {
         if (win + 3 > s.length) continue;
         final suffix = s.substring(s.length - win);
-        final dist = _editDistance(suffix, k);
+        final dist = _editDistanceWithin(suffix, k, 1);
         if (dist > 1) continue;
         final prefix = s.substring(0, s.length - win);
         if (prefix.length < 3 || _titlePrefixes.contains(prefix)) continue;
-        final prefixIsKnown = knownCharacters
-            .any((c) => c.replaceAll(RegExp(r'[^A-Z]'), '') == prefix);
-        final better = dist < bestDist ||
+        final prefixIsKnown = knownCharacters.any(
+          (c) => c.replaceAll(RegExp(r'[^A-Z]'), '') == prefix,
+        );
+        final better =
+            dist < bestDist ||
             (dist == bestDist &&
                 ((prefixIsKnown && !bestPrefixKnown) ||
                     (prefixIsKnown == bestPrefixKnown &&
@@ -1068,8 +1243,9 @@ class ScriptParser {
       if (bestPrefix != null) {
         // Prefer the cast's spelling if the prefix is already a known name.
         final prefixKnown = knownCharacters.firstWhere(
-            (c) => c.replaceAll(RegExp(r'[^A-Z]'), '') == bestPrefix,
-            orElse: () => bestPrefix!);
+          (c) => c.replaceAll(RegExp(r'[^A-Z]'), '') == bestPrefix,
+          orElse: () => bestPrefix!,
+        );
         return [prefixKnown, known];
       }
     }
@@ -1090,12 +1266,14 @@ class ScriptParser {
           .where((p) => p.isNotEmpty)
           .toList();
       if (parts.length >= 2 &&
-          parts.every((p) =>
-              _looksLikeCharacterName(p) &&
-              // "MRS, BENNET" (OCR comma-for-period) is ONE person, not the
-              // pair [MRS, BENNET] — splitting it injected bare title words
-              // as characters.
-              !_titlePrefixes.contains(p.replaceAll('.', '').trim()))) {
+          parts.every(
+            (p) =>
+                _looksLikeCharacterName(p) &&
+                // "MRS, BENNET" (OCR comma-for-period) is ONE person, not the
+                // pair [MRS, BENNET] — splitting it injected bare title words
+                // as characters.
+                !_titlePrefixes.contains(p.replaceAll('.', '').trim()),
+          )) {
         return parts;
       }
     }
@@ -1120,9 +1298,21 @@ class ScriptParser {
 
   /// Strip title prefix from a name, returning null if no title found.
   static String? _stripTitle(String name) {
-    final prefixes = [
-      'MR. ', 'MRS. ', 'MS. ', 'MISS ', 'SIR ', 'LORD ', 'LADY ',
-      'DR. ', 'REV. ', 'COLONEL ', 'CAPTAIN ', 'MR ', 'MRS ', 'MS ',
+    const prefixes = [
+      'MR. ',
+      'MRS. ',
+      'MS. ',
+      'MISS ',
+      'SIR ',
+      'LORD ',
+      'LADY ',
+      'DR. ',
+      'REV. ',
+      'COLONEL ',
+      'CAPTAIN ',
+      'MR ',
+      'MRS ',
+      'MS ',
     ];
     final upper = name.toUpperCase();
     for (final prefix in prefixes) {
@@ -1133,32 +1323,59 @@ class ScriptParser {
     return null;
   }
 
-  /// Levenshtein edit distance between two strings.
-  static int _editDistance(String a, String b) {
+  /// Deletion signatures used to find only strings that can be within
+  /// [maxDeletes] edits. The work depends on name length, not character count.
+  static Set<String> _deletionSignatures(String value, int maxDeletes) {
+    final all = <String>{value};
+    var frontier = <String>{value};
+    for (var depth = 0; depth < maxDeletes; depth++) {
+      final next = <String>{};
+      for (final current in frontier) {
+        for (var i = 0; i < current.length; i++) {
+          final deleted = current.substring(0, i) + current.substring(i + 1);
+          if (all.add(deleted)) next.add(deleted);
+        }
+      }
+      if (next.isEmpty) break;
+      frontier = next;
+    }
+    return all;
+  }
+
+  /// Thresholded Levenshtein distance. Cells outside the useful diagonal are
+  /// never visited, and candidates that cannot meet [maxDistance] exit early.
+  static int _editDistanceWithin(String a, String b, int maxDistance) {
     if (a == b) return 0;
+    if ((a.length - b.length).abs() > maxDistance) return maxDistance + 1;
     if (a.isEmpty) return b.length;
     if (b.isEmpty) return a.length;
 
-    final la = a.length, lb = b.length;
-    // Use single-row optimization
-    var prev = List.generate(lb + 1, (i) => i);
-    var curr = List.filled(lb + 1, 0);
-
-    for (var i = 1; i <= la; i++) {
-      curr[0] = i;
-      for (var j = 1; j <= lb; j++) {
-        final cost = a[i - 1] == b[j - 1] ? 0 : 1;
-        curr[j] = [
-          prev[j] + 1, // deletion
-          curr[j - 1] + 1, // insertion
-          prev[j - 1] + cost, // substitution
-        ].reduce((a, b) => a < b ? a : b);
+    final sentinel = maxDistance + 1;
+    var previous = List<int>.generate(b.length + 1, (index) => index);
+    var current = List<int>.filled(b.length + 1, sentinel);
+    for (var i = 1; i <= a.length; i++) {
+      current.fillRange(0, current.length, sentinel);
+      current[0] = i;
+      final start = (i - maxDistance).clamp(1, b.length) as int;
+      final end = (i + maxDistance).clamp(1, b.length) as int;
+      var rowMin = sentinel;
+      for (var j = start; j <= end; j++) {
+        final cost = a.codeUnitAt(i - 1) == b.codeUnitAt(j - 1) ? 0 : 1;
+        final deletion = previous[j] + 1;
+        final insertion = current[j - 1] + 1;
+        final substitution = previous[j - 1] + cost;
+        final distance = deletion < insertion
+            ? (deletion < substitution ? deletion : substitution)
+            : (insertion < substitution ? insertion : substitution);
+        current[j] = distance;
+        if (distance < rowMin) rowMin = distance;
       }
-      final tmp = prev;
-      prev = curr;
-      curr = tmp;
+      if (rowMin > maxDistance) return sentinel;
+      final swap = previous;
+      previous = current;
+      current = swap;
     }
-    return prev[lb];
+    return previous[b.length];
   }
 
   /// Normalize a character name using aliases (follows chains).
@@ -1180,8 +1397,7 @@ class ScriptParser {
       final norm = _normalizeForHeader(stripped);
       if (_titleHeaders.contains(norm)) return true;
       // "Pride and Prejudice 47" / "47 Pride and Prejudice"
-      final noPage =
-          norm.replaceAll(RegExp(r'^\d+ +| +\d+$'), '').trim();
+      final noPage = norm.replaceAll(RegExp(r'^\d+ +| +\d+$'), '').trim();
       if (_titleHeaders.contains(noPage)) return true;
     }
     for (final pattern in _noisePatterns) {
@@ -1198,14 +1414,18 @@ class ScriptParser {
   static final _multiSpaceRe = RegExp(r'  +');
   static final _trailingBracketNoiseRe = RegExp(r'\s*\[[A-Z0-9][^\]]*$');
   // Per-line loop patterns from _parseLines, hoisted for the same reason.
-  static final _folgerRunningHeaderRe =
-      RegExp(r'ACT \d+\. SC\.', caseSensitive: false);
+  static final _folgerRunningHeaderRe = RegExp(
+    r'ACT \d+\. SC\.',
+    caseSensitive: false,
+  );
   static final _actHeaderRe = RegExp(
-      r'^(?:ACT\s+(?:THE\s+)?(?:[IV]+|\d+|FIRST|SECOND|THIRD|FOURTH|FIFTH)\.?|Actus\s+\w+)',
-      caseSensitive: false);
+    r'^(?:ACT\s+(?:THE\s+)?(?:[IV]+|\d+|FIRST|SECOND|THIRD|FOURTH|FIFTH)\.?|Actus\s+\w+)',
+    caseSensitive: false,
+  );
   static final _sceneHeaderRe = RegExp(
-      r'^(?:SCENE\s+[\d.IVXiv]+|Sc[oe]na\s+\w+)',
-      caseSensitive: false);
+    r'^(?:SCENE\s+[\d.IVXiv]+|Sc[oe]na\s+\w+)',
+    caseSensitive: false,
+  );
 
   /// Clean OCR artifacts from text.
   String _cleanLine(String text) {
@@ -1222,13 +1442,31 @@ class ScriptParser {
   /// set or format changes. _detectCharacterCue runs for EVERY text line —
   /// recompiling ~5 regexes per character per line was ~10^5 compilations
   /// on a full-length import.
-  List<({String char, RegExp dot, RegExp colonEmpty, RegExp colonInline,
-      RegExp? ownLine, RegExp? flexible})>? _cuePatterns;
+  List<
+    ({
+      String char,
+      RegExp dot,
+      RegExp colonEmpty,
+      RegExp colonInline,
+      RegExp? ownLine,
+      RegExp? flexible,
+    })
+  >?
+  _cuePatterns;
   int _cuePatternsCharCount = -1;
   ScriptFormat? _cuePatternsFormat;
 
-  List<({String char, RegExp dot, RegExp colonEmpty, RegExp colonInline,
-      RegExp? ownLine, RegExp? flexible})> _buildCuePatterns() {
+  List<
+    ({
+      String char,
+      RegExp dot,
+      RegExp colonEmpty,
+      RegExp colonInline,
+      RegExp? ownLine,
+      RegExp? flexible,
+    })
+  >
+  _buildCuePatterns() {
     final sorted = knownCharacters.toList()
       ..sort((a, b) => b.length.compareTo(a.length));
     final caseSensitive = _format != ScriptFormat.titleCase;
@@ -1243,10 +1481,14 @@ class ScriptParser {
           return (
             char: char,
             dot: RegExp('^$escaped\\.\\s+(.*)', caseSensitive: caseSensitive),
-            colonEmpty: RegExp('^$escaped(?:\\s*\\([^)]*\\))?\\s*:\$',
-                caseSensitive: caseSensitive),
-            colonInline: RegExp('^$escaped(?:\\s*\\([^)]*\\))?\\s*:\\s+(.*)',
-                caseSensitive: caseSensitive),
+            colonEmpty: RegExp(
+              '^$escaped(?:\\s*\\([^)]*\\))?\\s*:\$',
+              caseSensitive: caseSensitive,
+            ),
+            colonInline: RegExp(
+              '^$escaped(?:\\s*\\([^)]*\\))?\\s*:\\s+(.*)',
+              caseSensitive: caseSensitive,
+            ),
             ownLine: _format == ScriptFormat.nameOnOwnLine
                 ? RegExp('^$escaped\\.?\$')
                 : null,
@@ -1254,7 +1496,8 @@ class ScriptParser {
                 ? null
                 : RegExp(
                     '^${tokens.map(RegExp.escape).join(r'[.,:]?\s*')}\\s*[.:]\\s+(.*)',
-                    caseSensitive: caseSensitive),
+                    caseSensitive: caseSensitive,
+                  ),
           );
         })(),
     ];
@@ -1330,8 +1573,9 @@ class ScriptParser {
     // 2. Trailing parenthetical: "...dialogue. (Direction)"
     // Match only after sentence-ending punctuation to avoid stripping
     // dialogue that happens to end with a parenthetical aside.
-    final trailMatch =
-        RegExp(r'^(.*[.!?])\s+\(([^)]+)\)\s*$').firstMatch(dialogue);
+    final trailMatch = RegExp(
+      r'^(.*[.!?])\s+\(([^)]+)\)\s*$',
+    ).firstMatch(dialogue);
     if (trailMatch != null) {
       dialogue = trailMatch.group(1)!;
       final trailDir = trailMatch.group(2)!;
@@ -1342,8 +1586,7 @@ class ScriptParser {
     // by the leading pattern above, but handle the colon variant specifically
     // in case the leading match didn't fire (e.g., no space after paren).
     if (direction.isEmpty) {
-      final colonMatch =
-          RegExp(r'^\(([^)]+?):\)\s*(.*)').firstMatch(dialogue);
+      final colonMatch = RegExp(r'^\(([^)]+?):\)\s*(.*)').firstMatch(dialogue);
       if (colonMatch != null) {
         direction = colonMatch.group(1)!;
         dialogue = colonMatch.group(2)!;
@@ -1462,19 +1705,20 @@ class ScriptParser {
         final multiChars = multiCharacterMap[charName] ?? const [];
 
         sceneLineNum++;
-        orderIndex++;
-        result.add(ScriptLine(
-          id: _uuid.v4(),
-          act: currentAct,
-          scene: currentScene,
-          lineNumber: sceneLineNum,
-          orderIndex: orderIndex,
-          character: charName,
-          text: extracted.text.isNotEmpty ? extracted.text : fullText,
-          lineType: LineType.dialogue,
-          stageDirection: extracted.direction,
-          multiCharacters: multiChars,
-        ));
+        result.add(
+          ScriptLine(
+            id: _uuid.v4(),
+            act: currentAct,
+            scene: currentScene,
+            lineNumber: sceneLineNum,
+            orderIndex: orderIndex++,
+            character: charName,
+            text: extracted.text.isNotEmpty ? extracted.text : fullText,
+            lineType: LineType.dialogue,
+            stageDirection: extracted.direction,
+            multiCharacters: multiChars,
+          ),
+        );
       }
     }
 
@@ -1486,30 +1730,32 @@ class ScriptParser {
       if (_isSceneTransition(text)) {
         flushDialogue();
         final location = _extractLocation(text);
-        final sceneNum = result
-                .where((l) => l.lineType == LineType.header && l.scene.isNotEmpty)
+        final sceneNum =
+            result
+                .where(
+                  (l) => l.lineType == LineType.header && l.scene.isNotEmpty,
+                )
                 .length +
             1;
-        currentScene = location.isNotEmpty
-            ? location
-            : 'Scene $sceneNum';
+        currentScene = location.isNotEmpty ? location : 'Scene $sceneNum';
         sceneLineNum = 0;
         currentCharacter = '';
         dialogueParts = [];
       }
 
       sceneLineNum++;
-      orderIndex++;
-      result.add(ScriptLine(
-        id: _uuid.v4(),
-        act: currentAct,
-        scene: currentScene,
-        lineNumber: sceneLineNum,
-        orderIndex: orderIndex,
-        character: '',
-        text: text,
-        lineType: LineType.stageDirection,
-      ));
+      result.add(
+        ScriptLine(
+          id: _uuid.v4(),
+          act: currentAct,
+          scene: currentScene,
+          lineNumber: sceneLineNum,
+          orderIndex: orderIndex++,
+          character: '',
+          text: text,
+          lineType: LineType.stageDirection,
+        ),
+      );
     }
 
     // Accumulates a parenthesized stage direction that spans multiple raw
@@ -1532,7 +1778,8 @@ class ScriptParser {
           final closeIdx = cleanedCont.indexOf(')');
           if (closeIdx >= 0) {
             addStageDirection(
-                '$pendingDirection ${cleanedCont.substring(0, closeIdx + 1)}');
+              '$pendingDirection ${cleanedCont.substring(0, closeIdx + 1)}',
+            );
             pendingDirection = '';
             // Dialogue may continue after the direction on the same line;
             // attribute it to the still-current speaker.
@@ -1556,8 +1803,7 @@ class ScriptParser {
       // Matches: "ACT I", "ACT 1", "ACT THE FIRST.", "ACT FIRST.",
       // "Actus Primus", but NOT Folger running headers "ACT 2. SC. 1"
       final isRunningHeader = _folgerRunningHeaderRe.hasMatch(line);
-      final actMatch =
-          isRunningHeader ? null : _actHeaderRe.firstMatch(line);
+      final actMatch = isRunningHeader ? null : _actHeaderRe.firstMatch(line);
       if (actMatch != null) {
         flushDialogue();
         currentAct = line.trim();
@@ -1565,17 +1811,18 @@ class ScriptParser {
         sceneLineNum = 0;
         currentCharacter = '';
         dialogueParts = [];
-        orderIndex++;
-        result.add(ScriptLine(
-          id: _uuid.v4(),
-          act: currentAct,
-          scene: '',
-          lineNumber: 0,
-          orderIndex: orderIndex,
-          character: '',
-          text: currentAct,
-          lineType: LineType.header,
-        ));
+        result.add(
+          ScriptLine(
+            id: _uuid.v4(),
+            act: currentAct,
+            scene: '',
+            lineNumber: 0,
+            orderIndex: orderIndex++,
+            character: '',
+            text: currentAct,
+            lineType: LineType.header,
+          ),
+        );
         continue;
       }
 
@@ -1741,16 +1988,18 @@ class ScriptParser {
 
       final sceneName = '$currentAct, Scene $sceneCounter';
 
-      scenes.add(ScriptScene(
-        id: _uuid.v4(),
-        act: currentAct,
-        sceneName: sceneName,
-        location: location,
-        description: _cleanDescription(description),
-        startLineIndex: sceneStart,
-        endLineIndex: endIndex,
-        characters: chars.toList()..sort(),
-      ));
+      scenes.add(
+        ScriptScene(
+          id: _uuid.v4(),
+          act: currentAct,
+          sceneName: sceneName,
+          location: location,
+          description: _cleanDescription(description),
+          startLineIndex: sceneStart,
+          endLineIndex: endIndex,
+          characters: chars.toList()..sort(),
+        ),
+      );
 
       sceneStart = endIndex + 1;
     }

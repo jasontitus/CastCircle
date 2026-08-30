@@ -26,6 +26,7 @@ class AuthScreen extends ConsumerStatefulWidget {
 }
 
 class _AuthScreenState extends ConsumerState<AuthScreen> {
+  static const _minimumPasswordLength = 12;
   final _emailController = TextEditingController();
   final _passwordController = TextEditingController();
   bool _isSignUp = false;
@@ -157,10 +158,14 @@ class _AuthScreenState extends ConsumerState<AuthScreen> {
                               ? const [AutofillHints.newPassword]
                               : const [AutofillHints.password],
                           textInputAction: TextInputAction.done,
-                          decoration: const InputDecoration(
+                          decoration: InputDecoration(
                             labelText: 'Password',
-                            border: OutlineInputBorder(),
-                            prefixIcon: Icon(Icons.lock_outlined),
+                            helperText: _isSignUp
+                                ? 'Use at least $_minimumPasswordLength characters; '
+                                      'a passphrase works well.'
+                                : null,
+                            border: const OutlineInputBorder(),
+                            prefixIcon: const Icon(Icons.lock_outlined),
                           ),
                           onSubmitted: (_) => _submit(),
                         ),
@@ -178,21 +183,21 @@ class _AuthScreenState extends ConsumerState<AuthScreen> {
                         padding: const EdgeInsets.all(16),
                         child: Column(
                           children: [
-                            Icon(Icons.mark_email_unread_outlined,
-                                size: 36,
-                                color: Theme.of(context)
-                                    .colorScheme
-                                    .onSecondaryContainer),
+                            Icon(
+                              Icons.mark_email_unread_outlined,
+                              size: 36,
+                              color: Theme.of(
+                                context,
+                              ).colorScheme.onSecondaryContainer,
+                            ),
                             const SizedBox(height: 8),
                             Text(
                               'Confirm your email',
-                              style: Theme.of(context)
-                                  .textTheme
-                                  .titleMedium
+                              style: Theme.of(context).textTheme.titleMedium
                                   ?.copyWith(
-                                    color: Theme.of(context)
-                                        .colorScheme
-                                        .onSecondaryContainer,
+                                    color: Theme.of(
+                                      context,
+                                    ).colorScheme.onSecondaryContainer,
                                     fontWeight: FontWeight.bold,
                                   ),
                             ),
@@ -201,9 +206,7 @@ class _AuthScreenState extends ConsumerState<AuthScreen> {
                               'We sent a link to $_awaitingConfirmationFor. '
                               'Tap it, then come back and sign in.',
                               textAlign: TextAlign.center,
-                              style: Theme.of(context)
-                                  .textTheme
-                                  .bodySmall
+                              style: Theme.of(context).textTheme.bodySmall
                                   ?.copyWith(
                                     color: Theme.of(context)
                                         .colorScheme
@@ -217,8 +220,9 @@ class _AuthScreenState extends ConsumerState<AuthScreen> {
                               spacing: 8,
                               children: [
                                 TextButton.icon(
-                                  onPressed:
-                                      _isLoading ? null : _resendConfirmation,
+                                  onPressed: _isLoading
+                                      ? null
+                                      : _resendConfirmation,
                                   icon: const Icon(Icons.refresh, size: 18),
                                   label: const Text('Resend email'),
                                 ),
@@ -226,10 +230,10 @@ class _AuthScreenState extends ConsumerState<AuthScreen> {
                                   onPressed: _isLoading
                                       ? null
                                       : () => setState(() {
-                                            _awaitingConfirmationFor = null;
-                                            _isSignUp = false;
-                                            _error = null;
-                                          }),
+                                          _awaitingConfirmationFor = null;
+                                          _isSignUp = false;
+                                          _error = null;
+                                        }),
                                   child: const Text('I confirmed — sign in'),
                                 ),
                               ],
@@ -317,6 +321,13 @@ class _AuthScreenState extends ConsumerState<AuthScreen> {
       setState(() => _error = 'Please enter email and password');
       return;
     }
+    if (_isSignUp && password.length < _minimumPasswordLength) {
+      setState(
+        () => _error =
+            'Use a password of at least $_minimumPasswordLength characters.',
+      );
+      return;
+    }
 
     setState(() {
       _isLoading = true;
@@ -325,7 +336,10 @@ class _AuthScreenState extends ConsumerState<AuthScreen> {
 
     try {
       if (_isSignUp) {
-        final res = await SupabaseService.instance.signUpWithEmail(email, password);
+        final res = await SupabaseService.instance.signUpWithEmail(
+          email,
+          password,
+        );
         // With email confirmation enabled the server returns a user but NO
         // session — the account isn't usable until the link is clicked. The
         // old code navigated straight into the app, leaving the user
@@ -383,6 +397,9 @@ class _AuthScreenState extends ConsumerState<AuthScreen> {
         text.contains('already been registered')) {
       return 'That email already has an account — try signing in.';
     }
+    if (text.contains('password') && text.contains('characters')) {
+      return 'Use a password of at least $_minimumPasswordLength characters.';
+    }
     return e.toString();
   }
 
@@ -391,16 +408,21 @@ class _AuthScreenState extends ConsumerState<AuthScreen> {
     if (email == null) return;
     setState(() => _isLoading = true);
     try {
-      await SupabaseService.instance.client.auth
-          .resend(type: OtpType.signup, email: email);
+      await SupabaseService.instance.client.auth.resend(
+        type: OtpType.signup,
+        email: email,
+      );
       if (mounted) {
         ScaffoldMessenger.of(context).showAutoToast(
           SnackBar(content: Text('Confirmation email re-sent to $email')),
         );
       }
     } catch (e) {
-      DebugLogService.instance
-          .logError(LogCategory.network, 'Resend confirmation failed', e);
+      DebugLogService.instance.logError(
+        LogCategory.network,
+        'Resend confirmation failed',
+        e,
+      );
       if (mounted) {
         setState(() => _error = "Couldn't resend the email: $e");
       }

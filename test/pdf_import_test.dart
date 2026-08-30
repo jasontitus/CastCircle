@@ -1,6 +1,7 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:castcircle/data/models/script_models.dart';
 import 'package:castcircle/data/services/script_parser.dart';
+import 'package:castcircle/data/services/script_import_service.dart';
 
 /// Tests for the PDF import pipeline — specifically testing the text parsing
 /// stage that processes OCR output. The actual PDF rendering + ML Kit OCR
@@ -28,7 +29,9 @@ void main() {
         buffer.writeln('${page ~/ 2 + 1}'); // page number (noise)
         buffer.writeln();
         final char = ['ELIZABETH', 'DARCY', 'JANE', 'BINGLEY'][page % 4];
-        buffer.writeln('$char. This is the dialogue from page $page of the script.');
+        buffer.writeln(
+          '$char. This is the dialogue from page $page of the script.',
+        );
         buffer.writeln();
       }
       final rawText = buffer.toString();
@@ -37,8 +40,12 @@ void main() {
       final dialogueLines = script.lines
           .where((l) => l.lineType == LineType.dialogue)
           .toList();
-      expect(dialogueLines.length, 60,
-          reason: 'Expected 60 dialogue lines (one per page), got ${dialogueLines.length}');
+      expect(
+        dialogueLines.length,
+        60,
+        reason:
+            'Expected 60 dialogue lines (one per page), got ${dialogueLines.length}',
+      );
 
       // Verify last page content is present
       expect(dialogueLines.last.text, contains('page 60'));
@@ -52,18 +59,25 @@ void main() {
       }
       // Pages 21-30 contain distinctive text
       for (var page = 31; page <= 40; page++) {
-        buffer.writeln('ELIZABETH. FINAL SECTION page $page important content.');
+        buffer.writeln(
+          'ELIZABETH. FINAL SECTION page $page important content.',
+        );
       }
 
       final script = parser.parse(buffer.toString());
       final finalLines = script.lines
-          .where((l) =>
-              l.lineType == LineType.dialogue &&
-              l.text.contains('FINAL SECTION'))
+          .where(
+            (l) =>
+                l.lineType == LineType.dialogue &&
+                l.text.contains('FINAL SECTION'),
+          )
           .toList();
 
-      expect(finalLines.length, 10,
-          reason: 'Expected 10 final section lines, got ${finalLines.length}');
+      expect(
+        finalLines.length,
+        10,
+        reason: 'Expected 10 final section lines, got ${finalLines.length}',
+      );
     });
 
     test('handles very large scripts (200+ pages equivalent)', () {
@@ -71,7 +85,13 @@ void main() {
       buffer.writeln('ACT I');
       // ~600 lines simulating a very long play
       for (var i = 0; i < 600; i++) {
-        final char = ['ELIZABETH', 'DARCY', 'JANE', 'BINGLEY', 'COLLINS'][i % 5];
+        final char = [
+          'ELIZABETH',
+          'DARCY',
+          'JANE',
+          'BINGLEY',
+          'COLLINS',
+        ][i % 5];
         buffer.writeln('$char. Line number $i of the very long script.');
       }
 
@@ -214,24 +234,27 @@ ELIZABETH. The very last line with no trailing newline''';
       expect(dialogueLines.length, 2);
     });
 
-    test('noise-heavy end pages do not eliminate valid content before them', () {
-      final buffer = StringBuffer();
-      buffer.writeln('ACT I');
-      buffer.writeln('ELIZABETH. Important line before noise.');
-      // End pages full of noise
-      for (var i = 0; i < 20; i++) {
-        buffer.writeln('${i + 50}'); // page numbers
-        buffer.writeln('Jon Jory ${i + 50}');
-        buffer.writeln('Pride and Prejudice ${i + 50}');
-      }
+    test(
+      'noise-heavy end pages do not eliminate valid content before them',
+      () {
+        final buffer = StringBuffer();
+        buffer.writeln('ACT I');
+        buffer.writeln('ELIZABETH. Important line before noise.');
+        // End pages full of noise
+        for (var i = 0; i < 20; i++) {
+          buffer.writeln('${i + 50}'); // page numbers
+          buffer.writeln('Jon Jory ${i + 50}');
+          buffer.writeln('Pride and Prejudice ${i + 50}');
+        }
 
-      final script = parser.parse(buffer.toString());
-      final dialogueLines = script.lines
-          .where((l) => l.lineType == LineType.dialogue)
-          .toList();
-      expect(dialogueLines.length, 1);
-      expect(dialogueLines.first.text, contains('Important line'));
-    });
+        final script = parser.parse(buffer.toString());
+        final dialogueLines = script.lines
+            .where((l) => l.lineType == LineType.dialogue)
+            .toList();
+        expect(dialogueLines.length, 1);
+        expect(dialogueLines.first.text, contains('Important line'));
+      },
+    );
   });
 
   group('PDF import: act/scene structure from OCR', () {
@@ -288,19 +311,32 @@ COLLINS. At Rosings.
       final buffer = StringBuffer();
       buffer.writeln('ACT I');
       final allChars = [
-        'ELIZABETH', 'DARCY', 'JANE', 'BINGLEY', 'COLLINS',
-        'WICKHAM', 'LYDIA', 'CHARLOTTE', 'MARY', 'KITTY',
+        'ELIZABETH',
+        'DARCY',
+        'JANE',
+        'BINGLEY',
+        'COLLINS',
+        'WICKHAM',
+        'LYDIA',
+        'CHARLOTTE',
+        'MARY',
+        'KITTY',
       ];
       for (var i = 0; i < allChars.length; i++) {
-        buffer.writeln('${allChars[i]}. I am ${allChars[i]} and this is my line.');
+        buffer.writeln(
+          '${allChars[i]}. I am ${allChars[i]} and this is my line.',
+        );
       }
 
       final script = parser.parse(buffer.toString());
       final charNames = script.characters.map((c) => c.name).toSet();
 
       for (final name in allChars) {
-        expect(charNames, contains(name),
-            reason: '$name should be in character list');
+        expect(
+          charNames,
+          contains(name),
+          reason: '$name should be in character list',
+        );
       }
     });
 
@@ -329,7 +365,9 @@ COLLINS. At Rosings.
       }
 
       final script = parser.parse(buffer.toString());
-      final elizabeth = script.characters.firstWhere((c) => c.name == 'ELIZABETH');
+      final elizabeth = script.characters.firstWhere(
+        (c) => c.name == 'ELIZABETH',
+      );
       final darcy = script.characters.firstWhere((c) => c.name == 'DARCY');
 
       expect(elizabeth.lineCount, 25);
@@ -353,6 +391,68 @@ DARCY. A [link](http://example.com) in dialogue.
           .where((l) => l.lineType == LineType.dialogue)
           .toList();
       expect(lines.length, 2);
+    });
+  });
+
+  group('PDFKit worker parsing and bounded mapping', () {
+    test('preserves parse output while assigning ordered source pages', () {
+      const nativeText = '''
+ELIZABETH. Hello there.
+DARCY. Good day.
+''';
+      final rawLines = nativeText.split('\n');
+      final pageMap = <int, int>{
+        for (var index = 0; index < rawLines.length; index++) index: index + 1,
+      };
+
+      final worker = ScriptImportService.parseAndMapPdfKit(
+        nativeText,
+        'Test',
+        pageMap,
+      );
+      final direct = ScriptParser().parse(nativeText, title: 'Test');
+
+      expect(
+        worker.script.lines.map(
+          (line) => (line.character, line.text, line.lineType),
+        ),
+        orderedEquals(
+          direct.lines.map(
+            (line) => (line.character, line.text, line.lineType),
+          ),
+        ),
+      );
+      expect(
+        worker.lines
+            .where((line) => line.lineType == LineType.dialogue)
+            .map((line) => line.sourcePage),
+        orderedEquals([1, 2]),
+      );
+    });
+
+    test('maps repeated dialogue to its later source page', () {
+      const nativeText = '''
+ELIZABETH. We wait for the signal.
+DARCY. Move ahead when it arrives.
+ELIZABETH. We wait for the signal.
+''';
+      final rawLines = nativeText.split('\n');
+      final pageMap = <int, int>{
+        for (var index = 0; index < rawLines.length; index++) index: index + 1,
+      };
+
+      final worker = ScriptImportService.parseAndMapPdfKit(
+        nativeText,
+        'Repeated dialogue',
+        pageMap,
+      );
+
+      expect(
+        worker.lines
+            .where((line) => line.lineType == LineType.dialogue)
+            .map((line) => line.sourcePage),
+        orderedEquals([1, 2, 3]),
+      );
     });
   });
 }

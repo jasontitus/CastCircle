@@ -147,9 +147,10 @@ def _extract_folger(doc: pymupdf.Document) -> str:
     all_chars = KNOWN_CHARACTERS | detected_chars
 
     output: list[str] = []
-    in_play = False
     current_char = ''
     play_start_page = -1
+    orphan_dialogue_count = 0
+    orphan_dialogue_samples: list[str] = []
 
     # Find the page where ACT 1 appears as a centered header (not TOC)
     for pg_idx in range(doc.page_count):
@@ -259,8 +260,6 @@ def _extract_folger(doc: pymupdf.Document) -> str:
 
             # Emit structured lines
             if act_header:
-                if not in_play:
-                    in_play = True
                 num = int(re.search(r'\d+', act_header).group())
                 output.append(f'\n\nACT {_roman(num)}\n')
                 current_char = ''
@@ -285,10 +284,23 @@ def _extract_folger(doc: pymupdf.Document) -> str:
                 if dialogue_parts:
                     output.append(' '.join(dialogue_parts))
             elif dialogue_parts:
+                dialogue = ' '.join(dialogue_parts)
                 if not current_char and not stage_dir:
-                    # Orphan dialogue — could be continuation from prev page
-                    pass
-                output.append(' '.join(dialogue_parts))
+                    orphan_dialogue_count += 1
+                    if len(orphan_dialogue_samples) < 3:
+                        orphan_dialogue_samples.append(
+                            f'page {pg_idx + 1}: {dialogue[:80]}'
+                        )
+                    continue
+                output.append(dialogue)
+
+    if orphan_dialogue_count:
+        samples = '; '.join(orphan_dialogue_samples)
+        print(
+            f'Skipped {orphan_dialogue_count} orphan dialogue line(s). '
+            f'Samples: {samples}',
+            file=sys.stderr,
+        )
 
     return '\n'.join(output)
 
@@ -360,7 +372,7 @@ def main():
     else:
         output_path = str(Path(pdf_path).with_suffix('.converted.txt'))
 
-    Path(output_path).write_text(result)
+    Path(output_path).write_text(result, encoding='utf-8')
     print(f"Written {len(result)} chars to {output_path}")
 
     # Quick stats

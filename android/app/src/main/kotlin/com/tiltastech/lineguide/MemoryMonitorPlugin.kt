@@ -2,6 +2,7 @@ package com.tiltastech.castcircle
 
 import android.app.ActivityManager
 import android.content.Context
+import android.os.Debug
 import io.flutter.embedding.engine.plugins.FlutterPlugin
 import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
@@ -9,8 +10,8 @@ import io.flutter.plugin.common.MethodChannel
 /**
  * Android implementation of the com.lineguide/memory_monitor channel.
  *
- * Uses Android's ActivityManager and Runtime to report memory usage,
- * matching the iOS MemoryMonitorPlugin response format.
+ * Uses Android's ActivityManager, Runtime, and process Debug.MemoryInfo to
+ * distinguish whole-process PSS from Java heap usage.
  */
 class MemoryMonitorPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
 
@@ -44,15 +45,27 @@ class MemoryMonitorPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
                 activityManager.getMemoryInfo(memoryInfo)
 
                 val runtime = Runtime.getRuntime()
-                val usedMemMB = ((runtime.totalMemory() - runtime.freeMemory()) / (1024L * 1024L)).toInt()
+                val javaHeapUsedMB =
+                    ((runtime.totalMemory() - runtime.freeMemory()) / (1024L * 1024L)).toInt()
+                val processMemory = Debug.MemoryInfo()
+                Debug.getMemoryInfo(processMemory)
+                // totalPss includes Java, native, graphics, code, and other
+                // proportional process memory. Keep physicalFootprintMB for
+                // the existing cross-platform contract, but it is now backed
+                // by a whole-process measurement rather than JVM heap alone.
+                val processPssMB = processMemory.totalPss / 1024
                 val availMemMB = (memoryInfo.availMem / (1024L * 1024L)).toInt()
                 val totalMemMB = (memoryInfo.totalMem / (1024L * 1024L)).toInt()
 
-                result.success(mapOf(
-                    "physicalFootprintMB" to usedMemMB,
-                    "availableMemoryMB" to availMemMB,
-                    "totalPhysicalMemoryMB" to totalMemMB
-                ))
+                result.success(
+                    mapOf(
+                        "physicalFootprintMB" to processPssMB,
+                        "processPssMB" to processPssMB,
+                        "javaHeapUsedMB" to javaHeapUsedMB,
+                        "availableMemoryMB" to availMemMB,
+                        "totalPhysicalMemoryMB" to totalMemMB,
+                    ),
+                )
             }
             else -> result.notImplemented()
         }

@@ -1,132 +1,173 @@
 // ignore_for_file: avoid_print
 //
-// Verify the cloud recordings for an EXISTING production are real audio and
-// downloadable on macOS. Auths a throwaway account, joins the production by
-// code, reads the recordings table, downloads each object, and reports size.
+// Read-only verification of recordings in an explicitly selected disposable
+// Supabase environment. The caller must provide a pre-provisioned,
+// least-privilege access token; this tool never signs up users or joins cast.
 //
-//   dart run tool/verify_cloud_recordings.dart <productionId> <joinCode>
+// dart run tool/verify_cloud_recordings.dart \
+//   --url http://127.0.0.1:54321 \
+//   --key <publishable-key> \
+//   --access-token <staging-user-jwt> \
+//   --production-id <seeded-production-uuid>
 
 import 'dart:convert';
 import 'dart:io';
-import 'dart:math';
 
 import 'package:supabase/supabase.dart';
 
-const _url = 'https://vngpbmqymdaxxnvqptsk.supabase.co';
-const _key = 'sb_publishable_f3YAIMI4GIEIPdDwnvfO3Q_stwSCxXI';
+const _productionHost = 'vngpbmqymdaxxnvqptsk.supabase.co';
 
 Future<void> main(List<String> args) async {
-  final productionId = args.isNotEmpty ? args[0] : 'ca0cde7d-5eef-4231-a584-03f935e3879b';
-  final joinCode = args.length > 1 ? args[1] : 'D5E6SK';
-
-  final rnd = Random().nextInt(1 << 31);
-  final email = 'verify_$rnd@example.com';
-  const pass = 'Test-passw0rd!';
-
-  print('[1] signup throwaway $email');
-  final cred = await _auth(email, pass);
-  if (cred == null) {
-    print('   signup/login did not return a session (email confirmation on?). '
-        'Cannot read RLS-protected recordings without a confirmed account.');
-    exit(1);
-  }
-  print('   userId=${cred.userId}');
-
-  final c = SupabaseClient(_url, _key,
-      headers: {'Authorization': 'Bearer ${cred.accessToken}'});
-
-  print('[2] join production $productionId (code $joinCode) via self cast_members insert');
-  try {
-    await c.from('cast_members').insert({
-      'production_id': productionId,
-      'user_id': cred.userId,
-      'character_name': '',
-      'role': 'understudy',
-      'joined_at': DateTime.now().toIso8601String(),
-    });
-    print('   joined');
-  } catch (e) {
-    print('   join insert failed (may already be member / RLS): $e');
+  final options = _parseOptions(args);
+  final target = Uri.parse(options.url);
+  if (target.host == _productionHost && !options.allowProduction) {
+    stderr.writeln(
+      'Refusing the production project. Re-run with '
+      '--allow-production only after approving this read-only audit target.',
+    );
+    exitCode = 64;
+    return;
   }
 
-  print('[3] read recordings for production');
-  final rows = await c
+  final client = SupabaseClient(
+    options.url,
+    options.key,
+    headers: {'Authorization': 'Bearer ${options.accessToken}'},
+  );
+
+  final rows = await client
       .from('recordings')
-      .select('line_id, user_id, audio_url, duration_ms')
-      .eq('production_id', productionId);
-  final list = (rows as List).cast<Map<String, dynamic>>();
-  print('   recordings rows visible: ${list.length}');
-  if (list.isEmpty) {
-    print('   RLS returned 0 rows — either not a member or no read policy.');
-    exit(1);
+      .select('line_id, audio_url, duration_ms')
+      .eq('production_id', options.productionId);
+  final recordings = rows.cast<Map<String, dynamic>>();
+  if (recordings.isEmpty) {
+    throw StateError(
+      'No recording rows were visible for the seeded production.',
+    );
   }
 
-  print('[4] download up to 3 objects and check size');
-  Directory('/tmp/cc_verify').createSync(recursive: true);
-  var i = 0;
-  for (final r in list.take(3)) {
-    final audioUrl = r['audio_url'] as String? ?? '';
+  var verified = 0;
+  for (final recording in recordings.take(3)) {
+    final audioUrl = recording['audio_url'];
+    if (audioUrl is! String) {
+      throw StateError('A recording row has no audio_url string.');
+    }
     final objectPath = _objectPathFromUrl(audioUrl);
     if (objectPath == null) {
-      print('   ! could not parse object path from: $audioUrl');
+      throw StateError(
+        'A recording URL does not identify a recordings object.',
+      );
+    }
+
+    final bytes = await client.storage.from('recordings').download(objectPath);
+    if (bytes.length < 12 || ascii.decode(bytes.sublist(4, 8)) != 'ftyp') {
+      throw StateError('Downloaded object is not a valid MP4/M4A container.');
+    }
+    verified++;
+  }
+
+  if (verified == 0) {
+    throw StateError('No recording object was verified.');
+  }
+  print('Verified $verified recording object(s) in the explicit target.');
+}
+
+_Options _parseOptions(List<String> args) {
+  if (args.contains('--help')) {
+    print(_usage);
+    exit(0);
+  }
+
+  final values = <String, String>{};
+  var allowProduction = false;
+  for (var i = 0; i < args.length; i++) {
+    final arg = args[i];
+    if (arg == '--allow-production') {
+      allowProduction = true;
       continue;
     }
-    try {
-      final bytes = await c.storage.from('recordings').download(objectPath);
-      final out = '/tmp/cc_verify/rec_${i++}.m4a';
-      File(out).writeAsBytesSync(bytes);
-      print('   ✓ ${objectPath.split('/').last}: ${(bytes.length / 1024).toStringAsFixed(0)}KB '
-          'dur=${r['duration_ms']}ms → $out');
-    } catch (e) {
-      print('   ✗ download FAILED for $objectPath: $e');
+    if (!const {
+      '--url',
+      '--key',
+      '--access-token',
+      '--production-id',
+    }.contains(arg)) {
+      _usageError('Unknown argument: $arg');
+    }
+    if (i + 1 >= args.length || args[i + 1].startsWith('--')) {
+      _usageError('Missing value for $arg');
+    }
+    values[arg] = args[++i];
+  }
+
+  for (final required in const [
+    '--url',
+    '--key',
+    '--access-token',
+    '--production-id',
+  ]) {
+    if ((values[required] ?? '').isEmpty) {
+      _usageError('Missing required argument: $required');
     }
   }
-  print('done.');
-  exit(0);
+
+  final url = Uri.tryParse(values['--url']!);
+  if (url == null || !url.hasScheme || url.host.isEmpty) {
+    _usageError('--url must be an absolute HTTP(S) URL');
+  }
+  if (!_uuid.hasMatch(values['--production-id']!)) {
+    _usageError('--production-id must be a UUID');
+  }
+
+  return _Options(
+    url: values['--url']!,
+    key: values['--key']!,
+    accessToken: values['--access-token']!,
+    productionId: values['--production-id']!,
+    allowProduction: allowProduction,
+  );
+}
+
+Never _usageError(String message) {
+  stderr.writeln('$message\n\n$_usage');
+  exit(64);
 }
 
 String? _objectPathFromUrl(String url) {
   const marker = '/recordings/';
-  final idx = url.indexOf(marker);
-  if (idx < 0) return null;
-  var path = url.substring(idx + marker.length);
-  final q = path.indexOf('?');
-  if (q >= 0) path = path.substring(0, q);
-  return Uri.decodeFull(path);
+  final index = url.indexOf(marker);
+  if (index < 0) return null;
+  final encodedPath = url.substring(index + marker.length).split('?').first;
+  if (encodedPath.isEmpty) return null;
+  return Uri.decodeFull(encodedPath);
 }
 
-class _Cred {
+final _uuid = RegExp(
+  r'^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$',
+);
+
+const _usage = '''Usage: dart run tool/verify_cloud_recordings.dart
+  --url <local-or-staging-supabase-url>
+  --key <publishable-key>
+  --access-token <pre-provisioned-user-jwt>
+  --production-id <seeded-production-uuid>
+  [--allow-production]
+
+The command is read-only and performs no signup or membership mutation.
+Production is refused unless --allow-production is explicit.''';
+
+class _Options {
+  const _Options({
+    required this.url,
+    required this.key,
+    required this.accessToken,
+    required this.productionId,
+    required this.allowProduction,
+  });
+
+  final String url;
+  final String key;
   final String accessToken;
-  final String userId;
-  _Cred(this.accessToken, this.userId);
-}
-
-Future<_Cred?> _auth(String email, String pass) async {
-  final body = jsonEncode({'email': email, 'password': pass});
-  var res = await _post('$_url/auth/v1/signup', body);
-  if (res == null || res['access_token'] == null) {
-    res = await _post('$_url/auth/v1/token?grant_type=password', body);
-  }
-  final at = res?['access_token'] as String?;
-  final uid = (res?['user'] as Map?)?['id'] as String?;
-  if (at == null || uid == null) return null;
-  return _Cred(at, uid);
-}
-
-Future<Map<String, dynamic>?> _post(String url, String body) async {
-  final client = HttpClient();
-  try {
-    final req = await client.postUrl(Uri.parse(url));
-    req.headers.set('Content-Type', 'application/json');
-    req.headers.set('apikey', _key);
-    req.add(utf8.encode(body));
-    final resp = await req.close();
-    final text = await resp.transform(utf8.decoder).join();
-    if (text.isEmpty) return null;
-    return jsonDecode(text) as Map<String, dynamic>;
-  } catch (_) {
-    return null;
-  } finally {
-    client.close();
-  }
+  final String productionId;
+  final bool allowProduction;
 }

@@ -64,13 +64,12 @@ class _SupabaseRecordingCloud implements RecordingCloud {
     required String characterName,
     required String lineId,
     required File audioFile,
-  }) =>
-      _supa.uploadRecording(
-        productionId: productionId,
-        characterName: characterName,
-        lineId: lineId,
-        audioFile: audioFile,
-      );
+  }) => _supa.uploadRecording(
+    productionId: productionId,
+    characterName: characterName,
+    lineId: lineId,
+    audioFile: audioFile,
+  );
 
   @override
   Future<void> saveRecordingMetadata({
@@ -80,15 +79,14 @@ class _SupabaseRecordingCloud implements RecordingCloud {
     required String audioUrl,
     required int durationMs,
     DateTime? recordedAt,
-  }) =>
-      _supa.saveRecordingMetadata(
-        productionId: productionId,
-        lineId: lineId,
-        userId: userId,
-        audioUrl: audioUrl,
-        durationMs: durationMs,
-        recordedAt: recordedAt,
-      );
+  }) => _supa.saveRecordingMetadata(
+    productionId: productionId,
+    lineId: lineId,
+    userId: userId,
+    audioUrl: audioUrl,
+    durationMs: durationMs,
+    recordedAt: recordedAt,
+  );
 
   @override
   Future<Uint8List> downloadRecordingByUrl(String audioUrl) =>
@@ -111,7 +109,7 @@ class RecordingSyncService {
 
   @visibleForTesting
   RecordingSyncService.forTesting(this._cloud, {String? cacheDirectory})
-      : _cacheDir = cacheDirectory;
+    : _cacheDir = cacheDirectory;
 
   static final instance = RecordingSyncService._();
 
@@ -155,7 +153,9 @@ class RecordingSyncService {
       if (data is! List) return;
       var restored = 0;
       for (final entry in data.whereType<Map>()) {
-        final cached = _CachedRecording.fromJson(Map<String, dynamic>.from(entry));
+        final cached = _CachedRecording.fromJson(
+          Map<String, dynamic>.from(entry),
+        );
         if (cached == null) continue;
         if (_cache.containsKey(cached.lineId)) continue;
         if (!File(cached.localPath).existsSync()) continue;
@@ -163,12 +163,17 @@ class RecordingSyncService {
         restored++;
       }
       if (restored > 0) {
-        _dlog.log(LogCategory.general,
-            'RecordingSync: restored $restored cached recording(s) from disk');
+        _dlog.log(
+          LogCategory.general,
+          'RecordingSync: restored $restored cached recording(s) from disk',
+        );
       }
     } catch (e) {
       _dlog.logError(
-          LogCategory.error, 'RecordingSync: cache manifest restore failed', e);
+        LogCategory.error,
+        'RecordingSync: cache manifest restore failed',
+        e,
+      );
     }
   }
 
@@ -190,12 +195,16 @@ class RecordingSyncService {
   void _saveManifest() {
     _manifestChain = (_manifestChain ?? Future.value()).then((_) async {
       try {
-        final snapshot =
-            jsonEncode(_cache.values.map((c) => c.toJson()).toList());
+        final snapshot = jsonEncode(
+          _cache.values.map((c) => c.toJson()).toList(),
+        );
         await File(await _manifestPath()).writeAsString(snapshot);
       } catch (e) {
         _dlog.logError(
-            LogCategory.error, 'RecordingSync: cache manifest save failed', e);
+          LogCategory.error,
+          'RecordingSync: cache manifest save failed',
+          e,
+        );
       }
     });
   }
@@ -206,9 +215,8 @@ class RecordingSyncService {
   /// Callback when a new recording is downloaded and ready
   void Function(String lineId, String localPath)? onRecordingReady;
 
-  /// Callback when a local recording was uploaded during [syncForProduction]
-  /// with (lineId, remoteUrl) — used to persist the remote URL locally.
-  void Function(String lineId, String remoteUrl)? onLocalUploaded;
+  /// Awaited before an upload is considered locally settled.
+  Future<void> Function(String lineId, String remoteUrl)? onLocalUploaded;
 
   /// Get or create the cache directory.
   Future<String> get cacheDir async {
@@ -234,7 +242,8 @@ class RecordingSyncService {
   Future<String> cachePath(String productionId, String lineId) async {
     if (!isSafePathId(productionId) || !isSafePathId(lineId)) {
       throw ArgumentError(
-          'Unsafe recording identifiers (production=$productionId, line=$lineId)');
+        'Unsafe recording identifiers (production=$productionId, line=$lineId)',
+      );
     }
     final dir = await cacheDir;
     final prodDir = p.join(dir, productionId);
@@ -270,8 +279,10 @@ class RecordingSyncService {
     await hydrateCache();
     if (!_cloud.isReady) return 0;
 
-    _dlog.log(LogCategory.general,
-        'RecordingSync: starting for $productionId (${localRecordings.length} local)');
+    _dlog.log(
+      LogCategory.general,
+      'RecordingSync: starting for $productionId (${localRecordings.length} local)',
+    );
 
     // Fetch all cloud recording metadata for this production
     List<Map<String, dynamic>> cloudRecordings;
@@ -281,13 +292,17 @@ class RecordingSyncService {
       // Returning 0 here is indistinguishable from "nothing to sync": the
       // actor rehearses against TTS with no idea their castmates' takes exist.
       _dlog.logError(LogCategory.error, 'RecordingSync: fetch failed', e);
-      _tellUser("Couldn't check for castmates' recordings — rehearsal will "
-          'use computer voices for their lines. Check your connection.');
+      _tellUser(
+        "Couldn't check for castmates' recordings — rehearsal will "
+        'use computer voices for their lines. Check your connection.',
+      );
       return 0;
     }
 
-    _dlog.log(LogCategory.general,
-        'RecordingSync: ${cloudRecordings.length} recordings in cloud');
+    _dlog.log(
+      LogCategory.general,
+      'RecordingSync: ${cloudRecordings.length} recordings in cloud',
+    );
 
     final userId = myUserId ?? _cloud.currentUserId;
 
@@ -303,8 +318,10 @@ class RecordingSyncService {
       // Reject hostile ids at the boundary (see cachePath) — loudly, so a
       // poisoned row is diagnosable rather than a mystery skipped line.
       if (!isSafePathId(lineId)) {
-        _dlog.logError(LogCategory.error,
-            'RecordingSync: ignoring cloud recording with unsafe line_id "$lineId"');
+        _dlog.logError(
+          LogCategory.error,
+          'RecordingSync: ignoring cloud recording with unsafe line_id "$lineId"',
+        );
         continue;
       }
       // Keep the most recent recording per line
@@ -326,36 +343,52 @@ class RecordingSyncService {
 
     // ── Upload local recordings that are missing or newer in cloud ──
     final toUpload = <MapEntry<String, Recording>>[];
+    final toStampLocally = <MapEntry<String, String>>[];
     for (final entry in localRecordings.entries) {
       final recording = entry.value;
 
-      // Skip if already uploaded (has remoteUrl)
       if (recording.remoteUrl != null && recording.remoteUrl!.isNotEmpty) {
         continue;
       }
 
-      // Skip if the cloud already has MY take for this line and it's at least
-      // as new as the local one. (A strictly newer local take — a re-record —
-      // must still be uploaded. Another user's newer take doesn't count: my
-      // row coexists with theirs.)
       final cloud = myCloudByLine[entry.key];
       if (cloud != null &&
           _parseTimestamp(cloud['recorded_at']) >=
               recording.recordedAt.millisecondsSinceEpoch) {
+        final cloudUrl = cloud['audio_url'] as String?;
+        if (cloudUrl != null && cloudUrl.isNotEmpty) {
+          // A prior run may have completed the cloud upload but died or failed
+          // while stamping Drift. Retry only that local persistence step.
+          toStampLocally.add(MapEntry(entry.key, cloudUrl));
+        }
         continue;
       }
 
-      // Skip if file doesn't exist
       if (!File(recording.localPath).existsSync()) continue;
-
       toUpload.add(entry);
     }
 
     int uploaded = 0;
     int uploadFailures = 0;
+    int localStampFailures = 0;
+
+    await _runPooled(toStampLocally, (entry) async {
+      try {
+        await onLocalUploaded?.call(entry.key, entry.value);
+      } catch (e) {
+        localStampFailures++;
+        _dlog.logError(
+          LogCategory.error,
+          'RecordingSync: local upload stamp retry failed for ${entry.key}',
+          e,
+        );
+      }
+    });
+
     await _runPooled(toUpload, (entry) async {
       final lineId = entry.key;
       final recording = entry.value;
+      var cloudSaved = false;
       try {
         final url = await _cloud.uploadRecording(
           productionId: productionId,
@@ -372,21 +405,37 @@ class RecordingSyncService {
           durationMs: recording.durationMs,
           recordedAt: recording.recordedAt,
         );
-
+        cloudSaved = true;
         uploaded++;
-        onLocalUploaded?.call(lineId, url);
-        _dlog.log(LogCategory.general,
-            'RecordingSync: uploaded $lineId (${recording.character})');
+        await onLocalUploaded?.call(lineId, url);
+        _dlog.log(
+          LogCategory.general,
+          'RecordingSync: upload complete line=$lineId',
+        );
       } catch (e) {
-        uploadFailures++;
-        _dlog.logError(
-            LogCategory.error, 'RecordingSync: upload failed for $lineId', e);
+        if (cloudSaved) {
+          localStampFailures++;
+          _dlog.logError(
+            LogCategory.error,
+            'RecordingSync: uploaded $lineId but local URL stamp failed',
+            e,
+          );
+        } else {
+          uploadFailures++;
+          _dlog.logError(
+            LogCategory.error,
+            'RecordingSync: upload failed for $lineId',
+            e,
+          );
+        }
       }
     });
 
     if (uploaded > 0) {
-      _dlog.log(LogCategory.general,
-          'RecordingSync: uploaded $uploaded local recordings');
+      _dlog.log(
+        LogCategory.general,
+        'RecordingSync: uploaded $uploaded local recordings',
+      );
     }
 
     // ── Download cloud recordings not cached locally ──
@@ -428,8 +477,10 @@ class RecordingSyncService {
       // Download the recording by its stored URL (resolves the exact object).
       try {
         final audioUrl = cloud['audio_url'] as String? ?? '';
-        final characterName =
-            _extractCharacterFromUrl(audioUrl, productionId); // for display only
+        final characterName = _extractCharacterFromUrl(
+          audioUrl,
+          productionId,
+        ); // for display only
 
         final bytes = await _cloud.downloadRecordingByUrl(audioUrl);
 
@@ -449,22 +500,28 @@ class RecordingSyncService {
         downloaded++;
         onRecordingReady?.call(lineId, path);
 
-        _dlog.log(LogCategory.general,
-            'RecordingSync: downloaded $lineId ($characterName)');
+        _dlog.log(
+          LogCategory.general,
+          'RecordingSync: download complete line=$lineId',
+        );
       } catch (e) {
         downloadFailures++;
         _dlog.logError(
-            LogCategory.error, 'RecordingSync: download failed for $lineId', e);
+          LogCategory.error,
+          'RecordingSync: download failed for $lineId',
+          e,
+        );
       }
     });
 
     if (downloaded > 0) _saveManifest();
 
     _dlog.log(
-        LogCategory.general,
-        'RecordingSync: done — $uploaded uploaded, $downloaded downloaded, '
-        '$uploadFailures upload failure(s), $downloadFailures '
-        'download failure(s)');
+      LogCategory.general,
+      'RecordingSync: done — $uploaded uploaded, $downloaded downloaded, '
+      '$uploadFailures upload failure(s), $localStampFailures local stamp '
+      'failure(s), $downloadFailures download failure(s)',
+    );
 
     // Per-transfer failures were log-only, so "every transfer failed" looked
     // exactly like "nothing to sync": the actor rehearses against TTS never
@@ -476,6 +533,9 @@ class RecordingSyncService {
       if (uploadFailures > 0)
         "$uploadFailures of your recordings couldn't be uploaded — castmates "
             "won't hear them yet",
+      if (localStampFailures > 0)
+        "$localStampFailures uploaded recording(s) still need their local "
+            'sync status saved and will retry without re-uploading audio',
     ];
     if (trouble.isNotEmpty) {
       _tellUser('${trouble.join('. ')}.');
@@ -490,10 +550,9 @@ class RecordingSyncService {
   /// SnackBar must never take down a sync; the failure is always logged first.
   void _tellUser(String message) {
     try {
-      rootScaffoldMessengerKey.currentState?.showAutoToast(SnackBar(
-        content: Text(message),
-        duration: const Duration(seconds: 8),
-      ));
+      rootScaffoldMessengerKey.currentState?.showAutoToast(
+        SnackBar(content: Text(message), duration: const Duration(seconds: 8)),
+      );
     } catch (e) {
       debugPrint('RecordingSync: could not show "$message" ($e)');
     }
@@ -510,7 +569,9 @@ class RecordingSyncService {
   }) async {
     if (items.isEmpty) return;
     var next = 0;
-    final workers = List.generate(concurrency.clamp(1, items.length), (_) async {
+    final workers = List.generate(concurrency.clamp(1, items.length), (
+      _,
+    ) async {
       while (true) {
         final i = next++; // safe: single isolate, no await between read+bump
         if (i >= items.length) break;
@@ -540,7 +601,8 @@ class RecordingSyncService {
       remoteUrl: null,
       durationMs: cached.durationMs,
       recordedAt: DateTime.fromMillisecondsSinceEpoch(
-          cached.recordedAt.clamp(0, 1 << 52)),
+        cached.recordedAt.clamp(0, 1 << 52),
+      ),
     );
   }
 
@@ -568,7 +630,8 @@ class RecordingSyncService {
         remoteUrl: null,
         durationMs: cached.durationMs,
         recordedAt: DateTime.fromMillisecondsSinceEpoch(
-            cached.recordedAt.clamp(0, 1 << 52)),
+          cached.recordedAt.clamp(0, 1 << 52),
+        ),
       );
     }
     return result;
@@ -578,10 +641,7 @@ class RecordingSyncService {
 
   /// Subscribe to new recordings for a production.
   /// Downloads them as they arrive.
-  void subscribe({
-    required String productionId,
-    String? myUserId,
-  }) {
+  void subscribe({required String productionId, String? myUserId}) {
     unsubscribe();
 
     final supa = SupabaseService.instance;
@@ -598,10 +658,11 @@ class RecordingSyncService {
       );
 
       _dlog.log(
-          LogCategory.general, 'RecordingSync: subscribed to $productionId');
+        LogCategory.general,
+        'RecordingSync: subscribed to $productionId',
+      );
     } catch (e) {
-      _dlog.logError(
-          LogCategory.error, 'RecordingSync: subscribe failed', e);
+      _dlog.logError(LogCategory.error, 'RecordingSync: subscribe failed', e);
     }
   }
 
@@ -617,8 +678,10 @@ class RecordingSyncService {
     final recordUserId = payload['user_id'] as String?;
     if (lineId == null) return;
     if (!isSafePathId(lineId)) {
-      _dlog.logError(LogCategory.error,
-          'RecordingSync: ignoring realtime recording with unsafe line_id "$lineId"');
+      _dlog.logError(
+        LogCategory.error,
+        'RecordingSync: ignoring realtime recording with unsafe line_id "$lineId"',
+      );
       return;
     }
 
@@ -626,11 +689,15 @@ class RecordingSyncService {
     if (recordUserId == (myUserId ?? _cloud.currentUserId)) return;
 
     final audioUrl = payload['audio_url'] as String? ?? '';
-    final characterName =
-        _extractCharacterFromUrl(audioUrl, productionId); // for display only
+    final characterName = _extractCharacterFromUrl(
+      audioUrl,
+      productionId,
+    ); // for display only
 
-    _dlog.log(LogCategory.general,
-        'RecordingSync: realtime — new recording for $lineId ($characterName)');
+    _dlog.log(
+      LogCategory.general,
+      'RecordingSync: realtime recording received line=$lineId',
+    );
 
     try {
       final bytes = await _cloud.downloadRecordingByUrl(audioUrl);
@@ -651,8 +718,11 @@ class RecordingSyncService {
 
       onRecordingReady?.call(lineId, path);
     } catch (e) {
-      _dlog.logError(LogCategory.error,
-          'RecordingSync: realtime download failed for $lineId', e);
+      _dlog.logError(
+        LogCategory.error,
+        'RecordingSync: realtime download failed for $lineId',
+        e,
+      );
     }
   }
 
@@ -665,7 +735,10 @@ class RecordingSyncService {
         SupabaseService.instance.unsubscribe(channel);
       } catch (e) {
         _dlog.logError(
-            LogCategory.error, 'RecordingSync: unsubscribe failed', e);
+          LogCategory.error,
+          'RecordingSync: unsubscribe failed',
+          e,
+        );
       }
     }
   }
@@ -754,14 +827,14 @@ class _CachedRecording {
   });
 
   Map<String, dynamic> toJson() => {
-        'lineId': lineId,
-        'userId': userId,
-        'localPath': localPath,
-        'recordedAt': recordedAt,
-        'durationMs': durationMs,
-        'character': character,
-        'productionId': productionId,
-      };
+    'lineId': lineId,
+    'userId': userId,
+    'localPath': localPath,
+    'recordedAt': recordedAt,
+    'durationMs': durationMs,
+    'character': character,
+    'productionId': productionId,
+  };
 
   static _CachedRecording? fromJson(Map<String, dynamic> json) {
     final lineId = json['lineId'] as String?;

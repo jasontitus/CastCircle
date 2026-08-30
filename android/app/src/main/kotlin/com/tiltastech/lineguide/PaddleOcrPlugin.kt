@@ -5,8 +5,10 @@ import ai.onnxruntime.OrtEnvironment
 import ai.onnxruntime.OrtSession
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Matrix
+import android.graphics.Paint
 import android.graphics.Rect
 import android.graphics.pdf.PdfRenderer
 import android.os.Handler
@@ -18,6 +20,12 @@ import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
 import java.io.File
 import java.nio.FloatBuffer
+import java.util.concurrent.ArrayBlockingQueue
+import java.util.concurrent.RejectedExecutionException
+import java.util.concurrent.ThreadPoolExecutor
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicReference
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.roundToInt
@@ -38,15 +46,81 @@ import kotlin.math.roundToInt
 class PaddleOcrPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
 
     private lateinit var channel: MethodChannel
-    private var binding: FlutterPlugin.FlutterPluginBinding? = null
     private val mainHandler = Handler(Looper.getMainLooper())
+    private val lifecycleLock = Any()
+    @Volatile private var attachment: Attachment? = null
+    private var nextGeneration = 0L
 
-    private var env: OrtEnvironment? = null
-    private var detSession: OrtSession? = null
-    private var recSession: OrtSession? = null
-    private var keys: List<String> = emptyList()
-    @Volatile private var ready = false
-    @Volatile private var loading = false
+    private class Attachment(val generation: Long) {
+        val workerThread = AtomicReference<Thread?>()
+        lateinit var executor: ThreadPoolExecutor
+        @Volatile var detached = false
+        @Volatile var loading = true
+        @Volatile var ready = false
+        var env: OrtEnvironment? = null
+        var detSession: OrtSession? = null
+        var recSession: OrtSession? = null
+        var keys: List<String> = emptyList()
+        val detScratch = TensorScratch()
+        val recScratch = TensorScratch()
+    }
+
+    private class TensorScratch : AutoCloseable {
+        private var pixels = IntArray(0)
+        private var values = FloatArray(0)
+        private var scaledBitmap: Bitmap? = null
+        private var canvas: Canvas? = null
+        private val paint = Paint(Paint.FILTER_BITMAP_FLAG)
+
+        fun convert(
+            src: Bitmap,
+            width: Int,
+            height: Int,
+            mean: FloatArray,
+            std: FloatArray,
+        ): FloatBuffer {
+            val plane = width * height
+            if (pixels.size < plane) pixels = IntArray(plane)
+            if (values.size < plane * 3) values = FloatArray(plane * 3)
+
+            val image = if (src.width == width && src.height == height) {
+                src
+            } else {
+                ensureBitmap(width, height)
+                canvas!!.drawBitmap(src, null, Rect(0, 0, width, height), paint)
+                scaledBitmap!!
+            }
+            image.getPixels(pixels, 0, width, 0, 0, width, height)
+            for (i in 0 until plane) {
+                val pixel = pixels[i]
+                values[i] = (((pixel shr 16) and 0xFF) / 255f - mean[0]) / std[0]
+                values[plane + i] =
+                    (((pixel shr 8) and 0xFF) / 255f - mean[1]) / std[1]
+                values[2 * plane + i] = ((pixel and 0xFF) / 255f - mean[2]) / std[2]
+            }
+            return FloatBuffer.wrap(values, 0, plane * 3)
+        }
+
+        private fun ensureBitmap(width: Int, height: Int) {
+            val current = scaledBitmap
+            if (current != null && current.width >= width && current.height >= height) return
+            val newWidth = max(width, current?.width ?: 0)
+            val newHeight = max(height, current?.height ?: 0)
+            canvas?.setBitmap(null)
+            current?.recycle()
+            scaledBitmap = Bitmap.createBitmap(newWidth, newHeight, Bitmap.Config.ARGB_8888)
+            canvas = Canvas(scaledBitmap!!)
+        }
+
+        override fun close() {
+            canvas?.setBitmap(null)
+            canvas = null
+            scaledBitmap?.recycle()
+            scaledBitmap = null
+            pixels = IntArray(0)
+            values = FloatArray(0)
+        }
+    }
 
     // Detection / recognition constants — keep in lockstep with the Swift
     // plugin (Mac-validated: unclip 0.4 from a 9-scan corpus sweep, render
@@ -60,75 +134,144 @@ class PaddleOcrPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
     private val recMaxWidth = 1024
     private val detMean = floatArrayOf(0.485f, 0.456f, 0.406f)
     private val detStd = floatArrayOf(0.229f, 0.224f, 0.225f)
+    private val recMean = floatArrayOf(0.5f, 0.5f, 0.5f)
+    private val recStd = floatArrayOf(0.5f, 0.5f, 0.5f)
 
     override fun onAttachedToEngine(binding: FlutterPlugin.FlutterPluginBinding) {
-        this.binding = binding
+        val state = synchronized(lifecycleLock) {
+            Attachment(++nextGeneration).also { created ->
+                created.executor = ThreadPoolExecutor(
+                    1,
+                    1,
+                    0L,
+                    TimeUnit.MILLISECONDS,
+                    ArrayBlockingQueue(MAX_PENDING_OCR_JOBS),
+                    { runnable ->
+                        Thread(runnable, "paddle-ocr-${created.generation}").also {
+                            created.workerThread.set(it)
+                        }
+                    },
+                    ThreadPoolExecutor.AbortPolicy(),
+                )
+                attachment = created
+            }
+        }
         channel = MethodChannel(binding.binaryMessenger, "com.lineguide/paddle_ocr")
         channel.setMethodCallHandler(this)
-        // Load models off the main thread; `ready` gates the channel meanwhile.
-        loading = true
-        Thread({ loadModels(binding) }, "paddle-ocr-load").start()
+        // Loading is the executor's first task, so its FIFO queue is the
+        // single shared completion barrier for requests arriving at startup.
+        state.executor.execute { loadModels(state, binding) }
     }
 
     override fun onDetachedFromEngine(binding: FlutterPlugin.FlutterPluginBinding) {
         channel.setMethodCallHandler(null)
-        this.binding = null
-        detSession?.close()
-        recSession?.close()
-        detSession = null
-        recSession = null
-        ready = false
+        val state = synchronized(lifecycleLock) {
+            val current = attachment ?: return
+            attachment = null
+            current.detached = true
+            current.ready = false
+            current
+        }
+
+        val cancelled = ArrayList<Runnable>()
+        state.executor.queue.drainTo(cancelled)
+        cancelled.filterIsInstance<OcrJob>().forEach { it.cancelSilently() }
+        state.workerThread.get()?.interrupt()
+        // Cleanup runs after any in-flight ORT call, so sessions are never
+        // closed concurrently with inference. The executor is then terminal.
+        state.executor.execute { closeAttachment(state) }
+        state.executor.shutdown()
     }
 
-    private fun loadModels(binding: FlutterPlugin.FlutterPluginBinding) {
+    private fun loadModels(
+        state: Attachment,
+        binding: FlutterPlugin.FlutterPluginBinding,
+    ) {
+        var localDet: OrtSession? = null
+        var localRec: OrtSession? = null
         try {
             val t0 = System.currentTimeMillis()
             val assets = binding.applicationContext.assets
-            val fa = binding.flutterAssets
+            val flutterAssets = binding.flutterAssets
             fun readAsset(name: String): ByteArray =
-                assets.open(fa.getAssetFilePathByName(name)).use { it.readBytes() }
+                assets.open(flutterAssets.getAssetFilePathByName(name)).use { it.readBytes() }
 
-            val e = OrtEnvironment.getEnvironment()
-            val opts = OrtSession.SessionOptions()
-            // Physical performance cores, capped — mirrors the Swift plugin's
-            // finding that 0 (auto) under-threads and all-logical-cores
-            // oversubscribes two sessions. Big.LITTLE phones report all cores,
-            // so half of them approximates the performance cluster.
-            val threads = max(2, min(Runtime.getRuntime().availableProcessors() / 2, 8))
-            opts.setIntraOpNumThreads(threads)
-            opts.addConfigEntry("session.intra_op.allow_spinning", "0")
-            opts.setOptimizationLevel(OrtSession.SessionOptions.OptLevel.ALL_OPT)
-            detSession = e.createSession(readAsset("assets/paddle_ocr/det.onnx"), opts)
-            recSession = e.createSession(readAsset("assets/paddle_ocr/rec.onnx"), opts)
-            keys = String(readAsset("assets/paddle_ocr/keys.txt"), Charsets.UTF_8)
-                .split("\n").dropLastWhile { it.isEmpty() }
-            env = e
-            ready = true
-            Log.i(TAG, "models loaded in ${System.currentTimeMillis() - t0}ms — ${keys.size} keys, $threads threads")
+            val detBytes = readAsset("assets/paddle_ocr/det.onnx")
+            val recBytes = readAsset("assets/paddle_ocr/rec.onnx")
+            val localKeys = String(
+                readAsset("assets/paddle_ocr/keys.txt"),
+                Charsets.UTF_8,
+            ).split("\n").dropLastWhile { it.isEmpty() }
+            val environment = OrtEnvironment.getEnvironment()
+            val threads = max(
+                2,
+                min(Runtime.getRuntime().availableProcessors() / 2, 8),
+            )
+            OrtSession.SessionOptions().use { options ->
+                options.setIntraOpNumThreads(threads)
+                options.addConfigEntry("session.intra_op.allow_spinning", "0")
+                options.setOptimizationLevel(OrtSession.SessionOptions.OptLevel.ALL_OPT)
+                localDet = environment.createSession(detBytes, options)
+                localRec = environment.createSession(recBytes, options)
+            }
+
+            val published = synchronized(lifecycleLock) {
+                if (attachment !== state || state.detached) {
+                    false
+                } else {
+                    state.env = environment
+                    state.detSession = localDet
+                    state.recSession = localRec
+                    state.keys = localKeys
+                    state.ready = true
+                    localDet = null
+                    localRec = null
+                    true
+                }
+            }
+            if (published) {
+                Log.i(
+                    TAG,
+                    "models loaded in ${System.currentTimeMillis() - t0}ms — " +
+                        "${localKeys.size} keys, $threads threads",
+                )
+            }
         } catch (t: Throwable) {
-            Log.e(TAG, "model load failed — Dart will fall back to ML Kit", t)
+            if (!state.detached) {
+                Log.e(TAG, "model load failed — Dart will fall back to ML Kit", t)
+            }
         } finally {
-            loading = false
+            state.loading = false
+            closeSession(localRec, "unpublished recognition session")
+            closeSession(localDet, "unpublished detection session")
+        }
+    }
+
+    private fun closeAttachment(state: Attachment) {
+        closeSession(state.recSession, "recognition session")
+        state.recSession = null
+        closeSession(state.detSession, "detection session")
+        state.detSession = null
+        state.detScratch.close()
+        state.recScratch.close()
+        state.env = null
+        state.keys = emptyList()
+        state.loading = false
+        state.ready = false
+    }
+
+    private fun closeSession(session: OrtSession?, description: String) {
+        if (session == null) return
+        try {
+            session.close()
+        } catch (t: Throwable) {
+            Log.w(TAG, "Could not close $description", t)
         }
     }
 
     // ── Channel ─────────────────────────────────────────────
 
     override fun onMethodCall(call: MethodCall, result: MethodChannel.Result) {
-        if (!ready) {
-            // Give an in-flight model load a moment before declaring NOT_READY
-            // (imports right after launch land here; load takes ~1s).
-            if (loading) {
-                Thread {
-                    val deadline = System.currentTimeMillis() + 15_000
-                    while (loading && System.currentTimeMillis() < deadline) Thread.sleep(100)
-                    mainHandler.post { onMethodCall(call, result) }
-                }.start()
-                return
-            }
-            result.error("NOT_READY", "PaddleOCR models not loaded", null)
-            return
-        }
         when (call.method) {
             "recognizeText" -> {
                 val path = call.argument<String>("path")
@@ -136,15 +279,7 @@ class PaddleOcrPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
                     result.error("INVALID_ARGS", "Missing 'path'", null)
                     return
                 }
-                Thread({
-                    val blocks = try {
-                        BitmapFactory.decodeFile(path)?.let { ocrImage(it) } ?: emptyList()
-                    } catch (t: Throwable) {
-                        Log.e(TAG, "recognizeText failed", t)
-                        emptyList()
-                    }
-                    mainHandler.post { result.success(mapOf("blocks" to blocks)) }
-                }, "paddle-ocr-img").start()
+                enqueue(result) { job -> recognizeText(path, job) }
             }
             "ocrPdf" -> {
                 val path = call.argument<String>("path")
@@ -152,7 +287,7 @@ class PaddleOcrPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
                     result.error("INVALID_ARGS", "Missing 'path'", null)
                     return
                 }
-                Thread({ ocrPdf(path, result) }, "paddle-ocr-pdf").start()
+                enqueue(result) { job -> ocrPdf(path, job) }
             }
             "ocrPdfPage" -> {
                 val path = call.argument<String>("path")
@@ -161,97 +296,213 @@ class PaddleOcrPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
                     result.error("INVALID_ARGS", "Missing 'path'/'page'", null)
                     return
                 }
-                Thread({ ocrPdfPage(path, page, result) }, "paddle-ocr-page").start()
+                enqueue(result) { job -> ocrPdfPage(path, page, job) }
             }
             else -> result.notImplemented()
         }
     }
 
-    /** OCR a single 1-based page with full normalized rects — the page
-     * viewer uses this to highlight where a flagged line's text sits. */
-    private fun ocrPdfPage(path: String, pageNumber: Int, result: MethodChannel.Result) {
+    private fun enqueue(
+        result: MethodChannel.Result,
+        operation: (OcrJob) -> Unit,
+    ) {
+        val state = attachment
+        if (state == null || state.detached) {
+            result.error("DETACHED", "PaddleOCR is not attached", null)
+            return
+        }
+        val job = OcrJob(state, result, operation)
         try {
-            ParcelFileDescriptor.open(File(path), ParcelFileDescriptor.MODE_READ_ONLY).use { fd ->
-                PdfRenderer(fd).use { renderer ->
-                    if (pageNumber < 1 || pageNumber > renderer.pageCount) {
-                        mainHandler.post {
-                            result.error("PDF_PAGE_FAILED", "No page $pageNumber", null)
-                        }
-                        return
-                    }
-                    renderer.openPage(pageNumber - 1).use { page ->
-                        val scale = min(6.0, max(1.0, targetRenderLongPx /
-                            max(page.width, page.height).toDouble()))
-                        val bmp = Bitmap.createBitmap(
-                            (page.width * scale).toInt(), (page.height * scale).toInt(),
-                            Bitmap.Config.ARGB_8888)
-                        bmp.eraseColor(Color.WHITE)
-                        page.render(bmp, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
-                        val lines = try {
-                            ocrImage(bmp)
-                        } finally {
-                            bmp.recycle()
-                        }
-                        mainHandler.post { result.success(mapOf("lines" to lines)) }
-                    }
-                }
+            state.executor.execute(job)
+        } catch (_: RejectedExecutionException) {
+            if (isCurrent(state)) {
+                job.error("BUSY", "PaddleOCR has too many pending requests")
+            } else {
+                job.cancelSilently()
             }
-        } catch (t: Throwable) {
-            mainHandler.post { result.error("PDF_PAGE_FAILED", "$t", null) }
         }
     }
 
-    private fun ocrPdf(path: String, result: MethodChannel.Result) {
+    private inner class OcrJob(
+        private val state: Attachment,
+        private val result: MethodChannel.Result,
+        private val operation: (OcrJob) -> Unit,
+    ) : Runnable {
+        private val completed = AtomicBoolean(false)
+
+        override fun run() {
+            if (!isCurrent(state)) {
+                cancelSilently()
+                return
+            }
+            if (!state.ready) {
+                error("NOT_READY", "PaddleOCR models not loaded")
+                return
+            }
+            try {
+                operation(this)
+            } catch (t: Throwable) {
+                if (isCurrent(state)) {
+                    Log.e(TAG, "OCR job failed", t)
+                    error("OCR_FAILED", t.toString())
+                } else {
+                    cancelSilently()
+                }
+            }
+        }
+
+        fun success(value: Any?) = complete { it.success(value) }
+
+        fun error(code: String, message: String) =
+            complete { it.error(code, message, null) }
+
+        fun cancelSilently() {
+            completed.set(true)
+        }
+
+        private fun complete(completion: (MethodChannel.Result) -> Unit) {
+            if (!completed.compareAndSet(false, true)) return
+            mainHandler.post {
+                if (isCurrent(state)) completion(result)
+            }
+        }
+
+        fun state(): Attachment = state
+    }
+
+    private fun isCurrent(state: Attachment): Boolean =
+        attachment === state && !state.detached
+
+    private fun recognizeText(path: String, job: OcrJob) {
+        val bitmap = BitmapFactory.decodeFile(path)
+        val blocks = if (bitmap == null) {
+            emptyList()
+        } else {
+            try {
+                ocrImage(job.state(), bitmap)
+            } catch (t: Throwable) {
+                Log.e(TAG, "recognizeText failed", t)
+                emptyList()
+            } finally {
+                bitmap.recycle()
+            }
+        }
+        job.success(mapOf("blocks" to blocks))
+    }
+
+    /** OCR a single 1-based page with full normalized rects — the page
+     * viewer uses this to highlight where a flagged line's text sits. */
+    private fun ocrPdfPage(path: String, pageNumber: Int, job: OcrJob) {
+        try {
+            if (Thread.currentThread().isInterrupted) throw InterruptedException()
+            ParcelFileDescriptor.open(File(path), ParcelFileDescriptor.MODE_READ_ONLY).use { fd ->
+                PdfRenderer(fd).use { renderer ->
+                    if (pageNumber < 1 || pageNumber > renderer.pageCount) {
+                        job.error("PDF_PAGE_FAILED", "No page $pageNumber")
+                        return
+                    }
+                    renderer.openPage(pageNumber - 1).use { page ->
+                        val scale = min(
+                            6.0,
+                            max(
+                                1.0,
+                                targetRenderLongPx / max(page.width, page.height).toDouble(),
+                            ),
+                        )
+                        val bitmap = Bitmap.createBitmap(
+                            (page.width * scale).toInt(),
+                            (page.height * scale).toInt(),
+                            Bitmap.Config.ARGB_8888,
+                        )
+                        bitmap.eraseColor(Color.WHITE)
+                        page.render(
+                            bitmap,
+                            null,
+                            null,
+                            PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY,
+                        )
+                        val lines = try {
+                            ocrImage(job.state(), bitmap)
+                        } finally {
+                            bitmap.recycle()
+                        }
+                        job.success(mapOf("lines" to lines))
+                    }
+                }
+            }
+        } catch (t: Throwable) {
+            job.error("PDF_PAGE_FAILED", t.toString())
+        }
+    }
+
+    private fun ocrPdf(path: String, job: OcrJob) {
         val fd = try {
             ParcelFileDescriptor.open(File(path), ParcelFileDescriptor.MODE_READ_ONLY)
         } catch (t: Throwable) {
-            mainHandler.post { result.error("PDF_OPEN_FAILED", "Could not open PDF: $t", null) }
+            job.error("PDF_OPEN_FAILED", "Could not open PDF: $t")
             return
         }
         try {
-            // fd.use: if the PdfRenderer constructor throws on a corrupt
-            // PDF, .use on the renderer never runs and the fd leaked —
-            // repeated corrupt imports exhausted the fd table.
             fd.use { openFd ->
-            PdfRenderer(openFd).use { renderer ->
-                val pageCount = renderer.pageCount
-                val pages = ArrayList<Map<String, Any>>(pageCount)
-                var failed = 0
-                val jobStart = System.currentTimeMillis()
-                for (i in 0 until pageCount) {
-                    mainHandler.post {
-                        channel.invokeMethod(
-                            "ocrProgress", mapOf("page" to i + 1, "pageCount" to pageCount))
-                    }
-                    try {
-                        val t0 = System.currentTimeMillis()
-                        val lines = renderer.openPage(i).use { page ->
-                            val bmp = renderPage(page)
-                            try {
-                                ocrImage(bmp)
-                            } finally {
-                                bmp.recycle()
+                PdfRenderer(openFd).use { renderer ->
+                    val pageCount = renderer.pageCount
+                    val pages = ArrayList<Map<String, Any>>(pageCount)
+                    var failed = 0
+                    val jobStart = System.currentTimeMillis()
+                    for (i in 0 until pageCount) {
+                        if (Thread.currentThread().isInterrupted) throw InterruptedException()
+                        postProgress(job.state(), i + 1, pageCount)
+                        try {
+                            val t0 = System.currentTimeMillis()
+                            val lines = renderer.openPage(i).use { page ->
+                                val bitmap = renderPage(page)
+                                try {
+                                    ocrImage(job.state(), bitmap)
+                                } finally {
+                                    bitmap.recycle()
+                                }
                             }
+                            pages.add(mapOf("page" to i + 1, "lines" to lines))
+                            Log.i(
+                                TAG,
+                                "page ${i + 1}/$pageCount — ${lines.size} lines in " +
+                                    "${System.currentTimeMillis() - t0}ms " +
+                                    "(det ${lastDetMs}ms, rec ${lastRecMs}ms)",
+                            )
+                        } catch (t: Throwable) {
+                            if (t is InterruptedException) throw t
+                            Log.e(TAG, "page ${i + 1} failed", t)
+                            failed++
                         }
-                        pages.add(mapOf("page" to i + 1, "lines" to lines))
-                        Log.i(TAG, "page ${i + 1}/$pageCount — ${lines.size} lines in " +
-                            "${System.currentTimeMillis() - t0}ms " +
-                            "(det ${lastDetMs}ms, rec ${lastRecMs}ms)")
-                    } catch (t: Throwable) {
-                        Log.e(TAG, "page ${i + 1} failed", t)
-                        failed++
                     }
+                    val total = (System.currentTimeMillis() - jobStart) / 1000.0
+                    Log.i(
+                        TAG,
+                        "$pageCount pages in ${"%.1f".format(total)}s " +
+                            "(${"%.2f".format(total / max(pageCount, 1))} s/page)",
+                    )
+                    job.success(
+                        mapOf(
+                            "pages" to pages,
+                            "pageCount" to pageCount,
+                            "failedPages" to failed,
+                        ),
+                    )
                 }
-                val total = (System.currentTimeMillis() - jobStart) / 1000.0
-                Log.i(TAG, "$pageCount pages in ${"%.1f".format(total)}s (${"%.2f".format(total / max(pageCount, 1))} s/page)")
-                mainHandler.post {
-                    result.success(
-                        mapOf("pages" to pages, "pageCount" to pageCount, "failedPages" to failed))
-                }
-            }
             }
         } catch (t: Throwable) {
-            mainHandler.post { result.error("PDF_OCR_FAILED", "$t", null) }
+            job.error("PDF_OCR_FAILED", t.toString())
+        }
+    }
+
+    private fun postProgress(state: Attachment, page: Int, pageCount: Int) {
+        mainHandler.post {
+            if (isCurrent(state)) {
+                channel.invokeMethod(
+                    "ocrProgress",
+                    mapOf("page" to page, "pageCount" to pageCount),
+                )
+            }
         }
     }
 
@@ -282,9 +533,9 @@ class PaddleOcrPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
     private var lastDetMs = 0L
     private var lastRecMs = 0L
 
-    private fun ocrImage(bmp: Bitmap): List<Map<String, Any>> {
-        val det = detSession ?: return emptyList()
-        val rec = recSession ?: return emptyList()
+    private fun ocrImage(state: Attachment, bmp: Bitmap): List<Map<String, Any>> {
+        val det = state.detSession ?: return emptyList()
+        val rec = state.recSession ?: return emptyList()
         val tDet0 = System.currentTimeMillis()
         val origW = bmp.width
         val origH = bmp.height
@@ -292,9 +543,13 @@ class PaddleOcrPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
         val ratio = min(detLimitSide.toFloat() / max(origW, origH).toFloat(), 1.0f)
         val newW = max(32, ((origW * ratio / 32).roundToInt()) * 32)
         val newH = max(32, ((origH * ratio / 32).roundToInt()) * 32)
-        val detIn = imageToTensor(bmp, newW, newH, detMean, detStd)
-        val (prob, pShape) = run(det, detIn, longArrayOf(1, 3, newH.toLong(), newW.toLong()))
-            ?: return emptyList()
+        val detInput = state.detScratch.convert(bmp, newW, newH, detMean, detStd)
+        val (prob, pShape) = run(
+            state,
+            det,
+            detInput,
+            longArrayOf(1, 3, newH.toLong(), newW.toLong()),
+        ) ?: return emptyList()
         if (pShape.size < 2) return emptyList()
         val mH = pShape[pShape.size - 2].toInt()
         val mW = pShape[pShape.size - 1].toInt()
@@ -307,9 +562,10 @@ class PaddleOcrPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
         val fOrigW = max(origW, 1).toDouble()
         val fOrigH = max(origH, 1).toDouble()
         for (box in boxes.sortedBy { it.top }) {
+            if (Thread.currentThread().isInterrupted) throw InterruptedException()
             val crop = cropBitmap(bmp, box) ?: continue
             try {
-                val (text, conf) = recognize(crop, rec) ?: continue
+                val (text, conf) = recognize(state, crop, rec) ?: continue
                 if (text.isNotEmpty()) {
                     lines.add(
                         mapOf(
@@ -426,17 +682,23 @@ class PaddleOcrPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
     }
 
     /** Recognize one cropped text-line image → (text, confidence) via CTC greedy. */
-    private fun recognize(crop: Bitmap, rec: OrtSession): Pair<String, Double>? {
+    private fun recognize(
+        state: Attachment,
+        crop: Bitmap,
+        rec: OrtSession,
+    ): Pair<String, Double>? {
         val h = crop.height
         val w = crop.width
         if (h == 0) return null
         var rw = (recHeight.toFloat() * w / h).roundToInt()
         rw = max(16, min(rw, recMaxWidth))
-        val mean = floatArrayOf(0.5f, 0.5f, 0.5f)
-        val std = floatArrayOf(0.5f, 0.5f, 0.5f)
-        val inp = imageToTensor(crop, rw, recHeight, mean, std)
-        val (out, shape) = run(rec, inp, longArrayOf(1, 3, recHeight.toLong(), rw.toLong()))
-            ?: return null
+        val input = state.recScratch.convert(crop, rw, recHeight, recMean, recStd)
+        val (out, shape) = run(
+            state,
+            rec,
+            input,
+            longArrayOf(1, 3, recHeight.toLong(), rw.toLong()),
+        ) ?: return null
         if (shape.size != 3) return null
         val T = shape[1].toInt()
         val C = shape[2].toInt()
@@ -454,7 +716,7 @@ class PaddleOcrPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
             }
             if (best != 0 && best != prev) {
                 val idx = best - 1
-                if (idx < keys.size) sb.append(keys[idx]) else sb.append(' ')
+                if (idx < state.keys.size) sb.append(state.keys[idx]) else sb.append(' ')
                 probSum += bestP
                 emitted++
             }
@@ -466,38 +728,22 @@ class PaddleOcrPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
 
     // ── Helpers ─────────────────────────────────────────────
 
-    /** Bitmap → NCHW float tensor (RGB), normalized `(p/255 - mean)/std`. */
-    private fun imageToTensor(src: Bitmap, w: Int, h: Int, mean: FloatArray, std: FloatArray): FloatArray {
-        val scaled = if (src.width == w && src.height == h) src
-        else Bitmap.createScaledBitmap(src, w, h, true)
-        try {
-            val pixels = IntArray(w * h)
-            scaled.getPixels(pixels, 0, w, 0, 0, w, h)
-            val plane = w * h
-            val out = FloatArray(3 * plane)
-            for (i in 0 until plane) {
-                val p = pixels[i]
-                out[i] = (((p shr 16) and 0xFF) / 255f - mean[0]) / std[0]
-                out[plane + i] = (((p shr 8) and 0xFF) / 255f - mean[1]) / std[1]
-                out[2 * plane + i] = ((p and 0xFF) / 255f - mean[2]) / std[2]
-            }
-            return out
-        } finally {
-            if (scaled !== src) scaled.recycle()
-        }
-    }
-
     /** Run a single-input/single-output float model → (data, shape). */
-    private fun run(session: OrtSession, data: FloatArray, shape: LongArray): Pair<FloatArray, LongArray>? {
-        val e = env ?: return null
-        val inName = session.inputNames.firstOrNull() ?: "x"
-        OnnxTensor.createTensor(e, FloatBuffer.wrap(data), shape).use { tensor ->
-            session.run(mapOf(inName to tensor)).use { results ->
+    private fun run(
+        state: Attachment,
+        session: OrtSession,
+        data: FloatBuffer,
+        shape: LongArray,
+    ): Pair<FloatArray, LongArray>? {
+        val environment = state.env ?: return null
+        val inputName = session.inputNames.firstOrNull() ?: "x"
+        OnnxTensor.createTensor(environment, data, shape).use { tensor ->
+            session.run(mapOf(inputName to tensor)).use { results ->
                 val value = results[0] as? OnnxTensor ?: return null
                 val outShape = value.info.shape
-                val buf = value.floatBuffer
-                val floats = FloatArray(buf.remaining())
-                buf.get(floats)
+                val buffer = value.floatBuffer
+                val floats = FloatArray(buffer.remaining())
+                buffer.get(floats)
                 return Pair(floats, outShape)
             }
         }
@@ -505,5 +751,6 @@ class PaddleOcrPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
 
     companion object {
         private const val TAG = "PaddleOCR"
+        private const val MAX_PENDING_OCR_JOBS = 8
     }
 }

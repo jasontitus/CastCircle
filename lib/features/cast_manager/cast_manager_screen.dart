@@ -12,6 +12,7 @@ import 'dart:io';
 
 import '../../core/responsive.dart';
 import '../../core/theme/app_theme.dart';
+import '../../data/database/app_database.dart' show PendingCastInvitationRow;
 import '../../data/models/cast_member_model.dart';
 import '../../data/models/script_models.dart';
 import '../../data/models/voice_preset.dart';
@@ -62,7 +63,10 @@ class _CastManagerScreenState extends ConsumerState<CastManagerScreen> {
 
   Map<String, String> _memoAssignment(ParsedScript script) {
     final key = Object.hash(
-        identityHashCode(script), _currentPreset, _genderOverrides.toString());
+      identityHashCode(script),
+      _currentPreset,
+      _genderOverrides.toString(),
+    );
     if (_assignmentCache != null && _assignmentKey == key) {
       return _assignmentCache!;
     }
@@ -80,27 +84,53 @@ class _CastManagerScreenState extends ConsumerState<CastManagerScreen> {
   VoicePreset _currentPreset = VoicePresets.modernAmerican;
   Map<String, CharacterVoiceConfig> _voiceOverrides = {};
   Map<String, CharacterGender> _genderOverrides = {};
+  bool _castSyncing = false;
+  bool _castSyncFailed = false;
+  int _castSyncGeneration = 0;
+  bool _voiceConfigCorrupt = false;
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
       final production = ref.read(currentProductionProvider);
       if (production != null) {
         ref.read(castMembersProvider.notifier).loadForProduction(production.id);
         _loadVoiceConfig(production.id);
-        _syncCastFromCloud(production.id);
+        _syncCastFromCloud(
+          production.id,
+          cloudBacked:
+              production.organizerId.isNotEmpty &&
+              production.organizerId != 'local',
+        );
       }
     });
   }
 
   /// Sync cast member statuses from Supabase so we see who has joined.
-  Future<void> _syncCastFromCloud(String productionId) async {
+  Future<void> _syncCastFromCloud(
+    String productionId, {
+    required bool cloudBacked,
+  }) async {
     final supa = SupabaseService.instance;
-    if (!supa.isSignedIn) return;
+    if (!mounted) return;
+    if (!supa.isSignedIn) {
+      if (cloudBacked) {
+        setState(() {
+          _castSyncFailed = true;
+          _castSyncing = false;
+        });
+      }
+      return;
+    }
+
+    final generation = ++_castSyncGeneration;
+    setState(() => _castSyncing = true);
 
     try {
       final cloudMembers = await supa.fetchCastMembers(productionId);
+      if (!mounted || generation != _castSyncGeneration) return;
       final notifier = ref.read(castMembersProvider.notifier);
       final cloudIds = <String>{};
 
@@ -125,44 +155,56 @@ class _CastManagerScreenState extends ConsumerState<CastManagerScreen> {
               : null,
         );
         await notifier.save(member);
+        if (!mounted || generation != _castSyncGeneration) return;
       }
 
-      // Remove local-only records that have a matching cloud record
-      // for the same character (stale duplicates from before sync)
       final localMembers = ref.read(castMembersProvider);
-      // Index once — per-local .any() over the cloud list is quadratic.
       final cloudKeys = {
         for (final cm in cloudMembers)
           '${cm['character_name']}/'
               '${CastRole.fromString(cm['role'] as String? ?? 'actor')}',
       };
       for (final local in localMembers) {
-        if (cloudIds.contains(local.id)) continue; // it's the cloud record
-        if (local.role == CastRole.organizer) continue; // keep organizer
-        // If there's a cloud record for the same character+role, remove the
-        // local duplicate.
+        if (cloudIds.contains(local.id)) continue;
+        if (local.role == CastRole.organizer) continue;
         if (cloudKeys.contains('${local.characterName}/${local.role}')) {
           await notifier.remove(local.id);
+          if (!mounted || generation != _castSyncGeneration) return;
         }
       }
-    } catch (e) {
+
+      setState(() => _castSyncFailed = false);
+    } catch (error, stack) {
       DebugLogService.instance.logError(
-          LogCategory.network, 'Cast cloud sync failed', e);
+        LogCategory.network,
+        'Cast cloud sync failed productionId=$productionId',
+        error,
+        stack,
+      );
+      if (!mounted || generation != _castSyncGeneration) return;
+      setState(() => _castSyncFailed = true);
+    } finally {
+      if (mounted && generation == _castSyncGeneration) {
+        setState(() => _castSyncing = false);
+      }
     }
   }
 
   Future<void> _loadVoiceConfig(String productionId) async {
-    final preset = await _voiceConfig.getPreset(productionId);
-    final overrides = await _voiceConfig.getOverrides(productionId);
-    // Saved gender toggles too — without them the voice shown here diverged
-    // from the voice rehearsal actually plays (rehearsal passes them).
-    final genders = await _voiceConfig.getGenders(productionId);
-    if (mounted) {
+    try {
+      final preset = await _voiceConfig.getPreset(productionId);
+      final overrides = await _voiceConfig.getOverrides(productionId);
+      final genders = await _voiceConfig.getGenders(productionId);
+      if (!mounted) return;
       setState(() {
         _currentPreset = preset;
         _voiceOverrides = overrides;
         _genderOverrides = genders;
+        _voiceConfigCorrupt = false;
       });
+    } on VoiceOverridesCorruptException {
+      if (!mounted) return;
+      setState(() => _voiceConfigCorrupt = true);
     }
   }
 
@@ -172,6 +214,7 @@ class _CastManagerScreenState extends ConsumerState<CastManagerScreen> {
     final production = ref.watch(currentProductionProvider);
     final castMembers = ref.watch(castMembersProvider);
     final recordings = ref.watch(recordingsProvider);
+    final pendingInvitations = ref.watch(pendingCastInvitationProvider);
 
     if (script == null) {
       return Scaffold(
@@ -181,6 +224,14 @@ class _CastManagerScreenState extends ConsumerState<CastManagerScreen> {
     }
 
     final joinCode = production?.joinCode;
+    final pendingForProduction = production == null
+        ? const <PendingCastInvitationRow>[]
+        : pendingInvitations
+              .where((row) => row.productionId == production.id)
+              .toList();
+    final failedInvitationCount = pendingForProduction
+        .where((row) => row.lastError != null)
+        .length;
     final joinedCount = castMembers
         .where((m) => m.hasJoined && m.role != CastRole.organizer)
         .length;
@@ -241,6 +292,66 @@ class _CastManagerScreenState extends ConsumerState<CastManagerScreen> {
       ),
       body: Column(
         children: [
+          if (_castSyncing && !_castSyncFailed) const LinearProgressIndicator(),
+          if (_castSyncFailed)
+            MaterialBanner(
+              content: const Text(
+                'This cast list may be out of date because cloud sync failed.',
+              ),
+              actions: [
+                TextButton(
+                  onPressed: _castSyncing || production == null
+                      ? null
+                      : () async {
+                          await _syncCastFromCloud(
+                            production.id,
+                            cloudBacked:
+                                production.organizerId.isNotEmpty &&
+                                production.organizerId != 'local',
+                          );
+                        },
+                  child: Text(_castSyncing ? 'Retrying…' : 'Retry'),
+                ),
+              ],
+            ),
+          if (pendingForProduction.isNotEmpty)
+            MaterialBanner(
+              content: Text(
+                failedInvitationCount == 0
+                    ? '${pendingForProduction.length} cast invitation(s) '
+                          'are waiting to sync.'
+                    : '$failedInvitationCount of '
+                          '${pendingForProduction.length} cast invitation(s) '
+                          'could not sync and remain retryable.',
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () async {
+                    await ref
+                        .read(pendingCastInvitationProvider.notifier)
+                        .retryAll();
+                  },
+                  child: const Text('Retry'),
+                ),
+              ],
+            ),
+          if (_voiceConfigCorrupt)
+            MaterialBanner(
+              content: const Text(
+                'Saved voice overrides could not be read. The original data '
+                'was preserved and voice edits are blocked.',
+              ),
+              actions: [
+                TextButton(
+                  onPressed: production == null
+                      ? null
+                      : () async {
+                          await _loadVoiceConfig(production.id);
+                        },
+                  child: const Text('Retry'),
+                ),
+              ],
+            ),
           // -- Join code banner --
           if (joinCode != null)
             Container(
@@ -506,8 +617,9 @@ class _CastManagerScreenState extends ConsumerState<CastManagerScreen> {
                 ),
                 Expanded(
                   child: OutlinedButton.icon(
-                    onPressed: () =>
-                        _showVoiceSheet(char, activeVoice, activeSpeed),
+                    onPressed: _voiceConfigCorrupt
+                        ? null
+                        : () => _showVoiceSheet(char, activeVoice, activeSpeed),
                     icon: const Icon(Icons.record_voice_over, size: 16),
                     label: Text(
                       '$voiceLabel  ${activeSpeed.toStringAsFixed(1)}x',
@@ -709,14 +821,18 @@ class _CastManagerScreenState extends ConsumerState<CastManagerScreen> {
                         // A denied Contacts permission threw here silently —
                         // the button just looked dead.
                         DebugLogService.instance.logError(
-                            LogCategory.general, 'Contact pick failed', e);
+                          LogCategory.general,
+                          'Contact pick failed',
+                          e,
+                        );
                         if (!mounted) return;
                         ScaffoldMessenger.of(context).showAutoToast(
                           const SnackBar(
                             content: Text(
-                                "Couldn't open your contacts — check that "
-                                'CastCircle has Contacts permission, or type '
-                                'the name in by hand.'),
+                              "Couldn't open your contacts — check that "
+                              'CastCircle has Contacts permission, or type '
+                              'the name in by hand.',
+                            ),
                             duration: Duration(seconds: 5),
                           ),
                         );
@@ -784,10 +900,14 @@ class _CastManagerScreenState extends ConsumerState<CastManagerScreen> {
                             // Reuse the local id so cloud + local stay in sync.
                             id: member.id,
                           );
-                        } catch (e) {
+                        } catch (error, stack) {
                           cloudInviteOk = false;
-                          DebugLogService.instance.logError(LogCategory.network,
-                              'Cloud cast invitation failed for "$name"', e);
+                          DebugLogService.instance.logError(
+                            LogCategory.network,
+                            'Cloud cast invitation failed',
+                            error,
+                            stack,
+                          );
                         }
                       }
 
@@ -802,9 +922,10 @@ class _CastManagerScreenState extends ConsumerState<CastManagerScreen> {
                           ScaffoldMessenger.of(context).showAutoToast(
                             const SnackBar(
                               content: Text(
-                                  "Couldn't create the cloud invitation — "
-                                  'check your connection and tap the share '
-                                  'icon to invite once you\'re back online.'),
+                                "Couldn't create the cloud invitation — "
+                                'check your connection and tap the share '
+                                'icon to invite once you\'re back online.',
+                              ),
                               duration: Duration(seconds: 6),
                             ),
                           );
@@ -844,18 +965,24 @@ class _CastManagerScreenState extends ConsumerState<CastManagerScreen> {
     if (supa.isSignedIn) {
       try {
         await supa.removeCastMember(member.id);
-      } catch (e) {
+      } catch (error, stack) {
         DebugLogService.instance.logError(
-            LogCategory.network,
-            'Unassign failed for "$who" (${member.characterName})',
-            e);
+          LogCategory.network,
+          'Cast unassign failed',
+          error,
+          stack,
+        );
         if (!mounted) return;
-        ScaffoldMessenger.of(context).showAutoToast(SnackBar(
-          content: Text("Couldn't remove $who from the shared cast — they'd "
+        ScaffoldMessenger.of(context).showAutoToast(
+          SnackBar(
+            content: Text(
+              "Couldn't remove $who from the shared cast — they'd "
               'reappear on the next sync. Check your connection, or ask the '
-              'organizer to remove them.'),
-          duration: const Duration(seconds: 6),
-        ));
+              'organizer to remove them.',
+            ),
+            duration: const Duration(seconds: 6),
+          ),
+        );
         return;
       }
     }
@@ -1059,9 +1186,14 @@ class _CastManagerScreenState extends ConsumerState<CastManagerScreen> {
             'Or enter code: $joinCode',
         subject: 'CastCircle Invitation',
       );
-    } catch (e) {
+    } catch (error, stack) {
       entry.remove();
-      debugPrint('Invite card share failed: $e');
+      DebugLogService.instance.logError(
+        LogCategory.general,
+        'Invite card share failed type=${error.runtimeType}',
+        null,
+        stack,
+      );
       // Fallback to text
       _shareTextInvite(
         productionTitle: productionTitle,
@@ -1100,10 +1232,10 @@ class _CastManagerScreenState extends ConsumerState<CastManagerScreen> {
 
     final text = deepLink != null
         ? 'Reminder: You\'re invited to play ${member.characterName} in '
-            '"$title" on CastCircle.\n\nTap to join: $deepLink\n\n'
-            'Or enter code: $code'
+              '"$title" on CastCircle.\n\nTap to join: $deepLink\n\n'
+              'Or enter code: $code'
         : 'Reminder: You\'re invited to play ${member.characterName} in '
-            '"$title" on CastCircle. Download the app to get started.';
+              '"$title" on CastCircle. Download the app to get started.';
 
     _shareWithOrigin(text, 'CastCircle Reminder');
   }

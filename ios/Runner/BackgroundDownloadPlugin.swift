@@ -1,31 +1,59 @@
 import Flutter
 import UIKit
 
-/// Native iOS plugin for background file downloads using URLSession.
-///
-/// Uses a background URLSession configuration so downloads survive screen
-/// sleep, app suspension, and even app termination. Large downloads (multi-GB
-/// models on flaky networks) are **resumable**: on a network error the
-/// partial-transfer resume data is persisted to disk, the download auto-retries
-/// with backoff, and a later manual retry (or app relaunch) continues from where
-/// it left off instead of restarting from zero.
+/// Native iOS plugin for resumable background model downloads.
 class BackgroundDownloadPlugin: NSObject, URLSessionDownloadDelegate {
     static let channelName = "com.lineguide/background_download"
 
     private let channel: FlutterMethodChannel
     private var session: URLSession!
     private var activeDownloads: [String: DownloadInfo] = [:]
-
-    /// How many times to auto-retry a failed transfer before surfacing the
-    /// error to the UI (which can still resume later via a manual re-tap).
+    private var lastProgressEmit: [String: (fraction: Double, at: Date)] = [:]
     private let maxAutoRetries = 6
 
-    struct DownloadInfo {
+    private final class DownloadInfo {
         let modelId: String
         let url: URL
         let destinationPath: String
+        let generation: String
         var task: URLSessionDownloadTask?
-        var retryCount: Int = 0
+        var taskIdentifier: Int?
+        var retryCount = 0
+        var retryWorkItem: DispatchWorkItem?
+
+        init(modelId: String, url: URL, destinationPath: String, generation: String = UUID().uuidString) {
+            self.modelId = modelId
+            self.url = url
+            self.destinationPath = destinationPath
+            self.generation = generation
+        }
+    }
+
+    /// The resume data and the immutable request identity it belongs to. Raw
+    /// URLSession resume blobs from older builds deliberately fail decoding and
+    /// are discarded rather than being applied to a different release URL.
+    private struct ResumeEnvelope: Codable {
+        let version: Int
+        let modelId: String
+        let url: String
+        let resumeData: Data
+    }
+
+    private enum ResumeFileError: LocalizedError {
+        case read(Error)
+        case remove(Error)
+        case write(Error)
+
+        var errorDescription: String? {
+            switch self {
+            case .read(let error):
+                return "Could not read saved download progress: \(error.localizedDescription)"
+            case .remove(let error):
+                return "Could not discard incompatible download progress: \(error.localizedDescription)"
+            case .write(let error):
+                return "Could not save download progress: \(error.localizedDescription)"
+            }
+        }
     }
 
     init(messenger: FlutterBinaryMessenger) {
@@ -38,60 +66,120 @@ class BackgroundDownloadPlugin: NSObject, URLSessionDownloadDelegate {
         config.isDiscretionary = false
         config.sessionSendsLaunchEvents = true
         config.allowsCellularAccess = true
-        // Wait for connectivity rather than failing instantly when the network
-        // drops — the system holds the task and resumes when a path returns.
         config.waitsForConnectivity = true
         session = URLSession(configuration: config, delegate: self, delegateQueue: .main)
-
         channel.setMethodCallHandler(handle)
     }
 
-    /// Where the resume-data blob for a download is persisted. Keyed off the
-    /// destination so it survives app relaunch and a fresh plugin instance.
     private func resumePath(_ destinationPath: String) -> String {
         destinationPath + ".resume"
     }
 
     // MARK: - Download-state persistence
-    //
-    // activeDownloads is memory-only, but a BACKGROUND URLSession outlives
-    // the process: iOS relaunches the app and replays didFinishDownloadingTo
-    // with taskDescription intact. The fresh plugin instance used to have an
-    // empty dict, so the guard dropped the callback, the temp file was
-    // deleted by the system, and a multi-GB download that completed while
-    // terminated was silently discarded. Persist modelId → (url, dest) and
-    // reconstruct on replay.
 
     private static let persistKey = "BackgroundDownloadPlugin.active"
 
     private func persistDownloadRecord(_ info: DownloadInfo) {
         var records = UserDefaults.standard.dictionary(forKey: Self.persistKey)
             as? [String: [String: String]] ?? [:]
-        records[info.modelId] = [
+        var record = [
             "url": info.url.absoluteString,
             "destinationPath": info.destinationPath,
+            "generation": info.generation,
         ]
+        if let taskIdentifier = info.taskIdentifier {
+            record["taskIdentifier"] = String(taskIdentifier)
+        }
+        records[info.modelId] = record
         UserDefaults.standard.set(records, forKey: Self.persistKey)
     }
 
-    private func removeDownloadRecord(_ modelId: String) {
+    private func removeDownloadRecord(_ info: DownloadInfo) {
         var records = UserDefaults.standard.dictionary(forKey: Self.persistKey)
             as? [String: [String: String]] ?? [:]
-        records.removeValue(forKey: modelId)
+        guard records[info.modelId]?["generation"] == info.generation else { return }
+        records.removeValue(forKey: info.modelId)
         UserDefaults.standard.set(records, forKey: Self.persistKey)
     }
 
-    /// Rebuild a DownloadInfo for a delegate callback that arrived after the
-    /// process (and activeDownloads) was recreated.
-    private func restoredDownloadInfo(_ modelId: String) -> DownloadInfo? {
+    private func restoredDownloadInfo(generation: String, taskIdentifier: Int) -> DownloadInfo? {
+        guard let records = UserDefaults.standard.dictionary(forKey: Self.persistKey)
+                as? [String: [String: String]] else { return nil }
+        for (modelId, record) in records where record["generation"] == generation {
+            guard let urlString = record["url"],
+                  let url = URL(string: urlString),
+                  let destinationPath = record["destinationPath"],
+                  record["taskIdentifier"].flatMap({ Int($0) }) == taskIdentifier else { continue }
+            let info = DownloadInfo(
+                modelId: modelId,
+                url: url,
+                destinationPath: destinationPath,
+                generation: generation
+            )
+            info.taskIdentifier = taskIdentifier
+            NSLog("BackgroundDownload: \(modelId) restored generation \(generation) after relaunch")
+            return info
+        }
+        return nil
+    }
+
+    private func persistedDownloadInfo(modelId: String) -> DownloadInfo? {
         guard let records = UserDefaults.standard.dictionary(forKey: Self.persistKey)
                 as? [String: [String: String]],
               let record = records[modelId],
+              let generation = record["generation"],
               let urlString = record["url"],
               let url = URL(string: urlString),
-              let dest = record["destinationPath"] else { return nil }
-        NSLog("BackgroundDownload: \(modelId) restored from persisted state (post-relaunch delivery)")
-        return DownloadInfo(modelId: modelId, url: url, destinationPath: dest)
+              let destinationPath = record["destinationPath"] else {
+            return nil
+        }
+        let info = DownloadInfo(
+            modelId: modelId,
+            url: url,
+            destinationPath: destinationPath,
+            generation: generation
+        )
+        if let taskIdentifierString = record["taskIdentifier"] {
+            info.taskIdentifier = Int(taskIdentifierString)
+        }
+        return info
+    }
+
+    private func persistedGeneration(modelId: String) -> String? {
+        let records = UserDefaults.standard.dictionary(forKey: Self.persistKey)
+            as? [String: [String: String]]
+        return records?[modelId]?["generation"]
+    }
+
+    private func finishCancellation(_ info: DownloadInfo, result: @escaping FlutterResult) {
+        do {
+            try removeResumeFileIfPresent(for: info)
+        } catch {
+            NSLog("BackgroundDownload: \(info.modelId) cancel could not clear resume state: \(error)")
+            removeDownloadRecord(info)
+            result(FlutterError(
+                code: "RESUME_CLEANUP_FAILED",
+                message: error.localizedDescription,
+                details: ["modelId": info.modelId]
+            ))
+            return
+        }
+        removeDownloadRecord(info)
+        result(true)
+    }
+
+    /// Resolve a callback only when both its generation and URLSession task ID
+    /// still identify the active transfer. A late callback from a replaced task
+    /// must never read, mutate, or remove its replacement's state.
+    private func info(for task: URLSessionTask, allowRestore: Bool = true) -> DownloadInfo? {
+        guard let generation = task.taskDescription else { return nil }
+        if let info = activeDownloads.values.first(where: {
+            $0.generation == generation && $0.taskIdentifier == task.taskIdentifier
+        }) {
+            return info
+        }
+        guard allowRestore else { return nil }
+        return restoredDownloadInfo(generation: generation, taskIdentifier: task.taskIdentifier)
     }
 
     private func handle(_ call: FlutterMethodCall, result: @escaping FlutterResult) {
@@ -99,31 +187,53 @@ class BackgroundDownloadPlugin: NSObject, URLSessionDownloadDelegate {
         case "startDownload":
             guard let args = call.arguments as? [String: Any],
                   let modelId = args["modelId"] as? String,
-                  let url = args["url"] as? String,
+                  let urlString = args["url"] as? String,
                   let destinationPath = args["destinationPath"] as? String else {
                 result(FlutterError(code: "INVALID_ARGS", message: "Missing arguments", details: nil))
                 return
             }
-            guard let downloadUrl = URL(string: url) else {
+            guard let downloadURL = URL(string: urlString) else {
                 result(FlutterError(code: "INVALID_URL", message: "Invalid URL", details: nil))
                 return
             }
 
-            // Create destination directory.
-            let destDir = (destinationPath as NSString).deletingLastPathComponent
-            try? FileManager.default.createDirectory(
-                atPath: destDir, withIntermediateDirectories: true, attributes: nil)
+            do {
+                let destinationDirectory = (destinationPath as NSString).deletingLastPathComponent
+                try FileManager.default.createDirectory(
+                    atPath: destinationDirectory,
+                    withIntermediateDirectories: true,
+                    attributes: nil
+                )
 
-            // Cancel any in-flight download for this model first.
-            if let existing = activeDownloads[modelId] {
-                existing.task?.cancel()
+                if let existing = activeDownloads.removeValue(forKey: modelId) {
+                    existing.retryWorkItem?.cancel()
+                    existing.task?.cancel()
+                    removeDownloadRecord(existing)
+                }
+
+                let info = DownloadInfo(
+                    modelId: modelId,
+                    url: downloadURL,
+                    destinationPath: destinationPath
+                )
+                activeDownloads[modelId] = info
+                do {
+                    try startTask(info)
+                    persistDownloadRecord(info)
+                    result(true)
+                } catch {
+                    activeDownloads.removeValue(forKey: modelId)
+                    removeDownloadRecord(info)
+                    throw error
+                }
+            } catch {
+                NSLog("BackgroundDownload: \(modelId) could not start: \(error)")
+                result(FlutterError(
+                    code: "DOWNLOAD_START_FAILED",
+                    message: error.localizedDescription,
+                    details: ["modelId": modelId, "resuming": false]
+                ))
             }
-
-            var info = DownloadInfo(modelId: modelId, url: downloadUrl, destinationPath: destinationPath)
-            startTask(&info)
-            activeDownloads[modelId] = info
-            persistDownloadRecord(info)
-            result(true)
 
         case "cancelDownload":
             guard let args = call.arguments as? [String: Any],
@@ -132,59 +242,187 @@ class BackgroundDownloadPlugin: NSObject, URLSessionDownloadDelegate {
                 return
             }
             if let info = activeDownloads.removeValue(forKey: modelId) {
+                info.retryWorkItem?.cancel()
                 info.task?.cancel()
-                // A user cancel clears any saved resume data — a later download
-                // starts fresh rather than silently resuming.
-                try? FileManager.default.removeItem(atPath: resumePath(info.destinationPath))
+                finishCancellation(info, result: result)
+                return
             }
-            removeDownloadRecord(modelId)
-            result(true)
+
+            guard let restored = persistedDownloadInfo(modelId: modelId) else {
+                result(true)
+                return
+            }
+            let restoredGeneration = restored.generation
+            // A background URLSession outlives this plugin instance. Resolve
+            // cancellation only after locating and cancelling the exact
+            // persisted generation/task pair.
+            session.getAllTasks { tasks in
+                DispatchQueue.main.async {
+                    let matchingTask = tasks.first {
+                        guard $0.taskDescription == restoredGeneration else { return false }
+                        guard let persistedTaskIdentifier = restored.taskIdentifier else { return true }
+                        return $0.taskIdentifier == persistedTaskIdentifier
+                    }
+                    matchingTask?.cancel()
+
+                    // A newer start may have replaced the record while the
+                    // asynchronous task lookup was in flight. Never clear its
+                    // resume file or persisted state.
+                    guard self.persistedGeneration(modelId: modelId) == restoredGeneration else {
+                        result(true)
+                        return
+                    }
+                    if let current = self.activeDownloads[modelId],
+                       current.generation == restoredGeneration {
+                        self.activeDownloads.removeValue(forKey: modelId)
+                        current.retryWorkItem?.cancel()
+                        current.task?.cancel()
+                    }
+                    self.finishCancellation(restored, result: result)
+                }
+            }
 
         default:
             result(FlutterMethodNotImplemented)
         }
     }
 
-    /// Build and resume the download task for `info`, preferring persisted
-    /// resume data (continues a partial transfer) over a fresh download.
-    private func startTask(_ info: inout DownloadInfo) {
+    /// Build and resume the task. Resume data is usable only for the exact
+    /// model ID and immutable source URL that produced it.
+    private func startTask(_ info: DownloadInfo) throws {
         let task: URLSessionDownloadTask
-        let resumeFile = resumePath(info.destinationPath)
-        if let resumeData = try? Data(contentsOf: URL(fileURLWithPath: resumeFile)),
-           !resumeData.isEmpty {
-            NSLog("BackgroundDownload: \(info.modelId) resuming from \(resumeData.count) bytes of resume data")
+        if let resumeData = try matchingResumeData(for: info) {
+            NSLog("BackgroundDownload: \(info.modelId) resuming with \(resumeData.count) bytes of resume data")
             task = session.downloadTask(withResumeData: resumeData)
         } else {
             task = session.downloadTask(with: info.url)
         }
-        task.taskDescription = info.modelId
+        task.taskDescription = info.generation
         info.task = task
+        info.taskIdentifier = task.taskIdentifier
         task.resume()
     }
 
-    /// Schedule an auto-retry with exponential backoff (capped). Uses any
-    /// freshly-saved resume data so the retry continues, not restarts.
-    private func scheduleRetry(_ modelId: String) {
-        guard var info = activeDownloads[modelId] else { return }
+    private func matchingResumeData(for info: DownloadInfo) throws -> Data? {
+        let fileURL = URL(fileURLWithPath: resumePath(info.destinationPath))
+        guard FileManager.default.fileExists(atPath: fileURL.path) else { return nil }
+
+        let encoded: Data
+        do {
+            encoded = try Data(contentsOf: fileURL)
+        } catch {
+            throw ResumeFileError.read(error)
+        }
+
+        let envelope: ResumeEnvelope?
+        do {
+            envelope = try PropertyListDecoder().decode(ResumeEnvelope.self, from: encoded)
+        } catch {
+            NSLog("BackgroundDownload: \(info.modelId) resume envelope is unreadable: \(error)")
+            envelope = nil
+        }
+        guard let envelope = envelope,
+              envelope.version == 1,
+              envelope.modelId == info.modelId,
+              envelope.url == info.url.absoluteString,
+              !envelope.resumeData.isEmpty else {
+            do {
+                try FileManager.default.removeItem(at: fileURL)
+            } catch {
+                throw ResumeFileError.remove(error)
+            }
+            NSLog("BackgroundDownload: \(info.modelId) discarded resume data for a different model URL")
+            return nil
+        }
+        return envelope.resumeData
+    }
+
+    private func saveResumeData(_ data: Data, for info: DownloadInfo) throws {
+        let envelope = ResumeEnvelope(
+            version: 1,
+            modelId: info.modelId,
+            url: info.url.absoluteString,
+            resumeData: data
+        )
+        do {
+            let encoded = try PropertyListEncoder().encode(envelope)
+            try encoded.write(
+                to: URL(fileURLWithPath: resumePath(info.destinationPath)),
+                options: .atomic
+            )
+        } catch {
+            throw ResumeFileError.write(error)
+        }
+    }
+
+    private func removeResumeFileIfPresent(for info: DownloadInfo) throws {
+        let path = resumePath(info.destinationPath)
+        guard FileManager.default.fileExists(atPath: path) else { return }
+        do {
+            try FileManager.default.removeItem(atPath: path)
+        } catch {
+            throw ResumeFileError.remove(error)
+        }
+    }
+
+    private func finishWithResumePersistenceError(_ error: Error, info: DownloadInfo) {
+        NSLog("BackgroundDownload: \(info.modelId) resume persistence failed: \(error)")
+        channel.invokeMethod("onDownloadError", arguments: [
+            "modelId": info.modelId,
+            "error": error.localizedDescription,
+            "resuming": false,
+            "errorCode": "RESUME_PERSISTENCE_FAILED",
+        ])
+        if activeDownloads[info.modelId]?.generation == info.generation {
+            activeDownloads.removeValue(forKey: info.modelId)
+        }
+        removeDownloadRecord(info)
+    }
+
+    private func scheduleRetry(_ info: DownloadInfo, resuming: Bool) {
+        guard activeDownloads[info.modelId]?.generation == info.generation else { return }
         info.retryCount += 1
+        info.task = nil
+        info.taskIdentifier = nil
+
         if info.retryCount > maxAutoRetries {
-            NSLog("BackgroundDownload: \(modelId) exhausted \(maxAutoRetries) retries")
+            NSLog("BackgroundDownload: \(info.modelId) exhausted \(maxAutoRetries) retries")
             channel.invokeMethod("onDownloadError", arguments: [
-                "modelId": modelId,
+                "modelId": info.modelId,
                 "error": "Network interrupted. Tap Download to resume.",
+                "resuming": resuming,
             ])
-            activeDownloads.removeValue(forKey: modelId)
-            removeDownloadRecord(modelId)
+            activeDownloads.removeValue(forKey: info.modelId)
+            removeDownloadRecord(info)
             return
         }
-        activeDownloads[modelId] = info
-        let delay = min(pow(2.0, Double(info.retryCount)), 30.0) // 2,4,8,16,30,30s
-        NSLog("BackgroundDownload: \(modelId) retry \(info.retryCount) in \(Int(delay))s")
-        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
-            guard let self = self, var info = self.activeDownloads[modelId] else { return }
-            self.startTask(&info)
-            self.activeDownloads[modelId] = info
+
+        let generation = info.generation
+        let delay = min(pow(2.0, Double(info.retryCount)), 30.0)
+        let workItem = DispatchWorkItem { [weak self] in
+            guard let self = self,
+                  let current = self.activeDownloads[info.modelId],
+                  current.generation == generation,
+                  current.task == nil else { return }
+            current.retryWorkItem = nil
+            do {
+                try self.startTask(current)
+                self.persistDownloadRecord(current)
+            } catch {
+                self.finishWithResumePersistenceError(error, info: current)
+            }
         }
+        info.retryWorkItem?.cancel()
+        info.retryWorkItem = workItem
+        activeDownloads[info.modelId] = info
+        persistDownloadRecord(info)
+        NSLog("BackgroundDownload: \(info.modelId) retry \(info.retryCount) in \(Int(delay))s (resuming: \(resuming))")
+        channel.invokeMethod("onDownloadRetry", arguments: [
+            "modelId": info.modelId,
+            "retry": info.retryCount,
+            "resuming": resuming,
+        ])
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: workItem)
     }
 
     // MARK: - URLSessionDownloadDelegate
@@ -194,42 +432,52 @@ class BackgroundDownloadPlugin: NSObject, URLSessionDownloadDelegate {
         downloadTask: URLSessionDownloadTask,
         didFinishDownloadingTo location: URL
     ) {
-        guard let modelId = downloadTask.taskDescription else { return }
-        guard let info = activeDownloads[modelId] ?? restoredDownloadInfo(modelId) else {
-            NSLog("BackgroundDownload: \(modelId) finished but no state (memory or disk) — dropping")
+        guard let info = info(for: downloadTask) else {
+            NSLog("BackgroundDownload: ignored completion from stale task \(downloadTask.taskIdentifier)")
             return
         }
 
-        let destURL = URL(fileURLWithPath: info.destinationPath)
+        let destinationURL = URL(fileURLWithPath: info.destinationPath)
         do {
-            try? FileManager.default.removeItem(at: destURL)
-            try FileManager.default.moveItem(at: location, to: destURL)
-            // Success — clear any resume data.
-            try? FileManager.default.removeItem(atPath: resumePath(info.destinationPath))
+            if FileManager.default.fileExists(atPath: destinationURL.path) {
+                _ = try FileManager.default.replaceItemAt(
+                    destinationURL,
+                    withItemAt: location,
+                    backupItemName: nil,
+                    options: .usingNewMetadataOnly
+                )
+            } else {
+                try FileManager.default.moveItem(at: location, to: destinationURL)
+            }
+            do {
+                try removeResumeFileIfPresent(for: info)
+            } catch {
+                NSLog("BackgroundDownload: \(info.modelId) completed but resume cleanup failed: \(error)")
+            }
 
-            let size = (try? FileManager.default.attributesOfItem(atPath: info.destinationPath)[.size] as? Int) ?? 0
-            NSLog("BackgroundDownload: \(modelId) complete (\(size / 1024 / 1024) MB)")
+            let attributes = try FileManager.default.attributesOfItem(atPath: info.destinationPath)
+            let size = (attributes[.size] as? NSNumber)?.intValue ?? 0
+            NSLog("BackgroundDownload: \(info.modelId) complete (\(size / 1024 / 1024) MB)")
             channel.invokeMethod("onDownloadComplete", arguments: [
-                "modelId": modelId,
+                "modelId": info.modelId,
                 "path": info.destinationPath,
                 "size": size,
             ])
         } catch {
-            NSLog("BackgroundDownload: \(modelId) move failed: \(error)")
+            NSLog("BackgroundDownload: \(info.modelId) move failed: \(error)")
             channel.invokeMethod("onDownloadError", arguments: [
-                "modelId": modelId,
+                "modelId": info.modelId,
                 "error": "Failed to save file: \(error.localizedDescription)",
             ])
         }
-        activeDownloads.removeValue(forKey: modelId)
-        removeDownloadRecord(modelId)
-    }
 
-    /// Last progress emission per model, for throttling: URLSession fires
-    /// didWriteData many times a second, and every callback was a
-    /// main-thread platform-channel hop — a bridge storm for the whole
-    /// duration of a multi-GB download.
-    private var lastProgressEmit: [String: (fraction: Double, at: Date)] = [:]
+        if activeDownloads[info.modelId]?.generation == info.generation {
+            info.retryWorkItem?.cancel()
+            activeDownloads.removeValue(forKey: info.modelId)
+            lastProgressEmit.removeValue(forKey: info.modelId)
+        }
+        removeDownloadRecord(info)
+    }
 
     func urlSession(
         _ session: URLSession,
@@ -238,20 +486,20 @@ class BackgroundDownloadPlugin: NSObject, URLSessionDownloadDelegate {
         totalBytesWritten: Int64,
         totalBytesExpectedToWrite: Int64
     ) {
-        guard let modelId = downloadTask.taskDescription else { return }
+        guard let info = info(for: downloadTask) else { return }
         let progress = totalBytesExpectedToWrite > 0
             ? Double(totalBytesWritten) / Double(totalBytesExpectedToWrite)
             : 0.0
         let now = Date()
-        if let last = lastProgressEmit[modelId],
+        if let last = lastProgressEmit[info.modelId],
            progress < 1.0,
            progress - last.fraction < 0.01,
            now.timeIntervalSince(last.at) < 0.3 {
             return
         }
-        lastProgressEmit[modelId] = (progress, now)
+        lastProgressEmit[info.modelId] = (progress, now)
         channel.invokeMethod("onDownloadProgress", arguments: [
-            "modelId": modelId,
+            "modelId": info.modelId,
             "progress": progress,
             "bytesWritten": totalBytesWritten,
             "totalBytes": totalBytesExpectedToWrite,
@@ -263,34 +511,39 @@ class BackgroundDownloadPlugin: NSObject, URLSessionDownloadDelegate {
         task: URLSessionTask,
         didCompleteWithError error: Error?
     ) {
-        guard let modelId = task.taskDescription else { return }
-        guard let error = error else { return }  // success handled in didFinishDownloadingTo
+        guard let error = error else { return }
+        guard let info = info(for: task) else {
+            NSLog("BackgroundDownload: ignored error from stale task \(task.taskIdentifier)")
+            return
+        }
 
         let nsError = error as NSError
-        if nsError.code == NSURLErrorCancelled { return }  // user cancel — not an error
+        if nsError.code == NSURLErrorCancelled { return }
 
-        guard let info = activeDownloads[modelId] ?? restoredDownloadInfo(modelId) else { return }
-        // Post-relaunch delivery: put the restored info back so
-        // scheduleRetry has state to work with.
-        if activeDownloads[modelId] == nil {
-            activeDownloads[modelId] = info
+        if activeDownloads[info.modelId] == nil {
+            activeDownloads[info.modelId] = info
         }
+        guard activeDownloads[info.modelId]?.generation == info.generation else { return }
 
-        // Persist resume data so the retry (or a later manual one) continues
-        // from the bytes already on disk. If the server didn't give us resume
-        // data, drop any stale blob so the next attempt restarts cleanly.
-        if let resumeData = nsError.userInfo[NSURLSessionDownloadTaskResumeData] as? Data {
-            try? resumeData.write(to: URL(fileURLWithPath: resumePath(info.destinationPath)))
-            NSLog("BackgroundDownload: \(modelId) saved \(resumeData.count) bytes resume data after error: \(error.localizedDescription)")
-        } else {
-            try? FileManager.default.removeItem(atPath: resumePath(info.destinationPath))
-            NSLog("BackgroundDownload: \(modelId) error with no resume data: \(error.localizedDescription)")
+        let resuming: Bool
+        do {
+            if let resumeData = nsError.userInfo[NSURLSessionDownloadTaskResumeData] as? Data,
+               !resumeData.isEmpty {
+                try saveResumeData(resumeData, for: info)
+                resuming = true
+                NSLog("BackgroundDownload: \(info.modelId) saved \(resumeData.count) bytes of resume data")
+            } else {
+                try removeResumeFileIfPresent(for: info)
+                resuming = false
+                NSLog("BackgroundDownload: \(info.modelId) retry will restart because the server supplied no resume data")
+            }
+        } catch {
+            finishWithResumePersistenceError(error, info: info)
+            return
         }
-        scheduleRetry(modelId)
+        scheduleRetry(info, resuming: resuming)
     }
 
-    /// Background session finished delivering events while the app was
-    /// suspended — let the system know we're done so it can snapshot the UI.
     func urlSessionDidFinishEvents(forBackgroundURLSession session: URLSession) {
         DispatchQueue.main.async {
             (UIApplication.shared.delegate as? AppDelegate)?.backgroundSessionCompletionHandler?()

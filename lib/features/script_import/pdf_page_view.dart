@@ -190,8 +190,11 @@ class _PdfPageViewState extends State<PdfPageView> {
       _totalPages = doc.pages.length;
       final pageIdx = page - 1;
       if (pageIdx < 0 || pageIdx >= doc.pages.length) {
-        _fail(generation, 'Page $page is not in this PDF '
-            '(it has $_totalPages page(s)).');
+        _fail(
+          generation,
+          'Page $page is not in this PDF '
+          '(it has $_totalPages page(s)).',
+        );
         return;
       }
 
@@ -203,8 +206,7 @@ class _PdfPageViewState extends State<PdfPageView> {
       final media = MediaQuery.maybeOf(context);
       final viewW = media == null ? 800.0 : media.size.width;
       final dpr = media?.devicePixelRatio ?? 2.0;
-      final targetW =
-          (viewW * dpr * 2).clamp(pdfPage.width, pdfPage.width * 3);
+      final targetW = (viewW * dpr * 2).clamp(pdfPage.width, pdfPage.width * 3);
       final scale = targetW / pdfPage.width;
       final pdfImage = await pdfPage.render(
         fullWidth: pdfPage.width * scale,
@@ -258,7 +260,8 @@ class _PdfPageViewState extends State<PdfPageView> {
       _highlightRects = null;
     });
     try {
-      final lines = _pageOcrCache[page] ??
+      final lines =
+          _pageOcrCache[page] ??
           await PaddleOcrChannel.ocrPage(widget.pdfPath, page);
       if (!mounted) return;
       if (_currentPage != page) {
@@ -281,21 +284,26 @@ class _PdfPageViewState extends State<PdfPageView> {
       }
       _pageOcrCache[page] = lines;
       final rects = OcrHighlightMatcher.locate(target, lines);
-      // Field diagnostics: when the chip says "couldn't locate", this line
-      // says whether the page OCR'd at all, and what we were hunting for.
+      // Persist only structural diagnostics. The target is private/licensed
+      // script dialogue and must never enter the support log.
       DebugLogService.instance.log(
-          LogCategory.general,
-          'Highlight p$page: ${rects.isEmpty ? 'NOT FOUND' : '${rects.length} rect(s)'} '
-          'among ${lines.length} OCR line(s) for '
-          '"${target.length > 40 ? '${target.substring(0, 40)}…' : target}"');
+        LogCategory.general,
+        'Page highlight p$page: '
+        '${rects.isEmpty ? 'not_found' : 'found'} '
+        'rectCount=${rects.length} ocrLineCount=${lines.length} '
+        'targetLength=${target.length}',
+      );
       setState(() {
         _locating = false;
         _highlightRects = rects;
       });
       if (rects.isNotEmpty) _scrollToHighlight(rects.first);
     } catch (e) {
-      DebugLogService.instance
-          .logError(LogCategory.general, 'Page highlight lookup failed', e);
+      DebugLogService.instance.logError(
+        LogCategory.general,
+        'Page highlight lookup failed',
+        e,
+      );
       if (mounted) {
         setState(() {
           _locating = false;
@@ -322,10 +330,18 @@ class _PdfPageViewState extends State<PdfPageView> {
 
   /// Always logged; shown in place of the blank pane when this request is still
   /// the current one.
-  void _fail(int generation, String message,
-      [Object? error, StackTrace? stack]) {
-    DebugLogService.instance
-        .logError(LogCategory.general, 'PDF page view: $message', error, stack);
+  void _fail(
+    int generation,
+    String message, [
+    Object? error,
+    StackTrace? stack,
+  ]) {
+    DebugLogService.instance.logError(
+      LogCategory.general,
+      'PDF page view: $message',
+      error,
+      stack,
+    );
     if (_isStale(generation)) return;
     setState(() {
       _loading = false;
@@ -348,18 +364,22 @@ class _PdfPageViewState extends State<PdfPageView> {
           children: [
             IconButton(
               icon: const Icon(Icons.chevron_left, size: 20),
-              onPressed: _currentPage > 1 ? () => _goToPage(_currentPage - 1) : null,
+              onPressed: _currentPage > 1
+                  ? () => _goToPage(_currentPage - 1)
+                  : null,
               visualDensity: VisualDensity.compact,
             ),
             Text(
               'Page $_currentPage${_totalPages > 0 ? '/$_totalPages' : ''}',
-              style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                    fontWeight: FontWeight.bold,
-                  ),
+              style: Theme.of(
+                context,
+              ).textTheme.bodySmall?.copyWith(fontWeight: FontWeight.bold),
             ),
             IconButton(
               icon: const Icon(Icons.chevron_right, size: 20),
-              onPressed: _currentPage < _totalPages ? () => _goToPage(_currentPage + 1) : null,
+              onPressed: _currentPage < _totalPages
+                  ? () => _goToPage(_currentPage + 1)
+                  : null,
               visualDensity: VisualDensity.compact,
             ),
           ],
@@ -367,114 +387,121 @@ class _PdfPageViewState extends State<PdfPageView> {
         Text(
           'Drag to pan · pinch to zoom',
           style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                color: Theme.of(context)
-                    .colorScheme
-                    .onSurface
-                    .withValues(alpha: 0.45),
-              ),
+            color: Theme.of(
+              context,
+            ).colorScheme.onSurface.withValues(alpha: 0.45),
+          ),
         ),
         const SizedBox(height: 4),
         Expanded(
           child: _loading
               ? const Center(child: CircularProgressIndicator())
               : _renderError != null
-                  ? _buildError(context)
-                  : _pageImage != null
-                  ? LayoutBuilder(
-                      builder: (context, constraints) {
-                        final viewW = constraints.maxWidth;
-                        final viewH = constraints.maxHeight;
-                        final imgW = _pageImage!.width.toDouble();
-                        final imgH = _pageImage!.height.toDouble();
+              ? _buildError(context)
+              : _pageImage != null
+              ? LayoutBuilder(
+                  builder: (context, constraints) {
+                    final viewW = constraints.maxWidth;
+                    final viewH = constraints.maxHeight;
+                    final imgW = _pageImage!.width.toDouble();
+                    final imgH = _pageImage!.height.toDouble();
 
-                        // Fit the page to the viewer WIDTH so the text is
-                        // readable; a taller-than-view page is panned vertically.
-                        // No line-targeted auto-zoom — sourceLineOnPage isn't
-                        // reliable, and a guessed crop hid the line off-screen.
-                        final scale = viewW / imgW;
-                        final pageW = imgW * scale; // == viewW
-                        final pageH = imgH * scale;
+                    // Fit the page to the viewer WIDTH so the text is
+                    // readable; a taller-than-view page is panned vertically.
+                    // No line-targeted auto-zoom — sourceLineOnPage isn't
+                    // reliable, and a guessed crop hid the line off-screen.
+                    final scale = viewW / imgW;
+                    final pageW = imgW * scale; // == viewW
+                    final pageH = imgH * scale;
 
-                        _lastViewSize = Size(viewW, viewH);
-                        return Stack(
-                          children: [
-                            InteractiveViewer(
-                              transformationController: _txController,
-                              constrained: false,
-                              minScale: 0.5,
-                              maxScale: 8.0,
-                              // Generous margin so any region can be slid into
-                              // view, even when zoomed right in.
-                              boundaryMargin: EdgeInsets.symmetric(
-                                horizontal: viewW,
-                                vertical: viewH,
-                              ),
-                              child: SizedBox(
-                                width: pageW,
-                                height: pageH,
-                                child: Stack(
-                                  children: [
-                                    RawImage(
-                                      image: _pageImage,
-                                      fit: BoxFit.fill,
-                                    ),
-                                    // Where the flagged line's text sits,
-                                    // from a fresh single-page OCR.
-                                    for (final r
-                                        in _highlightRects ?? const <Rect>[])
-                                      Positioned(
-                                        left: r.left * pageW - 4,
-                                        top: r.top * pageH - 3,
-                                        width: r.width * pageW + 8,
-                                        height: r.height * pageH + 6,
-                                        child: IgnorePointer(
-                                          child: DecoratedBox(
-                                            decoration: BoxDecoration(
-                                              color: Colors.yellow
-                                                  .withValues(alpha: 0.30),
-                                              border: Border.all(
-                                                  color: Colors.orange,
-                                                  width: 1.5),
-                                              borderRadius:
-                                                  BorderRadius.circular(3),
-                                            ),
+                    _lastViewSize = Size(viewW, viewH);
+                    return Stack(
+                      children: [
+                        InteractiveViewer(
+                          transformationController: _txController,
+                          constrained: false,
+                          minScale: 0.5,
+                          maxScale: 8.0,
+                          // Generous margin so any region can be slid into
+                          // view, even when zoomed right in.
+                          boundaryMargin: EdgeInsets.symmetric(
+                            horizontal: viewW,
+                            vertical: viewH,
+                          ),
+                          child: SizedBox(
+                            width: pageW,
+                            height: pageH,
+                            child: Stack(
+                              children: [
+                                RawImage(image: _pageImage, fit: BoxFit.fill),
+                                // Where the flagged line's text sits,
+                                // from a fresh single-page OCR.
+                                for (final r
+                                    in _highlightRects ?? const <Rect>[])
+                                  Positioned(
+                                    left: r.left * pageW - 4,
+                                    top: r.top * pageH - 3,
+                                    width: r.width * pageW + 8,
+                                    height: r.height * pageH + 6,
+                                    child: IgnorePointer(
+                                      child: DecoratedBox(
+                                        decoration: BoxDecoration(
+                                          color: Colors.yellow.withValues(
+                                            alpha: 0.30,
+                                          ),
+                                          border: Border.all(
+                                            color: Colors.orange,
+                                            width: 1.5,
+                                          ),
+                                          borderRadius: BorderRadius.circular(
+                                            3,
                                           ),
                                         ),
                                       ),
-                                  ],
-                                ),
+                                    ),
+                                  ),
+                              ],
+                            ),
+                          ),
+                        ),
+                        if (_locating)
+                          Positioned(
+                            top: 8,
+                            left: 0,
+                            right: 0,
+                            child: Center(
+                              child: _statusChip(
+                                context,
+                                'Locating line…',
+                                busy: true,
                               ),
                             ),
-                            if (_locating)
-                              Positioned(
-                                top: 8,
-                                left: 0,
-                                right: 0,
-                                child: Center(child: _statusChip(context,
-                                    'Locating line…', busy: true)),
-                              )
-                            else if (widget.highlightText != null &&
-                                _currentPage == widget.pageNumber &&
-                                (_highlightRects?.isEmpty ?? false))
-                              Positioned(
-                                top: 8,
-                                left: 0,
-                                right: 0,
-                                child: Center(child: _statusChip(context,
-                                    "Couldn't locate this line on the page")),
+                          )
+                        else if (widget.highlightText != null &&
+                            _currentPage == widget.pageNumber &&
+                            (_highlightRects?.isEmpty ?? false))
+                          Positioned(
+                            top: 8,
+                            left: 0,
+                            right: 0,
+                            child: Center(
+                              child: _statusChip(
+                                context,
+                                "Couldn't locate this line on the page",
                               ),
-                          ],
-                        );
-                      },
-                    )
-                  : const Center(child: Text('Could not load page')),
+                            ),
+                          ),
+                      ],
+                    );
+                  },
+                )
+              : const Center(child: Text('Could not load page')),
         ),
       ],
     );
   }
 
-  Widget _statusChip(BuildContext context, String label,
-      {bool busy = false}) {
+  Widget _statusChip(BuildContext context, String label, {bool busy = false}) {
     final theme = Theme.of(context);
     return DecoratedBox(
       decoration: BoxDecoration(
@@ -491,13 +518,18 @@ class _PdfPageViewState extends State<PdfPageView> {
                 width: 12,
                 height: 12,
                 child: CircularProgressIndicator(
-                    strokeWidth: 2, color: theme.colorScheme.onInverseSurface),
+                  strokeWidth: 2,
+                  color: theme.colorScheme.onInverseSurface,
+                ),
               ),
               const SizedBox(width: 8),
             ],
-            Text(label,
-                style: theme.textTheme.labelSmall
-                    ?.copyWith(color: theme.colorScheme.onInverseSurface)),
+            Text(
+              label,
+              style: theme.textTheme.labelSmall?.copyWith(
+                color: theme.colorScheme.onInverseSurface,
+              ),
+            ),
           ],
         ),
       ),
@@ -512,14 +544,18 @@ class _PdfPageViewState extends State<PdfPageView> {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Icon(Icons.broken_image_outlined,
-                size: 32, color: theme.colorScheme.error),
+            Icon(
+              Icons.broken_image_outlined,
+              size: 32,
+              color: theme.colorScheme.error,
+            ),
             const SizedBox(height: 8),
             Text(
               _renderError!,
               textAlign: TextAlign.center,
-              style: theme.textTheme.bodySmall
-                  ?.copyWith(color: theme.colorScheme.error),
+              style: theme.textTheme.bodySmall?.copyWith(
+                color: theme.colorScheme.error,
+              ),
             ),
             const SizedBox(height: 8),
             TextButton.icon(

@@ -110,15 +110,16 @@ class _ModelSetupScreenState extends State<ModelSetupScreen> {
     for (final m in files) {
       final s = svc.getState(m.id);
       total += m.sizeBytes;
-      done += (s.status == ModelStatus.downloaded ? 1.0 : s.progress) *
-          m.sizeBytes;
+      done +=
+          (s.status == ModelStatus.downloaded ? 1.0 : s.progress) * m.sizeBytes;
       error ??= s.errorMessage;
     }
     setState(() {
       _voices.progress = total == 0 ? 0 : done / total;
       _voices.error = error;
       if (files.every(
-          (m) => svc.getState(m.id).status == ModelStatus.downloaded)) {
+        (m) => svc.getState(m.id).status == ModelStatus.downloaded,
+      )) {
         _voices.ready = true;
       }
     });
@@ -127,15 +128,15 @@ class _ModelSetupScreenState extends State<ModelSetupScreen> {
   Future<void> _downloadAll() async {
     // Record consent: the launch-time auto-downloader only runs for users
     // who chose to download (never for "Skip for now" users on cellular).
-    SharedPreferences.getInstance()
-        .then((p) => p.setBool('models_auto_download_ok', true));
+    SharedPreferences.getInstance().then(
+      (p) => p.setBool('models_auto_download_ok', true),
+    );
     setState(() {
       _downloading = true;
       for (final i in _items) {
         i.error = null;
       }
     });
-    AnalyticsService.instance.logModelDownloaded(modelId: 'setup_all');
 
     // Sequential on purpose: one fat download at a time is kinder to the
     // network and gives an honest per-row progress bar.
@@ -151,8 +152,9 @@ class _ModelSetupScreenState extends State<ModelSetupScreen> {
           if (mounted) setState(() => _voices.ready = true);
         } else {
           // Native background session; progress arrives via _onServiceState.
-          for (final m in ModelDownloadService.availableModels
-              .where((m) => m.subdir == 'kokoro_mlx')) {
+          for (final m in ModelDownloadService.availableModels.where(
+            (m) => m.subdir == 'kokoro_mlx',
+          )) {
             await ModelDownloadService.instance.download(m);
           }
           // Completion also arrives via the listener; poll until settled so
@@ -190,7 +192,8 @@ class _ModelSetupScreenState extends State<ModelSetupScreen> {
           for (final m in files) {
             final s = svc.getState(m.id);
             total += m.sizeBytes;
-            done += (s.status == ModelStatus.downloaded ? 1.0 : s.progress) *
+            done +=
+                (s.status == ModelStatus.downloaded ? 1.0 : s.progress) *
                 m.sizeBytes;
           }
           if (mounted) {
@@ -209,7 +212,8 @@ class _ModelSetupScreenState extends State<ModelSetupScreen> {
           setState(() {
             matching.ready = ok;
             if (!ok) {
-              matching.error = ModelDownloadService.availableModels
+              matching.error =
+                  ModelDownloadService.availableModels
                       .where((m) => m.subdir == 'live_asr')
                       .map((m) => svc.getState(m.id).errorMessage)
                       .whereType<String>()
@@ -227,9 +231,10 @@ class _ModelSetupScreenState extends State<ModelSetupScreen> {
     if (!mounted) return;
     setState(() => _downloading = false);
     if (_items.every((i) => i.ready)) {
-      ScaffoldMessenger.of(context).showAutoToast(const SnackBar(
-        content: Text('All set — rehearsal is ready to go!'),
-      ));
+      AnalyticsService.instance.logModelDownloaded(modelId: 'setup_all');
+      ScaffoldMessenger.of(context).showAutoToast(
+        const SnackBar(content: Text('All set — rehearsal is ready to go!')),
+      );
       context.pop();
     }
   }
@@ -257,22 +262,28 @@ class _ModelSetupScreenState extends State<ModelSetupScreen> {
                     // Android) and everything is available later from the
                     // production screen or Settings.
                     onPressed: () => context.pop(),
-                    child: Text(allReady
-                        ? 'Continue'
-                        : _downloading
-                            ? 'Continue in background'
-                            : 'Skip for now'),
+                    child: Text(
+                      allReady
+                          ? 'Continue'
+                          : _downloading
+                          ? 'Continue in background'
+                          : 'Skip for now',
+                    ),
                   ),
                 ),
                 const SizedBox(height: 8),
-                Icon(Icons.theater_comedy,
-                    size: 56, color: theme.colorScheme.primary),
+                Icon(
+                  Icons.theater_comedy,
+                  size: 56,
+                  color: theme.colorScheme.primary,
+                ),
                 const SizedBox(height: 16),
                 Text(
                   'Set up your rehearsal AI',
                   textAlign: TextAlign.center,
-                  style: theme.textTheme.headlineSmall
-                      ?.copyWith(fontWeight: FontWeight.bold),
+                  style: theme.textTheme.headlineSmall?.copyWith(
+                    fontWeight: FontWeight.bold,
+                  ),
                 ),
                 const SizedBox(height: 8),
                 Text(
@@ -280,47 +291,56 @@ class _ModelSetupScreenState extends State<ModelSetupScreen> {
                   'rehearsal leaves your ${Platform.isAndroid ? 'phone' : 'device'}. '
                   'One download, then it works offline.',
                   textAlign: TextAlign.center,
-                  style: theme.textTheme.bodyMedium
-                      ?.copyWith(color: theme.colorScheme.onSurfaceVariant),
+                  style: theme.textTheme.bodyMedium?.copyWith(
+                    color: theme.colorScheme.onSurfaceVariant,
+                  ),
                 ),
                 const SizedBox(height: 24),
-                ..._items.map((i) => Card(
-                      child: ListTile(
-                        leading: Icon(
-                          i.ready
-                              ? Icons.check_circle
-                              : i == _voices
-                                  ? Icons.record_voice_over
-                                  : Icons.graphic_eq,
-                          color: i.ready
-                              ? Colors.green
-                              : theme.colorScheme.primary,
-                        ),
-                        title: Text(i.title),
-                        subtitle: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(i.ready
-                                ? 'Installed'
-                                : '${i.subtitle} (${i.sizeLabel})'),
-                            if (_downloading && !i.ready && i.error == null)
-                              Padding(
-                                padding: const EdgeInsets.only(top: 8),
-                                child: LinearProgressIndicator(
-                                    value:
-                                        i.progress == 0 ? null : i.progress),
-                              ),
-                            if (i.error != null)
-                              Padding(
-                                padding: const EdgeInsets.only(top: 4),
-                                child: Text(i.error!,
-                                    style: const TextStyle(
-                                        color: Colors.red, fontSize: 12)),
-                              ),
-                          ],
-                        ),
+                ..._items.map(
+                  (i) => Card(
+                    child: ListTile(
+                      leading: Icon(
+                        i.ready
+                            ? Icons.check_circle
+                            : i == _voices
+                            ? Icons.record_voice_over
+                            : Icons.graphic_eq,
+                        color: i.ready
+                            ? Colors.green
+                            : theme.colorScheme.primary,
                       ),
-                    )),
+                      title: Text(i.title),
+                      subtitle: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            i.ready
+                                ? 'Installed'
+                                : '${i.subtitle} (${i.sizeLabel})',
+                          ),
+                          if (_downloading && !i.ready && i.error == null)
+                            Padding(
+                              padding: const EdgeInsets.only(top: 8),
+                              child: LinearProgressIndicator(
+                                value: i.progress == 0 ? null : i.progress,
+                              ),
+                            ),
+                          if (i.error != null)
+                            Padding(
+                              padding: const EdgeInsets.only(top: 4),
+                              child: Text(
+                                i.error!,
+                                style: const TextStyle(
+                                  color: Colors.red,
+                                  fontSize: 12,
+                                ),
+                              ),
+                            ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
                 const Spacer(),
                 if (anyMissing)
                   FilledButton.icon(
@@ -329,13 +349,16 @@ class _ModelSetupScreenState extends State<ModelSetupScreen> {
                         ? const SizedBox(
                             width: 18,
                             height: 18,
-                            child: CircularProgressIndicator(strokeWidth: 2))
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          )
                         : const Icon(Icons.download),
-                    label: Text(_downloading
-                        ? 'Downloading…'
-                        : _items.any((i) => i.error != null)
-                            ? 'Retry download'
-                            : 'Download all'),
+                    label: Text(
+                      _downloading
+                          ? 'Downloading…'
+                          : _items.any((i) => i.error != null)
+                          ? 'Retry download'
+                          : 'Download all',
+                    ),
                   ),
                 if (allReady)
                   FilledButton.icon(
@@ -348,8 +371,9 @@ class _ModelSetupScreenState extends State<ModelSetupScreen> {
                   Text(
                     'You can always do this later in Settings → AI Models.',
                     textAlign: TextAlign.center,
-                    style: theme.textTheme.bodySmall
-                        ?.copyWith(color: theme.colorScheme.onSurfaceVariant),
+                    style: theme.textTheme.bodySmall?.copyWith(
+                      color: theme.colorScheme.onSurfaceVariant,
+                    ),
                   ),
               ],
             ),

@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -8,6 +9,7 @@ class FakeUploader implements RecordingUploader {
   bool ready = true;
   bool failUpload = false;
   bool failMetadata = false;
+  bool failDiscard = false;
 
   /// Called at the start of each upload, before it resolves — lets tests
   /// enqueue a replacement take while an upload is in flight.
@@ -16,7 +18,7 @@ class FakeUploader implements RecordingUploader {
   final List<SyncJob> uploads = [];
   final List<String> savedUrls = [];
   final List<SyncJob> savedMetadataJobs = [];
-
+  final List<String> discardedUrls = [];
   @override
   bool get isReady => ready;
 
@@ -29,7 +31,8 @@ class FakeUploader implements RecordingUploader {
     if (failUpload) throw Exception('upload failed');
     uploads.add(job);
     return 'https://cloud.example/recordings/'
-        '${job.productionId}/${job.characterName}/${job.lineId}.m4a';
+        '${job.productionId}/${job.characterName}/${job.lineId}/'
+        '${uploads.length}.m4a';
   }
 
   @override
@@ -37,6 +40,49 @@ class FakeUploader implements RecordingUploader {
     if (failMetadata) throw Exception('metadata failed');
     savedMetadataJobs.add(job);
     savedUrls.add(remoteUrl);
+  }
+
+  @override
+  Future<void> discardUpload(SyncJob job, String remoteUrl) async {
+    if (failDiscard) throw Exception('discard failed');
+    discardedUrls.add(remoteUrl);
+  }
+}
+
+class FlakyPersistence implements SyncQueuePersistence {
+  int failuresRemaining;
+  int writes = 0;
+  final Map<String, PersistedSyncJob> rows = {};
+
+  FlakyPersistence(this.failuresRemaining);
+
+  Future<void> _maybeFail() async {
+    if (failuresRemaining > 0) {
+      failuresRemaining--;
+      throw FileSystemException('disk unavailable');
+    }
+    writes++;
+  }
+
+  @override
+  Future<void> clear() async {
+    await _maybeFail();
+    rows.clear();
+  }
+
+  @override
+  Future<void> delete(String queueKey) async {
+    await _maybeFail();
+    rows.remove(queueKey);
+  }
+
+  @override
+  Future<List<PersistedSyncJob>> load() async => rows.values.toList();
+
+  @override
+  Future<void> upsert(SyncJob job, PersistedSyncJobState state) async {
+    await _maybeFail();
+    rows[job.queueKey] = PersistedSyncJob(job.snapshot(), state);
   }
 }
 
@@ -101,6 +147,23 @@ void main() {
 
       expect(job.recordedAt, recorded);
     });
+
+    test('persists immutable recording identity across queue restart', () {
+      final job = SyncJob(
+        id: 'job-1',
+        productionId: 'prod-1',
+        characterName: 'DARCY',
+        lineId: 'line-2',
+        recordingId: 'recording-2',
+        localPath: '/audio/rec2.m4a',
+        durationMs: 3000,
+        createdAt: DateTime.utc(2026),
+      );
+
+      expect(SyncJob.fromJson(job.toJson())!.recordingId, 'recording-2');
+      final legacyJson = job.toJson()..remove('recordingId');
+      expect(SyncJob.fromJson(legacyJson)!.recordingId, isNull);
+    });
   });
 
   group('SyncQueue upload flow', () {
@@ -111,9 +174,9 @@ void main() {
       String? uploadedProduction;
       String? uploadedLine;
       String? uploadedUrl;
-      queue.onUploaded = (prodId, lineId, url) {
-        uploadedProduction = prodId;
-        uploadedLine = lineId;
+      queue.onUploaded = (job, url) async {
+        uploadedProduction = job.productionId;
+        uploadedLine = job.lineId;
         uploadedUrl = url;
       };
 
@@ -138,7 +201,7 @@ void main() {
       expect(uploader.savedMetadataJobs.single.durationMs, 4200);
       expect(uploadedProduction, 'prod-1');
       expect(uploadedLine, 'line-1');
-      expect(uploadedUrl, contains('prod-1/HAMLET/line-1.m4a'));
+      expect(uploadedUrl, contains('prod-1/HAMLET/line-1/1.m4a'));
     });
 
     test('does nothing while uploader is not ready', () async {
@@ -281,40 +344,44 @@ void main() {
       }
 
       expect(queue.pending, isEmpty);
-      expect(queue.failed, isEmpty);
+      expect(queue.failed, hasLength(1));
       expect(abandoned, isNotNull);
       expect(abandoned!.lineId, 'line-1');
       expect(abandoned!.retryCount, 5);
     });
 
-    test(
-        're-recording while the old take is uploading keeps the new job '
+    test('re-recording while the old take is uploading keeps the new job '
         'and does not mark it uploaded with the stale URL', () async {
-      final oldPath = await makeAudioFile('take-1');
-      final newPath = await makeAudioFile('take-2');
+      final sharedPath = await makeAudioFile('take-shared');
 
       final uploadedUrls = <String>[];
-      queue.onUploaded = (prodId, lineId, url) => uploadedUrls.add(url);
+      final uploadedRecordingIds = <String?>[];
+      queue.onUploaded = (job, url) async {
+        uploadedUrls.add(url);
+        uploadedRecordingIds.add(job.recordingId);
+      };
 
       uploader.ready = false;
       queue.enqueue(
         productionId: 'prod-1',
         characterName: 'HAMLET',
         lineId: 'line-1',
-        localPath: oldPath,
+        recordingId: 'old-take',
+        localPath: sharedPath,
         durationMs: 1000,
       );
 
       // While take-1 is in flight, the actor re-records the line.
       var replacedMidFlight = false;
       uploader.onUploadStarted = (job) {
-        if (!replacedMidFlight && job.localPath == oldPath) {
+        if (!replacedMidFlight && job.recordingId == 'old-take') {
           replacedMidFlight = true;
           queue.enqueue(
             productionId: 'prod-1',
             characterName: 'HAMLET',
             lineId: 'line-1',
-            localPath: newPath,
+            recordingId: 'new-take',
+            localPath: sharedPath,
             durationMs: 2000,
           );
         }
@@ -326,84 +393,251 @@ void main() {
       await Future<void>.delayed(Duration.zero);
       await queue.processQueue();
 
-      // The NEW take must survive and upload; the stale take-1 URL must not
-      // be reported as the upload result for the re-recorded line.
+      // The NEW take must survive and upload; the stale take-1 object must be
+      // durably discarded and must never stamp the replacement row.
       expect(queue.pending, isEmpty);
       expect(queue.failed, isEmpty);
-      expect(uploader.uploads.map((j) => j.localPath), contains(newPath));
-      expect(uploadedUrls, isNotEmpty);
-      // Exactly one onUploaded for the final state of the line, from take-2's
-      // job (both takes share the same remote path, but the old in-flight job
-      // must not have claimed it).
+      expect(uploader.uploads.map((j) => j.localPath), contains(sharedPath));
       expect(uploadedUrls, hasLength(1));
+      expect(uploadedRecordingIds, ['new-take']);
+      expect(uploader.discardedUrls, hasLength(1));
+      expect(uploader.discardedUrls.single, isNot(uploadedUrls.single));
       expect(uploader.uploads.last.durationMs, 2000);
       expect(uploader.savedMetadataJobs.last.durationMs, 2000);
     });
 
-    test('queued uploads survive an app restart via the persistence file',
-        () async {
-      final persistPath = '${tempDir.path}/sync_queue.json';
-      final path1 = await makeAudioFile('line-1');
-      final path2 = await makeAudioFile('line-2');
-      final goneFilePath = '${tempDir.path}/deleted-later.m4a';
-      await File(goneFilePath).writeAsBytes(List.filled(64, 1));
-
-      final q1 = SyncQueue.forTesting(uploader, persistPath: persistPath);
-      uploader.ready = false; // offline — jobs stay queued
-      q1.enqueue(
+    test('persists orphan cleanup until a failed discard can retry', () async {
+      final oldPath = await makeAudioFile('orphan-old');
+      final newPath = await makeAudioFile('orphan-new');
+      uploader.ready = false;
+      queue.enqueue(
         productionId: 'prod-1',
         characterName: 'HAMLET',
-        lineId: 'line-1',
-        localPath: path1,
+        lineId: 'line-orphan',
+        localPath: oldPath,
         durationMs: 1000,
       );
-      q1.enqueue(
-        productionId: 'prod-1',
-        characterName: 'HAMLET',
-        lineId: 'line-2',
-        localPath: path2,
-        durationMs: 2000,
-      );
-      q1.enqueue(
-        productionId: 'prod-1',
-        characterName: 'HAMLET',
-        lineId: 'line-3',
-        localPath: goneFilePath,
-        durationMs: 500,
-      );
-      await q1.flushPersistence();
+      var replaced = false;
+      uploader.onUploadStarted = (job) {
+        if (!replaced) {
+          replaced = true;
+          queue.enqueue(
+            productionId: 'prod-1',
+            characterName: 'HAMLET',
+            lineId: 'line-orphan',
+            localPath: newPath,
+            durationMs: 2000,
+          );
+        }
+      };
 
-      // "App restart": new queue instance, audio for line-3 gone, and line-2
-      // was re-recorded live before the restore ran.
-      await File(goneFilePath).delete();
-      final uploader2 = FakeUploader()..ready = false;
-      final q2 = SyncQueue.forTesting(uploader2, persistPath: persistPath);
-      final newPath2 = await makeAudioFile('line-2-take2');
-      q2.enqueue(
-        productionId: 'prod-1',
-        characterName: 'HAMLET',
-        lineId: 'line-2',
-        localPath: newPath2,
-        durationMs: 2500,
-      );
-      await q2.flushPersistence();
+      uploader
+        ..ready = true
+        ..failDiscard = true;
+      await queue.processQueue();
+      expect(queue.failed, hasLength(1));
+      expect(queue.failed.single.orphanedRemoteUrls, hasLength(1));
+      expect(uploader.uploads.map((job) => job.localPath), [oldPath]);
 
-      expect(q2.pending, hasLength(2)); // line-1 restored, line-2 live take
-      expect(
-        q2.pending.map((j) => j.localPath),
-        containsAll([path1, newPath2]),
-      );
-      expect(q2.pending.map((j) => j.lineId), isNot(contains('line-3')));
-
-      uploader2.ready = true;
-      await q2.processQueue();
-      expect(q2.pending, isEmpty);
-      expect(uploader2.uploads, hasLength(2));
-      q2.reset();
+      uploader.failDiscard = false;
+      await queue.retryNow();
+      expect(queue.failed, isEmpty);
+      expect(queue.pending, isEmpty);
+      expect(uploader.discardedUrls, hasLength(1));
+      expect(uploader.uploads.map((job) => job.localPath), [oldPath, newPath]);
     });
 
-    test('re-recording a permanently failed line re-queues it fresh',
-        () async {
+    test('awaits local persistence before settling an uploaded job', () async {
+      final path = await makeAudioFile('delayed-stamp');
+      final callbackStarted = Completer<void>();
+      final allowCallback = Completer<void>();
+      queue.onUploaded = (job, url) async {
+        callbackStarted.complete();
+        await allowCallback.future;
+      };
+      uploader.ready = false;
+      queue.enqueue(
+        productionId: 'prod-1',
+        characterName: 'HAMLET',
+        lineId: 'line-delayed',
+        localPath: path,
+        durationMs: 1000,
+      );
+
+      uploader.ready = true;
+      final processing = queue.processQueue();
+      await callbackStarted.future;
+      expect(queue.pending, hasLength(1));
+      expect(uploader.uploads, hasLength(1));
+
+      allowCallback.complete();
+      await processing;
+      expect(queue.pending, isEmpty);
+    });
+
+    test(
+      'retries a failed local stamp without uploading bytes again',
+      () async {
+        final path = await makeAudioFile('stamp-retry');
+        var failStamp = true;
+        queue.onUploaded = (job, url) async {
+          if (failStamp) throw StateError('zero affected rows');
+        };
+        uploader.ready = false;
+        queue.enqueue(
+          productionId: 'prod-1',
+          characterName: 'HAMLET',
+          lineId: 'line-stamp',
+          localPath: path,
+          durationMs: 1000,
+        );
+
+        uploader.ready = true;
+        await queue.processQueue();
+        expect(queue.failed, hasLength(1));
+        expect(queue.failed.single.remoteUrl, isNotNull);
+        expect(uploader.uploads, hasLength(1));
+
+        failStamp = false;
+        await queue.retryNow();
+        expect(queue.failed, isEmpty);
+        expect(uploader.uploads, hasLength(1));
+      },
+    );
+
+    test(
+      'persistence failure stays visible and automatically retries',
+      () async {
+        final path = await makeAudioFile('durable');
+        final persistence = FlakyPersistence(2);
+        final durableQueue = SyncQueue.forTesting(
+          uploader,
+          persistence: persistence,
+          persistenceRetryDelay: const Duration(milliseconds: 1),
+        );
+        uploader.ready = false;
+        durableQueue.enqueue(
+          productionId: 'prod-1',
+          characterName: 'HAMLET',
+          lineId: 'line-durable',
+          localPath: path,
+          durationMs: 1000,
+        );
+
+        await Future<void>.delayed(Duration.zero);
+        expect(durableQueue.lastPersistenceError, isNotNull);
+        expect(durableQueue.persistenceHealthy, isFalse);
+
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+        await durableQueue.flushPersistence();
+        expect(durableQueue.persistenceHealthy, isTrue);
+        expect(persistence.rows, hasLength(1));
+
+        final restored = SyncQueue.forTesting(
+          FakeUploader()..ready = false,
+          persistence: persistence,
+        );
+        await restored.flushPersistence();
+        expect(restored.pending.single.lineId, 'line-durable');
+        durableQueue.stop();
+        restored.stop();
+      },
+    );
+
+    test(
+      'offline enqueue performs one keyed persistence mutation per job',
+      () async {
+        final path = await makeAudioFile('shared-audio');
+        final persistence = FlakyPersistence(0);
+        final durableQueue = SyncQueue.forTesting(
+          uploader,
+          persistence: persistence,
+        );
+        uploader.ready = false;
+
+        for (var i = 0; i < 1000; i++) {
+          durableQueue.enqueue(
+            productionId: 'prod-1',
+            characterName: 'HAMLET',
+            lineId: 'line-$i',
+            localPath: path,
+            durationMs: 1000,
+          );
+        }
+        await durableQueue.flushPersistence();
+
+        expect(persistence.rows, hasLength(1000));
+        expect(persistence.writes, 1000);
+        expect(durableQueue.durableGeneration, durableQueue.dirtyGeneration);
+        durableQueue.stop();
+      },
+    );
+
+    test(
+      'queued uploads survive an app restart via the persistence file',
+      () async {
+        final persistPath = '${tempDir.path}/sync_queue.json';
+        final path1 = await makeAudioFile('line-1');
+        final path2 = await makeAudioFile('line-2');
+        final goneFilePath = '${tempDir.path}/deleted-later.m4a';
+        await File(goneFilePath).writeAsBytes(List.filled(64, 1));
+
+        final q1 = SyncQueue.forTesting(uploader, persistPath: persistPath);
+        uploader.ready = false; // offline — jobs stay queued
+        q1.enqueue(
+          productionId: 'prod-1',
+          characterName: 'HAMLET',
+          lineId: 'line-1',
+          localPath: path1,
+          durationMs: 1000,
+        );
+        q1.enqueue(
+          productionId: 'prod-1',
+          characterName: 'HAMLET',
+          lineId: 'line-2',
+          localPath: path2,
+          durationMs: 2000,
+        );
+        q1.enqueue(
+          productionId: 'prod-1',
+          characterName: 'HAMLET',
+          lineId: 'line-3',
+          localPath: goneFilePath,
+          durationMs: 500,
+        );
+        await q1.flushPersistence();
+
+        // "App restart": new queue instance, audio for line-3 gone, and line-2
+        // was re-recorded live before the restore ran.
+        await File(goneFilePath).delete();
+        final uploader2 = FakeUploader()..ready = false;
+        final q2 = SyncQueue.forTesting(uploader2, persistPath: persistPath);
+        final newPath2 = await makeAudioFile('line-2-take2');
+        q2.enqueue(
+          productionId: 'prod-1',
+          characterName: 'HAMLET',
+          lineId: 'line-2',
+          localPath: newPath2,
+          durationMs: 2500,
+        );
+        await q2.flushPersistence();
+
+        expect(q2.pending, hasLength(2)); // line-1 restored, line-2 live take
+        expect(
+          q2.pending.map((j) => j.localPath),
+          containsAll([path1, newPath2]),
+        );
+        expect(q2.pending.map((j) => j.lineId), isNot(contains('line-3')));
+
+        uploader2.ready = true;
+        await q2.processQueue();
+        expect(q2.pending, isEmpty);
+        expect(uploader2.uploads, hasLength(2));
+        q2.reset();
+      },
+    );
+
+    test('re-recording a permanently failed line re-queues it fresh', () async {
       final path = await makeAudioFile('line-1');
       uploader.ready = false;
       queue.enqueue(

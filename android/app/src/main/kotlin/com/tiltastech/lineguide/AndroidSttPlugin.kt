@@ -63,6 +63,8 @@ class AndroidSttPlugin : FlutterPlugin, MethodChannel.MethodCallHandler, Activit
         private const val SAMPLE_RATE = 16000
         private const val CHUNK_SAMPLES = 1600 // 100 ms
         private const val AAC_BITRATE = 48000  // speech at 16 kHz mono
+        private const val MAX_CONSECUTIVE_ZERO_READS = 5
+        private const val ZERO_READ_BACKOFF_MS = 10L
     }
 
     override fun onAttachedToEngine(binding: FlutterPlugin.FlutterPluginBinding) {
@@ -333,6 +335,7 @@ class AndroidSttPlugin : FlutterPlugin, MethodChannel.MethodCallHandler, Activit
         var muxerTrack = -1
         var muxerStarted = false
         var samplesFed = 0L
+        var consecutiveZeroReads = 0
 
         fun drainEncoder(endOfStream: Boolean) {
             // While flushing, keep waiting (bounded) until the EOS buffer
@@ -366,7 +369,31 @@ class AndroidSttPlugin : FlutterPlugin, MethodChannel.MethodCallHandler, Activit
         try {
             while (capturing) {
                 val n = record.read(pcm, 0, CHUNK_SAMPLES)
-                if (n <= 0) continue
+                // stop/detach may unblock read with an error code. That is an
+                // intentional shutdown, not a capture failure.
+                if (!capturing) break
+                if (n < 0) {
+                    val reason = when (n) {
+                        AudioRecord.ERROR_INVALID_OPERATION -> "invalid operation"
+                        AudioRecord.ERROR_BAD_VALUE -> "bad value"
+                        AudioRecord.ERROR_DEAD_OBJECT -> "audio device unavailable"
+                        AudioRecord.ERROR -> "unspecified audio error"
+                        else -> "error $n"
+                    }
+                    throw IllegalStateException("AudioRecord.read failed: $reason")
+                }
+                if (n == 0) {
+                    consecutiveZeroReads++
+                    if (consecutiveZeroReads >= MAX_CONSECUTIVE_ZERO_READS) {
+                        throw IllegalStateException(
+                            "AudioRecord.read returned no audio " +
+                                "$consecutiveZeroReads consecutive times",
+                        )
+                    }
+                    Thread.sleep(ZERO_READ_BACKOFF_MS)
+                    continue
+                }
+                consecutiveZeroReads = 0
 
                 // Peak level for the mic indicator / silence endpointing.
                 var peak = 0
@@ -412,8 +439,14 @@ class AndroidSttPlugin : FlutterPlugin, MethodChannel.MethodCallHandler, Activit
                     MediaCodec.BUFFER_FLAG_END_OF_STREAM)
             }
             drainEncoder(true)
-        } catch (e: Exception) {
-            mainHandler.post { channel.invokeMethod("onError", "Capture failed: ${e.message}") }
+        } catch (t: Throwable) {
+            val shouldReport = capturing
+            capturing = false
+            if (shouldReport) {
+                mainHandler.post {
+                    channel.invokeMethod("onError", "Capture failed: ${t.message}")
+                }
+            }
         } finally {
             try { record.stop() } catch (_: Exception) {}
             try { record.release() } catch (_: Exception) {}

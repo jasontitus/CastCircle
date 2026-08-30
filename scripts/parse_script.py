@@ -88,6 +88,17 @@ CHARACTER_ALIASES = {
     "COLONEL FITZWILLIAM": "FITZWILLIAM",
 }
 
+
+def _cue_key(name: str) -> str:
+    """Normalize cue punctuation and spacing for exact speaker lookup."""
+    return re.sub(r"[^A-Z0-9]", "", name.upper())
+
+
+_CHARACTER_BY_CUE_KEY = {
+    _cue_key(name): CHARACTER_ALIASES.get(name, name)
+    for name in KNOWN_CHARACTERS
+}
+
 # Page headers/footers and noise patterns to strip
 NOISE_PATTERNS = [
     r"^\d+\s+Jon Jory$",                    # "12 Jon Jory"
@@ -151,18 +162,25 @@ def detect_character_cue(line: str) -> Optional[tuple[str, str]]:
             dialogue = line[match.end():]
             return (char, dialogue)
 
-    # Also try multi-character cues: "MARY, KITTY, LYDIA."
-    multi_match = re.match(
-        r"^([A-Z][A-Z\s.,]+(?:,\s*[A-Z][A-Z\s.]+)+)\.\s+(.+)",
-        line
-    )
-    if multi_match:
-        names_str = multi_match.group(1)
-        dialogue = multi_match.group(2)
-        # Verify at least one known character is in there
-        for char in KNOWN_CHARACTERS:
-            if char in names_str:
-                return (names_str.strip().rstrip("."), dialogue)
+    # Try each possible cue terminator so periods in titles such as "MR."
+    # cannot truncate a valid multi-character cue.
+    for terminator in re.finditer(r"\.\s+", line):
+        names_text = line[:terminator.start()]
+        dialogue = line[terminator.end():]
+        if "," not in names_text or not dialogue:
+            continue
+        raw_names = names_text.split(",")
+        if any(not name.strip() for name in raw_names):
+            continue
+        resolved_names = [
+            _CHARACTER_BY_CUE_KEY.get(_cue_key(name))
+            for name in raw_names
+        ]
+        if all(resolved_names):
+            return (
+                ", ".join(name for name in resolved_names if name is not None),
+                dialogue,
+            )
 
     return None
 
@@ -252,8 +270,7 @@ def parse_script(raw_text: str) -> list[ScriptLine]:
         if is_noise(line):
             continue
 
-        # Detect ACT headers
-        act_match = re.match(r"^ACT\s+(I+|[IVX]+|\d+)", line)
+        act_match = re.fullmatch(r"ACT\s+(?:[IVX]+|\d+)\.?", line)
         if act_match:
             flush_dialogue()
             current_act = line.strip()
@@ -273,9 +290,14 @@ def parse_script(raw_text: str) -> list[ScriptLine]:
             ))
             continue
 
-        # Detect scene headers (if present — this script doesn't use explicit scenes
-        # but many scripts do)
-        scene_match = re.match(r"^SCENE\s+(\d+|[IVX]+)", line, re.IGNORECASE)
+        # Supported scene headers use a numeral, then an optional period and
+        # short title. Scoped case-folding keeps lowercase dialogue after the
+        # numeral from becoming a title.
+        scene_match = re.fullmatch(
+            r"(?i:SCENE)\s+(?:\d+|[IVX]+)"
+            r"(?:\.\s*(?:[A-Z][A-Za-z0-9’'., -]{0,119})?)?",
+            line,
+        )
         if scene_match:
             flush_dialogue()
             current_scene = line.strip()
@@ -375,7 +397,7 @@ def print_stats(script_lines: list[ScriptLine]):
 if __name__ == "__main__":
     input_file = sys.argv[1] if len(sys.argv) > 1 else "/tmp/pride_full_ocr.txt"
 
-    with open(input_file, "r") as f:
+    with open(input_file, "r", encoding="utf-8") as f:
         raw_text = f.read()
 
     script_lines = parse_script(raw_text)
@@ -398,12 +420,12 @@ if __name__ == "__main__":
 
     os.makedirs(examples_dir, exist_ok=True)
 
-    with open(repo_md_path, "w") as f:
+    with open(repo_md_path, "w", encoding="utf-8") as f:
         f.write(md_output)
     print(f"\nMarkdown written to: {repo_md_path}")
 
     # Write JSON
     json_output = to_json(script_lines)
-    with open(repo_json_path, "w") as f:
+    with open(repo_json_path, "w", encoding="utf-8") as f:
         f.write(json_output)
     print(f"JSON written to: {repo_json_path}")

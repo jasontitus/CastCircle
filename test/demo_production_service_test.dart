@@ -5,6 +5,7 @@ import 'package:castcircle/data/services/voice_config_service.dart';
 import 'package:castcircle/main.dart' show databaseProvider;
 import 'package:castcircle/providers/production_providers.dart';
 import 'package:drift/native.dart';
+import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -36,22 +37,31 @@ void main() {
     late WidgetRef captured;
     await tester.pumpWidget(
       ProviderScope(
-        overrides: [databaseProvider.overrideWithValue(db)],
-        child: Consumer(builder: (context, ref, _) {
-          captured = ref;
-          return const SizedBox();
-        }),
+        overrides: [
+          databaseProvider.overrideWithValue(db),
+          connectivityChangesProvider.overrideWithValue(
+            const Stream<List<ConnectivityResult>>.empty(),
+          ),
+        ],
+        child: Consumer(
+          builder: (context, ref, _) {
+            captured = ref;
+            return const SizedBox();
+          },
+        ),
       ),
     );
     return captured;
   }
 
-  testWidgets('creates a British-voiced demo production with a part chosen',
-      (tester) async {
+  testWidgets('creates a British-voiced demo production with a part chosen', (
+    tester,
+  ) async {
     final ref = await refFor(tester);
 
     final production = (await tester.runAsync(
-        () => DemoProductionService.instance.load(ref)))!;
+      () => DemoProductionService.instance.load(ref),
+    ))!;
 
     expect(production.id, DemoProductionService.productionId);
     expect(production.title, contains('Demo'));
@@ -70,11 +80,16 @@ void main() {
     expect(ref.read(rehearsalCharacterProvider), isNotNull);
     expect(ref.read(rehearsalCharacterProvider), 'HAMLET');
 
-    final preset = await VoiceConfigService.instance
-        .getPreset(production.id, locale: production.locale);
+    final preset = await VoiceConfigService.instance.getPreset(
+      production.id,
+      locale: production.locale,
+    );
     expect(preset.id, 'shakespearean');
-    expect(preset.maleVoices.every((v) => v.startsWith('bm_')), isTrue,
-        reason: 'the demo is meant to sound British');
+    expect(
+      preset.maleVoices.every((v) => v.startsWith('bm_')),
+      isTrue,
+      reason: 'the demo is meant to sound British',
+    );
     expect(preset.femaleVoices.every((v) => v.startsWith('bf_')), isTrue);
   });
 

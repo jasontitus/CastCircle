@@ -33,17 +33,26 @@ class KokoroMLXService {
     private var ttsEngine: KokoroTTS?
     private var voices: [String: MLXArray] = [:]
 
-    /// Serial actor to prevent concurrent synthesis (NLTagger is not thread-safe).
+    /// Serial queue for MLX/NLTagger safety. Requests in one group are siblings;
+    /// an urgent request invalidates older groups but never another chunk in its
+    /// own group.
     private let synthQueue = DispatchQueue(label: "com.castcircle.kokoro-synth")
-    /// Incremented on each synthesize call; older calls bail out early.
-    /// Guarded by [genLock]: incremented on the calling Swift-concurrency
-    /// thread while queued blocks read it inside synthQueue — concurrent
-    /// synthesize() calls (prefetch overlaps live playback) raced the
-    /// read-modify-write, and a lost increment let a superseded synthesis
-    /// escape cancellation. NSLock, not synthQueue.sync: the queue is busy
-    /// for whole syntheses and sync-ing on it would block the caller.
-    private var synthGeneration: Int = 0
-    private let genLock = NSLock()
+    private let requestGate = KokoroRequestGate()
+
+    /// Cache metadata and file ownership live on one queue. Returned paths are
+    /// hard-linked into a process-owned delivery directory, so pruning a cache
+    /// entry cannot invalidate a file already handed to playback.
+    private static let cacheQueue = DispatchQueue(label: "com.castcircle.kokoro-cache")
+    private static let deliveryDirectory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("kokoro_tts_deliveries-\(UUID().uuidString)", isDirectory: true)
+    private static var cachePrepared = false
+    private struct CacheEntry {
+        var modificationDate: Date
+        let size: Int
+    }
+    private static var cacheEntries: [URL: CacheEntry] = [:]
+    private static var cacheBytes = 0
+    private static var activeDeliveries: Set<URL> = []
 
     var isModelLoaded: Bool { ttsEngine != nil && !voices.isEmpty }
 
@@ -152,36 +161,45 @@ class KokoroMLXService {
 
     // MARK: - Synthesis
 
-    /// Synthesize speech and return the path to a WAV file.
-    /// Serialized to prevent concurrent NLTagger/MLX access which causes SIGSEGV.
-    func synthesize(text: String, voice: String, speed: Float) async throws -> String {
+    /// Synthesize speech and return an owned WAV delivery path.
+    ///
+    /// MLX remains serial, but cancellation is group-aware: sibling chunks in
+    /// one request group all run, while an explicit urgent group invalidates
+    /// groups that were already known when it arrived.
+    func synthesize(
+        text: String,
+        voice: String,
+        speed: Float,
+        requestGroup: String,
+        urgent: Bool
+    ) async throws -> String {
+        guard !requestGroup.isEmpty else {
+            throw KokoroError.invalidRequestGroup
+        }
+        guard requestGate.register(group: requestGroup, urgent: urgent) else {
+            throw KokoroError.cancelled
+        }
         guard let ttsEngine = ttsEngine else {
             throw KokoroError.modelNotLoaded
         }
 
-        // Look up voice embedding — voice names in the NPZ have ".npy" suffix
         let voiceKey = voice + ".npy"
         guard let voiceEmbedding = voices[voiceKey] else {
             throw KokoroError.voiceNotFound(voice)
         }
 
-        // Cache hit: the key is a stable digest, so a line synthesized in ANY
-        // previous session (same text/voice/speed) plays with zero synthesis
-        // latency. Touch the file's date so pruning is LRU.
-        pruneCacheIfNeeded()
         let cachedPath = cacheURL(for: text, voice: voice, speed: speed)
-        if FileManager.default.fileExists(atPath: cachedPath.path) {
-            try? FileManager.default.setAttributes(
-                [.modificationDate: Date()], ofItemAtPath: cachedPath.path)
-            return cachedPath.path
+        if let delivery = try cachedDeliveryIfPresent(
+            at: cachedPath,
+            requestGroup: requestGroup
+        ) {
+            guard requestGate.isActive(requestGroup) else {
+                _ = try releaseDelivery(atPath: delivery)
+                throw KokoroError.cancelled
+            }
+            return delivery
         }
 
-        // MLX inference is Metal (GPU) work, and iOS TERMINATES apps that
-        // submit GPU work while backgrounded — the background-audio
-        // entitlement keeps rehearsal playing in the background, so every
-        // freshly-synthesized line there was an instant kill. Refuse (the
-        // Dart side falls back to system TTS, which is background-legal)
-        // instead of crashing.
         let inBackground = await MainActor.run {
             UIApplication.shared.applicationState == .background
         }
@@ -190,36 +208,17 @@ class KokoroMLXService {
             throw KokoroError.backgrounded
         }
 
-        // Mark this generation so older in-flight calls can bail out
-        genLock.lock()
-        synthGeneration += 1
-        let myGeneration = synthGeneration
-        genLock.unlock()
-
-        // Determine language from voice prefix
         let language: Language = voice.hasPrefix("a") ? .enUS : .enGB
-
-        // Run synthesis on a serial queue to prevent concurrent NLTagger access
-        let result: String = try await withCheckedThrowingContinuation { continuation in
+        return try await withCheckedThrowingContinuation { continuation in
             synthQueue.async { [weak self] in
                 guard let self = self else {
                     continuation.resume(throwing: KokoroError.modelNotLoaded)
                     return
                 }
-
-                // If a newer synthesis was requested, skip this one
-                self.genLock.lock()
-                let currentGeneration = self.synthGeneration
-                self.genLock.unlock()
-                if myGeneration != currentGeneration {
+                guard self.requestGate.isActive(requestGroup) else {
                     continuation.resume(throwing: KokoroError.cancelled)
                     return
                 }
-
-                // Re-check HERE, not just at call time: this block may have sat
-                // behind an in-flight synthesis for seconds, and the app can
-                // have been backgrounded meanwhile. Submitting Metal work in
-                // the background is an immediate iOS kill.
                 if Self.isBackgrounded {
                     NSLog("KokoroMLX: app backgrounded before queued synthesis ran — skipping GPU work")
                     continuation.resume(throwing: KokoroError.backgrounded)
@@ -227,49 +226,41 @@ class KokoroMLXService {
                 }
 
                 do {
-                    // Generate audio via Kokoro MLX inference
                     let (audioSamples, _) = try ttsEngine.generateAudio(
                         voice: voiceEmbedding,
                         language: language,
                         text: text,
                         speed: speed
                     )
-
-                    // Force GPU sync to catch Metal errors before they fire
-                    // asynchronously and crash the process via check_error()
                     Stream.gpu.synchronize()
-
                     guard !audioSamples.isEmpty else {
-                        continuation.resume(throwing: KokoroError.emptyAudio)
-                        return
+                        throw KokoroError.emptyAudio
                     }
 
-                    // Write to a cached WAV file
-                    let outputPath = self.cacheURL(for: text, voice: voice, speed: speed)
                     let sampleRate = KokoroTTS.Constants.samplingRate
-                    try self.writeWAV(samples: audioSamples, sampleRate: sampleRate, to: outputPath)
-
-                    // Free MLX intermediate computation buffers
+                    guard self.requestGate.isActive(requestGroup) else {
+                        throw KokoroError.cancelled
+                    }
+                    let delivery = try self.storeAndDeliver(
+                        samples: audioSamples,
+                        sampleRate: sampleRate,
+                        at: cachedPath,
+                        requestGroup: requestGroup
+                    )
                     Memory.clearCache()
-
-                    // Deliberately do NOT touch the AVAudioSession here.
-                    // Rehearsal PREFETCHES the next line's audio while the
-                    // actor is speaking — flipping the session to .playback at
-                    // synthesis-complete killed the live STT mic tap mid-line.
-                    // Dart's PlaybackSession.ensurePlayback() sets .playback
-                    // at actual play time instead.
-
-                    continuation.resume(returning: outputPath.path)
+                    guard self.requestGate.isActive(requestGroup) else {
+                        _ = try self.releaseDelivery(atPath: delivery)
+                        throw KokoroError.cancelled
+                    }
+                    continuation.resume(returning: delivery)
                 } catch {
-                    // Clear GPU state on error to prevent cascading Metal failures
                     Memory.clearCache()
                     continuation.resume(throwing: error)
                 }
             }
         }
-
-        return result
     }
+
 
     // MARK: - Audio encoding
 
@@ -331,40 +322,190 @@ class KokoroMLXService {
         return cacheDir.appendingPathComponent("\(hex).wav")
     }
 
-    /// LRU-prune the synthesis cache to ~200MB. Runs once per launch on a
-    /// utility queue (kicked from the first synthesize call).
-    private static var pruneScheduled = false
-    func pruneCacheIfNeeded() {
-        guard !Self.pruneScheduled else { return }
-        Self.pruneScheduled = true
-        DispatchQueue.global(qos: .utility).async {
-            let fm = FileManager.default
-            let dir = fm.urls(for: .cachesDirectory, in: .userDomainMask)[0]
-                .appendingPathComponent("kokoro_tts", isDirectory: true)
-            guard let files = try? fm.contentsOfDirectory(
-                at: dir, includingPropertiesForKeys: [.contentModificationDateKey, .fileSizeKey]
-            ) else { return }
-            var entries: [(url: URL, date: Date, size: Int)] = files.compactMap { url in
-                guard let values = try? url.resourceValues(
-                    forKeys: [.contentModificationDateKey, .fileSizeKey]) else { return nil }
-                return (url, values.contentModificationDate ?? .distantPast, values.fileSize ?? 0)
+    private func cachedDeliveryIfPresent(
+        at cacheURL: URL,
+        requestGroup: String
+    ) throws -> String? {
+        try Self.cacheQueue.sync {
+            try Self.prepareCacheLocked()
+            guard FileManager.default.fileExists(atPath: cacheURL.path) else {
+                if let missing = Self.cacheEntries.removeValue(forKey: cacheURL) {
+                    Self.cacheBytes -= missing.size
+                }
+                Self.pruneCacheLocked()
+                return nil
             }
-            let maxBytes = 200 * 1024 * 1024
-            // Prune below the cap so launches near the limit don't each pay
-            // a removal pass (hysteresis).
-            let lowWater = 150 * 1024 * 1024
-            var total = entries.reduce(0) { $0 + $1.size }
-            guard total > maxBytes else { return }
-            entries.sort { $0.date < $1.date } // oldest first
-            var removed = 0
-            for entry in entries {
-                if total <= lowWater { break }
-                try? fm.removeItem(at: entry.url)
-                total -= entry.size
-                removed += 1
+
+            let now = Date()
+            try FileManager.default.setAttributes(
+                [.modificationDate: now],
+                ofItemAtPath: cacheURL.path
+            )
+            if let prior = Self.cacheEntries[cacheURL] {
+                Self.cacheEntries[cacheURL] = CacheEntry(
+                    modificationDate: now,
+                    size: prior.size
+                )
             }
-            NSLog("KokoroMLX: pruned \(removed) cached WAVs (cache was over 200MB)")
+            guard requestGate.isActive(requestGroup) else {
+                Self.pruneCacheLocked()
+                throw KokoroError.cancelled
+            }
+            let delivery = try Self.makeDeliveryLocked(from: cacheURL)
+            Self.pruneCacheLocked()
+            return delivery.path
         }
+    }
+
+    private func storeAndDeliver(
+        samples: [Float],
+        sampleRate: Int,
+        at cacheURL: URL,
+        requestGroup: String
+    ) throws -> String {
+        try Self.cacheQueue.sync {
+            try Self.prepareCacheLocked()
+            if let prior = Self.cacheEntries.removeValue(forKey: cacheURL) {
+                Self.cacheBytes -= prior.size
+            }
+            try writeWAV(samples: samples, sampleRate: sampleRate, to: cacheURL)
+            let values = try cacheURL.resourceValues(
+                forKeys: [.contentModificationDateKey, .fileSizeKey]
+            )
+            guard let size = values.fileSize else {
+                throw KokoroError.cacheFailure("Could not determine the size of the new WAV")
+            }
+            Self.cacheEntries[cacheURL] = CacheEntry(
+                modificationDate: values.contentModificationDate ?? Date(),
+                size: size
+            )
+            Self.cacheBytes += size
+            guard requestGate.isActive(requestGroup) else {
+                Self.pruneCacheLocked()
+                throw KokoroError.cancelled
+            }
+            let delivery = try Self.makeDeliveryLocked(from: cacheURL)
+            Self.pruneCacheLocked()
+            return delivery.path
+        }
+    }
+
+    private static func prepareCacheLocked() throws {
+        guard !cachePrepared else { return }
+        let fm = FileManager.default
+        let cacheDirectory = fm.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("kokoro_tts", isDirectory: true)
+        try fm.createDirectory(at: cacheDirectory, withIntermediateDirectories: true)
+
+        let tempRoot = fm.temporaryDirectory
+        do {
+            let staleDeliveries = try fm.contentsOfDirectory(
+                at: tempRoot,
+                includingPropertiesForKeys: nil
+            )
+            for stale in staleDeliveries
+                where stale.lastPathComponent.hasPrefix("kokoro_tts_deliveries-")
+                    && stale != deliveryDirectory {
+                do {
+                    try fm.removeItem(at: stale)
+                } catch {
+                    NSLog("KokoroMLX: could not remove stale delivery directory: \(error)")
+                }
+            }
+        } catch {
+            NSLog("KokoroMLX: could not enumerate stale delivery directories: \(error)")
+        }
+        try fm.createDirectory(at: deliveryDirectory, withIntermediateDirectories: true)
+
+        let files = try fm.contentsOfDirectory(
+            at: cacheDirectory,
+            includingPropertiesForKeys: [.contentModificationDateKey, .fileSizeKey]
+        )
+        cacheEntries.removeAll(keepingCapacity: true)
+        cacheBytes = 0
+        for file in files where file.pathExtension == "wav" {
+            let values = try file.resourceValues(
+                forKeys: [.contentModificationDateKey, .fileSizeKey]
+            )
+            guard let size = values.fileSize else {
+                throw KokoroError.cacheFailure("Could not account for \(file.lastPathComponent)")
+            }
+            cacheEntries[file] = CacheEntry(
+                modificationDate: values.contentModificationDate ?? .distantPast,
+                size: size
+            )
+            cacheBytes += size
+        }
+        cachePrepared = true
+    }
+
+    private static func makeDeliveryLocked(from cacheURL: URL) throws -> URL {
+        let deliveryURL = deliveryDirectory
+            .appendingPathComponent(UUID().uuidString)
+            .appendingPathExtension("wav")
+        do {
+            try FileManager.default.linkItem(at: cacheURL, to: deliveryURL)
+        } catch {
+            NSLog("KokoroMLX: hard-link delivery unavailable; copying WAV: \(error)")
+            try FileManager.default.copyItem(at: cacheURL, to: deliveryURL)
+        }
+        activeDeliveries.insert(deliveryURL)
+        return deliveryURL
+    }
+
+    @discardableResult
+    func releaseDelivery(atPath path: String) throws -> Bool {
+        let deliveryURL = URL(fileURLWithPath: path).standardizedFileURL
+        return try Self.cacheQueue.sync {
+            let root = Self.deliveryDirectory.standardizedFileURL
+            guard deliveryURL.deletingLastPathComponent() == root,
+                  Self.activeDeliveries.remove(deliveryURL) != nil else {
+                return false
+            }
+            do {
+                try FileManager.default.removeItem(at: deliveryURL)
+            } catch {
+                if (error as? CocoaError)?.code != .fileNoSuchFile {
+                    Self.activeDeliveries.insert(deliveryURL)
+                    throw KokoroError.cacheFailure(
+                        "Could not release \(deliveryURL.lastPathComponent): \(error.localizedDescription)"
+                    )
+                }
+            }
+            return true
+        }
+    }
+
+    private static func pruneCacheLocked() {
+        let maxBytes = 200 * 1024 * 1024
+        let lowWater = 150 * 1024 * 1024
+        guard cacheBytes > maxBytes else { return }
+
+        let oldestFirst = cacheEntries.sorted {
+            $0.value.modificationDate < $1.value.modificationDate
+        }
+        var removed = 0
+        for (url, entry) in oldestFirst {
+            if cacheBytes <= lowWater { break }
+            do {
+                try FileManager.default.removeItem(at: url)
+                cacheEntries.removeValue(forKey: url)
+                cacheBytes -= entry.size
+                removed += 1
+            } catch {
+                if (error as? CocoaError)?.code == .fileNoSuchFile {
+                    // iOS may purge Caches behind us; the bytes are already
+                    // gone, so reconcile the inventory rather than retaining
+                    // a phantom entry.
+                    cacheEntries.removeValue(forKey: url)
+                    cacheBytes -= entry.size
+                } else {
+                    // Real failed deletes remain in both inventory and total.
+                    NSLog("KokoroMLX: failed to prune \(url.lastPathComponent): \(error)")
+                }
+            }
+        }
+        NSLog("KokoroMLX: pruned \(removed) cached WAVs; accounted cache is \(cacheBytes) bytes")
     }
 
     private var modelDirectory: URL {
@@ -375,6 +516,34 @@ class KokoroMLXService {
 
 // MARK: - Errors
 
+/// Thread-safe cancellation policy shared by the channel's concurrent Tasks.
+/// Group IDs are unique for one logical prefetch/speak operation.
+final class KokoroRequestGate {
+    private let lock = NSLock()
+    private var knownGroups: Set<String> = []
+    private var invalidatedGroups: Set<String> = []
+    private var urgentGroups: Set<String> = []
+
+    func register(group: String, urgent: Bool) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        if urgent && urgentGroups.insert(group).inserted {
+            for existing in knownGroups where existing != group {
+                invalidatedGroups.insert(existing)
+            }
+            invalidatedGroups.remove(group)
+        }
+        knownGroups.insert(group)
+        return !invalidatedGroups.contains(group)
+    }
+
+    func isActive(_ group: String) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return !invalidatedGroups.contains(group)
+    }
+}
+
 enum KokoroError: LocalizedError {
     case modelNotLoaded
     case modelNotDownloaded
@@ -384,6 +553,8 @@ enum KokoroError: LocalizedError {
     case emptyAudio
     case cancelled
     case backgrounded
+    case invalidRequestGroup
+    case cacheFailure(String)
 
     var errorDescription: String? {
         switch self {
@@ -394,6 +565,8 @@ enum KokoroError: LocalizedError {
         case .voiceNotFound(let v): return "Voice '\(v)' not found in voice embeddings."
         case .emptyAudio: return "No audio generated for the given text."
         case .cancelled: return "Synthesis cancelled (newer request superseded)."
+        case .invalidRequestGroup: return "Synthesis requestGroup must be nonempty."
+        case .cacheFailure(let message): return "Kokoro cache failed: \(message)"
         case .backgrounded:
             return "App is backgrounded — GPU synthesis unavailable."
         }

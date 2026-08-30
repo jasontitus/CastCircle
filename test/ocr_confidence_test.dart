@@ -17,16 +17,16 @@ void main() {
   tearDown(service.dispose);
 
   ScriptLine line(String text, {double? ocrConfidence}) => ScriptLine(
-        id: 't',
-        act: '',
-        scene: '',
-        lineNumber: 1,
-        orderIndex: 0,
-        character: '',
-        text: text,
-        lineType: LineType.dialogue,
-        ocrConfidence: ocrConfidence,
-      );
+    id: 't',
+    act: '',
+    scene: '',
+    lineNumber: 1,
+    orderIndex: 0,
+    character: '',
+    text: text,
+    lineType: LineType.dialogue,
+    ocrConfidence: ocrConfidence,
+  );
 
   group('tokenizer', () {
     test('curly open-quote glued to a word scores correctly', () {
@@ -90,6 +90,88 @@ void main() {
   });
 
   group('3-way classification (validated thresholds)', () {
+    test('threshold boundaries and precedence are exact', () {
+      const epsilon = 0.000001;
+      final cases =
+          <
+            ({
+              String name,
+              double dictionary,
+              double recognition,
+              OcrReviewStatus expected,
+            })
+          >[
+            (
+              name: 'dictionary junk below + recognition below => junk',
+              dictionary: OcrConfidenceService.dictJunkThreshold - epsilon,
+              recognition: OcrConfidenceService.recConfJunkThreshold - epsilon,
+              expected: OcrReviewStatus.likelyNotScript,
+            ),
+            (
+              name: 'dictionary junk equal takes review precedence',
+              dictionary: OcrConfidenceService.dictJunkThreshold,
+              recognition: OcrConfidenceService.recConfJunkThreshold - epsilon,
+              expected: OcrReviewStatus.review,
+            ),
+            (
+              name: 'dictionary junk above remains review',
+              dictionary: OcrConfidenceService.dictJunkThreshold + epsilon,
+              recognition: OcrConfidenceService.recConfJunkThreshold - epsilon,
+              expected: OcrReviewStatus.review,
+            ),
+            (
+              name: 'recognition below + dictionary below => junk',
+              dictionary: OcrConfidenceService.dictJunkThreshold - epsilon,
+              recognition: OcrConfidenceService.recConfJunkThreshold - epsilon,
+              expected: OcrReviewStatus.likelyNotScript,
+            ),
+            (
+              name: 'recognition equal takes review precedence',
+              dictionary: OcrConfidenceService.dictJunkThreshold - epsilon,
+              recognition: OcrConfidenceService.recConfJunkThreshold,
+              expected: OcrReviewStatus.review,
+            ),
+            (
+              name: 'recognition above remains review',
+              dictionary: OcrConfidenceService.dictJunkThreshold - epsilon,
+              recognition: OcrConfidenceService.recConfJunkThreshold + epsilon,
+              expected: OcrReviewStatus.review,
+            ),
+            (
+              name: 'dictionary review below => review',
+              dictionary: OcrConfidenceService.dictReviewThreshold - epsilon,
+              recognition: 1,
+              expected: OcrReviewStatus.review,
+            ),
+            (
+              name: 'dictionary review equal => ok',
+              dictionary: OcrConfidenceService.dictReviewThreshold,
+              recognition: 1,
+              expected: OcrReviewStatus.ok,
+            ),
+            (
+              name: 'dictionary review above => ok',
+              dictionary: OcrConfidenceService.dictReviewThreshold + epsilon,
+              recognition: 1,
+              expected: OcrReviewStatus.ok,
+            ),
+            (
+              name: 'low recognition alone cannot override clean dictionary',
+              dictionary: OcrConfidenceService.dictReviewThreshold,
+              recognition: OcrConfidenceService.recConfJunkThreshold - epsilon,
+              expected: OcrReviewStatus.ok,
+            ),
+          ];
+
+      for (final entry in cases) {
+        expect(
+          OcrConfidenceService.classify(entry.dictionary, entry.recognition),
+          entry.expected,
+          reason: entry.name,
+        );
+      }
+    });
+
     test('clean line with high rec-confidence -> ok', () {
       final scored = service.scoreScript([
         line('I have no objection to the proposal', ocrConfidence: 0.99),
@@ -146,19 +228,19 @@ void main() {
 
     test('classify helper matches the documented gates', () {
       // likelyNotScript: recConf < 0.65 AND dict < 0.50
-      expect(OcrConfidenceService.classify(0.40, 0.60),
-          OcrReviewStatus.likelyNotScript);
+      expect(
+        OcrConfidenceService.classify(0.40, 0.60),
+        OcrReviewStatus.likelyNotScript,
+      );
       // review: dict < 0.80 (conf fine)
-      expect(OcrConfidenceService.classify(0.70, 0.99),
-          OcrReviewStatus.review);
+      expect(OcrConfidenceService.classify(0.70, 0.99), OcrReviewStatus.review);
       // ok: clean text (dict high) is NOT flagged by a low recConf alone
       expect(OcrConfidenceService.classify(1.0, 0.80), OcrReviewStatus.ok);
       expect(OcrConfidenceService.classify(1.0, 0.50), OcrReviewStatus.ok);
       // ok: both above gates
       expect(OcrConfidenceService.classify(0.90, 0.90), OcrReviewStatus.ok);
       // boundary: low conf but dict >= 0.50 stays in review, not junk
-      expect(OcrConfidenceService.classify(0.60, 0.60),
-          OcrReviewStatus.review);
+      expect(OcrConfidenceService.classify(0.60, 0.60), OcrReviewStatus.review);
     });
   });
 

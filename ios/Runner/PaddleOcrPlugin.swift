@@ -12,41 +12,25 @@ import onnxruntime_objc
 
 /// On-device PaddleOCR (PP-OCRv6 small) via ONNX Runtime.
 ///
-/// Replaces Google ML Kit for PDF/image OCR on iOS. Mirrors the macOS
-/// `VisionOcrPlugin` channel contract (`recognizeText` / `ocrPdf` →
-/// `pages → lines → {text, confidence}`) so the import pipeline swaps engines
-/// with no shape change; the Dart side falls back to ML Kit if this plugin
-/// isn't registered or throws.
-///
-/// Pipeline per page: render (PDFKit) → DB detection ONNX → threshold +
-/// connected-component boxes → crop each box → recognition ONNX → CTC greedy
-/// decode against the PP-OCRv6 dictionary. Reasonable defaults throughout; the
-/// box extraction is connected-components (not full DBNet contour+unclip), which
-/// is a known simplification we can refine after measuring on-device.
+/// Model creation and every inference run are owned by [ocrQueue]. Plugin
+/// registration only records Flutter asset keys, so engine startup never pays
+/// the cost of constructing the two ORT sessions.
 class PaddleOcrPlugin: NSObject {
   private let channel: FlutterMethodChannel
+  private let ocrQueue = DispatchQueue(label: "com.lineguide.paddle-ocr", qos: .userInitiated)
+  private let assetKeys: (det: String, rec: String, keys: String)
+
+  // Accessed only on ocrQueue.
   private var env: ORTEnv?
   private var detSession: ORTSession?
   private var recSession: ORTSession?
   private var keys: [String] = []
-  private var ready = false
+  private var modelLoadFailure: PaddleOCRError?
 
-  // Detection / recognition constants (PP-OCR defaults).
   private let detLimitSide = 960
-  private let detThresh: Float = 0.3        // binarize the probability map
-  private let detMinBoxArea = 16            // drop specks (in det-map pixels)
-  // DBNet "unclip" box expansion. A larger ratio over-expands boxes and MERGES
-  // adjacent text lines (garble); a too-small ratio clips trailing punctuation.
-  // A 9-scan corpus sweep AND a full-document low-OCR debug of the real P&P
-  // copier scan (both Mac-verified) land on the 0.4–0.6 safe band. 0.4 is the
-  // corpus-wide optimum and, on tightly-leaded pages, recovers ~13 more lines
-  // than 0.6 (page 14: 13→2 low-OCR lines) while staying clear of the ~0.2
-  // punctuation-clipping threshold.
+  private let detThresh: Float = 0.3
+  private let detMinBoxArea = 16
   private let detUnclipRatio: Float = 0.4
-  // Auto render scale: rasterize so the page long side ≈ this many px — the
-  // recognition sweet spot (detection caps at 960 anyway, so scale only feeds
-  // the rec crops). Adapts per page so small-page / low-DPI PDFs still get
-  // enough resolution. Mac-validated across the corpus.
   private let targetRenderLongPx: CGFloat = 1800
   private let recHeight = 48
   private let recMaxWidth = 1024
@@ -55,372 +39,648 @@ class PaddleOcrPlugin: NSObject {
 
   init(registrar: FlutterPluginRegistrar, messenger: FlutterBinaryMessenger) {
     channel = FlutterMethodChannel(name: "com.lineguide/paddle_ocr", binaryMessenger: messenger)
+    assetKeys = (
+      registrar.lookupKey(forAsset: "assets/paddle_ocr/det.onnx"),
+      registrar.lookupKey(forAsset: "assets/paddle_ocr/rec.onnx"),
+      registrar.lookupKey(forAsset: "assets/paddle_ocr/keys.txt")
+    )
     super.init()
     channel.setMethodCallHandler(handle)
-    loadModels(registrar: registrar)
   }
 
   // MARK: - Model loading
 
-  private func assetPath(_ registrar: FlutterPluginRegistrar, _ asset: String) -> String? {
-    let key = registrar.lookupKey(forAsset: asset)
+  private func assetPath(for key: String) -> String? {
     let fm = FileManager.default
-    // iOS: the key is relative to the main bundle's resources.
-    if let p = Bundle.main.path(forResource: key, ofType: nil),
-       fm.fileExists(atPath: p) { return p }
-    // macOS: lookupKey returns a path RELATIVE TO Bundle.main.bundlePath, e.g.
-    // "Contents/Frameworks/App.framework/Resources/flutter_assets/...". The
-    // slashes defeat `pathForResource:`, so just join it onto the bundle path.
+    if let path = Bundle.main.path(forResource: key, ofType: nil),
+       fm.fileExists(atPath: path) {
+      return path
+    }
     let joined = (Bundle.main.bundlePath as NSString).appendingPathComponent(key)
     if fm.fileExists(atPath: joined) { return joined }
-    // Last resort: scan loaded bundles/frameworks for the (possibly relative)
-    // key under each bundle path or resourcePath.
+
     var candidates = [Bundle]()
     if let app = Bundle(identifier: "io.flutter.flutter.app") { candidates.append(app) }
     candidates += Bundle.allFrameworks + Bundle.allBundles
-    for b in candidates {
-      for base in [b.bundlePath, b.resourcePath].compactMap({ $0 }) {
+    for bundle in candidates {
+      for base in [bundle.bundlePath, bundle.resourcePath].compactMap({ $0 }) {
         let full = (base as NSString).appendingPathComponent(key)
         if fm.fileExists(atPath: full) { return full }
       }
-      if let p = b.path(forResource: key, ofType: nil), fm.fileExists(atPath: p) { return p }
+      if let path = bundle.path(forResource: key, ofType: nil),
+         fm.fileExists(atPath: path) {
+        return path
+      }
     }
     return nil
   }
 
-  private func loadModels(registrar: FlutterPluginRegistrar) {
-    guard let detPath = assetPath(registrar, "assets/paddle_ocr/det.onnx"),
-          let recPath = assetPath(registrar, "assets/paddle_ocr/rec.onnx"),
-          let keysPath = assetPath(registrar, "assets/paddle_ocr/keys.txt") else {
-      NSLog("PaddleOCR: model assets not found — falling back to ML Kit")
-      return
-    }
+  /// Called only by the serial OCR queue. The first request performs one load;
+  /// concurrent first callers queue behind it and observe the same success or
+  /// stored typed failure.
+  private func ensureModelsLoaded() throws {
+    if detSession != nil, recSession != nil { return }
+    if let modelLoadFailure = modelLoadFailure { throw modelLoadFailure }
+
     do {
-      let t0 = Date()
-      env = try ORTEnv(loggingLevel: ORTLoggingLevel.warning)
-      let opts = try ORTSessionOptions()
-      // Thread config. Passing 0 through the onnxruntime-objc wrapper silently
-      // yields a SINGLE intra-op thread (~30x slowdown — hit iOS imports too).
-      // Set it explicitly to the PHYSICAL performance cores, capped: this is a
-      // small model, so more threads add sync overhead, and we run two sessions
-      // (det+rec), so all-logical-cores oversubscribes and thrashes. Also
-      // disable intra-op spinning so the idle session's threads don't burn CPU
-      // (which thermally throttled the whole chip and slowed it mid-run).
-      var perfCores = 0
-      var sz = MemoryLayout<Int>.size
-      if sysctlbyname("hw.perflevel0.physicalcpu", &perfCores, &sz, nil, 0) != 0 || perfCores < 1 {
-        perfCores = max(1, ProcessInfo.processInfo.activeProcessorCount / 2)
+      guard let detPath = assetPath(for: assetKeys.det),
+            let recPath = assetPath(for: assetKeys.rec),
+            let keysPath = assetPath(for: assetKeys.keys) else {
+        throw PaddleOCRError.modelAssetsMissing
       }
-      let threads = Int32(max(2, min(perfCores, 8)))
-      try opts.setIntraOpNumThreads(threads)
-      try opts.addConfigEntry(withKey: "session.intra_op.allow_spinning", value: "0")
-      try opts.setGraphOptimizationLevel(.all)
-      detSession = try ORTSession(env: env!, modelPath: detPath, sessionOptions: opts)
-      recSession = try ORTSession(env: env!, modelPath: recPath, sessionOptions: opts)
-      let raw = (try? String(contentsOfFile: keysPath, encoding: .utf8)) ?? ""
-      keys = raw.components(separatedBy: "\n")
-      while let last = keys.last, last.isEmpty { keys.removeLast() }
-      ready = true
-      NSLog("PaddleOCR: models loaded in \(Int(Date().timeIntervalSince(t0)*1000))ms — \(keys.count) keys")
+
+      let started = Date()
+      let loadedEnv = try ORTEnv(loggingLevel: ORTLoggingLevel.warning)
+      let options = try ORTSessionOptions()
+      var performanceCores = 0
+      var size = MemoryLayout<Int>.size
+      if sysctlbyname("hw.perflevel0.physicalcpu", &performanceCores, &size, nil, 0) != 0
+          || performanceCores < 1 {
+        performanceCores = max(1, ProcessInfo.processInfo.activeProcessorCount / 2)
+      }
+      let threads = Int32(max(2, min(performanceCores, 8)))
+      try options.setIntraOpNumThreads(threads)
+      try options.addConfigEntry(withKey: "session.intra_op.allow_spinning", value: "0")
+      try options.setGraphOptimizationLevel(.all)
+
+      let loadedDet = try ORTSession(env: loadedEnv, modelPath: detPath, sessionOptions: options)
+      let loadedRec = try ORTSession(env: loadedEnv, modelPath: recPath, sessionOptions: options)
+      try validateMetadata(loadedDet, stage: "detection")
+      try validateMetadata(loadedRec, stage: "recognition")
+
+      let rawKeys = try String(contentsOfFile: keysPath, encoding: .utf8)
+      var loadedKeys = rawKeys.components(separatedBy: "\n")
+      while loadedKeys.last?.isEmpty == true { loadedKeys.removeLast() }
+      guard !loadedKeys.isEmpty else {
+        throw PaddleOCRError.invalidModelMetadata(stage: "recognition", reason: "dictionary is empty")
+      }
+
+      env = loadedEnv
+      detSession = loadedDet
+      recSession = loadedRec
+      keys = loadedKeys
+      NSLog("PaddleOCR: models loaded lazily in \(Int(Date().timeIntervalSince(started) * 1000))ms — \(keys.count) keys")
+    } catch let error as PaddleOCRError {
+      modelLoadFailure = error
+      throw error
     } catch {
-      NSLog("PaddleOCR: model load failed: \(error) — falling back to ML Kit")
+      let wrapped = PaddleOCRError.modelLoadFailed(error.localizedDescription)
+      modelLoadFailure = wrapped
+      throw wrapped
+    }
+  }
+
+  private func validateMetadata(_ session: ORTSession, stage: String) throws {
+    let inputNames = try session.inputNames()
+    guard inputNames.count == 1, let input = inputNames.first, !input.isEmpty else {
+      throw PaddleOCRError.invalidModelMetadata(
+        stage: stage,
+        reason: "expected one named input, found \(inputNames.count)"
+      )
+    }
+    let outputNames = try session.outputNames()
+    guard outputNames.count == 1, let output = outputNames.first, !output.isEmpty else {
+      throw PaddleOCRError.invalidModelMetadata(
+        stage: stage,
+        reason: "expected one named output, found \(outputNames.count)"
+      )
     }
   }
 
   // MARK: - Channel
 
   func handle(_ call: FlutterMethodCall, result: @escaping FlutterResult) {
-    guard ready else {
-      // Returning NOT_IMPLEMENTED makes the Dart channel fall back to ML Kit.
-      result(FlutterError(code: "NOT_READY", message: "PaddleOCR models not loaded", details: nil))
-      return
-    }
     switch call.method {
     case "recognizeText":
       guard let path = (call.arguments as? [String: Any])?["path"] as? String else {
-        result(FlutterError(code: "INVALID_ARGS", message: "Missing 'path'", details: nil)); return
+        result(FlutterError(code: "INVALID_ARGS", message: "Missing 'path'", details: nil))
+        return
       }
-      DispatchQueue.global(qos: .userInitiated).async {
-        var blocks: [[String: Any]] = []
-        if let img = self.loadCGImage(path) { blocks = self.ocrImage(img) }
-        DispatchQueue.main.async { result(["blocks": blocks]) }
+      perform(result: result) {
+        guard let image = self.loadCGImage(path) else {
+          throw PaddleOCRError.imageDecodeFailed(path)
+        }
+        return ["blocks": try self.ocrImage(image)]
       }
+
     case "ocrPdfPage":
-      guard let args = call.arguments as? [String: Any],
-            let path = args["path"] as? String,
-            let pageNumber = args["page"] as? Int else {
-        result(FlutterError(code: "INVALID_ARGS", message: "Missing 'path'/'page'", details: nil)); return
+      guard let arguments = call.arguments as? [String: Any],
+            let path = arguments["path"] as? String,
+            let pageNumber = arguments["page"] as? Int else {
+        result(FlutterError(code: "INVALID_ARGS", message: "Missing 'path'/'page'", details: nil))
+        return
       }
-      ocrPdfPage(path: path, pageNumber: pageNumber, result: result)
+      perform(result: result) {
+        ["lines": try self.ocrPdfPage(path: path, pageNumber: pageNumber)]
+      }
+
     case "ocrPdf":
       guard let path = (call.arguments as? [String: Any])?["path"] as? String else {
-        result(FlutterError(code: "INVALID_ARGS", message: "Missing 'path'", details: nil)); return
+        result(FlutterError(code: "INVALID_ARGS", message: "Missing 'path'", details: nil))
+        return
       }
       let scale = (call.arguments as? [String: Any])?["scale"] as? Double ?? 2.0
-      ocrPdf(path: path, scale: scale, result: result)
+      perform(result: result) {
+        try self.ocrPdf(path: path, scale: scale)
+      }
+
     default:
       result(FlutterMethodNotImplemented)
     }
   }
 
-  private func ocrPdf(path: String, scale: Double, result: @escaping FlutterResult) {
-    DispatchQueue.global(qos: .userInitiated).async {
-      guard let doc = PDFDocument(url: URL(fileURLWithPath: path)) else {
-        DispatchQueue.main.async {
-          result(FlutterError(code: "PDF_OPEN_FAILED", message: "Could not open PDF", details: nil))
-        }
-        return
-      }
-      let pageCount = doc.pageCount
-      var pages: [[String: Any]] = []
-      var failed = 0
-      let jobStart = Date()
-      for i in 0..<pageCount {
-        // Push per-page progress to Dart so the import screen shows
-        // "Reading page X of Y" instead of a frozen spinner.
-        DispatchQueue.main.async {
-          self.channel.invokeMethod("ocrProgress",
-                                    arguments: ["page": i + 1, "pageCount": pageCount])
-        }
-        guard let page = doc.page(at: i) else { failed += 1; continue }
-        let b = page.bounds(for: .mediaBox)
-        // Auto-scale per page so the long side ≈ targetRenderLongPx (clamped
-        // 1.0–6.0), instead of a fixed scale — adapts to page size / DPI.
-        let longPt = max(b.width, b.height)
-        // Honor the caller's `scale` as a floor: the channel mirrors
-        // VisionOcrChannel where scale controls render resolution, but it
-        // was parsed and then ignored — callers could never request a
-        // higher-fidelity render. autoScale (long side ≈ 1800px) remains
-        // the default when the caller's scale asks for less.
-        let autoScale = min(6.0, max(1.0, max(scale, self.targetRenderLongPx / longPt)))
-        guard let cg = self.renderPage(page, width: b.width * autoScale, height: b.height * autoScale) else {
-          failed += 1; continue
-        }
-        let t0 = Date()
-        let lines = self.ocrImage(cg)
-        pages.append(["page": i + 1, "lines": lines])
-        NSLog("PaddleOCR: page \(i+1)/\(pageCount) — \(lines.count) lines in \(Int(Date().timeIntervalSince(t0)*1000))ms")
-      }
-      let total = Date().timeIntervalSince(jobStart)
-      NSLog("PaddleOCR: \(pageCount) pages in \(String(format: "%.1f", total))s (\(String(format: "%.2f", total/Double(max(pageCount,1)))) s/page)")
-      DispatchQueue.main.async {
-        result(["pages": pages, "pageCount": pageCount, "failedPages": failed])
+  private func perform(result: @escaping FlutterResult, operation: @escaping () throws -> Any) {
+    ocrQueue.async {
+      do {
+        try self.ensureModelsLoaded()
+        let value = try operation()
+        DispatchQueue.main.async { result(value) }
+      } catch {
+        self.complete(error: error, result: result)
       }
     }
   }
 
-  /// OCR a single 1-based page and return its lines WITH full normalized
-  /// rects — used by the page viewer to highlight where a flagged line's
-  /// text sits on the scanned page.
-  private func ocrPdfPage(path: String, pageNumber: Int, result: @escaping FlutterResult) {
-    DispatchQueue.global(qos: .userInitiated).async {
-      guard let doc = PDFDocument(url: URL(fileURLWithPath: path)),
-            pageNumber >= 1, pageNumber <= doc.pageCount,
-            let page = doc.page(at: pageNumber - 1) else {
-        DispatchQueue.main.async {
-          result(FlutterError(code: "PDF_PAGE_FAILED",
-                              message: "Could not open page \(pageNumber)", details: nil))
-        }
-        return
+  private func complete(error: Error, result: @escaping FlutterResult) {
+    let typed = error as? PaddleOCRError
+      ?? PaddleOCRError.inferenceFailed(stage: "OCR", reason: error.localizedDescription)
+    NSLog("PaddleOCR: \(typed.localizedDescription)")
+    DispatchQueue.main.async {
+      result(FlutterError(code: typed.code, message: typed.localizedDescription, details: typed.details))
+    }
+  }
+
+  // MARK: - PDF
+
+  private func ocrPdf(path: String, scale: Double) throws -> [String: Any] {
+    guard let document = PDFDocument(url: URL(fileURLWithPath: path)) else {
+      throw PaddleOCRError.pdfOpenFailed(path)
+    }
+    let pageCount = document.pageCount
+    var pages: [[String: Any]] = []
+    pages.reserveCapacity(pageCount)
+    let jobStart = Date()
+
+    for index in 0..<pageCount {
+      let pageNumber = index + 1
+      DispatchQueue.main.async {
+        self.channel.invokeMethod(
+          "ocrProgress",
+          arguments: ["page": pageNumber, "pageCount": pageCount]
+        )
       }
-      let b = page.bounds(for: .mediaBox)
-      let longPt = max(b.width, b.height)
-      let autoScale = min(6.0, max(1.0, self.targetRenderLongPx / longPt))
-      guard let cg = self.renderPage(page, width: b.width * autoScale, height: b.height * autoScale) else {
-        DispatchQueue.main.async {
-          result(FlutterError(code: "PDF_PAGE_FAILED",
-                              message: "Could not render page \(pageNumber)", details: nil))
+      do {
+        guard let page = document.page(at: index) else {
+          throw PaddleOCRError.pdfPageUnavailable(pageNumber)
         }
-        return
+        let bounds = page.bounds(for: .mediaBox)
+        let longPoints = max(bounds.width, bounds.height)
+        guard longPoints > 0 else { throw PaddleOCRError.pdfRenderFailed(pageNumber) }
+        let autoScale = min(6.0, max(1.0, max(scale, targetRenderLongPx / longPoints)))
+        guard let image = renderPage(
+          page,
+          width: bounds.width * autoScale,
+          height: bounds.height * autoScale
+        ) else {
+          throw PaddleOCRError.pdfRenderFailed(pageNumber)
+        }
+        let started = Date()
+        let lines = try ocrImage(image)
+        pages.append(["page": pageNumber, "lines": lines])
+        NSLog("PaddleOCR: page \(pageNumber)/\(pageCount) — \(lines.count) lines in \(Int(Date().timeIntervalSince(started) * 1000))ms")
+      } catch let error as PaddleOCRError {
+        throw PaddleOCRError.pageFailed(page: pageNumber, reason: error.localizedDescription)
+      } catch {
+        throw PaddleOCRError.pageFailed(page: pageNumber, reason: error.localizedDescription)
       }
-      let lines = self.ocrImage(cg)
-      DispatchQueue.main.async { result(["lines": lines]) }
+    }
+
+    let total = Date().timeIntervalSince(jobStart)
+    NSLog("PaddleOCR: \(pageCount) pages in \(String(format: "%.1f", total))s")
+    return ["pages": pages, "pageCount": pageCount, "failedPages": 0]
+  }
+
+  private func ocrPdfPage(path: String, pageNumber: Int) throws -> [[String: Any]] {
+    guard let document = PDFDocument(url: URL(fileURLWithPath: path)) else {
+      throw PaddleOCRError.pdfOpenFailed(path)
+    }
+    guard pageNumber >= 1,
+          pageNumber <= document.pageCount,
+          let page = document.page(at: pageNumber - 1) else {
+      throw PaddleOCRError.pdfPageUnavailable(pageNumber)
+    }
+    let bounds = page.bounds(for: .mediaBox)
+    let longPoints = max(bounds.width, bounds.height)
+    guard longPoints > 0 else { throw PaddleOCRError.pdfRenderFailed(pageNumber) }
+    let autoScale = min(6.0, max(1.0, targetRenderLongPx / longPoints))
+    guard let image = renderPage(
+      page,
+      width: bounds.width * autoScale,
+      height: bounds.height * autoScale
+    ) else {
+      throw PaddleOCRError.pdfRenderFailed(pageNumber)
+    }
+    do {
+      return try ocrImage(image)
+    } catch {
+      throw PaddleOCRError.pageFailed(page: pageNumber, reason: error.localizedDescription)
     }
   }
 
   // MARK: - PP-OCR pipeline
 
-  private func ocrImage(_ cg: CGImage) -> [[String: Any]] {
-    guard let det = detSession, let rec = recSession else { return [] }
-    let origW = cg.width, origH = cg.height
-    // 1. Detection: resize to multiples of 32 (≤ limit), normalize, run.
-    let ratio = min(Float(detLimitSide) / Float(max(origW, origH)), 1.0)
-    let newW = max(32, Int((Float(origW) * ratio / 32).rounded()) * 32)
-    let newH = max(32, Int((Float(origH) * ratio / 32).rounded()) * 32)
-    guard let detIn = imageToTensor(cg, newW, newH, mean: detMean, std: detStd) else { return [] }
-    guard let (prob, pShape) = try? run(det, detIn, [1, 3, newH, newW]), pShape.count >= 2 else { return [] }
-    let mH = pShape[pShape.count - 2], mW = pShape[pShape.count - 1]
-    // 2. Threshold + connected-component boxes, mapped back to original coords.
-    let boxes = detectBoxes(prob, mW: mW, mH: mH, origW: origW, origH: origH)
-    // 3. Recognize each box, sorted top-to-bottom (reading order).
+  private func ocrImage(_ image: CGImage) throws -> [[String: Any]] {
+    guard let detectionSession = detSession, let recognitionSession = recSession else {
+      throw PaddleOCRError.modelLoadFailed("sessions are unavailable after loading")
+    }
+    let originalWidth = image.width
+    let originalHeight = image.height
+    guard originalWidth > 0, originalHeight > 0 else {
+      throw PaddleOCRError.imageConversionFailed("image has zero dimensions")
+    }
+
+    let ratio = min(Float(detLimitSide) / Float(max(originalWidth, originalHeight)), 1.0)
+    let newWidth = max(32, Int((Float(originalWidth) * ratio / 32).rounded()) * 32)
+    let newHeight = max(32, Int((Float(originalHeight) * ratio / 32).rounded()) * 32)
+    let detectionInput = try imageToTensor(
+      image,
+      newWidth,
+      newHeight,
+      mean: detMean,
+      std: detStd
+    )
+    let (probabilities, probabilityShape) = try run(
+      detectionSession,
+      detectionInput,
+      [1, 3, newHeight, newWidth],
+      stage: "detection"
+    )
+    guard probabilityShape.count >= 2 else {
+      throw PaddleOCRError.invalidInferenceOutput(stage: "detection", reason: "rank is \(probabilityShape.count)")
+    }
+    let mapHeight = probabilityShape[probabilityShape.count - 2]
+    let mapWidth = probabilityShape[probabilityShape.count - 1]
+    guard mapHeight > 0, mapWidth > 0,
+          probabilities.count >= mapHeight * mapWidth else {
+      throw PaddleOCRError.invalidInferenceOutput(stage: "detection", reason: "probability map shape/data mismatch")
+    }
+
+    let boxes = detectBoxes(
+      probabilities,
+      mW: mapWidth,
+      mH: mapHeight,
+      origW: originalWidth,
+      origH: originalHeight
+    )
     var lines: [[String: Any]] = []
-    let fOrigW = Double(max(origW, 1))
+    let width = Double(originalWidth)
+    let height = Double(originalHeight)
     for box in boxes.sorted(by: { $0.minY < $1.minY }) {
-      guard let crop = cg.cropping(to: box) else { continue }
-      if let (text, conf) = recognize(crop, rec) , !text.isEmpty {
-        // Normalized box left + width let the Dart side drop left-margin
-        // handwritten annotations (a marked-up script's director notes sit in a
-        // distinct left column, well left of the indented dialogue body).
+      guard let crop = image.cropping(to: box) else {
+        throw PaddleOCRError.imageConversionFailed("could not crop detected text region")
+      }
+      let (text, confidence) = try recognize(crop, recognitionSession)
+      if !text.isEmpty {
         lines.append([
-          "text": text, "confidence": conf,
-          "left": Double(box.minX) / fOrigW,
-          "width": Double(box.width) / fOrigW,
-          // Full normalized rect so the page viewer can highlight the
-          // region a flagged line came from.
-          "top": Double(box.minY) / Double(max(origH, 1)),
-          "height": Double(box.height) / Double(max(origH, 1)),
+          "text": text,
+          "confidence": confidence,
+          "left": Double(box.minX) / width,
+          "width": Double(box.width) / width,
+          "top": Double(box.minY) / height,
+          "height": Double(box.height) / height,
         ])
       }
     }
     return lines
   }
 
-  /// Threshold the DB probability map and extract axis-aligned boxes via a
-  /// scanline connected-components pass, scaled back to original-image coords.
-  private func detectBoxes(_ prob: [Float], mW: Int, mH: Int, origW: Int, origH: Int) -> [CGRect] {
+  private func detectBoxes(
+    _ probabilities: [Float],
+    mW: Int,
+    mH: Int,
+    origW: Int,
+    origH: Int
+  ) -> [CGRect] {
     var label = [Int](repeating: 0, count: mW * mH)
     var next = 1
     var minX = [Int](), minY = [Int](), maxX = [Int](), maxY = [Int](), area = [Int]()
-    func newComp() { minX.append(Int.max); minY.append(Int.max); maxX.append(0); maxY.append(0); area.append(0) }
-    newComp() // index 0 unused
+    func newComponent() {
+      minX.append(Int.max)
+      minY.append(Int.max)
+      maxX.append(0)
+      maxY.append(0)
+      area.append(0)
+    }
+    newComponent()
     var stack = [Int]()
-    for sy in 0..<mH {
-      for sx in 0..<mW {
-        let s = sy * mW + sx
-        if prob[s] <= detThresh || label[s] != 0 { continue }
-        newComp(); let id = next; next += 1
-        stack.removeAll(keepingCapacity: true); stack.append(s); label[s] = id
-        while let p = stack.popLast() {
-          let x = p % mW, y = p / mW
-          if x < minX[id] { minX[id] = x }; if x > maxX[id] { maxX[id] = x }
-          if y < minY[id] { minY[id] = y }; if y > maxY[id] { maxY[id] = y }
-          area[id] += 1
-          for (dx, dy) in [(-1,0),(1,0),(0,-1),(0,1)] {
-            let nx = x + dx, ny = y + dy
-            if nx < 0 || ny < 0 || nx >= mW || ny >= mH { continue }
-            let np = ny * mW + nx
-            if prob[np] > detThresh && label[np] == 0 { label[np] = id; stack.append(np) }
+    for sourceY in 0..<mH {
+      for sourceX in 0..<mW {
+        let source = sourceY * mW + sourceX
+        if probabilities[source] <= detThresh || label[source] != 0 { continue }
+        newComponent()
+        let identifier = next
+        next += 1
+        stack.removeAll(keepingCapacity: true)
+        stack.append(source)
+        label[source] = identifier
+        while let point = stack.popLast() {
+          let x = point % mW
+          let y = point / mW
+          if x < minX[identifier] { minX[identifier] = x }
+          if x > maxX[identifier] { maxX[identifier] = x }
+          if y < minY[identifier] { minY[identifier] = y }
+          if y > maxY[identifier] { maxY[identifier] = y }
+          area[identifier] += 1
+          for (dx, dy) in [(-1, 0), (1, 0), (0, -1), (0, 1)] {
+            let neighborX = x + dx
+            let neighborY = y + dy
+            if neighborX < 0 || neighborY < 0 || neighborX >= mW || neighborY >= mH { continue }
+            let neighbor = neighborY * mW + neighborX
+            if probabilities[neighbor] > detThresh && label[neighbor] == 0 {
+              label[neighbor] = identifier
+              stack.append(neighbor)
+            }
           }
         }
       }
     }
-    let sx = CGFloat(origW) / CGFloat(mW), sy = CGFloat(origH) / CGFloat(mH)
+
+    let scaleX = CGFloat(origW) / CGFloat(mW)
+    let scaleY = CGFloat(origH) / CGFloat(mH)
     var boxes = [CGRect]()
-    for id in 1..<next where area[id] >= detMinBoxArea {
-      // DBNet shrinks text regions — the probability map fires only on glyph
-      // cores — so a raw connected component clips ascenders/descenders and
-      // corrupts recognition (BANQUO→BANOUO, y→v, commas→periods). Recover the
-      // full glyph with PP-OCR's "unclip": expand the bbox outward by
-      // dist = area · ratio / perimeter (in det-map pixels) before the ±1px pad.
-      // Verified on-Mac against the real models (real Swift pipeline): lifts word
-      // accuracy 92% → 99%, matching rapidocr's full DBNet contour+unclip.
-      let bw = maxX[id] - minX[id] + 1, bh = maxY[id] - minY[id] + 1
-      let dist = Int((Float(bw * bh) * detUnclipRatio / Float(2 * (bw + bh))).rounded())
-      let mnx = minX[id] - dist, mny = minY[id] - dist
-      let mxx = maxX[id] + dist, mxy = maxY[id] + dist
-      let x0 = CGFloat(max(0, mnx - 1)) * sx
-      let y0 = CGFloat(max(0, mny - 1)) * sy
-      let x1 = CGFloat(min(mW, mxx + 2)) * sx
-      let y1 = CGFloat(min(mH, mxy + 2)) * sy
+    for identifier in 1..<next where area[identifier] >= detMinBoxArea {
+      let boxWidth = maxX[identifier] - minX[identifier] + 1
+      let boxHeight = maxY[identifier] - minY[identifier] + 1
+      let distance = Int(
+        (Float(boxWidth * boxHeight) * detUnclipRatio / Float(2 * (boxWidth + boxHeight))).rounded()
+      )
+      let minimumX = minX[identifier] - distance
+      let minimumY = minY[identifier] - distance
+      let maximumX = maxX[identifier] + distance
+      let maximumY = maxY[identifier] + distance
+      let x0 = CGFloat(max(0, minimumX - 1)) * scaleX
+      let y0 = CGFloat(max(0, minimumY - 1)) * scaleY
+      let x1 = CGFloat(min(mW, maximumX + 2)) * scaleX
+      let y1 = CGFloat(min(mH, maximumY + 2)) * scaleY
       boxes.append(CGRect(x: x0, y: y0, width: x1 - x0, height: y1 - y0))
     }
     return boxes
   }
 
-  /// Recognize one cropped text-line image → (text, confidence) via CTC greedy.
-  private func recognize(_ crop: CGImage, _ rec: ORTSession) -> (String, Double)? {
-    let h = crop.height, w = crop.width
-    if h == 0 { return nil }
-    var rw = Int((Float(recHeight) * Float(w) / Float(h)).rounded())
-    rw = max(16, min(rw, recMaxWidth))
-    let mean: [Float] = [0.5, 0.5, 0.5], std: [Float] = [0.5, 0.5, 0.5]
-    guard let inp = imageToTensor(crop, rw, recHeight, mean: mean, std: std) else { return nil }
-    guard let (out, shape) = try? run(rec, inp, [1, 3, recHeight, rw]), shape.count == 3 else { return nil }
-    let T = shape[1], C = shape[2]
-    var sb = ""; var probSum: Double = 0; var emitted = 0; var prev = -1
-    for t in 0..<T {
-      var best = 0; var bestP: Float = -1
-      let base = t * C
-      for c in 0..<C { let p = out[base + c]; if p > bestP { bestP = p; best = c } }
-      if best != 0 && best != prev {
-        let idx = best - 1
-        if idx >= 0 && idx < keys.count { sb += keys[idx] }
-        else { sb += " " }  // trailing space class
-        probSum += Double(bestP); emitted += 1
-      }
-      prev = best
+  private func recognize(_ crop: CGImage, _ session: ORTSession) throws -> (String, Double) {
+    let height = crop.height
+    let width = crop.width
+    guard height > 0, width > 0 else {
+      throw PaddleOCRError.imageConversionFailed("recognition crop has zero dimensions")
     }
-    let conf = emitted > 0 ? probSum / Double(emitted) : 0
-    return (sb.trimmingCharacters(in: .whitespaces), conf)
+    var resizedWidth = Int((Float(recHeight) * Float(width) / Float(height)).rounded())
+    resizedWidth = max(16, min(resizedWidth, recMaxWidth))
+    let input = try imageToTensor(
+      crop,
+      resizedWidth,
+      recHeight,
+      mean: [0.5, 0.5, 0.5],
+      std: [0.5, 0.5, 0.5]
+    )
+    let (output, shape) = try run(
+      session,
+      input,
+      [1, 3, recHeight, resizedWidth],
+      stage: "recognition"
+    )
+    guard shape.count == 3, shape[1] > 0, shape[2] > 0,
+          output.count >= shape[1] * shape[2] else {
+      throw PaddleOCRError.invalidInferenceOutput(stage: "recognition", reason: "expected nonempty rank-3 output")
+    }
+
+    let timeSteps = shape[1]
+    let classes = shape[2]
+    var string = ""
+    var probabilitySum: Double = 0
+    var emitted = 0
+    var previous = -1
+    for time in 0..<timeSteps {
+      var best = 0
+      var bestProbability: Float = -.infinity
+      let base = time * classes
+      for character in 0..<classes where output[base + character] > bestProbability {
+        bestProbability = output[base + character]
+        best = character
+      }
+      if best != 0 && best != previous {
+        let keyIndex = best - 1
+        if keys.indices.contains(keyIndex) {
+          string += keys[keyIndex]
+        } else if keyIndex == keys.count {
+          string += " "
+        } else {
+          throw PaddleOCRError.invalidInferenceOutput(
+            stage: "recognition",
+            reason: "class \(best) exceeds dictionary"
+          )
+        }
+        probabilitySum += Double(bestProbability)
+        emitted += 1
+      }
+      previous = best
+    }
+    let confidence = emitted > 0 ? probabilitySum / Double(emitted) : 0
+    return (string.trimmingCharacters(in: .whitespaces), confidence)
   }
 
-  // MARK: - Helpers
+  // MARK: - Image and ORT helpers
 
-  /// Load a CGImage from a file path via ImageIO — works on both iOS and macOS
-  /// (UIImage/NSImage are platform-specific; ImageIO is shared).
   private func loadCGImage(_ path: String) -> CGImage? {
-    guard let src = CGImageSourceCreateWithURL(URL(fileURLWithPath: path) as CFURL, nil) else { return nil }
-    return CGImageSourceCreateImageAtIndex(src, 0, nil)
+    guard let source = CGImageSourceCreateWithURL(URL(fileURLWithPath: path) as CFURL, nil) else {
+      return nil
+    }
+    return CGImageSourceCreateImageAtIndex(source, 0, nil)
   }
 
   private func renderPage(_ page: PDFPage, width: CGFloat, height: CGFloat) -> CGImage? {
-    let cs = CGColorSpaceCreateDeviceRGB()
-    let info = CGImageAlphaInfo.premultipliedLast.rawValue
+    let colorSpace = CGColorSpaceCreateDeviceRGB()
+    let bitmapInfo = CGImageAlphaInfo.premultipliedLast.rawValue
     guard width > 0, height > 0,
-          let ctx = CGContext(data: nil, width: Int(width), height: Int(height),
-                              bitsPerComponent: 8, bytesPerRow: 0, space: cs, bitmapInfo: info) else { return nil }
-    ctx.setFillColor(CGColor(red: 1, green: 1, blue: 1, alpha: 1))
-    ctx.fill(CGRect(x: 0, y: 0, width: width, height: height))
-    let b = page.bounds(for: .mediaBox)
-    ctx.scaleBy(x: width / b.width, y: height / b.height)
-    ctx.translateBy(x: -b.origin.x, y: -b.origin.y)
-    // Draw directly: the bitmap CGContext already shares PDFPage.draw's
-    // bottom-left origin. An extra y-flip here double-flips the page (renders it
-    // upside-down AND glyph-mirrored), which fed the recognizer garbage — the
-    // real "totally broken output" bug, caught by running this exact code on the
-    // Mac. (Verified: with the flip → ~0% word accuracy; without → 92%, then 99%
-    // with the detectBoxes unclip above.)
-    page.draw(with: .mediaBox, to: ctx)
-    return ctx.makeImage()
+          let context = CGContext(
+            data: nil,
+            width: Int(width),
+            height: Int(height),
+            bitsPerComponent: 8,
+            bytesPerRow: 0,
+            space: colorSpace,
+            bitmapInfo: bitmapInfo
+          ) else {
+      return nil
+    }
+    context.setFillColor(CGColor(red: 1, green: 1, blue: 1, alpha: 1))
+    context.fill(CGRect(x: 0, y: 0, width: width, height: height))
+    let bounds = page.bounds(for: .mediaBox)
+    guard bounds.width > 0, bounds.height > 0 else { return nil }
+    context.scaleBy(x: width / bounds.width, y: height / bounds.height)
+    context.translateBy(x: -bounds.origin.x, y: -bounds.origin.y)
+    page.draw(with: .mediaBox, to: context)
+    return context.makeImage()
   }
 
-  /// CGImage → NCHW float tensor (RGB), normalized `(p/255 - mean)/std`.
-  private func imageToTensor(_ cg: CGImage, _ w: Int, _ h: Int, mean: [Float], std: [Float]) -> [Float]? {
-    let bpr = w * 4
-    var buf = [UInt8](repeating: 0, count: h * bpr)
-    let cs = CGColorSpaceCreateDeviceRGB()
-    guard let ctx = CGContext(data: &buf, width: w, height: h, bitsPerComponent: 8,
-                              bytesPerRow: bpr, space: cs,
-                              bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return nil }
-    ctx.draw(cg, in: CGRect(x: 0, y: 0, width: w, height: h))
-    let plane = w * h
-    var out = [Float](repeating: 0, count: 3 * plane)
-    for y in 0..<h {
-      for x in 0..<w {
-        let p = y * bpr + x * 4
-        let idx = y * w + x
-        out[idx]             = (Float(buf[p])   / 255 - mean[0]) / std[0]
-        out[plane + idx]     = (Float(buf[p+1]) / 255 - mean[1]) / std[1]
-        out[2 * plane + idx] = (Float(buf[p+2]) / 255 - mean[2]) / std[2]
+  private func imageToTensor(
+    _ image: CGImage,
+    _ width: Int,
+    _ height: Int,
+    mean: [Float],
+    std: [Float]
+  ) throws -> [Float] {
+    let bytesPerRow = width * 4
+    var buffer = [UInt8](repeating: 0, count: height * bytesPerRow)
+    let colorSpace = CGColorSpaceCreateDeviceRGB()
+    guard let context = CGContext(
+      data: &buffer,
+      width: width,
+      height: height,
+      bitsPerComponent: 8,
+      bytesPerRow: bytesPerRow,
+      space: colorSpace,
+      bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+    ) else {
+      throw PaddleOCRError.imageConversionFailed("could not allocate bitmap context")
+    }
+    context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
+    let plane = width * height
+    var output = [Float](repeating: 0, count: 3 * plane)
+    for y in 0..<height {
+      for x in 0..<width {
+        let pixel = y * bytesPerRow + x * 4
+        let index = y * width + x
+        output[index] = (Float(buffer[pixel]) / 255 - mean[0]) / std[0]
+        output[plane + index] = (Float(buffer[pixel + 1]) / 255 - mean[1]) / std[1]
+        output[2 * plane + index] = (Float(buffer[pixel + 2]) / 255 - mean[2]) / std[2]
       }
     }
-    return out
+    return output
   }
 
-  /// Run a single-input/single-output float model.
-  private func run(_ session: ORTSession, _ data: [Float], _ shape: [Int]) throws -> ([Float], [Int]) {
-    let inName = try session.inputNames().first ?? "x"
-    let outName = try session.outputNames().first ?? "out"
-    let nsdata = NSMutableData(bytes: data, length: data.count * MemoryLayout<Float>.size)
-    let tensor = try ORTValue(tensorData: nsdata, elementType: ORTTensorElementDataType.float,
-                              shape: shape.map { NSNumber(value: $0) })
-    let outputs = try session.run(withInputs: [inName: tensor], outputNames: [outName], runOptions: nil)
-    guard let val = outputs[outName] else { return ([], []) }
-    let info = try val.tensorTypeAndShapeInfo()
-    let outShape = info.shape.map { $0.intValue }
-    let raw = try val.tensorData() as Data
-    var floats = [Float](repeating: 0, count: raw.count / MemoryLayout<Float>.size)
-    _ = floats.withUnsafeMutableBytes { raw.copyBytes(to: $0) }
-    return (floats, outShape)
+  private func run(
+    _ session: ORTSession,
+    _ data: [Float],
+    _ shape: [Int],
+    stage: String
+  ) throws -> ([Float], [Int]) {
+    do {
+      let inputNames = try session.inputNames()
+      guard inputNames.count == 1, let inputName = inputNames.first, !inputName.isEmpty else {
+        throw PaddleOCRError.invalidModelMetadata(stage: stage, reason: "missing input name")
+      }
+      let outputNames = try session.outputNames()
+      guard outputNames.count == 1, let outputName = outputNames.first, !outputName.isEmpty else {
+        throw PaddleOCRError.invalidModelMetadata(stage: stage, reason: "missing output name")
+      }
+
+      let bytes = NSMutableData(bytes: data, length: data.count * MemoryLayout<Float>.size)
+      let tensor = try ORTValue(
+        tensorData: bytes,
+        elementType: ORTTensorElementDataType.float,
+        shape: shape.map { NSNumber(value: $0) }
+      )
+      let outputs = try session.run(
+        withInputs: [inputName: tensor],
+        outputNames: [outputName],
+        runOptions: nil
+      )
+      guard let value = outputs[outputName] else {
+        throw PaddleOCRError.invalidInferenceOutput(stage: stage, reason: "named output is absent")
+      }
+      let info = try value.tensorTypeAndShapeInfo()
+      let outputShape = info.shape.map { $0.intValue }
+      guard !outputShape.isEmpty, outputShape.allSatisfy({ $0 >= 0 }) else {
+        throw PaddleOCRError.invalidInferenceOutput(stage: stage, reason: "invalid runtime shape")
+      }
+      let raw = try value.tensorData() as Data
+      guard raw.count % MemoryLayout<Float>.size == 0 else {
+        throw PaddleOCRError.invalidInferenceOutput(stage: stage, reason: "unaligned float output")
+      }
+      let elementCount = raw.count / MemoryLayout<Float>.size
+      let expectedCount = try outputShape.reduce(1) { partial, dimension in
+        let (product, overflow) = partial.multipliedReportingOverflow(by: dimension)
+        if overflow { throw PaddleOCRError.invalidInferenceOutput(stage: stage, reason: "shape overflow") }
+        return product
+      }
+      guard elementCount == expectedCount else {
+        throw PaddleOCRError.invalidInferenceOutput(
+          stage: stage,
+          reason: "shape expects \(expectedCount) floats, received \(elementCount)"
+        )
+      }
+      var floats = [Float](repeating: 0, count: elementCount)
+      _ = floats.withUnsafeMutableBytes { raw.copyBytes(to: $0) }
+      return (floats, outputShape)
+    } catch let error as PaddleOCRError {
+      throw error
+    } catch {
+      throw PaddleOCRError.inferenceFailed(stage: stage, reason: error.localizedDescription)
+    }
+  }
+}
+
+private enum PaddleOCRError: LocalizedError {
+  case modelAssetsMissing
+  case modelLoadFailed(String)
+  case invalidModelMetadata(stage: String, reason: String)
+  case imageDecodeFailed(String)
+  case imageConversionFailed(String)
+  case pdfOpenFailed(String)
+  case pdfPageUnavailable(Int)
+  case pdfRenderFailed(Int)
+  case pageFailed(page: Int, reason: String)
+  case inferenceFailed(stage: String, reason: String)
+  case invalidInferenceOutput(stage: String, reason: String)
+
+  var code: String {
+    switch self {
+    case .modelAssetsMissing, .modelLoadFailed, .invalidModelMetadata:
+      return "OCR_MODEL_FAILED"
+    case .imageDecodeFailed, .imageConversionFailed:
+      return "IMAGE_DECODE_FAILED"
+    case .pdfOpenFailed:
+      return "PDF_OPEN_FAILED"
+    case .pdfPageUnavailable, .pdfRenderFailed, .pageFailed:
+      return "PDF_PAGE_FAILED"
+    case .inferenceFailed, .invalidInferenceOutput:
+      return "OCR_INFERENCE_FAILED"
+    }
+  }
+
+  var details: [String: Any]? {
+    switch self {
+    case .pageFailed(let page, _), .pdfPageUnavailable(let page), .pdfRenderFailed(let page):
+      return ["page": page]
+    default:
+      return nil
+    }
+  }
+
+  var errorDescription: String? {
+    switch self {
+    case .modelAssetsMissing:
+      return "PaddleOCR model assets are missing"
+    case .modelLoadFailed(let reason):
+      return "PaddleOCR model load failed: \(reason)"
+    case .invalidModelMetadata(let stage, let reason):
+      return "PaddleOCR \(stage) model metadata is invalid: \(reason)"
+    case .imageDecodeFailed(let path):
+      return "Could not decode image at \(path)"
+    case .imageConversionFailed(let reason):
+      return "Could not prepare image for OCR: \(reason)"
+    case .pdfOpenFailed(let path):
+      return "Could not open PDF at \(path)"
+    case .pdfPageUnavailable(let page):
+      return "PDF page \(page) is unavailable"
+    case .pdfRenderFailed(let page):
+      return "Could not render PDF page \(page)"
+    case .pageFailed(let page, let reason):
+      return "OCR failed on PDF page \(page): \(reason)"
+    case .inferenceFailed(let stage, let reason):
+      return "PaddleOCR \(stage) inference failed: \(reason)"
+    case .invalidInferenceOutput(let stage, let reason):
+      return "PaddleOCR \(stage) output is invalid: \(reason)"
+    }
   }
 }
