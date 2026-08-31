@@ -1699,6 +1699,18 @@ The final diff audit found four additional defects in the first remediation pass
 
 - Absolute iOS starting footprints differed between launches, so the memory comparison uses each run's own peak-minus-start growth. The 10x duration increase raised baseline footprint by 110 MB while the chunked implementation remained flat, directly proving the intended whole-file-allocation removal.
 
+- iOS Kokoro MLX: `integration_test/ios_kokoro_benchmark_test.dart` cleared the audio cache, synthesized identical text/voice/speed fixtures, and exercised three concurrent sibling prefetches on the same physical iPhone.
+
+| iOS Kokoro probe | Baseline | Remediation | Result |
+| --- | ---: | ---: | --- |
+| Cache-cold line | 6,461 ms | 6,400 ms | -0.9%; no material change |
+| Warm line | 264 ms | 272 ms | +3.0%; no material change |
+| Sibling prefetch completion | 2/3 | 3/3 | cancelled line eliminated |
+| Cold output size | 195,644 bytes | 195,644 bytes | exact parity |
+| Warm output size | 150,044 bytes | 150,044 bytes | exact parity |
+
+- The baseline cancelled the first sibling with `SYNTH_FAILED: Synthesis cancelled (newer request superseded)`. The remediation completed all three in 1,074 ms; an asserted repeat completed all three again in 1,084 ms. Its raw per-line inference rate is not materially faster—the repeat measured 6,782 ms cold and 282 ms warm—so the user-visible improvement is reliable prefetch availability, avoiding a later on-demand resynthesis stall. The baseline's 670 ms queue total is not a throughput win because it produced only two of three requested lines.
+
 ## Performance benchmark protocol
 
 - Scope: benchmark only changes with a performance claim. Correctness, concurrency, RLS, and durability fixes remain gated by behavioral tests and adversarial reproductions rather than synthetic timing.
