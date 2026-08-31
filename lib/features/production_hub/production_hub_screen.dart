@@ -1,8 +1,9 @@
+import 'dart:async';
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
-
-import 'dart:io';
 
 import '../../core/responsive.dart';
 
@@ -13,8 +14,10 @@ import 'package:share_plus/share_plus.dart';
 import '../../core/theme/app_theme.dart';
 import '../../data/models/script_models.dart';
 import '../../data/services/model_manager.dart';
+import '../../data/services/model_download_service.dart';
 import '../../data/services/script_export.dart';
 import '../../data/services/supabase_service.dart';
+import '../../data/services/tts_service.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../../providers/production_providers.dart';
@@ -33,6 +36,8 @@ class ProductionHubScreen extends ConsumerStatefulWidget {
 class _ProductionHubScreenState extends ConsumerState<ProductionHubScreen> {
   bool _checkedModels = false;
   bool _modelsReady = false;
+  bool _modelDownloadStarted = false;
+  bool _modelDownloadErrorShown = false;
   String? _filterAct;
 
   @override
@@ -40,6 +45,94 @@ class _ProductionHubScreenState extends ConsumerState<ProductionHubScreen> {
     super.initState();
     _checkModels();
     _loadSavedCharacter();
+    ModelDownloadService.instance.addListener(_onModelDownloadState);
+  }
+
+  @override
+  void dispose() {
+    ModelDownloadService.instance.removeListener(_onModelDownloadState);
+    super.dispose();
+  }
+
+  void _onModelDownloadState() {
+    if (!mounted ||
+        !_modelDownloadStarted ||
+        _modelsReady ||
+        Platform.isAndroid) {
+      return;
+    }
+    final service = ModelDownloadService.instance;
+    final files = ModelDownloadService.availableModels
+        .where((model) => model.subdir == 'kokoro_mlx')
+        .toList();
+    final ready = files.every(
+      (model) => service.getState(model.id).status == ModelStatus.downloaded,
+    );
+    final error = files
+        .map((model) => service.getState(model.id).errorMessage)
+        .whereType<String>()
+        .firstOrNull;
+    if (ready) {
+      setState(() {
+        _modelsReady = true;
+        _modelDownloadStarted = false;
+      });
+      ScaffoldMessenger.of(context).showAutoToast(
+        const SnackBar(content: Text('AI models downloaded — rehearsal ready')),
+      );
+    } else if (error != null && !_modelDownloadErrorShown) {
+      _modelDownloadErrorShown = true;
+      ScaffoldMessenger.of(context).showAutoToast(
+        SnackBar(content: Text('AI model download failed: $error')),
+      );
+    }
+  }
+
+  Future<void> _startModelDownloads() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool('models_auto_download_ok', true);
+    if (!mounted) return;
+    setState(() {
+      _modelDownloadStarted = true;
+      _modelDownloadErrorShown = false;
+    });
+    ScaffoldMessenger.of(
+      context,
+    ).showAutoToast(const SnackBar(content: Text('AI model download started')));
+
+    try {
+      if (Platform.isAndroid) {
+        await ModelManager.instance.downloadKokoro();
+        await TtsService.instance.tryLoadKokoro();
+        await ModelDownloadService.instance.downloadLiveAsr();
+        final ready = await ModelManager.instance.isAllReady();
+        if (mounted) {
+          setState(() {
+            _modelsReady = ready;
+            _modelDownloadStarted = !ready;
+          });
+          if (ready) {
+            ScaffoldMessenger.of(context).showAutoToast(
+              const SnackBar(
+                content: Text('AI models downloaded — rehearsal ready'),
+              ),
+            );
+          }
+        }
+        return;
+      }
+      for (final model in ModelDownloadService.availableModels.where(
+        (model) => model.subdir == 'kokoro_mlx',
+      )) {
+        await ModelDownloadService.instance.download(model);
+      }
+    } catch (error) {
+      if (!mounted) return;
+      _modelDownloadErrorShown = true;
+      ScaffoldMessenger.of(context).showAutoToast(
+        SnackBar(content: Text('AI model download failed: $error')),
+      );
+    }
   }
 
   Future<void> _loadSavedCharacter() async {
@@ -121,37 +214,9 @@ class _ProductionHubScreenState extends ConsumerState<ProductionHubScreen> {
   void _showModelPrompt() {
     showDialog(
       context: context,
-      builder: (ctx) => AlertDialog(
-        icon: const Icon(Icons.smart_toy, size: 48),
-        title: const Text('Download AI Models'),
-        content: Text(
-          Platform.isAndroid
-              ? 'CastCircle uses on-device AI for natural-sounding voices and '
-                    'to follow your lines as you speak during rehearsal. '
-                    'Download the models now (one-time) for the best '
-                    'experience.\n\n'
-                    'Without them, rehearsal audio and live line matching '
-                    'won\'t be available.'
-              : 'CastCircle uses on-device AI for natural-sounding voices '
-                    'during rehearsal. Download the voice models now (~180 MB, '
-                    'one-time) for the best experience.\n\n'
-                    'Without them, rehearsal audio won\'t be available.',
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx),
-            child: const Text('Later'),
-          ),
-          FilledButton.icon(
-            onPressed: () async {
-              Navigator.pop(ctx);
-              await context.push('/ai-models');
-              _checkModels();
-            },
-            icon: const Icon(Icons.download),
-            label: const Text('Download Now'),
-          ),
-        ],
+      builder: (context) => ModelDownloadPrompt(
+        isAndroid: Platform.isAndroid,
+        onDownload: () => unawaited(_startModelDownloads()),
       ),
     );
   }
@@ -228,7 +293,9 @@ class _ProductionHubScreenState extends ConsumerState<ProductionHubScreen> {
                     const SizedBox(width: 12),
                     Expanded(
                       child: Text(
-                        'AI models not downloaded — tap to download',
+                        _modelDownloadStarted
+                            ? 'AI model download started — tap for progress'
+                            : 'AI models not downloaded — tap to download',
                         style: theme.textTheme.bodySmall?.copyWith(
                           color: theme.colorScheme.onTertiaryContainer,
                         ),
@@ -921,5 +988,52 @@ class _ProductionHubScreenState extends ConsumerState<ProductionHubScreen> {
         context,
       ).showAutoToast(SnackBar(content: Text('Export failed: $e')));
     }
+  }
+}
+
+@visibleForTesting
+class ModelDownloadPrompt extends StatelessWidget {
+  const ModelDownloadPrompt({
+    required this.isAndroid,
+    required this.onDownload,
+    super.key,
+  });
+
+  final bool isAndroid;
+  final VoidCallback onDownload;
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      icon: const Icon(Icons.smart_toy, size: 48),
+      title: const Text('Download AI Models'),
+      content: Text(
+        isAndroid
+            ? 'CastCircle uses on-device AI for natural-sounding voices and '
+                  'to follow your lines as you speak during rehearsal. '
+                  'Download the models now (one-time) for the best '
+                  'experience.\n\n'
+                  'Without them, rehearsal audio and live line matching '
+                  'won\'t be available.'
+            : 'CastCircle uses on-device AI for natural-sounding voices '
+                  'during rehearsal. Download the voice models now (~180 MB, '
+                  'one-time) for the best experience.\n\n'
+                  'Without them, rehearsal audio won\'t be available.',
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('Later'),
+        ),
+        FilledButton.icon(
+          onPressed: () {
+            Navigator.pop(context);
+            onDownload();
+          },
+          icon: const Icon(Icons.download),
+          label: const Text('Download Now'),
+        ),
+      ],
+    );
   }
 }

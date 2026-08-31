@@ -136,4 +136,15 @@ void main() {
     expect(DemoProductionService.isDemo(real), isFalse);
     expect(DemoProductionService.isDemo(null), isFalse);
   });
+
+  test('local demo never starts cloud recording sync', () {
+    expect(
+      shouldSyncRecordingsForProduction(DemoProductionService.productionId),
+      isFalse,
+    );
+    expect(
+      shouldSyncRecordingsForProduction('aaa1acd0-8658-405c-834f-e80ddefb13d9'),
+      isTrue,
+    );
+  });
 }

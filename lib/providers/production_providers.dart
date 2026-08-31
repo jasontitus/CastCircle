@@ -18,6 +18,7 @@ import '../data/models/production_models.dart';
 import '../data/models/script_models.dart';
 import '../data/repositories/production_repository.dart';
 import '../data/services/deep_link_service.dart';
+import '../data/services/demo_production_service.dart';
 import '../data/services/script_import_service.dart';
 import '../data/services/script_parser.dart';
 import '../data/services/voice_config_service.dart';
@@ -913,7 +914,17 @@ Future<void> persistScriptLocally(
 /// production hub's init so it covers BOTH entry paths — opening a production
 /// from the home screen AND joining one (the join screen uses `context.go`,
 /// which disposes it, so it can't own the long-lived sync work itself).
+bool shouldSyncRecordingsForProduction(String productionId) =>
+    productionId != DemoProductionService.productionId;
+
 void launchRecordingSync(WidgetRef ref, String productionId) {
+  // The built-in demo is local-only and deliberately uses a readable,
+  // non-UUID id. Sending it to Supabase produces a PostgreSQL UUID error and
+  // a false connection warning during first-run model setup.
+  if (!shouldSyncRecordingsForProduction(productionId)) {
+    RecordingSyncService.instance.unsubscribe();
+    return;
+  }
   final userId = SupabaseService.instance.currentUser?.id;
 
   // Persist remote URLs locally when queued uploads complete so recordings
