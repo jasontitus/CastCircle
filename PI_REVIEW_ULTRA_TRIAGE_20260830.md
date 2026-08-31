@@ -1727,7 +1727,8 @@ The final diff audit found four additional defects in the first remediation pass
 - Shell validation: every changed shell script passes Bash syntax checking.
 - Analyzer: **0 errors**; 129 pre-existing warning/info diagnostics remain, so `flutter analyze --no-pub` exits nonzero.
 - OCR real-corpus proof: 70 distinct monotonic pages; **1,161/1,187 (97.8%)** highlight hits.
-- iOS archive: `build/ios/archive/Runner.xcarchive`; Xcode archive and strict code-signature verification succeeded.
-- TestFlight IPA: `build/ios/testflight-156-final/castcircle.ipa`; version `0.1.1`, embedded build `156`, 124,869,502 bytes.
-- IPA SHA-256: `baa20b055b7d2c774beaf431ec01ed912651cf6a335a462cc0dc33c2a808cecb`.
-- The IPA was exported locally with App Store signing, validated by Apple, uploaded to App Store Connect, and processed as `VALID` and `APP_STORE_ELIGIBLE`. Build `156` delivery UUID: `d9ead3bf-35aa-4a8a-bdc0-f8c5e5dda7a8`.
+- Replacement iOS archive: `build/ios/archive/Runner.xcarchive`; embedded build `160` was gated before export.
+- Replacement TestFlight IPA: `build/ios/ipa/castcircle.ipa`; version `0.1.1`, embedded build `160`, 124,877,517 bytes.
+- Replacement IPA SHA-256: `24d1891b0e1ebfed1389903d432e63fe1fae2f81bdb1d963796481b43df36c3f`.
+- Apple processed build `160` as `VALID` and `APP_STORE_ELIGIBLE`; delivery UUID `b07715f1-dbf6-4047-b920-ce19b27d55a3`.
+- Post-release onboarding regressions: **6 targeted tests passed**, covering direct model-download dispatch and exclusion of the local demo from cloud recording sync.
