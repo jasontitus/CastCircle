@@ -52,20 +52,17 @@ Future<void> setAccountIdentity(WidgetRef ref, String? userId) async {
   }
 
   final database = ref.read(databaseProvider);
-  final preferences = await SharedPreferences.getInstance();
-  if (generation != _identityGeneration) return;
-  final completionKey = 'account_namespace_claim_v1_$namespace';
-  if (preferences.getBool(completionKey) != true) {
-    await database.claimLegacyProductions(namespace);
-    if (generation != _identityGeneration) return;
-    final persisted = await preferences.setBool(completionKey, true);
-    if (!persisted) {
-      throw StateError('Could not persist account namespace reconciliation');
-    }
-  }
+  // Publish the user's namespace FIRST so any production the user creates
+  // from here on is attributed to them, then reconcile guest-namespace rows a
+  // prior guest session (or the sign-in transition) left behind. The
+  // reconciliation is unconditional: the previous once-per-user gate left
+  // guest-created (organizer_id='local') and race-created productions
+  // permanently invisible after sign-in.
   if (generation == _identityGeneration && notifier.state != namespace) {
     notifier.state = namespace;
   }
+  if (generation != _identityGeneration) return;
+  await database.claimLegacyProductions(namespace);
 }
 
 /// Provider for the character the user is rehearsing as.

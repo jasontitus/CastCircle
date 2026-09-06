@@ -306,6 +306,7 @@ class AppDatabase extends _$AppDatabase {
           WHERE account_namespace = '__guest__'
             AND (
               organizer_id = ?
+              OR organizer_id = 'local'
               OR EXISTS (
                 SELECT 1
                 FROM cast_members

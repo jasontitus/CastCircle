@@ -161,4 +161,67 @@ void main() {
       expect(await keepFile.exists(), isTrue);
     });
   });
+
+  group('ProductionRepository.claimLegacyProductions', () {
+    late AppDatabase db;
+
+    setUp(() {
+      db = AppDatabase.forTesting(NativeDatabase.memory());
+    });
+
+    tearDown(() async {
+      await db.close();
+    });
+
+    test('claims a guest-created (organizer_id=local) production on sign-in',
+        () async {
+      // A production created while signed OUT is written under the guest
+      // namespace with organizer_id='local' (home_screen.dart).
+      await ProductionRepository(db).saveProduction(
+        Production(
+          id: 'guest-prod',
+          title: 'Guest Show',
+          organizerId: 'local',
+          createdAt: DateTime(2026, 1, 1),
+          status: ProductionStatus.draft,
+        ),
+      );
+
+      // The user later signs in: the guest production must be claimed into
+      // their namespace, or it silently vanishes from the home screen.
+      await db.claimLegacyProductions('user-1');
+
+      final signedIn = await ProductionRepository(
+        db,
+        accountNamespace: 'user-1',
+      ).getAllProductions();
+      expect(
+        signedIn.map((p) => p.id),
+        contains('guest-prod'),
+        reason: 'guest-created production is visible after sign-in',
+      );
+      // And it is no longer visible to a guest.
+      final guest = await ProductionRepository(db).getAllProductions();
+      expect(guest.map((p) => p.id), isNot(contains('guest-prod')));
+    });
+
+    test('claim is idempotent across repeated sign-ins', () async {
+      await ProductionRepository(db).saveProduction(
+        Production(
+          id: 'guest-prod-2',
+          title: 'Guest Show 2',
+          organizerId: 'local',
+          createdAt: DateTime(2026, 1, 1),
+          status: ProductionStatus.draft,
+        ),
+      );
+      await db.claimLegacyProductions('user-1');
+      await db.claimLegacyProductions('user-1');
+      final signedIn = await ProductionRepository(
+        db,
+        accountNamespace: 'user-1',
+      ).getAllProductions();
+      expect(signedIn.map((p) => p.id), contains('guest-prod-2'));
+    });
+  });
 }
