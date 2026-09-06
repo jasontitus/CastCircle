@@ -4,18 +4,18 @@ import 'package:castcircle/data/models/script_models.dart';
 import 'package:castcircle/features/script_import/ocr_review_screen.dart';
 
 ScriptLine _line(String id, String text, int page) => ScriptLine(
-      id: id,
-      act: 'ACT I',
-      scene: 'Scene 1',
-      lineNumber: 0,
-      orderIndex: int.parse(id),
-      character: 'DARCY',
-      text: text,
-      lineType: LineType.dialogue,
-      reviewStatus: OcrReviewStatus.review,
-      sourcePage: page,
-      sourceLineOnPage: 1,
-    );
+  id: id,
+  act: 'ACT I',
+  scene: 'Scene 1',
+  lineNumber: 0,
+  orderIndex: int.parse(id),
+  character: 'DARCY',
+  text: text,
+  lineType: LineType.dialogue,
+  reviewStatus: OcrReviewStatus.review,
+  sourcePage: page,
+  sourceLineOnPage: 1,
+);
 
 void main() {
   /// Field crash (iOS, build 142): tapping Remove in the page-viewer sheet
@@ -29,9 +29,11 @@ void main() {
     tester.view.devicePixelRatio = 3.0; // 400 x 800 logical
     addTearDown(tester.view.reset);
 
-    await tester.pumpWidget(MaterialApp(
-      home: OcrReviewScreen(lines: lines, pdfPath: '/tmp/does-not-exist.pdf'),
-    ));
+    await tester.pumpWidget(
+      MaterialApp(
+        home: OcrReviewScreen(lines: lines, pdfPath: '/tmp/does-not-exist.pdf'),
+      ),
+    );
     await tester.pump();
     await tester.tap(find.text('View page').first);
     // Fixed pumps, not pumpAndSettle: the page viewer shows an
@@ -78,8 +80,9 @@ void main() {
     expect(find.text('Flagged line 1 of 2'), findsOneWidget);
   });
 
-  testWidgets('the sheet text is editable and Looks right keeps the fix',
-      (tester) async {
+  testWidgets('the sheet text is editable and Looks right keeps the fix', (
+    tester,
+  ) async {
     final lines = [
       _line('1', 'She is tolerabl, but nut handsom', 3),
       _line('2', 'I would not be so fastidious as you are', 4),
@@ -87,8 +90,10 @@ void main() {
     await openSheet(tester, lines);
 
     // Fix the OCR text right in the page sheet...
-    await tester.enterText(find.byType(TextField).last,
-        'She is tolerable, but not handsome');
+    await tester.enterText(
+      find.byType(TextField).last,
+      'She is tolerable, but not handsome',
+    );
     await tester.pump();
     await tester.tap(find.widgetWithText(TextButton, 'Looks right'));
     await tester.pump();
@@ -118,8 +123,9 @@ void main() {
     await tester.pump(const Duration(seconds: 6)); // drain the toast timer
   });
 
-  testWidgets('"Looks right" on the LAST queued line closes cleanly',
-      (tester) async {
+  testWidgets('"Looks right" on the LAST queued line closes cleanly', (
+    tester,
+  ) async {
     // Field hang (iOS 147): the app froze on "Looks right" for the final
     // item in the queue — the path where the sheet must close ITSELF
     // because nothing is left to show.
@@ -139,8 +145,9 @@ void main() {
     await tester.pump(const Duration(seconds: 6));
   });
 
-  testWidgets('removing the last flagged line closes the sheet cleanly',
-      (tester) async {
+  testWidgets('removing the last flagged line closes the sheet cleanly', (
+    tester,
+  ) async {
     final lines = [_line('1', 'She is tolerable, but not handsome', 3)];
     await openSheet(tester, lines);
 

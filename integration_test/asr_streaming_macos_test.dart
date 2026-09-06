@@ -17,14 +17,18 @@ import 'package:sherpa_onnx/sherpa_onnx.dart' as sherpa;
 /// Repo root for fixture/model staging paths. Relative default works when
 /// tests run from the checkout root; override with
 /// --dart-define=CASTCIRCLE_REPO=/path for other harnesses.
-const _ccRepo =
-    String.fromEnvironment('CASTCIRCLE_REPO', defaultValue: '.');
-
+const _ccRepo = String.fromEnvironment('CASTCIRCLE_REPO', defaultValue: '.');
 
 const _repo = _ccRepo;
 
 class _Candidate {
-  const _Candidate(this.name, this.dir, this.encoder, this.decoder, this.joiner);
+  const _Candidate(
+    this.name,
+    this.dir,
+    this.encoder,
+    this.decoder,
+    this.joiner,
+  );
   final String name;
   final String dir;
   final String encoder;
@@ -33,21 +37,29 @@ class _Candidate {
 }
 
 const _candidates = [
-  _Candidate('kroko-2025-08-06', '$_repo/.asr-eval/kroko', 'encoder.onnx',
-      'decoder.onnx', 'joiner.onnx'),
   _Candidate(
-      'en-20M-int8',
-      '$_repo/.asr-eval/en20m',
-      'encoder-epoch-99-avg-1.int8.onnx',
-      'decoder-epoch-99-avg-1.int8.onnx',
-      'joiner-epoch-99-avg-1.int8.onnx'),
+    'kroko-2025-08-06',
+    '$_repo/.asr-eval/kroko',
+    'encoder.onnx',
+    'decoder.onnx',
+    'joiner.onnx',
+  ),
+  _Candidate(
+    'en-20M-int8',
+    '$_repo/.asr-eval/en20m',
+    'encoder-epoch-99-avg-1.int8.onnx',
+    'decoder-epoch-99-avg-1.int8.onnx',
+    'joiner-epoch-99-avg-1.int8.onnx',
+  ),
 ];
 
 const _lines = {
   'line1.wav': 'any savage can dance sir',
-  'line2.wav': 'it is a truth universally acknowledged that a single man in '
+  'line2.wav':
+      'it is a truth universally acknowledged that a single man in '
       'possession of a good fortune must be in want of a wife',
-  'line3.wav': 'you must allow me to tell you how ardently i admire and love you',
+  'line3.wav':
+      'you must allow me to tell you how ardently i admire and love you',
   'line4.wav': 'i could easily forgive his pride if he had not mortified mine',
 };
 
@@ -107,70 +119,83 @@ double _matchRate(String expected, String got) {
 void main() {
   IntegrationTestWidgetsFlutterBinding.ensureInitialized();
 
-  test('streaming candidates on synthesized rehearsal lines', () {
-    sherpa.initBindings();
+  test(
+    'streaming candidates on synthesized rehearsal lines',
+    () {
+      sherpa.initBindings();
 
-    for (final c in _candidates) {
-      final recognizer = sherpa.OnlineRecognizer(sherpa.OnlineRecognizerConfig(
-        model: sherpa.OnlineModelConfig(
-          transducer: sherpa.OnlineTransducerModelConfig(
-            encoder: '${c.dir}/${c.encoder}',
-            decoder: '${c.dir}/${c.decoder}',
-            joiner: '${c.dir}/${c.joiner}',
+      for (final c in _candidates) {
+        final recognizer = sherpa.OnlineRecognizer(
+          sherpa.OnlineRecognizerConfig(
+            model: sherpa.OnlineModelConfig(
+              transducer: sherpa.OnlineTransducerModelConfig(
+                encoder: '${c.dir}/${c.encoder}',
+                decoder: '${c.dir}/${c.decoder}',
+                joiner: '${c.dir}/${c.joiner}',
+              ),
+              tokens: '${c.dir}/tokens.txt',
+              numThreads: 2,
+              debug: false,
+            ),
+            // Endpointing is handled by the rehearsal screen's own silence logic;
+            // here we just want the transcript.
+            enableEndpoint: false,
           ),
-          tokens: '${c.dir}/tokens.txt',
-          numThreads: 2,
-          debug: false,
-        ),
-        // Endpointing is handled by the rehearsal screen's own silence logic;
-        // here we just want the transcript.
-        enableEndpoint: false,
-      ));
+        );
 
-      print('=== ${c.name} ===');
-      var total = 0.0;
-      for (final entry in _lines.entries) {
-        final raw = _samplesFromWav('$_repo/.asr-eval/${entry.key}');
-        // Lead-in so the encoder has left context for the first words —
-        // the live mic path opens before the actor starts speaking, so this
-        // mirrors reality too.
-        final samples = Float32List(4800 + raw.length)..setAll(4800, raw);
-        final audioSec = samples.length / 16000.0;
-        final stream = recognizer.createStream();
-        final sw = Stopwatch()..start();
-        var firstPartialMs = -1;
-        // 200 ms chunks — the cadence the live mic path will deliver.
-        for (var off = 0; off < samples.length; off += 3200) {
-          final end = (off + 3200 < samples.length) ? off + 3200 : samples.length;
-          stream.acceptWaveform(
-              samples: samples.sublist(off, end), sampleRate: 16000);
+        print('=== ${c.name} ===');
+        var total = 0.0;
+        for (final entry in _lines.entries) {
+          final raw = _samplesFromWav('$_repo/.asr-eval/${entry.key}');
+          // Lead-in so the encoder has left context for the first words —
+          // the live mic path opens before the actor starts speaking, so this
+          // mirrors reality too.
+          final samples = Float32List(4800 + raw.length)..setAll(4800, raw);
+          final audioSec = samples.length / 16000.0;
+          final stream = recognizer.createStream();
+          final sw = Stopwatch()..start();
+          var firstPartialMs = -1;
+          // 200 ms chunks — the cadence the live mic path will deliver.
+          for (var off = 0; off < samples.length; off += 3200) {
+            final end = (off + 3200 < samples.length)
+                ? off + 3200
+                : samples.length;
+            stream.acceptWaveform(
+              samples: samples.sublist(off, end),
+              sampleRate: 16000,
+            );
+            while (recognizer.isReady(stream)) {
+              recognizer.decode(stream);
+            }
+            if (firstPartialMs < 0 &&
+                recognizer.getResult(stream).text.trim().isNotEmpty) {
+              firstPartialMs = sw.elapsedMilliseconds;
+            }
+          }
+          // Flush with trailing silence so the last words decode — the zipformer
+          // needs ~0.8 s of right context before it will emit the final tokens.
+          stream.acceptWaveform(samples: Float32List(12800), sampleRate: 16000);
           while (recognizer.isReady(stream)) {
             recognizer.decode(stream);
           }
-          if (firstPartialMs < 0 &&
-              recognizer.getResult(stream).text.trim().isNotEmpty) {
-            firstPartialMs = sw.elapsedMilliseconds;
-          }
-        }
-        // Flush with trailing silence so the last words decode — the zipformer
-        // needs ~0.8 s of right context before it will emit the final tokens.
-        stream.acceptWaveform(
-            samples: Float32List(12800), sampleRate: 16000);
-        while (recognizer.isReady(stream)) {
-          recognizer.decode(stream);
-        }
-        sw.stop();
-        final text = recognizer.getResult(stream).text.trim();
-        stream.free();
-        final rate = _matchRate(entry.value, text);
-        total += rate;
-        print('${entry.key}: match ${(rate * 100).round()}% '
+          sw.stop();
+          final text = recognizer.getResult(stream).text.trim();
+          stream.free();
+          final rate = _matchRate(entry.value, text);
+          total += rate;
+          print(
+            '${entry.key}: match ${(rate * 100).round()}% '
             'rtf ${(sw.elapsedMilliseconds / 1000 / audioSec).toStringAsFixed(3)} '
-            'firstPartial ${firstPartialMs}ms\n  "$text"');
+            'firstPartial ${firstPartialMs}ms\n  "$text"',
+          );
+        }
+        print(
+          '${c.name} mean match: '
+          '${(total / _lines.length * 100).round()}%',
+        );
+        recognizer.free();
       }
-      print('${c.name} mean match: '
-          '${(total / _lines.length * 100).round()}%');
-      recognizer.free();
-    }
-  }, timeout: const Timeout(Duration(minutes: 10)));
+    },
+    timeout: const Timeout(Duration(minutes: 10)),
+  );
 }

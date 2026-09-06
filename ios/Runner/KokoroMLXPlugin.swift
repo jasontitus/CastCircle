@@ -21,7 +21,10 @@ class KokoroMLXPlugin: NSObject {
     private func handle(_ call: FlutterMethodCall, result: @escaping FlutterResult) {
         switch call.method {
         case "isAvailable":
-            result(kokoroService.isModelLoaded)
+            Task {
+                let loaded = await kokoroService.isModelLoaded()
+                DispatchQueue.main.async { result(loaded) }
+            }
 
         case "loadModel":
             Task {
@@ -88,25 +91,36 @@ class KokoroMLXPlugin: NSObject {
             result(KokoroMLXService.availableVoices)
 
         case "getModelStatus":
-            result([
-                "loaded": kokoroService.isModelLoaded,
-                "downloaded": kokoroService.isModelDownloaded,
-            ])
+            Task {
+                let status = await kokoroService.modelStatus()
+                DispatchQueue.main.async {
+                    result([
+                        "loaded": status.loaded,
+                        "downloaded": status.downloaded,
+                    ])
+                }
+            }
 
         case "unloadModel":
-            kokoroService.unloadModel()
-            result(true)
+            Task {
+                await kokoroService.unloadModel()
+                DispatchQueue.main.async { result(true) }
+            }
 
         case "deleteModel":
-            do {
-                try kokoroService.deleteModel()
-                result(true)
-            } catch {
-                result(FlutterError(
-                    code: "DELETE_FAILED",
-                    message: error.localizedDescription,
-                    details: nil
-                ))
+            Task {
+                do {
+                    try await kokoroService.deleteModel()
+                    DispatchQueue.main.async { result(true) }
+                } catch {
+                    DispatchQueue.main.async {
+                        result(FlutterError(
+                            code: "DELETE_FAILED",
+                            message: error.localizedDescription,
+                            details: nil
+                        ))
+                    }
+                }
             }
 
         default:

@@ -12,7 +12,15 @@ cd "$(dirname "$0")/.."
 
 if [[ "${1:-}" != "--no-build" ]]; then
   echo "Building (release)..."
-  flutter build ios --release 2>&1 | tail -4
+  BUILD_LOG=$(mktemp "${TMPDIR:-/tmp}/castcircle-build.XXXXXX")
+  trap 'rm -f "$BUILD_LOG"' EXIT
+  if flutter build ios --release >"$BUILD_LOG" 2>&1; then
+    tail -4 "$BUILD_LOG"
+  else
+    echo "✗ release build failed:" >&2
+    cat "$BUILD_LOG" >&2
+    exit 1
+  fi
 fi
 
 APP="build/ios/iphoneos/Runner.app"
@@ -20,11 +28,20 @@ APP="build/ios/iphoneos/Runner.app"
 
 for i in $(seq 1 6); do
   echo "install attempt $i..."
-  if xcrun devicectl device install app --device "$DEVICE" "$APP" 2>&1 | grep -q "App installed"; then
-    xcrun devicectl device process launch --device "$DEVICE" "$BUNDLE" >/dev/null 2>&1 || true
-    echo "✓ deployed + launched"
-    exit 0
+  if INSTALL_OUTPUT=$(xcrun devicectl device install app --device "$DEVICE" "$APP" 2>&1); then
+    if [[ "$INSTALL_OUTPUT" == *"App installed"* ]]; then
+      echo "✓ installed"
+      echo "launching..."
+      if LAUNCH_OUTPUT=$(xcrun devicectl device process launch --device "$DEVICE" "$BUNDLE" 2>&1); then
+        echo "✓ launched"
+        exit 0
+      fi
+      echo "✗ installed, but launch failed:" >&2
+      printf '%s\n' "$LAUNCH_OUTPUT" >&2
+      exit 1
+    fi
   fi
+  printf '%s\n' "$INSTALL_OUTPUT" >&2
   sleep 8
 done
 echo "✗ install failed after retries — device locked/busy? Unlock and retry." >&2

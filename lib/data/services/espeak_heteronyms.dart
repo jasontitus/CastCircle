@@ -37,17 +37,21 @@ class EspeakHeteronyms {
     (RegExp(r'\b(long\s+)(live)\b', caseSensitive: false), 2),
     // "Let him live", "let them live"
     (
-      RegExp(r'\b(let\s+(?:him|her|them|me|us|it)\s+)(live)\b',
-          caseSensitive: false),
-      2
+      RegExp(
+        r'\b(let\s+(?:him|her|them|me|us|it)\s+)(live)\b',
+        caseSensitive: false,
+      ),
+      2,
     ),
     // "…and let live" — the bare object-less form, also read as an adjective.
     (RegExp(r'\b(let\s+)(live)\b', caseSensitive: false), 2),
     // "May he live long"
     (
-      RegExp(r'\b(may\s+(?:he|she|they|i|we|you|it)\s+)(live)\b',
-          caseSensitive: false),
-      2
+      RegExp(
+        r'\b(may\s+(?:he|she|they|i|we|you|it)\s+)(live)\b',
+        caseSensitive: false,
+      ),
+      2,
     ),
     // Sentence-initial imperative: "Live and let live.", "Live!", "Live,
     // then." Bounded to punctuation and a small set of following words on
@@ -55,9 +59,10 @@ class EspeakHeteronyms {
     // theatre is better", which espeak already gets right.
     (
       RegExp(
-          r'(^|[.!?;:]\s+)(live)(?=\s*[.!?,;:]|\s+(?:and|then|well|long)\b)',
-          caseSensitive: false),
-      2
+        r'(^|[.!?;:]\s+)(live)(?=\s*[.!?,;:]|\s+(?:and|then|well|long)\b)',
+        caseSensitive: false,
+      ),
+      2,
     ),
   ];
 

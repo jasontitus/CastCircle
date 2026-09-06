@@ -69,18 +69,29 @@ void main() {
     final prefs = await SharedPreferences.getInstance();
     final prevAuthSkipped = prefs.getBool('auth_skipped');
     final prevScreenshotMode = prefs.getBool('screenshot_mode');
+    final db = AppDatabase.forTesting(NativeDatabase.memory());
+
+    Future<void> restore(String key, bool? previous) async {
+      if (previous == null) {
+        await prefs.remove(key);
+      } else {
+        await prefs.setBool(key, previous);
+      }
+    }
+
+    addTearDown(() async {
+      await restore('auth_skipped', prevAuthSkipped);
+      await restore('screenshot_mode', prevScreenshotMode);
+      await db.close();
+    });
+
     await prefs.setBool('auth_skipped', true);
     await prefs.setBool('screenshot_mode', true);
-
-    // A REAL in-memory database. `AppDatabase()` opens the on-disk
-    // lineguide.sqlite in the app's documents directory, so using it here
-    // wrote the seeded Hamlet production into whatever device this ran on.
-    final db = AppDatabase.forTesting(NativeDatabase.memory());
 
     // Parse the full Hamlet script so every screen has realistic content.
     final rawHamlet = await rootBundle.loadString(_hamletAssetPath);
     final importer = ScriptImportService();
-    final hamlet = importer.importFromText(rawHamlet, title: 'Hamlet');
+    final hamlet = await importer.importFromText(rawHamlet, title: 'Hamlet');
     final production = Production(
       id: const Uuid().v4(),
       title: 'Hamlet',
@@ -102,23 +113,39 @@ void main() {
     await tester.pumpAndSettle(const Duration(seconds: 2));
 
     // 1. Home — empty state
+    expect(
+      find.text('No productions yet'),
+      findsOneWidget,
+      reason: 'empty-home screenshot must show the empty state',
+    );
     await _snap(tester, '01_home_empty');
 
     // Seed production + script through Riverpod. This skips the file-picker
     // flow which isn't drivable from widget tests.
     final container = ProviderScope.containerOf(
-        tester.element(find.byType(CastCircleApp)));
+      tester.element(find.byType(CastCircleApp)),
+    );
     await container.read(productionsProvider.notifier).add(production);
     container.read(currentProductionProvider.notifier).state = production;
     container.read(currentScriptProvider.notifier).state = hamlet;
     await tester.pumpAndSettle(const Duration(seconds: 1));
 
     // 2. Home — with Hamlet production
+    expect(
+      find.text('Hamlet'),
+      findsWidgets,
+      reason: 'seeded-home screenshot must show the seeded production',
+    );
     await _snap(tester, '02_home_with_production');
 
     // 3. Script import screen — shows the parsed preview
     _context(tester).push('/import');
     await tester.pumpAndSettle(const Duration(seconds: 1));
+    expect(
+      find.text('Import Text File'),
+      findsOneWidget,
+      reason: 'import screenshot must show script import controls',
+    );
     await _snap(tester, '03_import_preview');
 
     // 4. Production hub — character + scene selection.
@@ -126,25 +153,62 @@ void main() {
     container.read(rehearsalCharacterProvider.notifier).state = 'HAMLET';
     _context(tester).go('/production');
     await tester.pumpAndSettle(const Duration(seconds: 2));
+    expect(
+      find.text('All Acts'),
+      findsOneWidget,
+      reason: 'production screenshot must show scene selection',
+    );
     await _snap(tester, '04_production_hub');
 
-    // Pick a scene that contains HAMLET's lines (Scene 2) for the actor
-    // shot; the readthrough shot uses Scene 1 which has the ghost setup.
+    // Pick known dialogue for both rehearsal screenshots so assertions guard
+    // the actual script content, not only route/header chrome.
+    expect(hamlet.scenes, isNotEmpty);
+    final readthroughScene = hamlet.scenes.first;
+    final readthroughLine = hamlet
+        .linesInScene(readthroughScene)
+        .firstWhere(
+          (line) => line.character.isNotEmpty && line.text.trim().isNotEmpty,
+        );
     final sceneWithHamlet = hamlet.scenes.firstWhere(
-      (s) => s.characters.contains('HAMLET'),
-      orElse: () => hamlet.scenes.first,
+      (scene) => scene.characters.contains('HAMLET'),
+      orElse: () => readthroughScene,
     );
+    final actorLine = hamlet
+        .linesInScene(sceneWithHamlet)
+        .firstWhere(
+          (line) => line.character == 'HAMLET',
+          orElse: () => hamlet
+              .linesInScene(sceneWithHamlet)
+              .firstWhere((line) => line.isForCharacter('HAMLET')),
+        );
 
     // 5. Rehearsal — readthrough mode (Scene 1: ghost watch)
     container.read(rehearsalModeProvider.notifier).state =
         RehearsalMode.readthrough;
     container.read(rehearsalCharacterProvider.notifier).state = null;
-    if (hamlet.scenes.isNotEmpty) {
-      container.read(selectedSceneProvider.notifier).state =
-          hamlet.scenes.first;
-    }
+    container.read(selectedSceneProvider.notifier).state = readthroughScene;
     _context(tester).push('/rehearsal');
     await tester.pumpAndSettle(const Duration(seconds: 2));
+    expect(
+      find.text('READ'),
+      findsOneWidget,
+      reason: 'readthrough screenshot must show readthrough mode',
+    );
+    expect(
+      find.text(readthroughScene.sceneName),
+      findsWidgets,
+      reason: 'readthrough screenshot must render the selected scene',
+    );
+    expect(
+      find.text(readthroughLine.character),
+      findsWidgets,
+      reason: 'readthrough screenshot must render the expected character',
+    );
+    expect(
+      find.text(readthroughLine.text),
+      findsWidgets,
+      reason: 'readthrough screenshot must render known scene dialogue',
+    );
     await _snap(tester, '05_rehearsal_readthrough');
 
     // 6. Rehearsal — actor mode as HAMLET (Scene 2: court scene)
@@ -153,9 +217,30 @@ void main() {
     container.read(rehearsalModeProvider.notifier).state =
         RehearsalMode.cuePractice;
     container.read(rehearsalCharacterProvider.notifier).state = 'HAMLET';
+    container.read(hideMyLinesProvider.notifier).state = false;
     container.read(selectedSceneProvider.notifier).state = sceneWithHamlet;
     _context(tester).push('/rehearsal');
     await tester.pumpAndSettle(const Duration(seconds: 2));
+    expect(
+      find.text('CUE'),
+      findsOneWidget,
+      reason: 'actor screenshot must show cue-practice mode',
+    );
+    expect(
+      find.text(sceneWithHamlet.sceneName),
+      findsWidgets,
+      reason: 'actor screenshot must render the selected Hamlet scene',
+    );
+    expect(
+      find.text('YOU (${actorLine.character})'),
+      findsWidgets,
+      reason: 'actor screenshot must identify the expected character',
+    );
+    expect(
+      find.text(actorLine.text),
+      findsWidgets,
+      reason: 'actor screenshot must render known Hamlet dialogue',
+    );
     await _snap(tester, '06_rehearsal_actor');
 
     // 7. Settings
@@ -163,6 +248,11 @@ void main() {
     await tester.pumpAndSettle();
     _context(tester).push('/settings');
     await tester.pumpAndSettle(const Duration(seconds: 1));
+    expect(
+      find.text('Jump-back lines'),
+      findsOneWidget,
+      reason: 'settings screenshot must render rehearsal settings',
+    );
     await _snap(tester, '07_settings');
 
     // 8. AI Models
@@ -170,6 +260,11 @@ void main() {
     await tester.pumpAndSettle();
     _context(tester).push('/ai-models');
     await tester.pumpAndSettle(const Duration(seconds: 1));
+    expect(
+      find.text('Kokoro AI Voices'),
+      findsOneWidget,
+      reason: 'AI-model screenshot must render model status',
+    );
     await _snap(tester, '08_ai_models');
 
     // 9. Cast manager
@@ -177,19 +272,11 @@ void main() {
     await tester.pumpAndSettle();
     _context(tester).push('/cast');
     await tester.pumpAndSettle(const Duration(seconds: 1));
+    expect(
+      find.text('Cast & Roles'),
+      findsOneWidget,
+      reason: 'cast screenshot must render role assignments',
+    );
     await _snap(tester, '09_cast_manager');
-
-    // Put the device's preferences back the way they were found.
-    Future<void> restore(String key, bool? previous) async {
-      if (previous == null) {
-        await prefs.remove(key);
-      } else {
-        await prefs.setBool(key, previous);
-      }
-    }
-
-    await restore('auth_skipped', prevAuthSkipped);
-    await restore('screenshot_mode', prevScreenshotMode);
-    await db.close();
   });
 }

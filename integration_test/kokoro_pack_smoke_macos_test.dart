@@ -13,14 +13,13 @@ import 'package:sherpa_onnx/sherpa_onnx.dart' as sherpa;
 /// Repo root for fixture/model staging paths. Relative default works when
 /// tests run from the checkout root; override with
 /// --dart-define=CASTCIRCLE_REPO=/path for other harnesses.
-const _ccRepo =
-    String.fromEnvironment('CASTCIRCLE_REPO', defaultValue: '.');
-
+const _ccRepo = String.fromEnvironment('CASTCIRCLE_REPO', defaultValue: '.');
 
 const _eval = '$_ccRepo/.asr-eval';
 const _pack = '$_eval/kokoro-en-fp16-pack';
 
-const _line = 'It is a truth universally acknowledged that a single man in '
+const _line =
+    'It is a truth universally acknowledged that a single man in '
     'possession of a good fortune must be in want of a wife.';
 
 // App voices across the accent/gender grid.
@@ -62,55 +61,70 @@ Float32List _to16k(Float32List x, int fromRate) {
 void main() {
   IntegrationTestWidgetsFlutterBinding.ensureInitialized();
 
-  test('shipped kokoro pack synthesizes intelligibly', () {
-    sherpa.initBindings();
-    final tts = sherpa.OfflineTts(sherpa.OfflineTtsConfig(
-      model: sherpa.OfflineTtsModelConfig(
-        kokoro: sherpa.OfflineTtsKokoroModelConfig(
-          model: '$_pack/model.fp16.onnx',
-          voices: '$_pack/voices.bin',
-          tokens: '$_pack/tokens.txt',
-          dataDir: '$_pack/espeak-ng-data',
-          lexicon: '$_pack/lexicon-us-en.txt,$_pack/lexicon-gb-en.txt',
-          // No dictDir: jieba is zh-only and excluded from the pack.
+  test(
+    'shipped kokoro pack synthesizes intelligibly',
+    () {
+      sherpa.initBindings();
+      final tts = sherpa.OfflineTts(
+        sherpa.OfflineTtsConfig(
+          model: sherpa.OfflineTtsModelConfig(
+            kokoro: sherpa.OfflineTtsKokoroModelConfig(
+              model: '$_pack/model.fp16.onnx',
+              voices: '$_pack/voices.bin',
+              tokens: '$_pack/tokens.txt',
+              dataDir: '$_pack/espeak-ng-data',
+              lexicon: '$_pack/lexicon-us-en.txt,$_pack/lexicon-gb-en.txt',
+              // No dictDir: jieba is zh-only and excluded from the pack.
+            ),
+            numThreads: 2,
+            debug: false,
+          ),
         ),
-        numThreads: 2,
-        debug: false,
-      ),
-    ));
-    final asr = sherpa.OnlineRecognizer(sherpa.OnlineRecognizerConfig(
-      model: sherpa.OnlineModelConfig(
-        transducer: sherpa.OnlineTransducerModelConfig(
-          encoder: '$_eval/kroko/encoder.onnx',
-          decoder: '$_eval/kroko/decoder.onnx',
-          joiner: '$_eval/kroko/joiner.onnx',
+      );
+      final asr = sherpa.OnlineRecognizer(
+        sherpa.OnlineRecognizerConfig(
+          model: sherpa.OnlineModelConfig(
+            transducer: sherpa.OnlineTransducerModelConfig(
+              encoder: '$_eval/kroko/encoder.onnx',
+              decoder: '$_eval/kroko/decoder.onnx',
+              joiner: '$_eval/kroko/joiner.onnx',
+            ),
+            tokens: '$_eval/kroko/tokens.txt',
+            numThreads: 2,
+            debug: false,
+          ),
+          enableEndpoint: false,
         ),
-        tokens: '$_eval/kroko/tokens.txt',
-        numThreads: 2,
-        debug: false,
-      ),
-      enableEndpoint: false,
-    ));
+      );
 
-    for (final v in _voices.entries) {
-      final audio = tts.generate(text: _line, sid: v.value, speed: 1.0);
-      expect(audio.samples.length, greaterThan(16000),
-          reason: '${v.key} produced almost no audio');
-      final stream = asr.createStream();
-      stream.acceptWaveform(
-          samples: _to16k(audio.samples, audio.sampleRate), sampleRate: 16000);
-      stream.acceptWaveform(samples: Float32List(12800), sampleRate: 16000);
-      while (asr.isReady(stream)) {
-        asr.decode(stream);
+      for (final v in _voices.entries) {
+        final audio = tts.generate(text: _line, sid: v.value, speed: 1.0);
+        expect(
+          audio.samples.length,
+          greaterThan(16000),
+          reason: '${v.key} produced almost no audio',
+        );
+        final stream = asr.createStream();
+        stream.acceptWaveform(
+          samples: _to16k(audio.samples, audio.sampleRate),
+          sampleRate: 16000,
+        );
+        stream.acceptWaveform(samples: Float32List(12800), sampleRate: 16000);
+        while (asr.isReady(stream)) {
+          asr.decode(stream);
+        }
+        final heard = asr.getResult(stream).text.trim();
+        stream.free();
+        final match = _matchRate(_line, heard);
+        print(
+          '${v.key}: match=${(match * 100).round()}% '
+          'dur=${(audio.samples.length / audio.sampleRate).toStringAsFixed(1)}s',
+        );
+        expect(match, greaterThan(0.8), reason: '${v.key} heard: "$heard"');
       }
-      final heard = asr.getResult(stream).text.trim();
-      stream.free();
-      final match = _matchRate(_line, heard);
-      print('${v.key}: match=${(match * 100).round()}% '
-          'dur=${(audio.samples.length / audio.sampleRate).toStringAsFixed(1)}s');
-      expect(match, greaterThan(0.8), reason: '${v.key} heard: "$heard"');
-    }
-    tts.free();
-    asr.free();
-  }, timeout: const Timeout(Duration(minutes: 15)));
+      tts.free();
+      asr.free();
+    },
+    timeout: const Timeout(Duration(minutes: 15)),
+  );
 }

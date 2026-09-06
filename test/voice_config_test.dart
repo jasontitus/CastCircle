@@ -1,29 +1,45 @@
 import 'package:flutter_test/flutter_test.dart';
+import 'package:castcircle/data/models/script_models.dart';
+import 'package:castcircle/data/services/voice_config_service.dart';
 import 'package:castcircle/data/models/voice_preset.dart';
 
 void main() {
   group('VoicePreset', () {
     test('allVoices contains both female and male voices', () {
       final preset = VoicePresets.modernAmerican;
-      expect(preset.allVoices.length,
-          preset.femaleVoices.length + preset.maleVoices.length);
+      expect(
+        preset.allVoices.length,
+        preset.femaleVoices.length + preset.maleVoices.length,
+      );
     });
 
     test('every preset has non-empty voice pools', () {
       for (final preset in VoicePresets.all) {
-        expect(preset.femaleVoices, isNotEmpty,
-            reason: '${preset.id} has empty femaleVoices');
-        expect(preset.maleVoices, isNotEmpty,
-            reason: '${preset.id} has empty maleVoices');
+        expect(
+          preset.femaleVoices,
+          isNotEmpty,
+          reason: '${preset.id} has empty femaleVoices',
+        );
+        expect(
+          preset.maleVoices,
+          isNotEmpty,
+          reason: '${preset.id} has empty maleVoices',
+        );
       }
     });
 
     test('every preset has a valid speed', () {
       for (final preset in VoicePresets.all) {
-        expect(preset.defaultSpeed, greaterThanOrEqualTo(0.5),
-            reason: '${preset.id} speed too low');
-        expect(preset.defaultSpeed, lessThanOrEqualTo(2.0),
-            reason: '${preset.id} speed too high');
+        expect(
+          preset.defaultSpeed,
+          greaterThanOrEqualTo(0.5),
+          reason: '${preset.id} speed too low',
+        );
+        expect(
+          preset.defaultSpeed,
+          lessThanOrEqualTo(2.0),
+          reason: '${preset.id} speed too high',
+        );
       }
     });
 
@@ -49,8 +65,11 @@ void main() {
         presetVoices.addAll(preset.maleVoices);
       }
       for (final voice in presetVoices) {
-        expect(VoicePresets.voiceLabels.containsKey(voice), true,
-            reason: '$voice used in preset but not in voiceLabels');
+        expect(
+          VoicePresets.voiceLabels.containsKey(voice),
+          true,
+          reason: '$voice used in preset but not in voiceLabels',
+        );
       }
     });
   });
@@ -79,39 +98,101 @@ void main() {
     });
   });
 
-  group('Voice pool gender assignment', () {
-    test('female character gets female voice from pool', () {
-      final preset = VoicePresets.victorianEnglish;
-      // isFemale=true → use femaleVoices pool
-      final voice = preset.femaleVoices[0 % preset.femaleVoices.length];
-      expect(voice.startsWith('bf_'), true,
-          reason: 'Victorian English female voice should be British female');
-    });
+  group('VoiceConfigService.assignVoicesFromScript', () {
+    test('assigns characters from their gender-specific pools', () {
+      const characters = [
+        ScriptCharacter(
+          name: 'ELIZABETH',
+          colorIndex: 0,
+          lineCount: 2,
+          gender: CharacterGender.female,
+        ),
+        ScriptCharacter(
+          name: 'DARCY',
+          colorIndex: 1,
+          lineCount: 2,
+          gender: CharacterGender.male,
+        ),
+      ];
 
-    test('male character gets male voice from pool', () {
-      final preset = VoicePresets.victorianEnglish;
-      // isFemale=false → use maleVoices pool
-      final voice = preset.maleVoices[0 % preset.maleVoices.length];
-      expect(voice.startsWith('bm_'), true,
-          reason: 'Victorian English male voice should be British male');
-    });
-
-    test('round-robin assigns different voices', () {
-      final preset = VoicePresets.modernAmerican;
-      final voices = List.generate(
-        preset.femaleVoices.length,
-        (i) => preset.femaleVoices[i % preset.femaleVoices.length],
+      final assignments = VoiceConfigService.assignVoicesFromScript(
+        lines: const [],
+        characters: characters,
+        femaleVoices: const ['female-1'],
+        maleVoices: const ['male-1'],
       );
-      // All voices should be unique since we haven't wrapped around
-      expect(voices.toSet().length, preset.femaleVoices.length);
+
+      expect(assignments, {'ELIZABETH': 'female-1', 'DARCY': 'male-1'});
     });
 
-    test('round-robin wraps correctly', () {
-      final preset = VoicePresets.modernAmerican;
-      final poolSize = preset.maleVoices.length;
-      // Index beyond pool size should wrap
-      final voice = preset.maleVoices[(poolSize + 1) % poolSize];
-      expect(voice, preset.maleVoices[1]);
+    test('adjacent speakers receive different voices when possible', () {
+      const characters = [
+        ScriptCharacter(name: 'A', colorIndex: 0, lineCount: 2),
+        ScriptCharacter(name: 'B', colorIndex: 1, lineCount: 2),
+        ScriptCharacter(name: 'C', colorIndex: 2, lineCount: 2),
+      ];
+      const lines = [
+        ScriptLine(
+          id: '1',
+          act: 'ACT I',
+          scene: 'Scene 1',
+          lineNumber: 1,
+          orderIndex: 1,
+          character: 'A',
+          text: 'First',
+          lineType: LineType.dialogue,
+        ),
+        ScriptLine(
+          id: '2',
+          act: 'ACT I',
+          scene: 'Scene 1',
+          lineNumber: 2,
+          orderIndex: 2,
+          character: 'B',
+          text: 'Second',
+          lineType: LineType.dialogue,
+        ),
+        ScriptLine(
+          id: '3',
+          act: 'ACT I',
+          scene: 'Scene 1',
+          lineNumber: 3,
+          orderIndex: 3,
+          character: 'C',
+          text: 'Third',
+          lineType: LineType.dialogue,
+        ),
+      ];
+
+      final assignments = VoiceConfigService.assignVoicesFromScript(
+        lines: lines,
+        characters: characters,
+        femaleVoices: const ['voice-1', 'voice-2'],
+        maleVoices: const [],
+        window: 1,
+      );
+
+      expect(assignments['A'], isNot(assignments['B']));
+      expect(assignments['B'], isNot(assignments['C']));
+      expect(assignments['A'], assignments['C']);
+    });
+
+    test('gender overrides change the selected voice pool', () {
+      const character = ScriptCharacter(
+        name: 'PAGE',
+        colorIndex: 0,
+        lineCount: 1,
+      );
+
+      final assignments = VoiceConfigService.assignVoicesFromScript(
+        lines: const [],
+        characters: const [character],
+        femaleVoices: const ['female-1'],
+        maleVoices: const ['male-1'],
+        genderOverrides: const {'PAGE': CharacterGender.male},
+      );
+
+      expect(assignments['PAGE'], 'male-1');
     });
   });
 }

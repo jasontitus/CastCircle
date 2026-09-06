@@ -103,6 +103,11 @@ void main() {
         '${Directory.systemTemp.path}/castcircle_keep_test_${DateTime.now().microsecondsSinceEpoch}.m4a',
       );
       await keepFile.writeAsBytes(const [5, 6, 7]);
+      addTearDown(() async {
+        if (await keepFile.exists()) {
+          await keepFile.delete();
+        }
+      });
 
       await repository.saveProduction(
         Production(
@@ -154,8 +159,6 @@ void main() {
       expect(productions.map((p) => p.id), contains('keep-me'));
       expect(await repository.getRecordings('keep-me'), isNotEmpty);
       expect(await keepFile.exists(), isTrue);
-
-      await keepFile.delete();
     });
   });
 }

@@ -2,6 +2,7 @@ package com.tiltastech.castcircle
 
 import android.app.ActivityManager
 import android.content.Context
+import android.os.Process
 import io.flutter.embedding.engine.plugins.FlutterPlugin
 import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
@@ -9,7 +10,7 @@ import io.flutter.plugin.common.MethodChannel
 /**
  * Android implementation of the com.lineguide/memory_monitor channel.
  *
- * Uses Android's ActivityManager and Runtime to report memory usage,
+ * Uses Android's ActivityManager process PSS and system memory totals,
  * matching the iOS MemoryMonitorPlugin response format.
  */
 class MemoryMonitorPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
@@ -43,13 +44,15 @@ class MemoryMonitorPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
                 val memoryInfo = ActivityManager.MemoryInfo()
                 activityManager.getMemoryInfo(memoryInfo)
 
-                val runtime = Runtime.getRuntime()
-                val usedMemMB = ((runtime.totalMemory() - runtime.freeMemory()) / (1024L * 1024L)).toInt()
+                val processMemory = activityManager
+                    .getProcessMemoryInfo(intArrayOf(Process.myPid()))
+                    .firstOrNull()
+                val physicalFootprintMB = ((processMemory?.totalPss ?: 0) / 1024)
                 val availMemMB = (memoryInfo.availMem / (1024L * 1024L)).toInt()
                 val totalMemMB = (memoryInfo.totalMem / (1024L * 1024L)).toInt()
 
                 result.success(mapOf(
-                    "physicalFootprintMB" to usedMemMB,
+                    "physicalFootprintMB" to physicalFootprintMB,
                     "availableMemoryMB" to availMemMB,
                     "totalPhysicalMemoryMB" to totalMemMB
                 ))

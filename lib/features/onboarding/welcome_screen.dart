@@ -56,35 +56,43 @@ const _pages = <_Page>[
   _Page(
     icon: Icons.theater_comedy,
     title: 'Rehearse without\nthe rest of the cast',
-    body: 'CastCircle reads everyone else’s lines aloud so you can run a '
+    body:
+        'CastCircle reads everyone else’s lines aloud so you can run a '
         'scene on your own — on the bus, in the kitchen, the night before.',
-    detail: 'Everything happens on your device. No connection needed to '
+    detail:
+        'Everything happens on your device. No connection needed to '
         'rehearse.',
   ),
   _Page(
     icon: Icons.document_scanner_outlined,
     title: 'Bring in\nyour script',
-    body: 'Import a PDF or a text file. Scanned pages are read on-device, '
+    body:
+        'Import a PDF or a text file. Scanned pages are read on-device, '
         'then you fix anything the scan got wrong — with the original page '
         'beside it, so you can see where a line came from.',
-    detail: 'No script to hand? The demo is two scenes of Hamlet, already '
+    detail:
+        'No script to hand? The demo is two scenes of Hamlet, already '
         'set up.',
   ),
   _Page(
     icon: Icons.mic_none,
     title: 'Three ways\nto run a scene',
-    body: 'Listen plays the whole scene. Read follows along while you speak. '
+    body:
+        'Listen plays the whole scene. Read follows along while you speak. '
         'Cue waits for you: it listens for your line and moves on when '
         'you’ve said it.',
-    detail: 'Turn on blind rehearsal to hide your own lines and find out '
+    detail:
+        'Turn on blind rehearsal to hide your own lines and find out '
         'what you actually know.',
   ),
   _Page(
     icon: Icons.groups_outlined,
     title: 'Invite\nyour cast',
-    body: 'Every production has a join code. Share it and your castmates '
+    body:
+        'Every production has a join code. Share it and your castmates '
         'get the same script, already cast, on their own phones.',
-    detail: 'Cast & Roles → tap a character → Invite sends that actor a link '
+    detail:
+        'Cast & Roles → tap a character → Invite sends that actor a link '
         'straight to their part. Once someone records their lines, everyone '
         'rehearsing hears the real voice instead of the AI one.',
   ),
@@ -113,17 +121,23 @@ class _WelcomeScreenState extends ConsumerState<WelcomeScreen> {
       await DemoProductionService.instance.load(ref);
       AnalyticsService.instance.logDemoOpened();
       if (!mounted) return;
-      router.pop();               // leave the walkthrough behind
+      router.pop(); // leave the walkthrough behind
       router.push('/production');
     } catch (e, stack) {
-      DebugLogService.instance
-          .logError(LogCategory.general, 'Loading the demo failed', e, stack);
+      DebugLogService.instance.logError(
+        LogCategory.general,
+        'Loading the demo failed',
+        e,
+        stack,
+      );
       if (!mounted) return;
       setState(() => _loadingDemo = false);
-      ScaffoldMessenger.of(context).showAutoToast(SnackBar(
-        content: Text("Couldn't open the demo: $e"),
-        duration: const Duration(seconds: 6),
-      ));
+      ScaffoldMessenger.of(context).showAutoToast(
+        SnackBar(
+          content: Text("Couldn't open the demo: $e"),
+          duration: const Duration(seconds: 6),
+        ),
+      );
     }
   }
 
@@ -175,12 +189,18 @@ class _WelcomeScreenState extends ConsumerState<WelcomeScreen> {
           const SizedBox(height: 8),
           Icon(page.icon, size: 64, color: theme.colorScheme.primary),
           const SizedBox(height: 28),
-          Text(page.title,
-              style: theme.textTheme.headlineMedium
-                  ?.copyWith(fontWeight: FontWeight.bold, height: 1.15)),
+          Text(
+            page.title,
+            style: theme.textTheme.headlineMedium?.copyWith(
+              fontWeight: FontWeight.bold,
+              height: 1.15,
+            ),
+          ),
           const SizedBox(height: 18),
-          Text(page.body,
-              style: theme.textTheme.bodyLarge?.copyWith(height: 1.45)),
+          Text(
+            page.body,
+            style: theme.textTheme.bodyLarge?.copyWith(height: 1.45),
+          ),
           if (page.detail != null) ...[
             const SizedBox(height: 18),
             Text(
@@ -243,7 +263,8 @@ class _WelcomeScreenState extends ConsumerState<WelcomeScreen> {
                 ? const SizedBox(
                     width: 18,
                     height: 18,
-                    child: CircularProgressIndicator(strokeWidth: 2))
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
                 : const Icon(Icons.play_circle_outline),
             label: Text(_loadingDemo ? 'Opening…' : 'Try the demo'),
           ),

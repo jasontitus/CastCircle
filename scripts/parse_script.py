@@ -17,6 +17,7 @@ Format: Standard American play format
 import re
 import sys
 import json
+from pathlib import Path
 from dataclasses import dataclass, field, asdict
 from enum import Enum
 from typing import Optional
@@ -104,8 +105,7 @@ MARGIN_NOISE = re.compile(
     r"(?:Kep\s*lace|annouyn|dhe\s*Aan|Ruynoy\s*Claims|"
     r"sinqu\s*Our|moor\s*sous|wow\s*Wane|ent\s*ine|"
     r"ave\s*We\s*Wee|Urs\s*Huts|ISS\s*Anny|"
-    r"JT\.\s*@m|Sale\s*And|BERR\s*OIN|"
-    r"[A-Z]{2,}\s+[a-z]{2,}\s+[A-Z]{2,})"
+    r"JT\.\s*@m|Sale\s*And|BERR\s*OIN)"
 )
 
 
@@ -167,6 +167,7 @@ def detect_character_cue(line: str) -> Optional[tuple[str, str]]:
     return None
 
 
+
 def is_stage_direction(text: str) -> bool:
     """Check if text is a standalone stage direction (fully in parens)."""
     stripped = text.strip()
@@ -221,7 +222,7 @@ def parse_script(raw_text: str) -> list[ScriptLine]:
                 line_number=scene_line_num,
                 order_index=order_index,
                 character=char_name,
-                text=dialogue if dialogue else full_text,
+                text=dialogue,
                 line_type=LineType.DIALOGUE,
                 stage_direction=direction,
             ))
@@ -282,6 +283,16 @@ def parse_script(raw_text: str) -> list[ScriptLine]:
             scene_line_num = 0
             current_character = ""
             current_dialogue_parts = []
+            order_index += 1
+            result.append(ScriptLine(
+                act=current_act,
+                scene=current_scene,
+                line_number=0,
+                order_index=order_index,
+                character="",
+                text=current_scene,
+                line_type=LineType.HEADER,
+            ))
             continue
 
         # Clean the line
@@ -296,6 +307,7 @@ def parse_script(raw_text: str) -> list[ScriptLine]:
             current_character = cue[0]
             current_dialogue_parts = [cue[1]]
             continue
+
 
         # Standalone stage direction
         if is_stage_direction(line):
@@ -372,38 +384,29 @@ def print_stats(script_lines: list[ScriptLine]):
         print(f"  {char}: {count}")
 
 
-if __name__ == "__main__":
-    input_file = sys.argv[1] if len(sys.argv) > 1 else "/tmp/pride_full_ocr.txt"
+def main(argv: list[str] | None = None) -> int:
+    args = sys.argv[1:] if argv is None else argv
+    input_path = Path(args[0]) if args else Path("/tmp/pride_full_ocr.txt")
+    if not input_path.is_file():
+        print(f"Error: input file not found: {input_path}", file=sys.stderr)
+        print(f"Usage: {Path(sys.argv[0]).name} [input.txt]", file=sys.stderr)
+        return 2
 
-    with open(input_file, "r") as f:
-        raw_text = f.read()
-
+    raw_text = input_path.read_text(encoding="utf-8")
     script_lines = parse_script(raw_text)
     print_stats(script_lines)
 
-    # Write markdown
-    md_output = to_markdown(script_lines)
-    md_path = input_file.replace(".txt", "_parsed.md")
-    if md_path == input_file:
-        md_path = input_file + "_parsed.md"
+    base_path = input_path.with_suffix("") if input_path.suffix else input_path
+    md_path = base_path.parent / f"{base_path.name}_parsed.md"
+    json_path = base_path.parent / f"{base_path.name}_parsed.json"
 
-    # Write to the repo as the example (repo root derived from this file's
-    # location — the old hardcoded /home/user/Lineguide-/ path failed on
-    # every machine but one long-gone checkout).
-    import os
-    repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    examples_dir = os.path.join(repo_root, "examples")
-    repo_md_path = os.path.join(examples_dir, "pride_and_prejudice_parsed.md")
-    repo_json_path = os.path.join(examples_dir, "pride_and_prejudice_parsed.json")
+    md_path.write_text(to_markdown(script_lines), encoding="utf-8")
+    print(f"\nMarkdown written to: {md_path}")
 
-    os.makedirs(examples_dir, exist_ok=True)
+    json_path.write_text(to_json(script_lines), encoding="utf-8")
+    print(f"JSON written to: {json_path}")
+    return 0
 
-    with open(repo_md_path, "w") as f:
-        f.write(md_output)
-    print(f"\nMarkdown written to: {repo_md_path}")
 
-    # Write JSON
-    json_output = to_json(script_lines)
-    with open(repo_json_path, "w") as f:
-        f.write(json_output)
-    print(f"JSON written to: {repo_json_path}")
+if __name__ == "__main__":
+    sys.exit(main())

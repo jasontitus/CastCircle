@@ -35,16 +35,19 @@ void main(List<String> args) {
     }
   }
   if (positional.isEmpty) {
-    stderr.writeln('usage: dart run tool/parse_stats.dart <textfile> [--json] '
-        '[--expect NAME1,NAME2,...]');
+    stderr.writeln(
+      'usage: dart run tool/parse_stats.dart <textfile> [--json] '
+      '[--expect NAME1,NAME2,...]',
+    );
     exit(2);
   }
 
   final text = File(positional.first).readAsStringSync();
   final parsed = ScriptParser().parse(text, title: 'Test');
 
-  final dialogue =
-      parsed.lines.where((l) => l.lineType == LineType.dialogue).length;
+  final dialogue = parsed.lines
+      .where((l) => l.lineType == LineType.dialogue)
+      .length;
   final roster = [...parsed.characters]
     ..sort((a, b) => b.lineCount.compareTo(a.lineCount));
 
@@ -54,45 +57,102 @@ void main(List<String> args) {
       .where((s) => s.isNotEmpty)
       .toSet();
 
-  // Roster scoring vs the answer key (if provided). A parsed name "matches" an
-  // expected name if either contains the other (handles "MRS. BENNET" vs
-  // "BENNET" and minor truncations), so we measure real coverage, not exact
-  // string equality.
-  bool matches(String got, String exp) =>
-      got == exp || got.contains(exp) || exp.contains(got);
+  // Score exact normalized names first, then find a maximum one-to-one
+  // matching across complete-token aliases such as "BENNET" vs "MRS. BENNET".
+  // This prevents both one-to-many inflation and greedy undercounting.
+  String normalizeName(String name) => name
+      .toUpperCase()
+      .replaceAll(RegExp(r'[^A-Z0-9]+'), ' ')
+      .trim()
+      .replaceAll(RegExp(r'\s+'), ' ');
+  bool exactMatch(String got, String exp) {
+    final normalizedGot = normalizeName(got);
+    return normalizedGot.isNotEmpty && normalizedGot == normalizeName(exp);
+  }
+
+  bool tokenBoundaryMatch(String got, String exp) {
+    final normalizedGot = normalizeName(got);
+    final normalizedExpected = normalizeName(exp);
+    if (normalizedGot.isEmpty ||
+        normalizedExpected.isEmpty ||
+        normalizedGot == normalizedExpected) {
+      return false;
+    }
+    return ' $normalizedGot '.contains(' $normalizedExpected ') ||
+        ' $normalizedExpected '.contains(' $normalizedGot ');
+  }
+
   final matchedExpected = <String>{};
-  final phantoms = <String>[];
-  for (final c in roster) {
-    final n = c.name.toUpperCase();
-    final hit = expected.where((e) => matches(n, e)).toList();
-    if (hit.isEmpty && expected.isNotEmpty) {
-      phantoms.add('${c.name} (${c.lineCount})');
-    } else {
-      matchedExpected.addAll(hit);
+  final matchedRosterIndexes = <int>{};
+  for (var index = 0; index < roster.length; index++) {
+    for (final candidate in expected) {
+      if (matchedExpected.contains(candidate)) continue;
+      if (!exactMatch(roster[index].name, candidate)) continue;
+      matchedRosterIndexes.add(index);
+      matchedExpected.add(candidate);
+      break;
     }
   }
+
+  // Kuhn's augmenting-path algorithm finds a maximum bipartite matching over
+  // the remaining alias edges, rather than depending on greedy iteration order.
+  final aliasRosterByExpected = <String, int>{};
+  bool augmentAlias(int rosterIndex, Set<String> visitedExpected) {
+    for (final candidate in expected) {
+      if (matchedExpected.contains(candidate) ||
+          !visitedExpected.add(candidate) ||
+          !tokenBoundaryMatch(roster[rosterIndex].name, candidate)) {
+        continue;
+      }
+      final displacedRoster = aliasRosterByExpected[candidate];
+      if (displacedRoster == null ||
+          augmentAlias(displacedRoster, visitedExpected)) {
+        aliasRosterByExpected[candidate] = rosterIndex;
+        return true;
+      }
+    }
+    return false;
+  }
+
+  for (var index = 0; index < roster.length; index++) {
+    if (!matchedRosterIndexes.contains(index)) {
+      augmentAlias(index, <String>{});
+    }
+  }
+  matchedExpected.addAll(aliasRosterByExpected.keys);
+  matchedRosterIndexes.addAll(aliasRosterByExpected.values);
+  final phantoms = <String>[
+    if (expected.isNotEmpty)
+      for (var index = 0; index < roster.length; index++)
+        if (!matchedRosterIndexes.contains(index))
+          '${roster[index].name} (${roster[index].lineCount})',
+  ];
   final missing = expected.difference(matchedExpected);
 
   if (asJson) {
-    print(const JsonEncoder.withIndent('  ').convert({
-      'characters': parsed.characters.length,
-      'acts': parsed.acts.length,
-      'scenes': parsed.scenes.length,
-      'dialogueLines': dialogue,
-      'totalLines': parsed.lines.length,
-      'roster': {for (final c in roster) c.name: c.lineCount},
-      if (expected.isNotEmpty) ...{
-        'expectedCount': expected.length,
-        'matchedExpected': matchedExpected.length,
-        'missing': missing.toList(),
-        'phantoms': phantoms,
-      },
-    }));
+    print(
+      const JsonEncoder.withIndent('  ').convert({
+        'characters': parsed.characters.length,
+        'acts': parsed.acts.length,
+        'scenes': parsed.scenes.length,
+        'dialogueLines': dialogue,
+        'totalLines': parsed.lines.length,
+        'roster': {for (final c in roster) c.name: c.lineCount},
+        if (expected.isNotEmpty) ...{
+          'expectedCount': expected.length,
+          'matchedExpected': matchedExpected.length,
+          'missing': missing.toList(),
+          'phantoms': phantoms,
+        },
+      }),
+    );
     return;
   }
 
-  print('characters:    ${parsed.characters.length}'
-      '${expected.isNotEmpty ? '   (expected ~${expected.length})' : ''}');
+  print(
+    'characters:    ${parsed.characters.length}'
+    '${expected.isNotEmpty ? '   (expected ~${expected.length})' : ''}',
+  );
   print('acts:          ${parsed.acts.length}   ${parsed.acts}');
   print('scenes:        ${parsed.scenes.length}');
   print('dialogue lines:${dialogue}   total lines: ${parsed.lines.length}');

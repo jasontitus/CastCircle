@@ -2,7 +2,6 @@ class AppConstants {
   AppConstants._();
 
   static const String appName = 'CastCircle';
-  static const String appVersion = '0.1.0';
 
   // Default rehearsal settings
   static const int defaultJumpBackLines = 3;

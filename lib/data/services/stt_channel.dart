@@ -26,6 +26,8 @@ class SttChannel {
 
   void Function(String text, bool isFinal)? _onResult;
   void Function()? _onDone;
+  int? _activeSessionId;
+  int? _activeLevelSessionId;
 
   /// Called with raw mic input level (RMS, 0..1) while listening.
   /// Survives across listen sessions — set once by the consumer.
@@ -61,18 +63,25 @@ class SttChannel {
       } else {
         // Permission denied / recognizer unavailable — must be visible in
         // release debug logs, not just debugPrint.
-        DebugLogService.instance.logError(LogCategory.stt,
-            'STT initialize($locale) returned false — permission denied or '
-            'recognizer unavailable');
+        DebugLogService.instance.logError(
+          LogCategory.stt,
+          'STT initialize($locale) returned false — permission denied or '
+          'recognizer unavailable',
+        );
       }
       return _initialized;
     } on PlatformException catch (e) {
-      DebugLogService.instance
-          .logError(LogCategory.stt, 'STT initialize failed', e);
+      DebugLogService.instance.logError(
+        LogCategory.stt,
+        'STT initialize failed',
+        e,
+      );
       return false;
     } on MissingPluginException {
       DebugLogService.instance.logError(
-          LogCategory.stt, 'STT platform channel not available on this platform');
+        LogCategory.stt,
+        'STT platform channel not available on this platform',
+      );
       return false;
     }
   }
@@ -82,13 +91,16 @@ class SttChannel {
   /// [contextualStrings] — words/phrases to boost in recognition.
   /// [onResult] — called with (text, isFinal) as words are recognized.
   /// [onDone] — called when recognition ends.
-  /// [onDevice] — force on-device recognition (default true).
+  /// [onDevice] — require on-device recognition (default true).
   Future<bool> listen({
     List<String>? contextualStrings,
+    required int sessionId,
     required void Function(String text, bool isFinal) onResult,
     void Function()? onDone,
-    bool onDevice = false,
+    bool onDevice = true,
   }) async {
+    _activeSessionId = sessionId;
+    _activeLevelSessionId = sessionId;
     _onResult = onResult;
     _onDone = onDone;
 
@@ -97,23 +109,59 @@ class SttChannel {
         if (contextualStrings != null && contextualStrings.isNotEmpty)
           'contextualStrings': contextualStrings,
         'onDevice': onDevice,
+        'sessionId': sessionId,
       });
+      if (_activeSessionId != sessionId) return false;
       _listening = result ?? false;
+      if (!_listening) {
+        _activeSessionId = null;
+        if (_activeLevelSessionId == sessionId) {
+          _activeLevelSessionId = null;
+        }
+        _onResult = null;
+        _onDone = null;
+      }
       return _listening;
     } on PlatformException catch (e) {
-      DebugLogService.instance.logError(LogCategory.stt, 'STT listen failed', e);
-      _listening = false;
+      DebugLogService.instance.logError(
+        LogCategory.stt,
+        'STT listen failed',
+        e,
+      );
+      if (_activeSessionId == sessionId) {
+        _listening = false;
+        _activeSessionId = null;
+        if (_activeLevelSessionId == sessionId) {
+          _activeLevelSessionId = null;
+        }
+        _onResult = null;
+        _onDone = null;
+      }
       return false;
     } on MissingPluginException {
       DebugLogService.instance.logError(
-          LogCategory.stt, 'STT listen: platform channel not available');
-      _listening = false;
+        LogCategory.stt,
+        'STT listen: platform channel not available',
+      );
+      if (_activeSessionId == sessionId) {
+        _listening = false;
+        _activeSessionId = null;
+        _onResult = null;
+        _onDone = null;
+      }
+      if (_activeLevelSessionId == sessionId) {
+        _activeLevelSessionId = null;
+      }
       return false;
     }
   }
 
   /// Stop listening.
   Future<void> stop() async {
+    _activeLevelSessionId = null;
+    _activeSessionId = null;
+    _onResult = null;
+    _onDone = null;
     try {
       await _channel.invokeMethod<void>('stop');
     } on PlatformException catch (e) {
@@ -129,6 +177,7 @@ class SttChannel {
     switch (call.method) {
       case 'onResult':
         final args = call.arguments as Map;
+        if (args['sessionId'] != _activeSessionId) return;
         final text = args['text'] as String? ?? '';
         final isFinal = args['isFinal'] as bool? ?? false;
         _onResult?.call(text, isFinal);
@@ -136,16 +185,34 @@ class SttChannel {
           _listening = false;
         }
       case 'onDone':
+        final args = call.arguments as Map;
+        if (args['sessionId'] != _activeSessionId) return;
         _listening = false;
-        _onDone?.call();
+        _activeLevelSessionId = null;
+        _activeSessionId = null;
+        final onDone = _onDone;
         _onResult = null;
         _onDone = null;
+        onDone?.call();
       case 'onError':
-        final error = call.arguments as String?;
-        DebugLogService.instance
-            .logError(LogCategory.stt, 'STT native error: $error');
+        final args = call.arguments;
+        if (args is Map) {
+          if (args['sessionId'] != _activeSessionId) return;
+          DebugLogService.instance.logError(
+            LogCategory.stt,
+            'STT native error: ${args['error']}',
+          );
+        } else {
+          // Recorder capture errors are not tied to a recognition session.
+          DebugLogService.instance.logError(
+            LogCategory.stt,
+            'STT native error: $args',
+          );
+        }
       case 'onLevel':
-        final level = (call.arguments as num?)?.toDouble() ?? 0.0;
+        final args = call.arguments as Map;
+        if (args['sessionId'] != _activeLevelSessionId) return;
+        final level = (args['level'] as num?)?.toDouble() ?? 0.0;
         onLevel?.call(level);
       case 'onPcm':
         final pcm = call.arguments;
@@ -154,30 +221,54 @@ class SttChannel {
         final args = call.arguments as Map? ?? {};
         final began = args['began'] as bool? ?? true;
         final shouldResume = args['shouldResume'] as bool? ?? false;
-        DebugLogService.instance.log(LogCategory.stt,
-            'Audio interruption ${began ? 'began' : 'ended'} (shouldResume=$shouldResume)');
+        DebugLogService.instance.log(
+          LogCategory.stt,
+          'Audio interruption ${began ? 'began' : 'ended'} (shouldResume=$shouldResume)',
+        );
         onAudioInterruption?.call(began, shouldResume);
       case 'onAudioRouteLost':
-        DebugLogService.instance
-            .log(LogCategory.stt, 'Audio route lost (headphones unplugged?)');
+        DebugLogService.instance.log(
+          LogCategory.stt,
+          'Audio route lost (headphones unplugged?)',
+        );
         onAudioRouteLost?.call();
     }
   }
 
   /// Start recording audio alongside STT (same mic tap).
   /// Audio is saved to [path] as .m4a.
-  Future<bool> startRecording(String path) async {
+  Future<bool> startRecording(String path, {required int sessionId}) async {
+    _activeLevelSessionId = sessionId;
+
+    void clearRecordOnlyLevelSession() {
+      if (_activeSessionId != sessionId && _activeLevelSessionId == sessionId) {
+        _activeLevelSessionId = null;
+      }
+    }
+
     try {
-      return await _channel.invokeMethod<bool>('startRecording', {
-        'path': path,
-      }) ?? false;
+      final started =
+          await _channel.invokeMethod<bool>('startRecording', {
+            'path': path,
+            'sessionId': sessionId,
+          }) ??
+          false;
+      if (!started) clearRecordOnlyLevelSession();
+      return started;
     } on PlatformException catch (e) {
-      DebugLogService.instance
-          .logError(LogCategory.stt, 'STT startRecording failed', e);
+      DebugLogService.instance.logError(
+        LogCategory.stt,
+        'STT startRecording failed',
+        e,
+      );
+      clearRecordOnlyLevelSession();
       return false;
     } on MissingPluginException {
       DebugLogService.instance.logError(
-          LogCategory.stt, 'STT startRecording: channel not available');
+        LogCategory.stt,
+        'STT startRecording: channel not available',
+      );
+      clearRecordOnlyLevelSession();
       return false;
     }
   }
@@ -190,8 +281,11 @@ class SttChannel {
       if (result == null) return null;
       return Map<String, dynamic>.from(result);
     } on PlatformException catch (e) {
-      DebugLogService.instance
-          .logError(LogCategory.stt, 'STT stopRecording failed', e);
+      DebugLogService.instance.logError(
+        LogCategory.stt,
+        'STT stopRecording failed',
+        e,
+      );
       return null;
     } on MissingPluginException {
       return null;
@@ -201,7 +295,9 @@ class SttChannel {
   Future<void> dispose() async {
     await stop();
     _onResult = null;
+    _activeSessionId = null;
     _onDone = null;
+    _activeLevelSessionId = null;
     onLevel = null;
   }
 }

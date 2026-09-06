@@ -12,6 +12,7 @@ final class EnglishFallbackNetwork {
   private let tokenToPhoneme: [Int: Character]
 
   private let british: Bool
+  private let resultCache = NSCache<NSString, NSString>()
     
   /// Failable: missing/corrupt bundled BART config or weights used to
   /// force-unwrap and crash the app at G2P init. Callers fall back to
@@ -40,19 +41,29 @@ final class EnglishFallbackNetwork {
        phonemeDict[index] = phoneme
     }
     self.tokenToPhoneme = phonemeDict    
+    resultCache.countLimit = 256
   }
   
-  private func graphemesToTokens(_ graphemes: String) -> [Int] {
+  private func graphemesToTokens(_ graphemes: String) -> [Int]? {
+    guard configuration.maxPositionEmbeddings >= 2 else { return nil }
+
     var tokens: [Int] = [configuration.bosTokenId]
-    
+    tokens.reserveCapacity(configuration.maxPositionEmbeddings)
+
     for char in graphemes {
+      // Reserve the final position for EOS. BART's position table cannot
+      // encode more than maxPositionEmbeddings input tokens.
+      guard tokens.count < configuration.maxPositionEmbeddings - 1 else {
+        return nil
+      }
+
       if let tokenId = graphemeToToken[char] {
-        tokens.append(Int(tokenId))
+        tokens.append(tokenId)
       } else {
         tokens.append(EnglishFallbackNetwork.unknownTokenId)
       }
     }
-    
+
     tokens.append(configuration.eosTokenId)
     return tokens
   }
@@ -71,12 +82,20 @@ final class EnglishFallbackNetwork {
     return phonemes
   }
   
-  func callAsFunction(_ word: MToken) -> (phoneme: String, rating: Int) {
-    let tokenIds = graphemesToTokens(word.text)
+  func callAsFunction(_ word: MToken) -> (phoneme: String, rating: Int)? {
+    let normalizedWord = word.text.precomposedStringWithCanonicalMapping
+    let cacheKey = "\(british ? "en-GB" : "en-US")\u{0}\(normalizedWord)" as NSString
+    if let cached = resultCache.object(forKey: cacheKey) {
+      return (cached as String, 1)
+    }
+
+    guard let tokenIds = graphemesToTokens(normalizedWord) else { return nil }
+
     let inputIds = MLXArray(tokenIds).reshaped([1, tokenIds.count])
     let generatedIds = model.generate(inputIds: inputIds)
     let outputText = tokensToPhonemes(generatedIds.asArray(Int.self))
-    
+    resultCache.setObject(outputText as NSString, forKey: cacheKey)
+
     return (outputText, 1)
   }
   

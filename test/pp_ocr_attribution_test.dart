@@ -15,8 +15,9 @@ void main() {
   setUpAll(() {
     final raw = File('test/fixtures/pp_ocr_raw.txt').readAsStringSync();
     script = ScriptParser().parse(raw, title: 'Pride and Prejudice');
-    dialogue =
-        script.lines.where((l) => l.lineType == LineType.dialogue).toList();
+    dialogue = script.lines
+        .where((l) => l.lineType == LineType.dialogue)
+        .toList();
   });
 
   ScriptLine? lineContaining(String probe) {
@@ -27,9 +28,7 @@ void main() {
   }
 
   test('major Jory roles all present with plausible line counts', () {
-    final counts = {
-      for (final c in script.characters) c.name: c.lineCount,
-    };
+    final counts = {for (final c in script.characters) c.name: c.lineCount};
     expect(counts['ELIZABETH'], greaterThan(250));
     expect(counts['MRS. BENNET'], greaterThan(100));
     expect(counts['DARCY'], greaterThan(90));
@@ -44,40 +43,47 @@ void main() {
     expect(names, isNot(contains('MR')));
   });
 
-  test('OCR comma-cue "MRS, BENNET." attributes to MRS. BENNET (print p8)',
-      () {
+  test('OCR comma-cue "MRS, BENNET." attributes to MRS. BENNET (print p8)', () {
     final l = lineContaining('Now see what an excellent father');
     expect(l, isNotNull);
     expect(l!.character, 'MRS. BENNET');
   });
 
-  test('OCR no-space cue "MRS.BENNET." attributes to MRS. BENNET (print p78)',
-      () {
-    final l = lineContaining('Mr. Darcy is here Elizabeth');
-    expect(l, isNotNull);
-    expect(l!.character, 'MRS. BENNET');
-  });
+  test(
+    'OCR no-space cue "MRS.BENNET." attributes to MRS. BENNET (print p78)',
+    () {
+      final l = lineContaining('Mr. Darcy is here Elizabeth');
+      expect(l, isNotNull);
+      expect(l!.character, 'MRS. BENNET');
+    },
+  );
 
-  test('continuation after centered direction keeps the speaker (print p72)',
-      () {
-    // BINGLEY: "Indeed. (A change of subject.) Excellent shooting this
-    // season, eh Darcy?" — the continuation used to be silently DROPPED.
-    final l = lineContaining('Excellent shooting this season');
-    expect(l, isNotNull, reason: 'line must not be dropped');
-    expect(l!.character, 'BINGLEY');
-  });
+  test(
+    'continuation after centered direction keeps the speaker (print p72)',
+    () {
+      // BINGLEY: "Indeed. (A change of subject.) Excellent shooting this
+      // season, eh Darcy?" — the continuation used to be silently DROPPED.
+      final l = lineContaining('Excellent shooting this season');
+      expect(l, isNotNull, reason: 'line must not be dropped');
+      expect(l!.character, 'BINGLEY');
+    },
+  );
 
   test('DARCY keeps speaking after (A pause.) (print p72)', () {
     // DARCY: "Quite well. (A pause.) Very well."
     final idx = dialogue.indexWhere(
-        (l) => l.character == 'DARCY' && l.text.contains('Quite well'));
+      (l) => l.character == 'DARCY' && l.text.contains('Quite well'),
+    );
     expect(idx, greaterThanOrEqualTo(0));
     final after = dialogue
         .skip(idx + 1)
         .take(2)
         .where((l) => l.character == 'DARCY' && l.text.contains('Very well'));
-    expect(after, isNotEmpty,
-        reason: '"Very well." after (A pause.) must stay with DARCY');
+    expect(
+      after,
+      isNotEmpty,
+      reason: '"Very well." after (A pause.) must stay with DARCY',
+    );
   });
 
   test('print-verified MRS. BENNET lines are hers (not MR. BENNET)', () {
@@ -98,16 +104,20 @@ void main() {
     expect(dialogue.length, lessThan(1350));
   });
 
-  test('running page header is never glued onto a line (print p11, p13, ...)',
-      () {
+  test('running page header is never glued onto a line (print p11, p13, ...)', () {
     // The title sits at the top of every page; OCR emits it as its own line and
     // the parser used to append it to the PRECEDING speech, producing lines like
     // "Miss Elizabeth Bennet. Pride and Prejudice" that an actor can never
     // match — rehearsal just sat on them until the silence timeout. 33 of 1189
     // lines were affected.
-    final polluted =
-        dialogue.where((l) => l.text.contains('Pride and Prejudice')).toList();
-    expect(polluted, isEmpty,
-        reason: 'header leaked into: ${polluted.take(3).map((l) => l.text).toList()}');
+    final polluted = dialogue
+        .where((l) => l.text.contains('Pride and Prejudice'))
+        .toList();
+    expect(
+      polluted,
+      isEmpty,
+      reason:
+          'header leaked into: ${polluted.take(3).map((l) => l.text).toList()}',
+    );
   });
 }

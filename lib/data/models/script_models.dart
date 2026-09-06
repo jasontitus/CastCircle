@@ -1,10 +1,5 @@
 /// Line type classification for script parsing.
-enum LineType {
-  dialogue,
-  stageDirection,
-  header,
-  song,
-}
+enum LineType { dialogue, stageDirection, header, song }
 
 /// OCR review classification for a script line.
 ///
@@ -34,7 +29,8 @@ class ScriptLine {
   final String text;
   final LineType lineType;
   final String stageDirection; // inline direction like "(Smiling:)"
-  final double? ocrConfidence; // OCR confidence 0.0–1.0, null for non-OCR imports
+  final double?
+  ocrConfidence; // OCR confidence 0.0–1.0, null for non-OCR imports
   final int? sourcePage; // 1-based page from original PDF
   final int? sourceLineOnPage; // 1-based line within that page
 
@@ -111,44 +107,49 @@ class ScriptLine {
       lineType: lineType ?? this.lineType,
       stageDirection: stageDirection ?? this.stageDirection,
       multiCharacters: multiCharacters ?? this.multiCharacters,
-      ocrConfidence: ocrConfidence != null ? ocrConfidence() : this.ocrConfidence,
+      ocrConfidence: ocrConfidence != null
+          ? ocrConfidence()
+          : this.ocrConfidence,
       sourcePage: sourcePage != null ? sourcePage() : this.sourcePage,
-      sourceLineOnPage: sourceLineOnPage != null ? sourceLineOnPage() : this.sourceLineOnPage,
+      sourceLineOnPage: sourceLineOnPage != null
+          ? sourceLineOnPage()
+          : this.sourceLineOnPage,
       reviewStatus: reviewStatus ?? this.reviewStatus,
     );
   }
 
   Map<String, dynamic> toJson() => {
-        'id': id,
-        'act': act,
-        'scene': scene,
-        'line_number': lineNumber,
-        'order_index': orderIndex,
-        'character': character,
-        'text': text,
-        'line_type': lineType.name,
-        'stage_direction': stageDirection,
-        if (multiCharacters.isNotEmpty) 'multi_characters': multiCharacters,
-        if (ocrConfidence != null) 'ocr_confidence': ocrConfidence,
-        if (sourcePage != null) 'source_page': sourcePage,
-        if (sourceLineOnPage != null) 'source_line_on_page': sourceLineOnPage,
-      };
+    'id': id,
+    'act': act,
+    'scene': scene,
+    'line_number': lineNumber,
+    'order_index': orderIndex,
+    'character': character,
+    'text': text,
+    'line_type': lineType.name,
+    'stage_direction': stageDirection,
+    if (multiCharacters.isNotEmpty) 'multi_characters': multiCharacters,
+    if (ocrConfidence != null) 'ocr_confidence': ocrConfidence,
+    if (sourcePage != null) 'source_page': sourcePage,
+    if (sourceLineOnPage != null) 'source_line_on_page': sourceLineOnPage,
+  };
 
   factory ScriptLine.fromJson(Map<String, dynamic> json) => ScriptLine(
-        id: json['id'] as String,
-        act: json['act'] as String? ?? '',
-        scene: json['scene'] as String? ?? '',
-        lineNumber: json['line_number'] as int,
-        orderIndex: json['order_index'] as int,
-        character: json['character'] as String? ?? '',
-        text: json['text'] as String,
-        lineType: LineType.values.byName(json['line_type'] as String),
-        stageDirection: json['stage_direction'] as String? ?? '',
-        multiCharacters: (json['multi_characters'] as List?)?.cast<String>() ?? const [],
-        ocrConfidence: (json['ocr_confidence'] as num?)?.toDouble(),
-        sourcePage: json['source_page'] as int?,
-        sourceLineOnPage: json['source_line_on_page'] as int?,
-      );
+    id: json['id'] as String,
+    act: json['act'] as String? ?? '',
+    scene: json['scene'] as String? ?? '',
+    lineNumber: json['line_number'] as int,
+    orderIndex: json['order_index'] as int,
+    character: json['character'] as String? ?? '',
+    text: json['text'] as String,
+    lineType: LineType.values.byName(json['line_type'] as String),
+    stageDirection: json['stage_direction'] as String? ?? '',
+    multiCharacters:
+        (json['multi_characters'] as List?)?.cast<String>() ?? const [],
+    ocrConfidence: (json['ocr_confidence'] as num?)?.toDouble(),
+    sourcePage: json['source_page'] as int?,
+    sourceLineOnPage: json['source_line_on_page'] as int?,
+  );
 }
 
 /// Gender assigned to a character, used for voice pool selection.
@@ -234,26 +235,26 @@ class ScriptScene {
   }
 
   Map<String, dynamic> toJson() => {
-        'id': id,
-        'act': act,
-        'scene_name': sceneName,
-        'location': location,
-        'description': description,
-        'start_line_index': startLineIndex,
-        'end_line_index': endLineIndex,
-        'characters': characters,
-      };
+    'id': id,
+    'act': act,
+    'scene_name': sceneName,
+    'location': location,
+    'description': description,
+    'start_line_index': startLineIndex,
+    'end_line_index': endLineIndex,
+    'characters': characters,
+  };
 
   factory ScriptScene.fromJson(Map<String, dynamic> json) => ScriptScene(
-        id: json['id'] as String,
-        act: json['act'] as String? ?? '',
-        sceneName: json['scene_name'] as String,
-        location: json['location'] as String? ?? '',
-        description: json['description'] as String? ?? '',
-        startLineIndex: json['start_line_index'] as int,
-        endLineIndex: json['end_line_index'] as int,
-        characters: (json['characters'] as List).cast<String>(),
-      );
+    id: json['id'] as String,
+    act: json['act'] as String? ?? '',
+    sceneName: json['scene_name'] as String,
+    location: json['location'] as String? ?? '',
+    description: json['description'] as String? ?? '',
+    startLineIndex: json['start_line_index'] as int,
+    endLineIndex: json['end_line_index'] as int,
+    characters: (json['characters'] as List).cast<String>(),
+  );
 }
 
 /// A recording of a single script line by a cast member.
@@ -348,9 +349,7 @@ class ParsedScript {
         if (end == null || idx > end) end = idx;
       }
       if (start == null || end == null) continue; // scene fully removed
-      remapped.add(
-        scene.copyWith(startLineIndex: start, endLineIndex: end),
-      );
+      remapped.add(scene.copyWith(startLineIndex: start, endLineIndex: end));
     }
     return remapped;
   }
@@ -359,8 +358,11 @@ class ParsedScript {
   /// where this character is one of the speakers.
   List<ScriptLine> linesForCharacter(String characterName) {
     return lines
-        .where((l) =>
-            l.lineType == LineType.dialogue && l.isForCharacter(characterName))
+        .where(
+          (l) =>
+              l.lineType == LineType.dialogue &&
+              l.isForCharacter(characterName),
+        )
         .toList();
   }
 
@@ -389,7 +391,8 @@ class ParsedScript {
   int? indexForRef(int page, int lineOnPage) {
     // Try exact source page match first
     for (var i = 0; i < lines.length; i++) {
-      if (lines[i].sourcePage == page && lines[i].sourceLineOnPage == lineOnPage) {
+      if (lines[i].sourcePage == page &&
+          lines[i].sourceLineOnPage == lineOnPage) {
         return i;
       }
     }

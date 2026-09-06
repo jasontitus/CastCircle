@@ -20,7 +20,14 @@ class MemoryMonitorPlugin: NSObject {
     func handle(_ call: FlutterMethodCall, result: @escaping FlutterResult) {
         switch call.method {
         case "getMemoryUsage":
-            let physicalMB = getPhysicalFootprint()
+            guard let physicalMB = getPhysicalFootprint() else {
+                result(FlutterError(
+                    code: "TASK_INFO_FAILED",
+                    message: "Unable to read the process physical footprint",
+                    details: nil
+                ))
+                return
+            }
 
             // os_proc_available_memory gives the amount of memory available
             // before Jetsam kills us
@@ -39,7 +46,7 @@ class MemoryMonitorPlugin: NSObject {
 
     /// Get the physical footprint of this process in MB.
     /// This matches what Jetsam uses to decide whether to kill the process.
-    private func getPhysicalFootprint() -> Int {
+    private func getPhysicalFootprint() -> Int? {
         var info = task_vm_info_data_t()
         var count = mach_msg_type_number_t(MemoryLayout<task_vm_info_data_t>.size / MemoryLayout<natural_t>.size)
         let result = withUnsafeMutablePointer(to: &info) {
@@ -50,6 +57,6 @@ class MemoryMonitorPlugin: NSObject {
         if result == KERN_SUCCESS {
             return Int(info.phys_footprint) / 1024 / 1024
         }
-        return 0
+        return nil
     }
 }

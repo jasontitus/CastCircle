@@ -6,11 +6,7 @@ class PickedContact {
   final String? phone;
   final String? email;
 
-  const PickedContact({
-    required this.displayName,
-    this.phone,
-    this.email,
-  });
+  const PickedContact({required this.displayName, this.phone, this.email});
 }
 
 /// Lightweight contact picker using a native platform channel.
@@ -25,7 +21,9 @@ class ContactPickerService {
   /// Returns null if the user cancels.
   Future<PickedContact?> pickContact() async {
     try {
-      final result = await _channel.invokeMapMethod<String, String>('pickContact');
+      final result = await _channel.invokeMapMethod<String, String>(
+        'pickContact',
+      );
       if (result == null) return null;
       return PickedContact(
         displayName: result['name'] ?? '',

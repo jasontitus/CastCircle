@@ -134,7 +134,9 @@ God save the King.
 
       // Duncan should have 2 lines
       final duncanLines = script.lines
-          .where((l) => l.character == 'DUNCAN' && l.lineType == LineType.dialogue)
+          .where(
+            (l) => l.character == 'DUNCAN' && l.lineType == LineType.dialogue,
+          )
           .toList();
       expect(duncanLines.length, 2);
       expect(duncanLines[0].text, contains('bloody man'));
@@ -208,7 +210,9 @@ I have thee not, and yet I see thee still.
       final script = parser.parse(rawText, title: 'Continuation Test');
 
       final macbethLines = script.lines
-          .where((l) => l.character == 'MACBETH' && l.lineType == LineType.dialogue)
+          .where(
+            (l) => l.character == 'MACBETH' && l.lineType == LineType.dialogue,
+          )
           .toList();
       // The parser should produce 2 Macbeth dialogue blocks
       // (one before the stage dir, one after — the continuation is attributed
@@ -312,7 +316,9 @@ Is execution done on Cawdor?
       final script = parser.parse(rawText, title: 'Gender Test');
 
       final macbeth = script.characters.firstWhere((c) => c.name == 'MACBETH');
-      final ladyMacbeth = script.characters.firstWhere((c) => c.name == 'LADY MACBETH');
+      final ladyMacbeth = script.characters.firstWhere(
+        (c) => c.name == 'LADY MACBETH',
+      );
       final banquo = script.characters.firstWhere((c) => c.name == 'BANQUO');
 
       expect(macbeth.gender, CharacterGender.male);
@@ -377,8 +383,12 @@ Fair is foul, and foul is fair;
       expect(charsG, equals(charsF));
 
       // Same number of dialogue lines
-      final dlgG = scriptG.lines.where((l) => l.lineType == LineType.dialogue).length;
-      final dlgF = scriptF.lines.where((l) => l.lineType == LineType.dialogue).length;
+      final dlgG = scriptG.lines
+          .where((l) => l.lineType == LineType.dialogue)
+          .length;
+      final dlgF = scriptF.lines
+          .where((l) => l.lineType == LineType.dialogue)
+          .length;
       expect(dlgG, equals(dlgF));
 
       // Same character attribution order
@@ -446,7 +456,9 @@ DARCY. You have been dancing with the only handsome girl in the room.
       expect(script.scenes.length, greaterThanOrEqualTo(1));
 
       // Gender inference
-      final elizabeth = script.characters.firstWhere((c) => c.name == 'ELIZABETH');
+      final elizabeth = script.characters.firstWhere(
+        (c) => c.name == 'ELIZABETH',
+      );
       final darcy = script.characters.firstWhere((c) => c.name == 'DARCY');
       expect(elizabeth.gender, CharacterGender.female);
       expect(darcy.gender, CharacterGender.male);

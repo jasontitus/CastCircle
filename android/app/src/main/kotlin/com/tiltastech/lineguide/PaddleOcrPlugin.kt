@@ -21,6 +21,9 @@ import java.nio.FloatBuffer
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.roundToInt
+import java.util.concurrent.ExecutorService
+import java.util.concurrent.Executors
+import java.util.concurrent.RejectedExecutionException
 
 /**
  * On-device PaddleOCR (PP-OCRv5 small) via ONNX Runtime — the Android port of
@@ -40,6 +43,9 @@ class PaddleOcrPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
     private lateinit var channel: MethodChannel
     private var binding: FlutterPlugin.FlutterPluginBinding? = null
     private val mainHandler = Handler(Looper.getMainLooper())
+    private val lifecycleLock = Any()
+    private var worker: ExecutorService? = null
+    private var generation = 0
 
     private var env: OrtEnvironment? = null
     private var detSession: OrtSession? = null
@@ -47,6 +53,18 @@ class PaddleOcrPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
     private var keys: List<String> = emptyList()
     @Volatile private var ready = false
     @Volatile private var loading = false
+
+    private data class PendingCall(
+        val call: MethodCall,
+        val result: MethodChannel.Result,
+        val generation: Int,
+    )
+
+    private val pendingCalls = mutableListOf<PendingCall>()
+    private val activePdfRequests = mutableSetOf<String>()
+    private val cancelledPdfRequests = mutableSetOf<String>()
+
+    private class OcrCancelledException : RuntimeException()
 
     // Detection / recognition constants — keep in lockstep with the Swift
     // plugin (Mac-validated: unclip 0.4 from a 9-scan corpus sweep, render
@@ -60,27 +78,74 @@ class PaddleOcrPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
     private val recMaxWidth = 1024
     private val detMean = floatArrayOf(0.485f, 0.456f, 0.406f)
     private val detStd = floatArrayOf(0.229f, 0.224f, 0.225f)
+    private val recMean = floatArrayOf(0.5f, 0.5f, 0.5f)
+    private val recStd = floatArrayOf(0.5f, 0.5f, 0.5f)
 
     override fun onAttachedToEngine(binding: FlutterPlugin.FlutterPluginBinding) {
         this.binding = binding
         channel = MethodChannel(binding.binaryMessenger, "com.lineguide/paddle_ocr")
         channel.setMethodCallHandler(this)
-        // Load models off the main thread; `ready` gates the channel meanwhile.
-        loading = true
-        Thread({ loadModels(binding) }, "paddle-ocr-load").start()
+        val currentGeneration: Int
+        val executor = Executors.newSingleThreadExecutor { runnable ->
+            Thread(runnable, "paddle-ocr-worker")
+        }
+        synchronized(lifecycleLock) {
+            generation++
+            currentGeneration = generation
+            worker = executor
+            ready = false
+            loading = true
+        }
+        executor.execute { loadModels(binding, currentGeneration) }
     }
 
     override fun onDetachedFromEngine(binding: FlutterPlugin.FlutterPluginBinding) {
         channel.setMethodCallHandler(null)
-        this.binding = null
-        detSession?.close()
-        recSession?.close()
-        detSession = null
-        recSession = null
-        ready = false
+        val oldWorker: ExecutorService?
+        val oldDet: OrtSession?
+        val oldRec: OrtSession?
+        val abandoned: List<PendingCall>
+        synchronized(lifecycleLock) {
+            this.binding = null
+            generation++
+            ready = false
+            loading = false
+            oldWorker = worker
+            worker = null
+            oldDet = detSession
+            oldRec = recSession
+            abandoned = pendingCalls.toList()
+            pendingCalls.clear()
+            activePdfRequests.clear()
+            cancelledPdfRequests.clear()
+        }
+        abandoned.forEach {
+            it.result.error("DETACHED", "PaddleOCR plugin detached", null)
+        }
+        if (oldWorker != null) {
+            try {
+                oldWorker.execute {
+                    try { oldDet?.close() } catch (_: Exception) {}
+                    try { oldRec?.close() } catch (_: Exception) {}
+                    synchronized(lifecycleLock) {
+                        if (detSession === oldDet) detSession = null
+                        if (recSession === oldRec) recSession = null
+                    }
+                }
+            } catch (_: RejectedExecutionException) {
+                try { oldDet?.close() } catch (_: Exception) {}
+                try { oldRec?.close() } catch (_: Exception) {}
+            }
+            oldWorker.shutdown()
+        }
     }
 
-    private fun loadModels(binding: FlutterPlugin.FlutterPluginBinding) {
+    private fun loadModels(
+        binding: FlutterPlugin.FlutterPluginBinding,
+        loadGeneration: Int,
+    ) {
+        var loadedDet: OrtSession? = null
+        var loadedRec: OrtSession? = null
         try {
             val t0 = System.currentTimeMillis()
             val assets = binding.applicationContext.assets
@@ -88,47 +153,111 @@ class PaddleOcrPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
             fun readAsset(name: String): ByteArray =
                 assets.open(fa.getAssetFilePathByName(name)).use { it.readBytes() }
 
-            val e = OrtEnvironment.getEnvironment()
+            val loadedEnv = OrtEnvironment.getEnvironment()
             val opts = OrtSession.SessionOptions()
-            // Physical performance cores, capped — mirrors the Swift plugin's
-            // finding that 0 (auto) under-threads and all-logical-cores
-            // oversubscribes two sessions. Big.LITTLE phones report all cores,
-            // so half of them approximates the performance cluster.
-            val threads = max(2, min(Runtime.getRuntime().availableProcessors() / 2, 8))
-            opts.setIntraOpNumThreads(threads)
-            opts.addConfigEntry("session.intra_op.allow_spinning", "0")
-            opts.setOptimizationLevel(OrtSession.SessionOptions.OptLevel.ALL_OPT)
-            detSession = e.createSession(readAsset("assets/paddle_ocr/det.onnx"), opts)
-            recSession = e.createSession(readAsset("assets/paddle_ocr/rec.onnx"), opts)
-            keys = String(readAsset("assets/paddle_ocr/keys.txt"), Charsets.UTF_8)
-                .split("\n").dropLastWhile { it.isEmpty() }
-            env = e
-            ready = true
-            Log.i(TAG, "models loaded in ${System.currentTimeMillis() - t0}ms — ${keys.size} keys, $threads threads")
+            try {
+                // Physical performance cores, capped — mirrors the Swift plugin.
+                val threads = max(2, min(Runtime.getRuntime().availableProcessors() / 2, 8))
+                opts.setIntraOpNumThreads(threads)
+                opts.addConfigEntry("session.intra_op.allow_spinning", "0")
+                opts.setOptimizationLevel(OrtSession.SessionOptions.OptLevel.ALL_OPT)
+                loadedDet = loadedEnv.createSession(readAsset("assets/paddle_ocr/det.onnx"), opts)
+                loadedRec = loadedEnv.createSession(readAsset("assets/paddle_ocr/rec.onnx"), opts)
+                val loadedKeys = String(
+                    readAsset("assets/paddle_ocr/keys.txt"),
+                    Charsets.UTF_8,
+                ).split("\n").dropLastWhile { it.isEmpty() }
+
+                val published = synchronized(lifecycleLock) {
+                    if (generation == loadGeneration && this.binding === binding) {
+                        env = loadedEnv
+                        detSession = loadedDet
+                        recSession = loadedRec
+                        keys = loadedKeys
+                        ready = true
+                        true
+                    } else {
+                        false
+                    }
+                }
+                if (!published) return
+                loadedDet = null
+                loadedRec = null
+                Log.i(
+                    TAG,
+                    "models loaded in ${System.currentTimeMillis() - t0}ms — " +
+                        "${loadedKeys.size} keys, $threads threads",
+                )
+            } finally {
+                opts.close()
+            }
         } catch (t: Throwable) {
             Log.e(TAG, "model load failed — Dart will fall back to ML Kit", t)
         } finally {
-            loading = false
+            try { loadedDet?.close() } catch (_: Exception) {}
+            try { loadedRec?.close() } catch (_: Exception) {}
+            synchronized(lifecycleLock) {
+                if (generation == loadGeneration) loading = false
+            }
+            mainHandler.post { finishPendingCalls(loadGeneration) }
         }
     }
 
     // ── Channel ─────────────────────────────────────────────
 
     override fun onMethodCall(call: MethodCall, result: MethodChannel.Result) {
-        if (!ready) {
-            // Give an in-flight model load a moment before declaring NOT_READY
-            // (imports right after launch land here; load takes ~1s).
-            if (loading) {
-                Thread {
-                    val deadline = System.currentTimeMillis() + 15_000
-                    while (loading && System.currentTimeMillis() < deadline) Thread.sleep(100)
-                    mainHandler.post { onMethodCall(call, result) }
-                }.start()
-                return
-            }
-            result.error("NOT_READY", "PaddleOCR models not loaded", null)
+        if (call.method == "cancelOcrPdf") {
+            cancelPdf(call, result)
             return
         }
+        val currentGeneration: Int
+        synchronized(lifecycleLock) {
+            currentGeneration = generation
+            if (!ready) {
+                if (loading && binding != null) {
+                    val pending = PendingCall(call, result, currentGeneration)
+                    pendingCalls.add(pending)
+                    mainHandler.postDelayed({
+                        val timedOut = synchronized(lifecycleLock) {
+                            pendingCalls.remove(pending)
+                        }
+                        if (timedOut) {
+                            result.error(
+                                "NOT_READY",
+                                "PaddleOCR model loading timed out",
+                                null,
+                            )
+                        }
+                    }, MODEL_LOAD_TIMEOUT_MS)
+                    return
+                }
+                result.error("NOT_READY", "PaddleOCR models not loaded", null)
+                return
+            }
+        }
+        dispatchCall(call, result, currentGeneration)
+    }
+
+    private fun finishPendingCalls(loadGeneration: Int) {
+        val pending = synchronized(lifecycleLock) {
+            val matching = pendingCalls.filter { it.generation == loadGeneration }
+            pendingCalls.removeAll(matching.toSet())
+            matching
+        }
+        pending.forEach {
+            if (isActive(it.generation) && ready) {
+                dispatchCall(it.call, it.result, it.generation)
+            } else {
+                it.result.error("NOT_READY", "PaddleOCR models not loaded", null)
+            }
+        }
+    }
+
+    private fun dispatchCall(
+        call: MethodCall,
+        result: MethodChannel.Result,
+        callGeneration: Int,
+    ) {
         when (call.method) {
             "recognizeText" -> {
                 val path = call.argument<String>("path")
@@ -136,23 +265,55 @@ class PaddleOcrPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
                     result.error("INVALID_ARGS", "Missing 'path'", null)
                     return
                 }
-                Thread({
-                    val blocks = try {
-                        BitmapFactory.decodeFile(path)?.let { ocrImage(it) } ?: emptyList()
+                execute(callGeneration, result) {
+                    try {
+                        val bitmap = decodeImage(path)
+                            ?: throw IllegalArgumentException("Could not decode image")
+                        val blocks = try {
+                            ocrImage(bitmap)
+                        } finally {
+                            bitmap.recycle()
+                        }
+                        postSuccess(callGeneration, result, mapOf("blocks" to blocks))
                     } catch (t: Throwable) {
                         Log.e(TAG, "recognizeText failed", t)
-                        emptyList()
+                        postError(
+                            callGeneration,
+                            result,
+                            "IMAGE_OCR_FAILED",
+                            t.message ?: t.javaClass.simpleName,
+                        )
                     }
-                    mainHandler.post { result.success(mapOf("blocks" to blocks)) }
-                }, "paddle-ocr-img").start()
+                }
             }
             "ocrPdf" -> {
                 val path = call.argument<String>("path")
-                if (path == null) {
-                    result.error("INVALID_ARGS", "Missing 'path'", null)
+                val scale = call.argument<Number>("scale")?.toDouble()
+                val requestId = call.argument<String>("requestId")
+                if (path == null || scale == null || !scale.isFinite() || requestId == null) {
+                    result.error(
+                        "INVALID_ARGS",
+                        "Missing or invalid 'path'/'scale'/'requestId'",
+                        null,
+                    )
                     return
                 }
-                Thread({ ocrPdf(path, result) }, "paddle-ocr-pdf").start()
+                val registered = synchronized(lifecycleLock) {
+                    activePdfRequests.add(requestId)
+                }
+                if (!registered) {
+                    result.error("INVALID_ARGS", "Duplicate OCR requestId", requestId)
+                    return
+                }
+                val scheduled = execute(callGeneration, result) {
+                    ocrPdf(path, scale, requestId, result, callGeneration)
+                }
+                if (!scheduled) {
+                    synchronized(lifecycleLock) {
+                        activePdfRequests.remove(requestId)
+                        cancelledPdfRequests.remove(requestId)
+                    }
+                }
             }
             "ocrPdfPage" -> {
                 val path = call.argument<String>("path")
@@ -161,116 +322,373 @@ class PaddleOcrPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
                     result.error("INVALID_ARGS", "Missing 'path'/'page'", null)
                     return
                 }
-                Thread({ ocrPdfPage(path, page, result) }, "paddle-ocr-page").start()
+                execute(callGeneration, result) {
+                    ocrPdfPage(path, page, result, callGeneration)
+                }
             }
             else -> result.notImplemented()
         }
     }
 
+    private fun cancelPdf(call: MethodCall, result: MethodChannel.Result) {
+        val requestId = call.argument<String>("requestId")
+        if (requestId == null) {
+            result.error("INVALID_ARGS", "Missing 'requestId'", null)
+            return
+        }
+        val pending: List<PendingCall>
+        val active: Boolean
+        synchronized(lifecycleLock) {
+            pending = pendingCalls.filter {
+                it.call.method == "ocrPdf" &&
+                    it.call.argument<String>("requestId") == requestId
+            }
+            pendingCalls.removeAll(pending.toSet())
+            active = activePdfRequests.contains(requestId)
+            if (active) cancelledPdfRequests.add(requestId)
+        }
+        pending.forEach {
+            it.result.error(
+                "ocr_cancelled",
+                "PDF OCR was cancelled",
+                requestId,
+            )
+        }
+        result.success(pending.isNotEmpty() || active)
+    }
+
+    private fun execute(
+        callGeneration: Int,
+        result: MethodChannel.Result,
+        task: () -> Unit,
+    ): Boolean {
+        val executor = synchronized(lifecycleLock) {
+            worker.takeIf { generation == callGeneration }
+        }
+        if (executor == null) {
+            result.error("DETACHED", "PaddleOCR plugin detached", null)
+            return false
+        }
+        return try {
+            executor.execute {
+                if (isActive(callGeneration)) {
+                    task()
+                } else {
+                    postError(
+                        callGeneration,
+                        result,
+                        "DETACHED",
+                        "PaddleOCR plugin detached",
+                    )
+                }
+            }
+            true
+        } catch (_: RejectedExecutionException) {
+            result.error("DETACHED", "PaddleOCR plugin detached", null)
+            false
+        }
+    }
+
+    private fun isActive(callGeneration: Int): Boolean = synchronized(lifecycleLock) {
+        generation == callGeneration && binding != null
+    }
+
+    private fun postSuccess(
+        callGeneration: Int,
+        result: MethodChannel.Result,
+        value: Any,
+    ) {
+        mainHandler.post {
+            if (isActive(callGeneration)) {
+                result.success(value)
+            } else {
+                result.error("DETACHED", "PaddleOCR plugin detached", null)
+            }
+        }
+    }
+
+    private fun postError(
+        callGeneration: Int,
+        result: MethodChannel.Result,
+        code: String,
+        message: String,
+        details: Any? = null,
+    ) {
+        mainHandler.post {
+            val actualCode = if (isActive(callGeneration)) code else "DETACHED"
+            val actualMessage =
+                if (actualCode == "DETACHED") "PaddleOCR plugin detached" else message
+            val actualDetails = if (actualCode == "DETACHED") null else details
+            result.error(actualCode, actualMessage, actualDetails)
+        }
+    }
+
+    private fun decodeImage(path: String): Bitmap? {
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeFile(path, bounds)
+        val sourceWidth = bounds.outWidth
+        val sourceHeight = bounds.outHeight
+        if (sourceWidth <= 0 || sourceHeight <= 0) return null
+
+        var sampleSize = 1
+        while (sampleSize < (1 shl 30)) {
+            val sampledWidth = max(1, sourceWidth / sampleSize)
+            val sampledHeight = max(1, sourceHeight / sampleSize)
+            val sampledPixels = sampledWidth.toLong() * sampledHeight.toLong()
+            if (max(sampledWidth, sampledHeight) <= MAX_IMAGE_DECODE_DIMENSION &&
+                sampledPixels <= MAX_IMAGE_DECODE_PIXELS) {
+                break
+            }
+            sampleSize *= 2
+        }
+        return BitmapFactory.decodeFile(
+            path,
+            BitmapFactory.Options().apply {
+                inSampleSize = sampleSize
+                inPreferredConfig = Bitmap.Config.ARGB_8888
+            },
+        )
+    }
+
     /** OCR a single 1-based page with full normalized rects — the page
      * viewer uses this to highlight where a flagged line's text sits. */
-    private fun ocrPdfPage(path: String, pageNumber: Int, result: MethodChannel.Result) {
+    private fun ocrPdfPage(
+        path: String,
+        pageNumber: Int,
+        result: MethodChannel.Result,
+        callGeneration: Int,
+    ) {
         try {
             ParcelFileDescriptor.open(File(path), ParcelFileDescriptor.MODE_READ_ONLY).use { fd ->
                 PdfRenderer(fd).use { renderer ->
                     if (pageNumber < 1 || pageNumber > renderer.pageCount) {
-                        mainHandler.post {
-                            result.error("PDF_PAGE_FAILED", "No page $pageNumber", null)
-                        }
+                        postError(
+                            callGeneration,
+                            result,
+                            "PDF_PAGE_FAILED",
+                            "No page $pageNumber",
+                        )
                         return
                     }
                     renderer.openPage(pageNumber - 1).use { page ->
-                        val scale = min(6.0, max(1.0, targetRenderLongPx /
-                            max(page.width, page.height).toDouble()))
-                        val bmp = Bitmap.createBitmap(
-                            (page.width * scale).toInt(), (page.height * scale).toInt(),
-                            Bitmap.Config.ARGB_8888)
-                        bmp.eraseColor(Color.WHITE)
-                        page.render(bmp, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
+                        val bitmap = renderPage(page)
                         val lines = try {
-                            ocrImage(bmp)
+                            ocrImage(bitmap)
                         } finally {
-                            bmp.recycle()
+                            bitmap.recycle()
                         }
-                        mainHandler.post { result.success(mapOf("lines" to lines)) }
+                        postSuccess(callGeneration, result, mapOf("lines" to lines))
                     }
                 }
             }
         } catch (t: Throwable) {
-            mainHandler.post { result.error("PDF_PAGE_FAILED", "$t", null) }
+            postError(callGeneration, result, "PDF_PAGE_FAILED", "$t")
         }
     }
 
-    private fun ocrPdf(path: String, result: MethodChannel.Result) {
-        val fd = try {
-            ParcelFileDescriptor.open(File(path), ParcelFileDescriptor.MODE_READ_ONLY)
-        } catch (t: Throwable) {
-            mainHandler.post { result.error("PDF_OPEN_FAILED", "Could not open PDF: $t", null) }
-            return
-        }
+    private fun ocrPdf(
+        path: String,
+        requestedScale: Double,
+        requestId: String,
+        result: MethodChannel.Result,
+        callGeneration: Int,
+    ) {
         try {
-            // fd.use: if the PdfRenderer constructor throws on a corrupt
-            // PDF, .use on the renderer never runs and the fd leaked —
-            // repeated corrupt imports exhausted the fd table.
+            throwIfPdfCancelled(requestId)
+            val fd = try {
+                ParcelFileDescriptor.open(File(path), ParcelFileDescriptor.MODE_READ_ONLY)
+            } catch (t: Throwable) {
+                if (isPdfCancelled(requestId)) throw OcrCancelledException()
+                postError(
+                    callGeneration,
+                    result,
+                    "PDF_OPEN_FAILED",
+                    "Could not open PDF: $t",
+                )
+                return
+            }
+            // fd.use: if the PdfRenderer constructor throws on a corrupt PDF,
+            // .use on the renderer never runs and the fd would otherwise leak.
             fd.use { openFd ->
-            PdfRenderer(openFd).use { renderer ->
-                val pageCount = renderer.pageCount
-                val pages = ArrayList<Map<String, Any>>(pageCount)
-                var failed = 0
-                val jobStart = System.currentTimeMillis()
-                for (i in 0 until pageCount) {
-                    mainHandler.post {
-                        channel.invokeMethod(
-                            "ocrProgress", mapOf("page" to i + 1, "pageCount" to pageCount))
+                PdfRenderer(openFd).use { renderer ->
+                    val pageCount = renderer.pageCount
+                    if (pageCount > MAX_PDF_PAGES) {
+                        throw IllegalArgumentException(
+                            "PDF has $pageCount pages; maximum is $MAX_PDF_PAGES",
+                        )
                     }
-                    try {
-                        val t0 = System.currentTimeMillis()
-                        val lines = renderer.openPage(i).use { page ->
-                            val bmp = renderPage(page)
-                            try {
-                                ocrImage(bmp)
-                            } finally {
-                                bmp.recycle()
+                    var failed = 0
+                    val jobStart = System.currentTimeMillis()
+                    for (i in 0 until pageCount) {
+                        throwIfPdfCancelled(requestId)
+                        if (!isActive(callGeneration)) {
+                            postError(
+                                callGeneration,
+                                result,
+                                "DETACHED",
+                                "PaddleOCR plugin detached",
+                            )
+                            return
+                        }
+                        try {
+                            val t0 = System.currentTimeMillis()
+                            val lines = renderer.openPage(i).use { page ->
+                                throwIfPdfCancelled(requestId)
+                                val bitmap = renderPage(page, requestedScale)
+                                try {
+                                    throwIfPdfCancelled(requestId)
+                                    ocrImage(bitmap) { isPdfCancelled(requestId) }
+                                } finally {
+                                    bitmap.recycle()
+                                }
+                            }
+                            val pageLines = lines.map { line ->
+                                mapOf(
+                                    "text" to (line["text"] as String),
+                                    "confidence" to (line["confidence"] as Number).toDouble(),
+                                    "left" to (line["left"] as Number).toDouble(),
+                                    "width" to (line["width"] as Number).toDouble(),
+                                )
+                            }
+                            mainHandler.post {
+                                if (isActive(callGeneration) && !isPdfCancelled(requestId)) {
+                                    channel.invokeMethod(
+                                        "ocrPage",
+                                        mapOf(
+                                            "requestId" to requestId,
+                                            "pageIndex" to i + 1,
+                                            "lines" to pageLines,
+                                        ),
+                                    )
+                                }
+                            }
+                            Log.i(
+                                TAG,
+                                "page ${i + 1}/$pageCount — ${lines.size} lines in " +
+                                    "${System.currentTimeMillis() - t0}ms " +
+                                    "(det ${lastDetMs}ms, rec ${lastRecMs}ms)",
+                            )
+                        } catch (cancelled: OcrCancelledException) {
+                            throw cancelled
+                        } catch (e: Exception) {
+                            Log.e(TAG, "page ${i + 1} failed", e)
+                            failed++
+                        }
+                        throwIfPdfCancelled(requestId)
+                        mainHandler.post {
+                            if (isActive(callGeneration) && !isPdfCancelled(requestId)) {
+                                channel.invokeMethod(
+                                    "ocrProgress",
+                                    mapOf(
+                                        "requestId" to requestId,
+                                        "page" to i + 1,
+                                        "pageCount" to pageCount,
+                                    ),
+                                )
                             }
                         }
-                        pages.add(mapOf("page" to i + 1, "lines" to lines))
-                        Log.i(TAG, "page ${i + 1}/$pageCount — ${lines.size} lines in " +
-                            "${System.currentTimeMillis() - t0}ms " +
-                            "(det ${lastDetMs}ms, rec ${lastRecMs}ms)")
-                    } catch (t: Throwable) {
-                        Log.e(TAG, "page ${i + 1} failed", t)
-                        failed++
+                    }
+                    val total = (System.currentTimeMillis() - jobStart) / 1000.0
+                    Log.i(
+                        TAG,
+                        "$pageCount pages in ${"%.1f".format(total)}s " +
+                            "(${"%.2f".format(total / max(pageCount, 1))} s/page)",
+                    )
+                    synchronized(lifecycleLock) {
+                        if (cancelledPdfRequests.contains(requestId)) {
+                            throw OcrCancelledException()
+                        }
+                        activePdfRequests.remove(requestId)
+                    }
+                    postSuccess(
+                        callGeneration,
+                        result,
+                        mapOf(
+                            "pageCount" to pageCount,
+                            "failedPages" to failed,
+                        ),
+                    )
+                }
+            }
+        } catch (_: OcrCancelledException) {
+            postError(
+                callGeneration,
+                result,
+                "ocr_cancelled",
+                "PDF OCR was cancelled",
+                requestId,
+            )
+        } catch (t: Throwable) {
+            if (isPdfCancelled(requestId)) {
+                postError(
+                    callGeneration,
+                    result,
+                    "ocr_cancelled",
+                    "PDF OCR was cancelled",
+                    requestId,
+                )
+            } else {
+                postError(callGeneration, result, "PDF_OCR_FAILED", "$t")
+            }
+        } finally {
+            val keepCancellationTombstone = synchronized(lifecycleLock) {
+                activePdfRequests.remove(requestId)
+                cancelledPdfRequests.contains(requestId)
+            }
+            if (keepCancellationTombstone) {
+                // Queued page/progress callbacks must observe cancellation.
+                // Remove the tombstone only after the cancellation reply.
+                mainHandler.post {
+                    synchronized(lifecycleLock) {
+                        cancelledPdfRequests.remove(requestId)
                     }
                 }
-                val total = (System.currentTimeMillis() - jobStart) / 1000.0
-                Log.i(TAG, "$pageCount pages in ${"%.1f".format(total)}s (${"%.2f".format(total / max(pageCount, 1))} s/page)")
-                mainHandler.post {
-                    result.success(
-                        mapOf("pages" to pages, "pageCount" to pageCount, "failedPages" to failed))
+            } else {
+                synchronized(lifecycleLock) {
+                    cancelledPdfRequests.remove(requestId)
                 }
             }
-            }
-        } catch (t: Throwable) {
-            mainHandler.post { result.error("PDF_OCR_FAILED", "$t", null) }
         }
+    }
+
+    private fun isPdfCancelled(requestId: String): Boolean = synchronized(lifecycleLock) {
+        cancelledPdfRequests.contains(requestId)
+    }
+
+    private fun throwIfPdfCancelled(requestId: String) {
+        if (isPdfCancelled(requestId)) throw OcrCancelledException()
     }
 
     // ── PP-OCR pipeline ─────────────────────────────────────
 
-    private fun renderPage(page: PdfRenderer.Page): Bitmap {
-        // Auto-scale so the page long side ≈ targetRenderLongPx (clamped
-        // 1–6×) — detection caps at 960 anyway; the scale feeds the rec crops.
-        val longPt = max(page.width, page.height).toDouble()
-        val autoScale = min(6.0, max(1.0, targetRenderLongPx / longPt))
-        val w = (page.width * autoScale).roundToInt()
-        val h = (page.height * autoScale).roundToInt()
-        val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
-        bmp.eraseColor(Color.WHITE)
-        val m = Matrix().apply {
-            setScale(w.toFloat() / page.width, h.toFloat() / page.height)
+    private fun renderPage(page: PdfRenderer.Page, requestedScale: Double = 2.0): Bitmap {
+        val pageWidth = page.width
+        val pageHeight = page.height
+        if (pageWidth <= 0 || pageHeight <= 0) {
+            throw IllegalArgumentException("PDF page has invalid dimensions")
         }
-        page.render(bmp, null, m, PdfRenderer.Page.RENDER_MODE_FOR_PRINT)
-        return bmp
+        // scale=2.0 preserves the established 1800px target. Caller scale is
+        // relative and bounded before applying the hard output caps.
+        val effectiveTarget =
+            targetRenderLongPx * requestedScale.coerceIn(0.5, 4.0) / 2.0
+        val longSide = max(pageWidth, pageHeight).toDouble()
+        val renderScale = min(6.0, effectiveTarget / longSide)
+        val width = max(1, (pageWidth * renderScale).roundToInt())
+        val height = max(1, (pageHeight * renderScale).roundToInt())
+        val pixels = width.toLong() * height.toLong()
+        if (width > MAX_RENDER_DIMENSION || height > MAX_RENDER_DIMENSION ||
+            pixels > MAX_RENDER_PIXELS) {
+            throw IllegalArgumentException(
+                "PDF page render is too large: ${width}x$height",
+            )
+        }
+        val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+        bitmap.eraseColor(Color.WHITE)
+        val matrix = Matrix().apply {
+            setScale(width.toFloat() / pageWidth, height.toFloat() / pageHeight)
+        }
+        page.render(bitmap, null, matrix, PdfRenderer.Page.RENDER_MODE_FOR_PRINT)
+        return bitmap
     }
 
     // Per-page timing breakdown for the caller's log line. Measured on a
@@ -282,24 +700,43 @@ class PaddleOcrPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
     private var lastDetMs = 0L
     private var lastRecMs = 0L
 
-    private fun ocrImage(bmp: Bitmap): List<Map<String, Any>> {
-        val det = detSession ?: return emptyList()
-        val rec = recSession ?: return emptyList()
+    private fun ocrImage(
+        bmp: Bitmap,
+        isCancelled: () -> Boolean = { false },
+    ): List<Map<String, Any>> {
+        val det = detSession ?: throw IllegalStateException("Detection model unavailable")
+        val rec = recSession ?: throw IllegalStateException("Recognition model unavailable")
+        val currentEnv = env ?: throw IllegalStateException("ONNX environment unavailable")
+        val workspace = TensorWorkspace()
         val tDet0 = System.currentTimeMillis()
         val origW = bmp.width
         val origH = bmp.height
+        if (isCancelled()) throw OcrCancelledException()
         // 1. Detection: resize to multiples of 32 (≤ limit), normalize, run.
         val ratio = min(detLimitSide.toFloat() / max(origW, origH).toFloat(), 1.0f)
         val newW = max(32, ((origW * ratio / 32).roundToInt()) * 32)
         val newH = max(32, ((origH * ratio / 32).roundToInt()) * 32)
-        val detIn = imageToTensor(bmp, newW, newH, detMean, detStd)
-        val (prob, pShape) = run(det, detIn, longArrayOf(1, 3, newH.toLong(), newW.toLong()))
-            ?: return emptyList()
-        if (pShape.size < 2) return emptyList()
-        val mH = pShape[pShape.size - 2].toInt()
-        val mW = pShape[pShape.size - 1].toInt()
+        val detIn = imageToTensor(bmp, newW, newH, detMean, detStd, workspace)
+        if (isCancelled()) throw OcrCancelledException()
+        val (prob, probabilityShape) = runDetection(
+            currentEnv,
+            det,
+            detIn,
+            longArrayOf(1, 3, newH.toLong(), newW.toLong()),
+        )
+        if (isCancelled()) throw OcrCancelledException()
+        if (probabilityShape.size < 2) {
+            throw IllegalStateException("Detection model returned an invalid shape")
+        }
+        val mapHeight = probabilityShape[probabilityShape.size - 2].toInt()
+        val mapWidth = probabilityShape[probabilityShape.size - 1].toInt()
+        if (mapWidth <= 0 || mapHeight <= 0 ||
+            mapWidth.toLong() * mapHeight.toLong() > prob.size) {
+            throw IllegalStateException("Detection model returned invalid dimensions")
+        }
         // 2. Threshold + connected-component boxes in original coords.
-        val boxes = detectBoxes(prob, mW, mH, origW, origH)
+        val boxes = detectBoxes(prob, mapWidth, mapHeight, origW, origH)
+        if (isCancelled()) throw OcrCancelledException()
         lastDetMs = System.currentTimeMillis() - tDet0
         val tRec0 = System.currentTimeMillis()
         // 3. Recognize each box, sorted top-to-bottom (reading order).
@@ -307,20 +744,24 @@ class PaddleOcrPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
         val fOrigW = max(origW, 1).toDouble()
         val fOrigH = max(origH, 1).toDouble()
         for (box in boxes.sortedBy { it.top }) {
+            if (isCancelled()) throw OcrCancelledException()
             val crop = cropBitmap(bmp, box) ?: continue
             try {
-                val (text, conf) = recognize(crop, rec) ?: continue
+                val (text, confidence) = recognize(crop, rec, currentEnv, workspace)
+                if (isCancelled()) throw OcrCancelledException()
                 if (text.isNotEmpty()) {
                     lines.add(
                         mapOf(
-                            "text" to text, "confidence" to conf,
+                            "text" to text,
+                            "confidence" to confidence,
                             "left" to box.left / fOrigW,
                             "width" to box.width() / fOrigW,
                             // Full normalized rect for the page viewer's
                             // flagged-line highlight.
                             "top" to box.top / fOrigH,
                             "height" to box.height() / fOrigH,
-                        ))
+                        ),
+                    )
                 }
             } finally {
                 crop.recycle()
@@ -426,84 +867,160 @@ class PaddleOcrPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
     }
 
     /** Recognize one cropped text-line image → (text, confidence) via CTC greedy. */
-    private fun recognize(crop: Bitmap, rec: OrtSession): Pair<String, Double>? {
-        val h = crop.height
-        val w = crop.width
-        if (h == 0) return null
-        var rw = (recHeight.toFloat() * w / h).roundToInt()
-        rw = max(16, min(rw, recMaxWidth))
-        val mean = floatArrayOf(0.5f, 0.5f, 0.5f)
-        val std = floatArrayOf(0.5f, 0.5f, 0.5f)
-        val inp = imageToTensor(crop, rw, recHeight, mean, std)
-        val (out, shape) = run(rec, inp, longArrayOf(1, 3, recHeight.toLong(), rw.toLong()))
-            ?: return null
-        if (shape.size != 3) return null
-        val T = shape[1].toInt()
-        val C = shape[2].toInt()
-        val sb = StringBuilder()
-        var probSum = 0.0
-        var emitted = 0
-        var prev = -1
-        for (t in 0 until T) {
-            var best = 0
-            var bestP = -1.0f
-            val base = t * C
-            for (c in 0 until C) {
-                val p = out[base + c]
-                if (p > bestP) { bestP = p; best = c }
-            }
-            if (best != 0 && best != prev) {
-                val idx = best - 1
-                if (idx < keys.size) sb.append(keys[idx]) else sb.append(' ')
-                probSum += bestP
-                emitted++
-            }
-            prev = best
-        }
-        val conf = if (emitted > 0) probSum / emitted else 0.0
-        return Pair(sb.toString().trim(), conf)
+    private fun recognize(
+        crop: Bitmap,
+        rec: OrtSession,
+        currentEnv: OrtEnvironment,
+        workspace: TensorWorkspace,
+    ): Pair<String, Double> {
+        val height = crop.height
+        val width = crop.width
+        if (height <= 0) throw IllegalArgumentException("Invalid recognition crop")
+        var resizedWidth = (recHeight.toFloat() * width / height).roundToInt()
+        resizedWidth = max(16, min(resizedWidth, recMaxWidth))
+        val input = imageToTensor(
+            crop,
+            resizedWidth,
+            recHeight,
+            recMean,
+            recStd,
+            workspace,
+        )
+        return runRecognizer(
+            currentEnv,
+            rec,
+            input,
+            longArrayOf(1, 3, recHeight.toLong(), resizedWidth.toLong()),
+        )
     }
 
     // ── Helpers ─────────────────────────────────────────────
 
+    private class TensorWorkspace {
+        var pixels = IntArray(0)
+        var floats = FloatArray(0)
+
+        fun ensure(pixelCount: Int) {
+            if (pixels.size < pixelCount) pixels = IntArray(pixelCount)
+            val floatCount = pixelCount * 3
+            if (floats.size < floatCount) floats = FloatArray(floatCount)
+        }
+    }
+
     /** Bitmap → NCHW float tensor (RGB), normalized `(p/255 - mean)/std`. */
-    private fun imageToTensor(src: Bitmap, w: Int, h: Int, mean: FloatArray, std: FloatArray): FloatArray {
-        val scaled = if (src.width == w && src.height == h) src
-        else Bitmap.createScaledBitmap(src, w, h, true)
+    private fun imageToTensor(
+        src: Bitmap,
+        width: Int,
+        height: Int,
+        mean: FloatArray,
+        std: FloatArray,
+        workspace: TensorWorkspace,
+    ): FloatBuffer {
+        val scaled = if (src.width == width && src.height == height) {
+            src
+        } else {
+            Bitmap.createScaledBitmap(src, width, height, true)
+        }
         try {
-            val pixels = IntArray(w * h)
-            scaled.getPixels(pixels, 0, w, 0, 0, w, h)
-            val plane = w * h
-            val out = FloatArray(3 * plane)
+            val plane = width * height
+            workspace.ensure(plane)
+            scaled.getPixels(workspace.pixels, 0, width, 0, 0, width, height)
             for (i in 0 until plane) {
-                val p = pixels[i]
-                out[i] = (((p shr 16) and 0xFF) / 255f - mean[0]) / std[0]
-                out[plane + i] = (((p shr 8) and 0xFF) / 255f - mean[1]) / std[1]
-                out[2 * plane + i] = ((p and 0xFF) / 255f - mean[2]) / std[2]
+                val pixel = workspace.pixels[i]
+                workspace.floats[i] =
+                    (((pixel shr 16) and 0xFF) / 255f - mean[0]) / std[0]
+                workspace.floats[plane + i] =
+                    (((pixel shr 8) and 0xFF) / 255f - mean[1]) / std[1]
+                workspace.floats[2 * plane + i] =
+                    ((pixel and 0xFF) / 255f - mean[2]) / std[2]
             }
-            return out
+            return FloatBuffer.wrap(workspace.floats, 0, 3 * plane).slice()
         } finally {
             if (scaled !== src) scaled.recycle()
         }
     }
 
-    /** Run a single-input/single-output float model → (data, shape). */
-    private fun run(session: OrtSession, data: FloatArray, shape: LongArray): Pair<FloatArray, LongArray>? {
-        val e = env ?: return null
-        val inName = session.inputNames.firstOrNull() ?: "x"
-        OnnxTensor.createTensor(e, FloatBuffer.wrap(data), shape).use { tensor ->
-            session.run(mapOf(inName to tensor)).use { results ->
-                val value = results[0] as? OnnxTensor ?: return null
-                val outShape = value.info.shape
-                val buf = value.floatBuffer
-                val floats = FloatArray(buf.remaining())
-                buf.get(floats)
-                return Pair(floats, outShape)
+    private fun runDetection(
+        currentEnv: OrtEnvironment,
+        session: OrtSession,
+        data: FloatBuffer,
+        shape: LongArray,
+    ): Pair<FloatArray, LongArray> {
+        val inputName = session.inputNames.firstOrNull()
+            ?: throw IllegalStateException("Detection model has no input")
+        OnnxTensor.createTensor(currentEnv, data, shape).use { tensor ->
+            session.run(mapOf(inputName to tensor)).use { results ->
+                val value = results[0] as? OnnxTensor
+                    ?: throw IllegalStateException("Detection model returned no tensor")
+                val buffer = value.floatBuffer
+                val floats = FloatArray(buffer.remaining())
+                buffer.get(floats)
+                return Pair(floats, value.info.shape)
+            }
+        }
+    }
+
+    private fun runRecognizer(
+        currentEnv: OrtEnvironment,
+        session: OrtSession,
+        data: FloatBuffer,
+        shape: LongArray,
+    ): Pair<String, Double> {
+        val inputName = session.inputNames.firstOrNull()
+            ?: throw IllegalStateException("Recognition model has no input")
+        OnnxTensor.createTensor(currentEnv, data, shape).use { tensor ->
+            session.run(mapOf(inputName to tensor)).use { results ->
+                val value = results[0] as? OnnxTensor
+                    ?: throw IllegalStateException("Recognition model returned no tensor")
+                val outputShape = value.info.shape
+                if (outputShape.size != 3) {
+                    throw IllegalStateException("Recognition model returned an invalid shape")
+                }
+                val timeSteps = outputShape[1].toInt()
+                val classes = outputShape[2].toInt()
+                val buffer = value.floatBuffer
+                if (timeSteps <= 0 || classes <= 0 ||
+                    timeSteps.toLong() * classes.toLong() > buffer.remaining()) {
+                    throw IllegalStateException("Recognition model returned invalid dimensions")
+                }
+
+                val start = buffer.position()
+                val text = StringBuilder()
+                var probabilitySum = 0.0
+                var emitted = 0
+                var previous = -1
+                for (time in 0 until timeSteps) {
+                    var best = 0
+                    var bestProbability = -1.0f
+                    val base = start + time * classes
+                    for (candidate in 0 until classes) {
+                        val probability = buffer.get(base + candidate)
+                        if (probability > bestProbability) {
+                            bestProbability = probability
+                            best = candidate
+                        }
+                    }
+                    if (best != 0 && best != previous) {
+                        val keyIndex = best - 1
+                        if (keyIndex < keys.size) text.append(keys[keyIndex]) else text.append(' ')
+                        probabilitySum += bestProbability
+                        emitted++
+                    }
+                    previous = best
+                }
+                val confidence = if (emitted > 0) probabilitySum / emitted else 0.0
+                return Pair(text.toString().trim(), confidence)
             }
         }
     }
 
     companion object {
         private const val TAG = "PaddleOCR"
+        private const val MODEL_LOAD_TIMEOUT_MS = 15_000L
+        private const val MAX_PDF_PAGES = 500
+        private const val MAX_IMAGE_DECODE_DIMENSION = 1920
+        private const val MAX_IMAGE_DECODE_PIXELS = 4_000_000L
+        private const val MAX_RENDER_DIMENSION = 4096
+        private const val MAX_RENDER_PIXELS = 12_000_000L
     }
 }

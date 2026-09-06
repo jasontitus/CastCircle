@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
@@ -10,15 +11,45 @@ import 'package:path_provider/path_provider.dart';
 
 import '../../core/responsive.dart';
 import '../../data/models/script_models.dart';
+import '../../data/models/production_models.dart';
 import '../../data/services/analytics_service.dart';
 import '../../data/services/debug_log_service.dart';
 import '../../data/services/paddle_ocr_channel.dart';
 import '../../data/services/script_parser.dart';
+import '../../data/services/script_import_service.dart';
 import '../../data/services/supabase_service.dart';
 import '../../data/services/voice_config_service.dart';
 import '../../providers/production_providers.dart';
 import 'ocr_review_screen.dart';
 import '../../core/toast.dart';
+
+class _PreparedPdfCommit {
+  const _PreparedPdfCommit({
+    required this.staged,
+    required this.incoming,
+    required this.destination,
+    required this.backup,
+    required this.ownsStaged,
+  });
+
+  final File staged;
+  final File incoming;
+  final File destination;
+  final File? backup;
+  final bool ownsStaged;
+}
+
+class _PdfPromotionRollbackException implements Exception {
+  const _PdfPromotionRollbackException(this.promotionError, this.rollbackError);
+
+  final Object promotionError;
+  final Object rollbackError;
+
+  @override
+  String toString() =>
+      'PDF promotion failed ($promotionError), then rollback failed '
+      '($rollbackError)';
+}
 
 class ScriptImportScreen extends ConsumerStatefulWidget {
   const ScriptImportScreen({super.key});
@@ -30,41 +61,75 @@ class ScriptImportScreen extends ConsumerStatefulWidget {
 class _ScriptImportScreenState extends ConsumerState<ScriptImportScreen> {
   bool _loading = false;
   bool _saving = false;
+  bool _mutationInFlight = false;
   String? _error;
   ParsedScript? _preview;
+  late final ScriptImportService _importService;
   String? _importedPdfPath; // copy of the imported PDF for the page viewer
 
-  /// True while [_importedPdfPath] points at the staging copy in the temp dir,
-  /// i.e. before the user accepted the import. See [_commitStagedPdf].
+  /// True while [_importedPdfPath] is waiting to be committed.
   bool _pdfPendingCommit = false;
+
+  /// Whether the pending PDF is our temporary staging copy rather than the
+  /// picker-owned source used as a review fallback.
+  bool _pdfStagingOwned = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _importService = ref.read(scriptImportServiceProvider);
+  }
+
+  @override
+  void dispose() {
+    unawaited(_cancelOcrOnDispose());
+    super.dispose();
+  }
+
+  Future<void> _cancelOcrOnDispose() async {
+    try {
+      await _importService.cancelActiveOcr();
+    } catch (e, stack) {
+      DebugLogService.instance.logError(
+        LogCategory.general,
+        'Cancelling abandoned PDF import failed',
+        e,
+        stack,
+      );
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
     final production = ref.watch(currentProductionProvider);
+    final mutationInFlight = _mutationInFlight;
 
-    return Scaffold(
-      appBar: AppBar(
-        title: Text(production?.title ?? 'Import Script'),
-        leading: IconButton(
-          icon: const Icon(Icons.arrow_back),
-          onPressed: () => context.pop(),
+    return PopScope(
+      canPop: !mutationInFlight,
+      child: Scaffold(
+        appBar: AppBar(
+          title: Text(production?.title ?? 'Import Script'),
+          leading: IconButton(
+            icon: const Icon(Icons.arrow_back),
+            onPressed: mutationInFlight ? null : () => context.pop(),
+          ),
         ),
+        body: _loading
+            ? _buildLoading(context)
+            : _preview != null
+            ? _buildPreview(context)
+            : _buildImportOptions(context),
       ),
-      body: _loading
-          ? _buildLoading(context)
-          : _preview != null
-          ? _buildPreview(context)
-          : _buildImportOptions(context),
     );
   }
 
-  /// Loading view. For scanned PDFs the native PaddleOCR pass can take a while,
-  /// so surface its per-page progress (pushed via [PaddleOcrChannel.progress])
-  /// instead of an indeterminate spinner that looks frozen.
+  /// Loading view. For scanned PDFs the native OCR pass can take a while, so
+  /// surface request-scoped progress instead of an indeterminate spinner that
+  /// looks frozen.
   Widget _buildLoading(BuildContext context) {
     return Center(
       child: ValueListenableBuilder<OcrProgress?>(
-        valueListenable: PaddleOcrChannel.progress,
+        valueListenable: _importService.ocrProgress,
         builder: (context, ocr, _) {
           final reading = ocr != null && ocr.total > 0;
           return Column(
@@ -203,6 +268,10 @@ class _ScriptImportScreenState extends ConsumerState<ScriptImportScreen> {
   Widget _buildPreview(BuildContext context) {
     final script = _preview!;
     final (dialogueCount, _, _) = _countsFor(script);
+    final characterColorIndices = {
+      for (final character in script.characters)
+        character.name: character.colorIndex,
+    };
 
     return Column(
       children: [
@@ -259,7 +328,15 @@ class _ScriptImportScreenState extends ConsumerState<ScriptImportScreen> {
                   style: Theme.of(context).textTheme.titleMedium,
                 ),
                 const SizedBox(height: 8),
-                ...script.lines.take(30).map((line) => _buildLinePreview(line)),
+                ...script.lines.take(30).map((line) {
+                  final colorName = line.multiCharacters.isNotEmpty
+                      ? line.multiCharacters.first
+                      : line.character;
+                  return _buildLinePreview(
+                    line,
+                    characterColorIndices[colorName] ?? 0,
+                  );
+                }),
                 if (script.lines.length > 30)
                   Padding(
                     padding: const EdgeInsets.symmetric(vertical: 16),
@@ -285,9 +362,9 @@ class _ScriptImportScreenState extends ConsumerState<ScriptImportScreen> {
                       _preview = null;
                       _error = null;
                       // Drop the staged PDF too, or a following text import
-                      // would commit the abandoned PDF as this script's source.
                       _importedPdfPath = null;
                       _pdfPendingCommit = false;
+                      _pdfStagingOwned = false;
                     }),
                     child: const Text('Re-import'),
                   ),
@@ -295,7 +372,9 @@ class _ScriptImportScreenState extends ConsumerState<ScriptImportScreen> {
                 const SizedBox(width: 12),
                 Expanded(
                   child: FilledButton.icon(
-                    onPressed: _saving ? null : () => _acceptScript(script),
+                    onPressed: _mutationInFlight
+                        ? null
+                        : () => _acceptScript(script),
                     icon: _saving
                         ? const SizedBox(
                             width: 18,
@@ -325,7 +404,9 @@ class _ScriptImportScreenState extends ConsumerState<ScriptImportScreen> {
   Widget _buildDialectSelector(BuildContext context) {
     final production = ref.watch(currentProductionProvider);
     if (production == null) return const SizedBox.shrink();
-    final label = _localeLabels[production.locale] ?? production.locale;
+    final selectedLocale = _localeLabels.containsKey(production.locale)
+        ? production.locale
+        : 'en-US';
 
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
@@ -357,31 +438,136 @@ class _ScriptImportScreenState extends ConsumerState<ScriptImportScreen> {
               segments: _localeLabels.entries
                   .map((e) => ButtonSegment(value: e.key, label: Text(e.value)))
                   .toList(),
-              selected: {production.locale},
-              onSelectionChanged: (selected) {
-                final locale = selected.first;
-                final updated = production.copyWith(locale: locale);
-                ref.read(productionsProvider.notifier).update(updated);
-                ref.read(currentProductionProvider.notifier).state = updated;
-                final presetId = locale == 'en-GB'
-                    ? 'victorian_english'
-                    : 'modern_american';
-                VoiceConfigService.instance.setPreset(production.id, presetId);
-                // Sync locale and voice preset to cloud
-                final supa = SupabaseService.instance;
-                if (supa.isSignedIn) {
-                  supa.saveLocale(productionId: production.id, locale: locale);
-                  supa.saveVoicePreset(
-                    productionId: production.id,
-                    presetId: presetId,
-                  );
-                }
-              },
+              selected: {selectedLocale},
+              onSelectionChanged: _mutationInFlight
+                  ? null
+                  : (selected) => _setDialect(production, selected.first),
             ),
           ),
         ],
       ),
     );
+  }
+
+  Future<void> _setDialect(Production production, String locale) async {
+    if (_mutationInFlight || locale == production.locale) return;
+    setState(() {
+      _mutationInFlight = true;
+    });
+
+    final supa = SupabaseService.instance;
+    final voiceService = VoiceConfigService.instance;
+    final productionsNotifier = ref.read(productionsProvider.notifier);
+    final currentProductionNotifier = ref.read(
+      currentProductionProvider.notifier,
+    );
+    final presetId = locale == 'en-GB'
+        ? 'victorian_english'
+        : 'modern_american';
+    var previousPresetId = production.locale == 'en-GB'
+        ? 'victorian_english'
+        : 'modern_american';
+
+    try {
+      previousPresetId = (await voiceService.getPreset(
+        production.id,
+        locale: production.locale,
+      )).id;
+      if (supa.isSignedIn) {
+        await Future.wait([
+          supa.saveLocale(productionId: production.id, locale: locale),
+          supa.saveVoicePreset(productionId: production.id, presetId: presetId),
+        ]);
+      }
+      await voiceService.setPreset(production.id, presetId);
+      final latest = currentProductionNotifier.state;
+      if (latest == null || latest.id != production.id) {
+        throw StateError('Production changed while updating its dialect');
+      }
+      final updated = latest.copyWith(locale: locale);
+      await productionsNotifier.update(updated);
+      currentProductionNotifier.state = updated;
+    } catch (e, stack) {
+      var rollbackFailed = false;
+      final latest = currentProductionNotifier.state;
+      final rollbackBase = latest != null && latest.id == production.id
+          ? latest
+          : production;
+      final restoredProduction = rollbackBase.copyWith(
+        locale: production.locale,
+      );
+      try {
+        await productionsNotifier.update(restoredProduction);
+      } catch (rollbackError, rollbackStack) {
+        rollbackFailed = true;
+        DebugLogService.instance.logError(
+          LogCategory.general,
+          'Dialect production rollback failed',
+          rollbackError,
+          rollbackStack,
+        );
+      }
+      currentProductionNotifier.state = restoredProduction;
+      try {
+        await voiceService.setPreset(production.id, previousPresetId);
+      } catch (rollbackError, rollbackStack) {
+        rollbackFailed = true;
+        DebugLogService.instance.logError(
+          LogCategory.general,
+          'Dialect preset rollback failed',
+          rollbackError,
+          rollbackStack,
+        );
+      }
+      if (supa.isSignedIn) {
+        try {
+          await Future.wait([
+            supa.saveLocale(
+              productionId: production.id,
+              locale: production.locale,
+            ),
+            supa.saveVoicePreset(
+              productionId: production.id,
+              presetId: previousPresetId,
+            ),
+          ]);
+        } catch (rollbackError, rollbackStack) {
+          rollbackFailed = true;
+          DebugLogService.instance.logError(
+            LogCategory.network,
+            'Dialect cloud rollback failed',
+            rollbackError,
+            rollbackStack,
+          );
+        }
+      }
+      DebugLogService.instance.logError(
+        LogCategory.network,
+        'Updating script dialect failed',
+        e,
+        stack,
+      );
+      if (mounted) {
+        ScaffoldMessenger.of(context).showAutoToast(
+          SnackBar(
+            content: Text(
+              rollbackFailed
+                  ? "Couldn't update the script dialect, and the previous "
+                        'setting could not be fully restored.'
+                  : "Couldn't update the script dialect. The previous setting "
+                        'was restored.',
+            ),
+            duration: const Duration(seconds: 6),
+          ),
+        );
+      }
+    } finally {
+      if (mounted) {
+        setState(() {
+          _mutationInFlight = false;
+        });
+      }
+    }
   }
 
   /// Banner surfacing low-OCR lines flagged for review. Hidden when the import
@@ -442,7 +628,10 @@ class _ScriptImportScreenState extends ConsumerState<ScriptImportScreen> {
         // later scene, which rehearsal (linesInScene) would then play from
         // the wrong part of the script.
         scenes: ParsedScript.remapScenes(
-            script.scenes, script.lines, result.lines),
+          script.scenes,
+          script.lines,
+          result.lines,
+        ),
         // Recount characters from the surviving lines: a character whose
         // only lines were removed in review used to linger in the preview's
         // cast list with a stale line count until the next DB reload.
@@ -455,7 +644,9 @@ class _ScriptImportScreenState extends ConsumerState<ScriptImportScreen> {
   /// Rebuild the character list from [lines], preserving gender (and keeping
   /// colorIndex stable by list position, like the parser does).
   static List<ScriptCharacter> _recountCharacters(
-      List<ScriptCharacter> existing, List<ScriptLine> lines) {
+    List<ScriptCharacter> existing,
+    List<ScriptLine> lines,
+  ) {
     final genders = {for (final c in existing) c.name: c.gender};
     final counts = <String, int>{};
     for (final line in lines) {
@@ -481,6 +672,20 @@ class _ScriptImportScreenState extends ConsumerState<ScriptImportScreen> {
     ];
   }
 
+  static Production _withScriptPath(
+    Production production,
+    String? scriptPath,
+  ) => Production(
+    id: production.id,
+    title: production.title,
+    organizerId: production.organizerId,
+    createdAt: production.createdAt,
+    status: production.status,
+    scriptPath: scriptPath,
+    locale: production.locale,
+    joinCode: production.joinCode,
+  );
+
   Widget _statBadge(BuildContext context, String value, String label) {
     return Column(
       mainAxisSize: MainAxisSize.min,
@@ -496,7 +701,7 @@ class _ScriptImportScreenState extends ConsumerState<ScriptImportScreen> {
     );
   }
 
-  Widget _buildLinePreview(ScriptLine line) {
+  Widget _buildLinePreview(ScriptLine line, int characterColorIndex) {
     switch (line.lineType) {
       case LineType.header:
         return Padding(
@@ -519,7 +724,7 @@ class _ScriptImportScreenState extends ConsumerState<ScriptImportScreen> {
         );
       case LineType.dialogue:
       case LineType.song:
-        final charIndex = line.character.hashCode.abs();
+        final charIndex = characterColorIndex;
         return Padding(
           padding: const EdgeInsets.symmetric(vertical: 4),
           child: RichText(
@@ -565,75 +770,276 @@ class _ScriptImportScreenState extends ConsumerState<ScriptImportScreen> {
     return colors[index.abs() % colors.length];
   }
 
-  /// Take the previewed import: promote the staged PDF, save the script, and
-  /// open the production hub.
+  /// Persist the preview while the PDF is still staged, then atomically
+  /// promote the PDF and publish the production/provider changes.
   Future<void> _acceptScript(ParsedScript script) async {
-    setState(() => _saving = true);
+    if (_mutationInFlight) return;
+    final production = ref.read(currentProductionProvider);
+    if (production == null) return;
+    final previousScript = ref.read(currentScriptProvider);
+    var cloudMayHaveChanged = false;
+    _PreparedPdfCommit? preparedPdf;
+    var scriptWasApplied = false;
+    var pdfPromotionAttempted = false;
+
+    setState(() {
+      _mutationInFlight = true;
+      _saving = true;
+    });
     try {
-      await _commitStagedPdf();
-      if (!mounted) return;
+      preparedPdf = await _prepareStagedPdf(production);
       ref.read(currentScriptProvider.notifier).state = script;
-      AnalyticsService.instance.logScriptImported(
-        format: _importedPdfPath != null ? 'pdf' : 'text',
-        lineCount: script.lines.length,
-        characterCount: script.characters.length,
-      );
-      await persistScript(ref);
-      if (!mounted) return;
-      context.push('/production');
+      scriptWasApplied = true;
+      await persistScriptLocally(ref, production.id, script);
+      if (SupabaseService.instance.currentUser?.id == production.organizerId) {
+        // The cloud call can save script lines before failing on scenes or an
+        // account-epoch check. From this point rollback must strictly restore
+        // the prior cloud script rather than trusting local-first persistence.
+        cloudMayHaveChanged = true;
+        try {
+          await pushScriptToCloud(ref);
+        } catch (cloudError, cloudStack) {
+          DebugLogService.instance.logError(
+            LogCategory.network,
+            'Imported script cloud push failed',
+            cloudError,
+            cloudStack,
+          );
+          if (mounted) {
+            ScaffoldMessenger.of(context).showAutoToast(
+              const SnackBar(
+                content: Text(
+                  "Couldn't sync the imported script to the cast. It is saved "
+                  'on this device.',
+                ),
+                duration: Duration(seconds: 6),
+              ),
+            );
+          }
+        }
+      }
+      if (preparedPdf != null) {
+        pdfPromotionAttempted = true;
+        await _promotePreparedPdf(preparedPdf, production);
+      }
     } catch (e, stack) {
+      var restored = e is! _PdfPromotionRollbackException;
+      if (scriptWasApplied) {
+        try {
+          await _restorePreviousScript(
+            previousScript,
+            production,
+            restoreCloud: cloudMayHaveChanged,
+          );
+        } catch (rollbackError, rollbackStack) {
+          restored = false;
+          DebugLogService.instance.logError(
+            LogCategory.general,
+            'Imported script rollback failed',
+            rollbackError,
+            rollbackStack,
+          );
+        }
+      }
+      await _discardPreparedPdf(
+        preparedPdf,
+        preserveBackup: pdfPromotionAttempted,
+      );
       DebugLogService.instance.logError(
-          LogCategory.general, 'Accepting imported script failed', e, stack);
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showAutoToast(SnackBar(
-        content: Text("Couldn't save the imported script — it has NOT been "
-            'added to this production. $e'),
-        duration: const Duration(seconds: 8),
-      ));
+        LogCategory.general,
+        'Accepting imported script failed',
+        e,
+        stack,
+      );
+      if (mounted) {
+        ScaffoldMessenger.of(context).showAutoToast(
+          SnackBar(
+            content: Text(
+              restored
+                  ? "Couldn't save the imported script. The previous script and "
+                        'PDF are unchanged. $e'
+                  : "Couldn't finish saving the imported script, and the "
+                        'previous state could not be fully restored. $e',
+            ),
+            duration: const Duration(seconds: 8),
+          ),
+        );
+      }
+      return;
     } finally {
-      // Or the button sticks on "Saving..." forever after a failure.
-      if (mounted) setState(() => _saving = false);
+      if (mounted) {
+        setState(() {
+          _saving = false;
+          _mutationInFlight = false;
+        });
+      }
     }
+
+    AnalyticsService.instance.logScriptImported(
+      format: _importedPdfPath != null ? 'pdf' : 'text',
+      lineCount: script.lines.length,
+      characterCount: script.characters.length,
+    );
+    if (mounted) context.push('/production');
   }
 
-  /// Move the staged PDF to `Documents/scripts/{productionId}.pdf` and record
-  /// it on the production. Deferred until the user accepts: that destination
-  /// holds the PREVIOUS script's source PDF, and overwriting it at import time
-  /// leaves every "view page" showing the wrong document if they back out.
-  Future<void> _commitStagedPdf() async {
-    final staged = _importedPdfPath;
-    if (!_pdfPendingCommit || staged == null) return;
-    final production = ref.read(currentProductionProvider);
-    if (production == null) {
-      // Shouldn't happen — staging only starts with a production open — but
-      // dropping the PDF without a word would break the page viewer later.
-      DebugLogService.instance.logError(LogCategory.general,
-          'Staged PDF not committed — no production is open');
-      return;
-    }
+  Future<_PreparedPdfCommit?> _prepareStagedPdf(Production production) async {
+    final stagedPath = _importedPdfPath;
+    if (!_pdfPendingCommit || stagedPath == null) return null;
 
     final docsDir = await getApplicationDocumentsDirectory();
     final pdfDir = Directory(p.join(docsDir.path, 'scripts'));
-    if (!pdfDir.existsSync()) pdfDir.createSync(recursive: true);
-    final destPath = p.join(pdfDir.path, '${production.id}.pdf');
-    // Copy beside the destination and rename into place: copying straight onto
-    // destPath truncates the previous script's PDF if it fails part-way.
-    final incoming = await File(staged).copy('$destPath.incoming');
-    await incoming.rename(destPath);
+    await pdfDir.create(recursive: true);
+    final destination = File(p.join(pdfDir.path, '${production.id}.pdf'));
+    final incoming = File('${destination.path}.incoming');
     try {
-      await File(staged).delete();
-    } catch (e) {
-      // Only a leftover temp file — the import itself succeeded.
-      DebugLogService.instance
-          .logError(LogCategory.general, 'Staged PDF cleanup failed', e);
+      await File(stagedPath).copy(incoming.path);
+
+      File? backup;
+      if (await destination.exists()) {
+        backup = File('${destination.path}.previous');
+        if (await backup.exists()) await backup.delete();
+        await destination.copy(backup.path);
+      }
+      return _PreparedPdfCommit(
+        staged: File(stagedPath),
+        incoming: incoming,
+        destination: destination,
+        backup: backup,
+        ownsStaged: _pdfStagingOwned,
+      );
+    } catch (_) {
+      if (await incoming.exists()) await incoming.delete();
+      rethrow;
+    }
+  }
+
+  Future<void> _promotePreparedPdf(
+    _PreparedPdfCommit prepared,
+    Production production,
+  ) async {
+    final productionsNotifier = ref.read(productionsProvider.notifier);
+    final currentProductionNotifier = ref.read(
+      currentProductionProvider.notifier,
+    );
+    try {
+      // POSIX rename replaces the destination atomically on every platform
+      // this app ships on, so the previous PDF is never absent between file
+      // operations.
+      await prepared.incoming.rename(prepared.destination.path);
+      final latest = currentProductionNotifier.state;
+      if (latest == null || latest.id != production.id) {
+        throw StateError('Production changed while promoting its PDF');
+      }
+      final updated = _withScriptPath(latest, prepared.destination.path);
+      await productionsNotifier.update(updated);
+      currentProductionNotifier.state = updated;
+    } catch (promotionError) {
+      try {
+        final backup = prepared.backup;
+        if (backup != null && await backup.exists()) {
+          await backup.rename(prepared.destination.path);
+        } else if (await prepared.destination.exists()) {
+          await prepared.destination.delete();
+        }
+        final latest = currentProductionNotifier.state;
+        final rollbackBase = latest != null && latest.id == production.id
+            ? latest
+            : production;
+        final restoredProduction = _withScriptPath(
+          rollbackBase,
+          production.scriptPath,
+        );
+        await productionsNotifier.update(restoredProduction);
+        currentProductionNotifier.state = restoredProduction;
+      } catch (rollbackError, rollbackStack) {
+        DebugLogService.instance.logError(
+          LogCategory.general,
+          'PDF promotion rollback failed',
+          rollbackError,
+          rollbackStack,
+        );
+        throw _PdfPromotionRollbackException(promotionError, rollbackError);
+      }
+      rethrow;
     }
 
-    if (!mounted) return;
     _pdfPendingCommit = false;
-    _importedPdfPath = destPath;
-    final updated = production.copyWith(scriptPath: destPath);
-    ref.read(productionsProvider.notifier).update(updated);
-    ref.read(currentProductionProvider.notifier).state = updated;
+    _pdfStagingOwned = false;
+    _importedPdfPath = prepared.destination.path;
+    if (prepared.ownsStaged) {
+      try {
+        if (await prepared.staged.exists()) await prepared.staged.delete();
+      } catch (e) {
+        DebugLogService.instance.logError(
+          LogCategory.general,
+          'Staged PDF cleanup failed',
+          e,
+        );
+      }
+    }
+    final backup = prepared.backup;
+    if (backup != null) {
+      try {
+        if (await backup.exists()) await backup.delete();
+      } catch (e) {
+        DebugLogService.instance.logError(
+          LogCategory.general,
+          'PDF backup cleanup failed',
+          e,
+        );
+      }
+    }
+  }
+
+  Future<void> _restorePreviousScript(
+    ParsedScript? previous,
+    Production production, {
+    required bool restoreCloud,
+  }) async {
+    final rollback =
+        previous ??
+        ParsedScript(
+          title: production.title,
+          lines: const [],
+          characters: const [],
+          scenes: const [],
+          rawText: '',
+        );
+    ref.read(currentScriptProvider.notifier).state = rollback;
+    try {
+      await persistScriptLocally(ref, production.id, rollback);
+      if (restoreCloud) {
+        final outcome = await pushScriptToCloud(ref);
+        if (outcome != ScriptCloudPushOutcome.complete) {
+          throw StateError(
+            'Prior script cloud restore was ${outcome.name}, not complete',
+          );
+        }
+      }
+    } finally {
+      ref.read(currentScriptProvider.notifier).state = previous;
+    }
+  }
+
+  Future<void> _discardPreparedPdf(
+    _PreparedPdfCommit? prepared, {
+    required bool preserveBackup,
+  }) async {
+    if (prepared == null) return;
+    final files = [prepared.incoming, if (!preserveBackup) prepared.backup];
+    for (final file in files) {
+      if (file == null) continue;
+      try {
+        if (await file.exists()) await file.delete();
+      } catch (e) {
+        DebugLogService.instance.logError(
+          LogCategory.general,
+          'Prepared PDF cleanup failed',
+          e,
+        );
+      }
+    }
   }
 
   Future<void> _pickPdfFile() async {
@@ -654,7 +1060,7 @@ class _ScriptImportScreenState extends ConsumerState<ScriptImportScreen> {
         _error = null;
       });
 
-      final service = ref.read(scriptImportServiceProvider);
+      final service = _importService;
 
       // Keep the screen (and therefore the process) awake for the whole OCR
       // run. Field log 2026-08-13: with the screen allowed to time out,
@@ -670,17 +1076,8 @@ class _ScriptImportScreenState extends ConsumerState<ScriptImportScreen> {
         if (!mounted) return;
 
         // Stage the PDF in the temp dir so the page viewer works during review.
-        // It only replaces the production's stored PDF on Accept
-        // (see [_commitStagedPdf], which resolves the production THEN).
-        //
-        // Field 2026-08-13 (iPhone): a review session had no "View page"
-        // buttons and no staged file on disk — staging had silently skipped.
-        // The old code required currentProductionProvider to be non-null
-        // here and skipped WITHOUT A WORD otherwise. Staging needs no
-        // production id (commit derives its destination at accept time), so
-        // it now runs unconditionally under a fixed name, every branch is
-        // logged, and a failed copy still leaves the picker's own file as a
-        // viewer fallback instead of a silently absent button.
+        // It only replaces the production's stored PDF after the script itself
+        // persists successfully.
         try {
           final tmpDir = await getTemporaryDirectory();
           if (!mounted) return;
@@ -689,17 +1086,28 @@ class _ScriptImportScreenState extends ConsumerState<ScriptImportScreen> {
           if (!mounted) return;
           _importedPdfPath = stagedPath;
           _pdfPendingCommit = true;
-          DebugLogService.instance.log(LogCategory.general,
-              'Import: PDF staged for page viewer ($stagedPath)');
+          _pdfStagingOwned = true;
+          DebugLogService.instance.log(
+            LogCategory.general,
+            'Import: PDF staged for page viewer ($stagedPath)',
+          );
         } catch (e) {
+          if (!mounted) return;
           // The picked file itself usually survives in tmp — use it so the
-          // review's page viewer still works this session.
+          // review's page viewer still works this session. It is not ours to
+          // delete after acceptance.
           _importedPdfPath = filePath;
           _pdfPendingCommit = true;
-          DebugLogService.instance.logError(LogCategory.general,
-              'Import: PDF staging copy failed — page viewer will use the '
-              'picked file directly', e);
+          _pdfStagingOwned = false;
+          DebugLogService.instance.logError(
+            LogCategory.general,
+            'Import: PDF staging copy failed — page viewer will use the '
+            'picked file directly',
+            e,
+          );
         }
+
+        if (!mounted) return;
 
         setState(() {
           _preview = script;
@@ -710,16 +1118,23 @@ class _ScriptImportScreenState extends ConsumerState<ScriptImportScreen> {
         // is silently missing scenes — warn now, not at rehearsal.
         final failed = service.lastImportFailedPages;
         if (failed > 0) {
-          ScaffoldMessenger.of(context).showAutoToast(SnackBar(
-            content: Text('$failed page(s) couldn\'t be read — parts of the '
-                'script may be missing. Check the preview against the PDF.'),
-            duration: const Duration(seconds: 8),
-          ));
+          ScaffoldMessenger.of(context).showAutoToast(
+            SnackBar(
+              content: Text(
+                '$failed page(s) couldn\'t be read — parts of the '
+                'script may be missing. Check the preview against the PDF.',
+              ),
+              duration: const Duration(seconds: 8),
+            ),
+          );
         }
       } on UnimplementedError catch (e) {
         // ML Kit not available — show helpful message
-        DebugLogService.instance
-            .logError(LogCategory.general, 'PDF import unavailable', e);
+        DebugLogService.instance.logError(
+          LogCategory.general,
+          'PDF import unavailable',
+          e,
+        );
         if (!mounted) return;
         setState(() {
           _error =
@@ -734,8 +1149,12 @@ class _ScriptImportScreenState extends ConsumerState<ScriptImportScreen> {
         WakelockPlus.disable();
       }
     } catch (e, stack) {
-      DebugLogService.instance
-          .logError(LogCategory.general, 'PDF import failed', e, stack);
+      DebugLogService.instance.logError(
+        LogCategory.general,
+        'PDF import failed',
+        e,
+        stack,
+      );
       if (!mounted) return;
       setState(() {
         _error = 'Failed to import PDF: $e';
@@ -762,7 +1181,7 @@ class _ScriptImportScreenState extends ConsumerState<ScriptImportScreen> {
         _error = null;
       });
 
-      final service = ref.read(scriptImportServiceProvider);
+      final service = _importService;
       final script = await service.importFromMarkdownFile(filePath);
       if (!mounted) return;
 
@@ -771,8 +1190,12 @@ class _ScriptImportScreenState extends ConsumerState<ScriptImportScreen> {
         _loading = false;
       });
     } catch (e, stack) {
-      DebugLogService.instance
-          .logError(LogCategory.general, 'Markdown import failed', e, stack);
+      DebugLogService.instance.logError(
+        LogCategory.general,
+        'Markdown import failed',
+        e,
+        stack,
+      );
       if (!mounted) return;
       setState(() {
         _error = 'Failed to import markdown: $e';
@@ -799,7 +1222,7 @@ class _ScriptImportScreenState extends ConsumerState<ScriptImportScreen> {
         _error = null;
       });
 
-      final service = ref.read(scriptImportServiceProvider);
+      final service = _importService;
       final script = await service.importFromTextFile(filePath);
       if (!mounted) return;
 
@@ -808,8 +1231,12 @@ class _ScriptImportScreenState extends ConsumerState<ScriptImportScreen> {
         _loading = false;
       });
     } catch (e, stack) {
-      DebugLogService.instance
-          .logError(LogCategory.general, 'Text import failed', e, stack);
+      DebugLogService.instance.logError(
+        LogCategory.general,
+        'Text import failed',
+        e,
+        stack,
+      );
       if (!mounted) return;
       setState(() {
         _error = 'Failed to import script: $e';

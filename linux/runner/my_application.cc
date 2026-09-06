@@ -1,9 +1,6 @@
 #include "my_application.h"
 
 #include <flutter_linux/flutter_linux.h>
-#ifdef GDK_WINDOWING_X11
-#include <gdk/gdkx.h>
-#endif
 
 #include "flutter/generated_plugin_registrant.h"
 
@@ -14,10 +11,44 @@ struct _MyApplication {
 
 G_DEFINE_TYPE(MyApplication, my_application, GTK_TYPE_APPLICATION)
 
-// Called when first Flutter frame received.
-static void first_frame_cb(MyApplication* self, FlView* view) {
-  gtk_widget_show(gtk_widget_get_toplevel(GTK_WIDGET(view)));
+namespace {
+
+constexpr guint kFirstFrameFallbackSeconds = 5;
+constexpr char kFirstFrameFallbackSourceKey[] =
+    "castcircle-first-frame-fallback-source";
+
+void cancel_first_frame_fallback(GtkWidget* window) {
+  const guint source_id = GPOINTER_TO_UINT(
+      g_object_get_data(G_OBJECT(window), kFirstFrameFallbackSourceKey));
+  if (source_id == 0) {
+    return;
+  }
+
+  g_source_remove(source_id);
+  g_object_set_data(G_OBJECT(window), kFirstFrameFallbackSourceKey, nullptr);
 }
+
+gboolean first_frame_fallback_cb(gpointer user_data) {
+  GtkWidget* window = GTK_WIDGET(user_data);
+  g_object_set_data(G_OBJECT(window), kFirstFrameFallbackSourceKey, nullptr);
+  g_warning("Flutter did not render a first frame within %u seconds",
+            kFirstFrameFallbackSeconds);
+  gtk_widget_show(window);
+  return G_SOURCE_REMOVE;
+}
+
+void window_destroy_cb(GtkWidget* window, gpointer) {
+  cancel_first_frame_fallback(window);
+}
+
+// Called when first Flutter frame received.
+void first_frame_cb(MyApplication*, FlView* view) {
+  GtkWidget* window = gtk_widget_get_toplevel(GTK_WIDGET(view));
+  cancel_first_frame_fallback(window);
+  gtk_widget_show(window);
+}
+
+}  // namespace
 
 // Implements GApplication::activate.
 static void my_application_activate(GApplication* application) {
@@ -25,32 +56,13 @@ static void my_application_activate(GApplication* application) {
   GtkWindow* window =
       GTK_WINDOW(gtk_application_window_new(GTK_APPLICATION(application)));
 
-  // Use a header bar when running in GNOME as this is the common style used
-  // by applications and is the setup most users will be using (e.g. Ubuntu
-  // desktop).
-  // If running on X and not using GNOME then just use a traditional title bar
-  // in case the window manager does more exotic layout, e.g. tiling.
-  // If running on Wayland assume the header bar will work (may need changing
-  // if future cases occur).
-  gboolean use_header_bar = TRUE;
-#ifdef GDK_WINDOWING_X11
-  GdkScreen* screen = gtk_window_get_screen(window);
-  if (GDK_IS_X11_SCREEN(screen)) {
-    const gchar* wm_name = gdk_x11_screen_get_window_manager_name(screen);
-    if (g_strcmp0(wm_name, "GNOME Shell") != 0) {
-      use_header_bar = FALSE;
-    }
-  }
-#endif
-  if (use_header_bar) {
-    GtkHeaderBar* header_bar = GTK_HEADER_BAR(gtk_header_bar_new());
-    gtk_widget_show(GTK_WIDGET(header_bar));
-    gtk_header_bar_set_title(header_bar, "castcircle");
-    gtk_header_bar_set_show_close_button(header_bar, TRUE);
-    gtk_window_set_titlebar(window, GTK_WIDGET(header_bar));
-  } else {
-    gtk_window_set_title(window, "castcircle");
-  }
+  // Header bars work on both Wayland and X11. Avoid querying the X11 window
+  // manager here because that synchronous round trip delays Flutter startup.
+  GtkHeaderBar* header_bar = GTK_HEADER_BAR(gtk_header_bar_new());
+  gtk_widget_show(GTK_WIDGET(header_bar));
+  gtk_header_bar_set_title(header_bar, "castcircle");
+  gtk_header_bar_set_show_close_button(header_bar, TRUE);
+  gtk_window_set_titlebar(window, GTK_WIDGET(header_bar));
 
   gtk_window_set_default_size(window, 1280, 720);
 
@@ -67,10 +79,15 @@ static void my_application_activate(GApplication* application) {
   gtk_widget_show(GTK_WIDGET(view));
   gtk_container_add(GTK_CONTAINER(window), GTK_WIDGET(view));
 
-  // Show the window when Flutter renders.
-  // Requires the view to be realized so we can start rendering.
+  // Show the window when Flutter renders, with a fallback so an engine failure
+  // cannot leave the application permanently invisible.
   g_signal_connect_swapped(view, "first-frame", G_CALLBACK(first_frame_cb),
                            self);
+  const guint fallback_source_id = g_timeout_add_seconds(
+      kFirstFrameFallbackSeconds, first_frame_fallback_cb, window);
+  g_object_set_data(G_OBJECT(window), kFirstFrameFallbackSourceKey,
+                    GUINT_TO_POINTER(fallback_source_id));
+  g_signal_connect(window, "destroy", G_CALLBACK(window_destroy_cb), nullptr);
   gtk_widget_realize(GTK_WIDGET(view));
 
   fl_register_plugins(FL_PLUGIN_REGISTRY(view));

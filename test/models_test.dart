@@ -185,44 +185,86 @@ void main() {
   group('ParsedScript', () {
     final lines = [
       const ScriptLine(
-        id: 'h1', act: 'ACT I', scene: '', lineNumber: 0,
-        orderIndex: 1, character: '', text: 'ACT I', lineType: LineType.header,
+        id: 'h1',
+        act: 'ACT I',
+        scene: '',
+        lineNumber: 0,
+        orderIndex: 1,
+        character: '',
+        text: 'ACT I',
+        lineType: LineType.header,
       ),
       const ScriptLine(
-        id: 'l1', act: 'ACT I', scene: '', lineNumber: 1,
-        orderIndex: 2, character: 'ELIZABETH', text: 'Hello.',
+        id: 'l1',
+        act: 'ACT I',
+        scene: '',
+        lineNumber: 1,
+        orderIndex: 2,
+        character: 'ELIZABETH',
+        text: 'Hello.',
         lineType: LineType.dialogue,
       ),
       const ScriptLine(
-        id: 'l2', act: 'ACT I', scene: '', lineNumber: 2,
-        orderIndex: 3, character: 'DARCY', text: 'Good day.',
+        id: 'l2',
+        act: 'ACT I',
+        scene: '',
+        lineNumber: 2,
+        orderIndex: 3,
+        character: 'DARCY',
+        text: 'Good day.',
         lineType: LineType.dialogue,
       ),
       const ScriptLine(
-        id: 'l3', act: 'ACT I', scene: '', lineNumber: 3,
-        orderIndex: 4, character: 'ELIZABETH', text: 'Goodbye.',
+        id: 'l3',
+        act: 'ACT I',
+        scene: '',
+        lineNumber: 3,
+        orderIndex: 4,
+        character: 'ELIZABETH',
+        text: 'Goodbye.',
         lineType: LineType.dialogue,
       ),
       const ScriptLine(
-        id: 'h2', act: 'ACT II', scene: '', lineNumber: 0,
-        orderIndex: 5, character: '', text: 'ACT II', lineType: LineType.header,
+        id: 'h2',
+        act: 'ACT II',
+        scene: '',
+        lineNumber: 0,
+        orderIndex: 5,
+        character: '',
+        text: 'ACT II',
+        lineType: LineType.header,
       ),
       const ScriptLine(
-        id: 'l4', act: 'ACT II', scene: '', lineNumber: 1,
-        orderIndex: 6, character: 'DARCY', text: 'I love you.',
+        id: 'l4',
+        act: 'ACT II',
+        scene: '',
+        lineNumber: 1,
+        orderIndex: 6,
+        character: 'DARCY',
+        text: 'I love you.',
         lineType: LineType.dialogue,
       ),
     ];
 
     final scenes = [
       const ScriptScene(
-        id: 's1', act: 'ACT I', sceneName: 'Scene 1', location: '',
-        description: '', startLineIndex: 0, endLineIndex: 3,
+        id: 's1',
+        act: 'ACT I',
+        sceneName: 'Scene 1',
+        location: '',
+        description: '',
+        startLineIndex: 0,
+        endLineIndex: 3,
         characters: ['DARCY', 'ELIZABETH'],
       ),
       const ScriptScene(
-        id: 's2', act: 'ACT II', sceneName: 'Scene 2', location: '',
-        description: '', startLineIndex: 4, endLineIndex: 5,
+        id: 's2',
+        act: 'ACT II',
+        sceneName: 'Scene 2',
+        location: '',
+        description: '',
+        startLineIndex: 4,
+        endLineIndex: 5,
         characters: ['DARCY'],
       ),
     ];
@@ -255,8 +297,13 @@ void main() {
 
     test('linesInScene clamps out-of-range indices safely', () {
       const badScene = ScriptScene(
-        id: 'bad', act: '', sceneName: '', location: '',
-        description: '', startLineIndex: -1, endLineIndex: 100,
+        id: 'bad',
+        act: '',
+        sceneName: '',
+        location: '',
+        description: '',
+        startLineIndex: -1,
+        endLineIndex: 100,
         characters: [],
       );
       // Indices are clamped to valid range (0..length) to prevent crashes
@@ -305,14 +352,17 @@ void main() {
 
     test('ProductionStatus has all expected states', () {
       expect(ProductionStatus.values.length, 6);
-      expect(ProductionStatus.values, containsAll([
-        ProductionStatus.draft,
-        ProductionStatus.scriptImported,
-        ProductionStatus.scriptApproved,
-        ProductionStatus.castAssigned,
-        ProductionStatus.recording,
-        ProductionStatus.ready,
-      ]));
+      expect(
+        ProductionStatus.values,
+        containsAll([
+          ProductionStatus.draft,
+          ProductionStatus.scriptImported,
+          ProductionStatus.scriptApproved,
+          ProductionStatus.castAssigned,
+          ProductionStatus.recording,
+          ProductionStatus.ready,
+        ]),
+      );
     });
   });
 

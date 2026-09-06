@@ -19,6 +19,17 @@ if (keystorePropertiesFile.exists()) {
     keystoreProperties.load(FileInputStream(keystorePropertiesFile))
 }
 
+val requiredKeystoreProperties = listOf("keyAlias", "keyPassword", "storeFile", "storePassword")
+val missingKeystoreProperties = if (keystorePropertiesFile.exists()) {
+    requiredKeystoreProperties.filter { name ->
+        keystoreProperties.getProperty(name)?.trim().isNullOrEmpty()
+    }
+} else {
+    requiredKeystoreProperties
+}
+val releaseSigningConfigured =
+    keystorePropertiesFile.exists() && missingKeystoreProperties.isEmpty()
+
 android {
     namespace = "com.tiltastech.castcircle"
     compileSdk = flutter.compileSdkVersion
@@ -43,33 +54,45 @@ android {
 
     signingConfigs {
         create("release") {
-            if (keystorePropertiesFile.exists()) {
-                keyAlias = keystoreProperties["keyAlias"] as String
-                keyPassword = keystoreProperties["keyPassword"] as String
-                storeFile = file(keystoreProperties["storeFile"] as String)
-                storePassword = keystoreProperties["storePassword"] as String
+            if (releaseSigningConfigured) {
+                keyAlias = keystoreProperties.getProperty("keyAlias").trim()
+                keyPassword = keystoreProperties.getProperty("keyPassword").trim()
+                storeFile = file(keystoreProperties.getProperty("storeFile").trim())
+                storePassword = keystoreProperties.getProperty("storePassword").trim()
             }
         }
     }
 
     buildTypes {
         release {
-            // Never fall back to the debug key: a debug-signed "release" is
-            // uninstallable over the Play build and silently unshippable.
-            signingConfig = if (keystorePropertiesFile.exists()) {
-                signingConfigs.getByName("release")
-            } else {
-                throw GradleException(
-                    "android/key.properties is missing — release builds must be " +
-                    "signed with the release keystore (see docs/RELEASING.md). " +
-                    "Use a debug build for local work."
-                )
+            // Keep debug-only Gradle configuration usable without signing
+            // secrets. The task-graph guard below fails only release work.
+            if (releaseSigningConfigured) {
+                signingConfig = signingConfigs.getByName("release")
             }
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
         }
+    }
+}
+
+gradle.taskGraph.whenReady {
+    val releaseRequested = allTasks.any { task ->
+        task.project == project && task.name.contains("release", ignoreCase = true)
+    }
+    if (releaseRequested && !releaseSigningConfigured) {
+        val detail = if (!keystorePropertiesFile.exists()) {
+            "android/key.properties is missing"
+        } else {
+            "android/key.properties is missing required properties: " +
+                missingKeystoreProperties.joinToString()
+        }
+        throw GradleException(
+            "$detail — release builds must be signed with the release keystore " +
+                "(see docs/RELEASING.md)."
+        )
     }
 }
 

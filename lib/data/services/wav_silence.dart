@@ -53,7 +53,11 @@ class WavSilence {
     final length = (dataLength == null || dataLength > available)
         ? available
         : dataLength;
-    return _WavInfo(byteRate: byteRate, dataStart: dataStart, dataLength: length);
+    return _WavInfo(
+      byteRate: byteRate,
+      dataStart: dataStart,
+      dataLength: length,
+    );
   }
 
   /// Write [source] to [destination] with [silence] of leading quiet.
@@ -74,13 +78,15 @@ class WavSilence {
       // Whole frames only — a partial frame would shift every sample after it
       // and turn the audio to noise.
       final frameSize = _frameSize(bytes, info);
-      var padBytes =
-          (info.byteRate * silence.inMilliseconds / 1000).round();
+      var padBytes = (info.byteRate * silence.inMilliseconds / 1000).round();
       padBytes -= padBytes % frameSize;
       if (padBytes <= 0) return source;
 
       final header = bytes.sublist(0, info.dataStart);
-      final audio = bytes.sublist(info.dataStart, info.dataStart + info.dataLength);
+      final audio = bytes.sublist(
+        info.dataStart,
+        info.dataStart + info.dataLength,
+      );
       final out = BytesBuilder()
         ..add(header)
         ..add(Uint8List(padBytes)) // PCM silence is zeroes
@@ -90,8 +96,11 @@ class WavSilence {
       // Fix the two length fields the sizes changed under.
       final view = ByteData.sublistView(result);
       view.setUint32(4, result.length - 8, Endian.little); // RIFF size
-      view.setUint32(info.dataStart - 4, info.dataLength + padBytes,
-          Endian.little); // data chunk size
+      view.setUint32(
+        info.dataStart - 4,
+        info.dataLength + padBytes,
+        Endian.little,
+      ); // data chunk size
 
       await File(destination).writeAsBytes(result, flush: true);
       return destination;

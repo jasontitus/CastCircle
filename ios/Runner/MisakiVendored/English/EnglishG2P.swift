@@ -20,16 +20,14 @@ final public class EnglishG2P {
       "''": String(UnicodeScalar(8221)!)      // Right double quotation mark
   ]
   
-  static let nonQuotePunctuations: Set<Character> = Set(punctuactions.filter { !"\"\"\"".contains($0) })
+  static let nonQuotePunctuations: Set<Character> = Set(punctuactions.filter { !"\"“”".contains($0) })
   static let vowels: Set<Character> = Set("AIOQWYaiuæɑɒɔəɛɜɪʊʌᵻ")
   static let consonants: Set<Character> = Set("bdfhjklmnpstvwzðŋɡɹɾʃʒʤʧθ")
   static let subTokenJunks: Set<Character> = Set("',-._''/")
-  static let stresses = "ˌˈ"
-  static let primaryStress = stresses[stresses.index(stresses.startIndex, offsetBy: 1)]
-  static let secondaryStress = stresses[stresses.index(stresses.startIndex, offsetBy: 0)]
   // Splits words into subtokens such as acronym boundaries, signs, commas, decimals, multiple quotes, camelCase boundaries and so forth.
   static let subtokenizeRegexPattern = #"^[''']+|\p{Lu}(?=\p{Lu}\p{Ll})|(?:^-)?(?:\d?[,.]?\d)+|[-_]+|[''']{2,}|\p{L}*?(?:[''']\p{L})*?\p{Ll}(?=\p{Lu})|\p{L}+(?:[''']\p{L})*|[^-_\p{L}'''\d]|[''']+$"#
   static let subtokenizeRegex = try! NSRegularExpression(pattern: EnglishG2P.subtokenizeRegexPattern, options: [])
+  static let linkRegex = try! NSRegularExpression(pattern: #"\[([^\]]+)\]\(([^\)]*)\)"#, options: [])
   
   struct PreprocessFeature {
     enum Value {
@@ -40,6 +38,25 @@ final public class EnglishG2P {
     
     let value: Value
     let tokenRange: Range<String.Index>
+  }
+  private struct LexiconCandidate {
+    let left: Int
+    let text: String
+    let tag: NLTag?
+    let featureStress: Double?
+    let currency: String?
+    let isHead: Bool
+    let numFlags: String
+  }
+
+  // Candidate probing is bounded so an adversarially fragmented token cannot
+  // make lexicon fallback quadratic in its subtoken count.
+  private static let maxCompoundSubtokens = 16
+
+  private static func casingScore(_ token: MToken) -> Int {
+    token.text.reduce(0) {
+      $0 + (String($1) == String($1).lowercased() ? 1 : 2)
+    }
   }
 
   public init(british: Bool = false, unk: String = "❓") {
@@ -137,9 +154,6 @@ final public class EnglishG2P {
   /// Preprocesses the string in case there are some parts where the pronounciation or stress is pre-dictated using Markdown-like link format, e.g.
   /// "[Misaki](/misˈɑki/) is a G2P engine designed for [Kokoro](/kˈOkəɹO/) models."
   private func preprocess(text: String) -> PreprocessTuple {
-    // Matches the pattern of form [link text](url) and captures the two parts
-    let linkRegex = try! NSRegularExpression(pattern: #"\[([^\]]+)\]\(([^\)]*)\)"#, options: [])
-
     var result = ""
     var tokens: [String] = []
     var features: [PreprocessFeature] = []
@@ -149,18 +163,19 @@ final public class EnglishG2P {
     let ns = input as NSString
     let fullRange = NSRange(location: 0, length: ns.length)
  
-    linkRegex.enumerateMatches(in: input, options: [], range: fullRange) { match, _, _ in
-      guard let m = match else { return }
+    EnglishG2P.linkRegex.enumerateMatches(in: input, options: [], range: fullRange) { match, _, _ in
+      guard let match,
+            let range = Range(match.range, in: input),
+            let graphemeRange = Range(match.range(at: 1), in: input),
+            let phonemeRange = Range(match.range(at: 2), in: input) else {
+        return
+      }
 
-      let range = m.range
-      let start = input.index(input.startIndex, offsetBy: range.location)
-      let end = input.index(start, offsetBy: range.length)
+      result += String(input[lastEnd..<range.lowerBound])
+      tokens.append(contentsOf: String(input[lastEnd..<range.lowerBound]).split(separator: " ").map(String.init))
 
-      result += String(input[lastEnd..<start])
-      tokens.append(contentsOf: String(input[lastEnd..<start]).split(separator: " ").map(String.init))
-
-      let grapheme = ns.substring(with: m.range(at: 1))
-      let phoneme = ns.substring(with: m.range(at: 2))
+      let grapheme = String(input[graphemeRange])
+      let phoneme = String(input[phonemeRange])
       
       let tokenStartIndex = result.endIndex
       result += grapheme
@@ -179,7 +194,7 @@ final public class EnglishG2P {
       }
 
       tokens.append(grapheme)
-      lastEnd = end
+      lastEnd = range.upperBound
     }
     
     if lastEnd < input.endIndex {
@@ -220,10 +235,19 @@ final public class EnglishG2P {
       return true
     }
                             
-    // Simplistic alignment by index to add stress and pre-phonemization features to tokens
-    // TO_DO: Doesn't match the capability of spacy.training.Alignment.from_strings()
+    // Features and tokens are both emitted in source order. Advance through
+    // them together rather than rescanning every token for every feature.
+    var tokenIndex = 0
     for feature in preprocessedText.features {
-      for token in mutableTokens {
+      while tokenIndex < mutableTokens.count,
+            mutableTokens[tokenIndex].tokenRange.upperBound <= feature.tokenRange.lowerBound {
+        tokenIndex += 1
+      }
+
+      var overlappingTokenIndex = tokenIndex
+      while overlappingTokenIndex < mutableTokens.count,
+            mutableTokens[overlappingTokenIndex].tokenRange.lowerBound < feature.tokenRange.upperBound {
+        let token = mutableTokens[overlappingTokenIndex]
         if token.tokenRange.contains(feature.tokenRange) || feature.tokenRange.contains(token.tokenRange) {
           switch feature.value {
             case .int(let int):
@@ -240,13 +264,14 @@ final public class EnglishG2P {
               }
           }
         }
+        overlappingTokenIndex += 1
       }
     }
 
     return mutableTokens
   }
   
-  func mergeTokens(_ tokens: [MToken], unk: String? = nil) -> MToken {
+  func mergeTokens<T: RandomAccessCollection>(_ tokens: T, unk: String? = nil) -> MToken where T.Element == MToken {
     let stressSet = Set(tokens.compactMap { $0._.stress })
     let currencySet = Set(tokens.compactMap { $0._.currency })
     let ratings: Set<Int?> = Set(tokens.map { $0._.rating })
@@ -270,10 +295,9 @@ final public class EnglishG2P {
     let mergedText = tokens.dropLast().map { $0.text + $0.whitespace }.joined() + (tokens.last?.text ?? "")
 
     // Choose tag from token with highest casing score
-    func score(_ t: MToken) -> Int {
-      return t.text.reduce(0) { $0 + (String($1) == String($1).lowercased() ? 1 : 2) }
+    let tagSource = tokens.max {
+      EnglishG2P.casingScore($0) < EnglishG2P.casingScore($1)
     }
-    let tagSource = tokens.max(by: { score($0) < score($1) })
     
     let tokenRangeStart = tokens.first!.tokenRange.lowerBound
     let tokenRangeEnd = tokens.last!.tokenRange.upperBound
@@ -437,41 +461,113 @@ final public class EnglishG2P {
         
         ctx = tokenContext(ctx, ps: w.phonemes, token: w)
       } else if var arr = words[i] as? [MToken] {
-        var left = 0
         var right = arr.count
         var shouldFallback = false
-        while left < right {
-          let hasFixed = arr[left..<right].contains { $0.`_`.alias != nil || $0.phonemes != nil }
-          let token: MToken? = hasFixed ? nil : mergeTokens(Array(arr[left..<right]))
-          let res: (String?, Int?) = (token == nil) ? (nil, nil) : lexicon.transcribe(token!, ctx: ctx)
-          
-          if let phonemes = res.0 {
-            arr[left].phonemes = phonemes
-            arr[left].`_`.rating = res.1
-            for j in (left + 1)..<right {
-              arr[j].phonemes = ""
-              arr[j].`_`.rating = res.1
-            }
-            ctx = tokenContext(ctx, ps: phonemes, token: token!)
-            right = left
-            left = 0
-          } else if left + 1 < right {
-            left += 1
-          } else {
+
+        // Record the nearest fixed token at or before every boundary. A
+        // candidate cannot cross aliases or already-resolved phonemes.
+        var lastFixedBefore = [Int](repeating: -1, count: arr.count + 1)
+        for index in arr.indices {
+          let isFixed = arr[index].`_`.alias != nil || arr[index].phonemes != nil
+          lastFixedBefore[index + 1] = isFixed ? index : lastFixedBefore[index]
+        }
+
+        while right > 0 {
+          let minimumLeft = lastFixedBefore[right] + 1
+          if minimumLeft == right {
             right -= 1
-            let last = arr[right]
-            if last.phonemes == nil {
-              if last.text.allSatisfy({ EnglishG2P.subTokenJunks.contains($0) }) {
-                last.phonemes = ""
-                last.`_`.rating = 3
-              } else {
-                shouldFallback = true
-                break
-              }
-            }
-            left = 0
-            arr[right] = last
+            continue
           }
+
+          let boundedLeft = max(minimumLeft, right - EnglishG2P.maxCompoundSubtokens)
+          var candidates: [LexiconCandidate] = []
+          candidates.reserveCapacity(right - boundedLeft)
+
+          var candidateText = ""
+          var tagSource: MToken?
+          var tagScore = Int.min
+          var stressValues = Set<Double>()
+          var currencies = Set<String>()
+          var flagCharacters = Set<Character>()
+
+          // Build each suffix incrementally from shortest to longest. Probe in
+          // reverse below to preserve the existing longest-match preference.
+          for candidateLeft in stride(from: right - 1, through: boundedLeft, by: -1) {
+            let component = arr[candidateLeft]
+            if candidateLeft == right - 1 {
+              candidateText = component.text
+            } else {
+              candidateText = component.text + component.whitespace + candidateText
+            }
+
+            let componentScore = EnglishG2P.casingScore(component)
+            if componentScore >= tagScore {
+              tagSource = component
+              tagScore = componentScore
+            }
+            if let stress = component.`_`.stress {
+              stressValues.insert(stress)
+            }
+            if let currency = component.`_`.currency {
+              currencies.insert(currency)
+            }
+            flagCharacters.formUnion(component.`_`.num_flags)
+
+            candidates.append(LexiconCandidate(
+              left: candidateLeft,
+              text: candidateText,
+              tag: tagSource?.tag,
+              featureStress: stressValues.count == 1 ? stressValues.first : nil,
+              currency: currencies.max(),
+              isHead: component.`_`.is_head,
+              numFlags: String(flagCharacters.sorted())))
+          }
+
+          var matchedCandidate: LexiconCandidate?
+          var matchedPhonemes: String?
+          var matchedRating: Int?
+          for candidate in candidates.reversed() {
+            let result = lexicon.transcribe(
+              candidate.text,
+              tag: candidate.tag,
+              featureStress: candidate.featureStress,
+              currency: candidate.currency,
+              isHead: candidate.isHead,
+              numFlags: candidate.numFlags,
+              ctx: ctx)
+            if let phonemes = result.0 {
+              matchedCandidate = candidate
+              matchedPhonemes = phonemes
+              matchedRating = result.1
+              break
+            }
+          }
+
+          if let candidate = matchedCandidate, let phonemes = matchedPhonemes {
+            let token = mergeTokens(arr[candidate.left..<right])
+            arr[candidate.left].phonemes = phonemes
+            arr[candidate.left].`_`.rating = matchedRating
+            for index in (candidate.left + 1)..<right {
+              arr[index].phonemes = ""
+              arr[index].`_`.rating = matchedRating
+            }
+            ctx = tokenContext(ctx, ps: phonemes, token: token)
+            right = candidate.left
+            continue
+          }
+
+          right -= 1
+          let last = arr[right]
+          if last.phonemes == nil {
+            if last.text.allSatisfy({ EnglishG2P.subTokenJunks.contains($0) }) {
+              last.phonemes = ""
+              last.`_`.rating = 3
+            } else {
+              shouldFallback = true
+              break
+            }
+          }
+          arr[right] = last
         }
         
         if shouldFallback {

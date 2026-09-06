@@ -25,7 +25,9 @@ void main() {
 (Blackout.)
 ''';
       final result = parser.parse(text, title: 'Directions Only');
-      final dialogue = result.lines.where((l) => l.lineType == LineType.dialogue);
+      final dialogue = result.lines.where(
+        (l) => l.lineType == LineType.dialogue,
+      );
       expect(dialogue, isEmpty);
     });
 
@@ -111,9 +113,7 @@ MARY. (Laughing:) How delightful!
 LYDIA. (Running to the window:) A carriage!
 ''';
       final result = parser.parse(text, title: 'Inline Dirs');
-      final maryLine = result.lines.firstWhere(
-        (l) => l.character == 'MARY',
-      );
+      final maryLine = result.lines.firstWhere((l) => l.character == 'MARY');
       expect(maryLine.stageDirection, contains('Laughing'));
       expect(maryLine.text, contains('delightful'));
     });
@@ -155,10 +155,7 @@ DARCY. "Indeed," he said, "it's extraordinary."
     });
 
     test('handles repeated words — LCS respects word count', () {
-      final score = SttService.matchScore(
-        'yes yes yes',
-        'yes',
-      );
+      final score = SttService.matchScore('yes yes yes', 'yes');
       // LCS: spoken "yes" matches 1 of 3 expected "yes" words → 1/3
       expect(score, closeTo(0.333, 0.01));
 
@@ -174,10 +171,7 @@ DARCY. "Indeed," he said, "it's extraordinary."
     });
 
     test('handles empty spoken text', () {
-      final score = SttService.matchScore(
-        'Hello world',
-        '',
-      );
+      final score = SttService.matchScore('Hello world', '');
       expect(score, 0.0);
     });
 
@@ -195,10 +189,7 @@ DARCY. "Indeed," he said, "it's extraordinary."
     });
 
     test('handles numbers in text', () {
-      final score = SttService.matchScore(
-        'I have 3 apples',
-        'I have 3 apples',
-      );
+      final score = SttService.matchScore('I have 3 apples', 'I have 3 apples');
       expect(score, 1.0);
     });
   });
@@ -286,8 +277,7 @@ DARCY. And I about you.
       parser = ScriptParser();
     });
 
-    test('3-edit corruption of a long name merges into the real character',
-        () {
+    test('3-edit corruption of a long name merges into the real character', () {
       // ML Kit read one "MRS. BENNET." cue as "MKS BENNEE." — edit
       // distance 3, which the old <=2 cap left as a phantom cast member.
       const text = '''
@@ -299,10 +289,15 @@ MRS. BENNET. A young man of large fortune.
 MKS BENNEE. Oh, what a fine thing for our girls!
 ''';
       final result = parser.parse(text, title: 'PP');
-      expect(result.characters.map((c) => c.name), isNot(contains('MKS BENNEE')));
+      expect(
+        result.characters.map((c) => c.name),
+        isNot(contains('MKS BENNEE')),
+      );
       final mrsB = result.lines
-          .where((l) =>
-              l.lineType == LineType.dialogue && l.character == 'MRS. BENNET')
+          .where(
+            (l) =>
+                l.lineType == LineType.dialogue && l.character == 'MRS. BENNET',
+          )
           .toList();
       expect(mrsB.any((l) => l.text.contains('fine thing')), true);
     });
@@ -332,13 +327,18 @@ ELIZABETH. As you wish.
 ANNEADYCATHERINE. We are most seriously displeased!
 ''';
       final result = parser.parse(text, title: 'PP');
-      expect(result.characters.map((c) => c.name),
-          isNot(contains('ANNEADYCATHERINE')));
+      expect(
+        result.characters.map((c) => c.name),
+        isNot(contains('ANNEADYCATHERINE')),
+      );
       final glued = result.lines
           .where((l) => l.text.contains('seriously displeased'))
           .toList();
       expect(glued.length, 1);
-      expect(glued.first.multiCharacters, containsAll(['ANNE', 'LADY CATHERINE']));
+      expect(
+        glued.first.multiCharacters,
+        containsAll(['ANNE', 'LADY CATHERINE']),
+      );
     });
   });
 }

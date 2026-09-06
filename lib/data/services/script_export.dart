@@ -118,11 +118,17 @@ class ScriptExporter {
           buf.writeln();
           break;
         case LineType.dialogue:
-        case LineType.song:
           final direction = line.stageDirection.isNotEmpty
               ? ' (${line.stageDirection})'
               : '';
           buf.writeln('${line.character}:$direction ${line.text}');
+          buf.writeln();
+          break;
+        case LineType.song:
+          final direction = line.stageDirection.isNotEmpty
+              ? ' (${line.stageDirection})'
+              : '';
+          buf.writeln('♪ ${line.character}:$direction ${line.text}');
           buf.writeln();
           break;
         case LineType.header:
@@ -192,35 +198,34 @@ class ScriptExporter {
     buf.writeln();
 
     final charLineCount = script.lines
-        .where((l) =>
-            l.lineType == LineType.dialogue && l.isForCharacter(characterName))
+        .where(
+          (line) => _isSpokenLine(line) && line.isForCharacter(characterName),
+        )
         .length;
 
     buf.writeln('Total lines: $charLineCount');
     buf.writeln();
 
-    String currentAct = '';
     for (final line in script.lines) {
-      // Track act headers
-      if (line.lineType == LineType.header && line.act != currentAct) {
-        currentAct = line.act;
+      if (line.lineType == LineType.header) {
         buf.writeln('--- ${line.text} ---');
         buf.writeln();
         continue;
       }
 
-      // Show cue lines (the line before yours) and your lines
-      if (line.lineType == LineType.dialogue) {
+      // Show spoken context and the character's own lines.
+      if (_isSpokenLine(line)) {
+        final songMarker = line.lineType == LineType.song ? '♪ ' : '';
         if (line.isForCharacter(characterName)) {
           final direction = line.stageDirection.isNotEmpty
               ? ' (${line.stageDirection})'
               : '';
-          buf.writeln('  >>> YOU:$direction ${line.text}');
+          buf.writeln('  >>> ${songMarker}YOU:$direction ${line.text}');
           buf.writeln();
         } else {
-          // Show as cue context
           buf.writeln(
-              '  ${line.character}: ${_truncate(line.text, 80)}');
+            '  $songMarker${line.character}: ${_truncate(line.text, 80)}',
+          );
         }
       } else if (line.lineType == LineType.stageDirection) {
         buf.writeln('  [${_stripParens(line.text)}]');
@@ -239,31 +244,57 @@ class ScriptExporter {
     buf.writeln('=' * 60);
     buf.writeln();
 
-    // Find all dialogue lines in order
-    final dialogueLines = script.lines
-        .where((l) => l.lineType == LineType.dialogue)
-        .toList();
+    ScriptLine? cue;
+    String? currentAct;
+    String? currentScene;
+    final sceneStartIndexes = <int>{
+      for (final scene in script.scenes)
+        if (scene.startLineIndex >= 0 &&
+            scene.startLineIndex < script.lines.length)
+          scene.startLineIndex,
+    };
 
-    for (var i = 0; i < dialogueLines.length; i++) {
-      final line = dialogueLines[i];
+    for (var lineIndex = 0; lineIndex < script.lines.length; lineIndex++) {
+      if (sceneStartIndexes.contains(lineIndex)) cue = null;
+      final line = script.lines[lineIndex];
+      if (line.lineType == LineType.header) {
+        cue = null;
+        currentAct = line.act;
+        currentScene = line.scene;
+        continue;
+      }
+      if (!_isSpokenLine(line)) continue;
+
+      if (currentAct != null &&
+          (line.act != currentAct || line.scene != currentScene)) {
+        cue = null;
+      }
+      currentAct = line.act;
+      currentScene = line.scene;
 
       if (line.isForCharacter(characterName)) {
-        // Show the cue line (previous line)
-        if (i > 0) {
-          final cue = dialogueLines[i - 1];
+        if (cue != null) {
+          final songMarker = cue.lineType == LineType.song ? '♪ ' : '';
           buf.writeln(
-              'CUE (${cue.character}): ...${_lastWords(cue.text, 8)}');
+            '${songMarker}CUE (${cue.character}): ...${_lastWords(cue.text, 8)}',
+          );
         }
         final direction = line.stageDirection.isNotEmpty
             ? ' (${line.stageDirection})'
             : '';
-        buf.writeln('YOU:$direction ${line.text}');
+        final songMarker = line.lineType == LineType.song ? '♪ ' : '';
+        buf.writeln('${songMarker}YOU:$direction ${line.text}');
         buf.writeln();
+      } else {
+        cue = line;
       }
     }
 
     return buf.toString();
   }
+
+  static bool _isSpokenLine(ScriptLine line) =>
+      line.lineType == LineType.dialogue || line.lineType == LineType.song;
 
   static String _stripParens(String text) {
     var t = text.trim();

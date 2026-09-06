@@ -6,13 +6,14 @@ class BackgroundDownloadPlugin: NSObject, URLSessionDownloadDelegate {
 
     private let channel: FlutterMethodChannel
     private var session: URLSession!
-    private var activeDownloads: [String: DownloadInfo] = [:]
-    private var lastProgressEmit: [String: (fraction: Double, at: Date)] = [:]
+    private var activeDownloads: [Int: DownloadInfo] = [:]
+    private var activeTaskByModelId: [String: Int] = [:]
+    private var lastProgressEmit: [Int: (fraction: Double, at: Date)] = [:]
 
     struct DownloadInfo {
         let modelId: String
         let destinationPath: String
-        var task: URLSessionDownloadTask?
+        let task: URLSessionDownloadTask
     }
 
     init(messenger: FlutterBinaryMessenger) {
@@ -38,10 +39,8 @@ class BackgroundDownloadPlugin: NSObject, URLSessionDownloadDelegate {
                 return
             }
 
-            let tmpPath = destinationPath + ".tmp"
-            try? FileManager.default.removeItem(atPath: tmpPath)
-
             let destDir = (destinationPath as NSString).deletingLastPathComponent
+
             try? FileManager.default.createDirectory(
                 atPath: destDir,
                 withIntermediateDirectories: true,
@@ -53,17 +52,18 @@ class BackgroundDownloadPlugin: NSObject, URLSessionDownloadDelegate {
                 return
             }
 
-            if let existing = activeDownloads[modelId] {
-                existing.task?.cancel()
+            if let existingTaskId = activeTaskByModelId[modelId] {
+                activeDownloads[existingTaskId]?.task.cancel()
             }
 
             let task = session.downloadTask(with: downloadUrl)
-            activeDownloads[modelId] = DownloadInfo(
+            let taskId = task.taskIdentifier
+            activeDownloads[taskId] = DownloadInfo(
                 modelId: modelId,
                 destinationPath: destinationPath,
                 task: task
             )
-            task.taskDescription = modelId
+            activeTaskByModelId[modelId] = taskId
             task.resume()
 
             result(true)
@@ -74,8 +74,8 @@ class BackgroundDownloadPlugin: NSObject, URLSessionDownloadDelegate {
                 result(FlutterError(code: "INVALID_ARGS", message: "Missing modelId", details: nil))
                 return
             }
-            if let info = activeDownloads.removeValue(forKey: modelId) {
-                info.task?.cancel()
+            if let taskId = activeTaskByModelId.removeValue(forKey: modelId) {
+                activeDownloads[taskId]?.task.cancel()
             }
             result(true)
 
@@ -91,14 +91,28 @@ class BackgroundDownloadPlugin: NSObject, URLSessionDownloadDelegate {
         downloadTask: URLSessionDownloadTask,
         didFinishDownloadingTo location: URL
     ) {
-        guard let modelId = downloadTask.taskDescription,
-              let info = activeDownloads[modelId] else { return }
+        let taskId = downloadTask.taskIdentifier
+        guard let info = activeDownloads[taskId],
+              activeTaskByModelId[info.modelId] == taskId else { return }
 
+        let modelId = info.modelId
         let destURL = URL(fileURLWithPath: info.destinationPath)
+        let stagingURL = destURL.deletingLastPathComponent().appendingPathComponent(
+            ".\(destURL.lastPathComponent).\(UUID().uuidString).tmp"
+        )
+
+        defer {
+            try? FileManager.default.removeItem(at: stagingURL)
+            removeDownload(taskId: taskId, modelId: modelId)
+        }
 
         do {
-            try? FileManager.default.removeItem(at: destURL)
-            try FileManager.default.moveItem(at: location, to: destURL)
+            try FileManager.default.moveItem(at: location, to: stagingURL)
+            if FileManager.default.fileExists(atPath: destURL.path) {
+                _ = try FileManager.default.replaceItemAt(destURL, withItemAt: stagingURL)
+            } else {
+                try FileManager.default.moveItem(at: stagingURL, to: destURL)
+            }
 
             let size = (try? FileManager.default.attributesOfItem(atPath: info.destinationPath)[.size] as? Int) ?? 0
             NSLog("BackgroundDownload: \(modelId) complete (\(size / 1024 / 1024) MB)")
@@ -116,7 +130,6 @@ class BackgroundDownloadPlugin: NSObject, URLSessionDownloadDelegate {
             ])
         }
 
-        activeDownloads.removeValue(forKey: modelId)
     }
 
     func urlSession(
@@ -126,7 +139,10 @@ class BackgroundDownloadPlugin: NSObject, URLSessionDownloadDelegate {
         totalBytesWritten: Int64,
         totalBytesExpectedToWrite: Int64
     ) {
-        guard let modelId = downloadTask.taskDescription else { return }
+        let taskId = downloadTask.taskIdentifier
+        guard let info = activeDownloads[taskId],
+              activeTaskByModelId[info.modelId] == taskId else { return }
+        let modelId = info.modelId
 
         let progress: Double
         if totalBytesExpectedToWrite > 0 {
@@ -140,13 +156,13 @@ class BackgroundDownloadPlugin: NSObject, URLSessionDownloadDelegate {
         // download was a main-thread platform-channel storm (iOS twin has
         // the same guard).
         let now = Date()
-        if let last = lastProgressEmit[modelId],
+        if let last = lastProgressEmit[taskId],
            progress < 1.0,
            progress - last.fraction < 0.01,
            now.timeIntervalSince(last.at) < 0.3 {
             return
         }
-        lastProgressEmit[modelId] = (progress, now)
+        lastProgressEmit[taskId] = (progress, now)
 
         channel.invokeMethod("onDownloadProgress", arguments: [
             "modelId": modelId,
@@ -161,19 +177,30 @@ class BackgroundDownloadPlugin: NSObject, URLSessionDownloadDelegate {
         task: URLSessionTask,
         didCompleteWithError error: Error?
     ) {
-        guard let modelId = task.taskDescription else { return }
+        let taskId = task.taskIdentifier
+        guard let info = activeDownloads[taskId] else { return }
+        let modelId = info.modelId
+        let isCurrent = activeTaskByModelId[modelId] == taskId
 
-        if let error = error {
-            let nsError = error as NSError
-            if nsError.code == NSURLErrorCancelled { return }
+        defer { removeDownload(taskId: taskId, modelId: modelId) }
 
-            NSLog("BackgroundDownload: \(modelId) error: \(error)")
-            channel.invokeMethod("onDownloadError", arguments: [
-                "modelId": modelId,
-                "error": error.localizedDescription,
-            ])
+        guard isCurrent, let error = error else { return }
+
+        let nsError = error as NSError
+        if nsError.code == NSURLErrorCancelled { return }
+
+        NSLog("BackgroundDownload: \(modelId) error: \(error)")
+        channel.invokeMethod("onDownloadError", arguments: [
+            "modelId": modelId,
+            "error": error.localizedDescription,
+        ])
+    }
+
+    private func removeDownload(taskId: Int, modelId: String) {
+        activeDownloads.removeValue(forKey: taskId)
+        lastProgressEmit.removeValue(forKey: taskId)
+        if activeTaskByModelId[modelId] == taskId {
+            activeTaskByModelId.removeValue(forKey: modelId)
         }
-
-        activeDownloads.removeValue(forKey: modelId)
     }
 }

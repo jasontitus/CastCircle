@@ -36,7 +36,7 @@ print("")
 var fullText = ""
 
 if let page = singlePage {
-    guard page < doc.pageCount else {
+    guard page >= 0, page < doc.pageCount else {
         print("ERROR: Page \(page) out of range (0..\(doc.pageCount - 1))")
         exit(1)
     }

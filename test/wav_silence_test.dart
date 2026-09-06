@@ -67,8 +67,11 @@ void main() {
   test('prepends exactly the requested silence', () async {
     const rate = 24000, frames = 1000;
     final src = await write('in.wav', wav(sampleRate: rate, frames: frames));
-    final out = await WavSilence.prepend(src, '${dir.path}/out.wav',
-        silence: const Duration(milliseconds: 350));
+    final out = await WavSilence.prepend(
+      src,
+      '${dir.path}/out.wav',
+      silence: const Duration(milliseconds: 350),
+    );
 
     expect(out, '${dir.path}/out.wav');
     final bytes = await File(out).readAsBytes();
@@ -84,24 +87,38 @@ void main() {
   test('the padding is silent and the audio survives intact', () async {
     final original = wav(frames: 500);
     final src = await write('in.wav', original);
-    final out = await WavSilence.prepend(src, '${dir.path}/out.wav',
-        silence: const Duration(milliseconds: 100));
+    final out = await WavSilence.prepend(
+      src,
+      '${dir.path}/out.wav',
+      silence: const Duration(milliseconds: 100),
+    );
 
     final bytes = await File(out).readAsBytes();
     const padBytes = 100 * 24000 * 2 ~/ 1000;
-    expect(bytes.sublist(44, 44 + padBytes).every((b) => b == 0), isTrue,
-        reason: 'the pad must be pure silence');
-    expect(bytes.sublist(44 + padBytes), original.sublist(44),
-        reason: 'the original audio must be byte-identical after the pad');
+    expect(
+      bytes.sublist(44, 44 + padBytes).every((b) => b == 0),
+      isTrue,
+      reason: 'the pad must be pure silence',
+    );
+    expect(
+      bytes.sublist(44 + padBytes),
+      original.sublist(44),
+      reason: 'the original audio must be byte-identical after the pad',
+    );
   });
 
   test('keeps frames aligned for stereo', () async {
     // A pad that is not a whole number of frames would shift every sample
     // after it and turn the audio into noise.
     final src = await write(
-        'in.wav', wav(channels: 2, sampleRate: 44100, frames: 100));
-    final out = await WavSilence.prepend(src, '${dir.path}/out.wav',
-        silence: const Duration(milliseconds: 7));
+      'in.wav',
+      wav(channels: 2, sampleRate: 44100, frames: 100),
+    );
+    final out = await WavSilence.prepend(
+      src,
+      '${dir.path}/out.wav',
+      silence: const Duration(milliseconds: 7),
+    );
     final bytes = await File(out).readAsBytes();
     final pad = parse(bytes).dataSize - 100 * 4;
     expect(pad % 4, 0, reason: '4 bytes per frame at 16-bit stereo');
@@ -119,8 +136,10 @@ void main() {
     });
 
     test('when the input is missing', () async {
-      expect(await WavSilence.prepend('${dir.path}/nope.wav',
-          '${dir.path}/out.wav'), '${dir.path}/nope.wav');
+      expect(
+        await WavSilence.prepend('${dir.path}/nope.wav', '${dir.path}/out.wav'),
+        '${dir.path}/nope.wav',
+      );
     });
 
     test('when the format is not PCM', () async {
@@ -142,8 +161,11 @@ void main() {
     final bytes = wav(frames: 100);
     ByteData.sublistView(bytes).setUint32(40, 999999, Endian.little);
     final src = await write('lying.wav', bytes);
-    final out = await WavSilence.prepend(src, '${dir.path}/out.wav',
-        silence: const Duration(milliseconds: 10));
+    final out = await WavSilence.prepend(
+      src,
+      '${dir.path}/out.wav',
+      silence: const Duration(milliseconds: 10),
+    );
     final result = await File(out).readAsBytes();
     expect(result.length, 44 + 200 + (10 * 24000 * 2 ~/ 1000));
   });

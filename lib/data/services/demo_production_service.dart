@@ -62,7 +62,8 @@ class DemoProductionService {
         .where((p) => p.id == productionId)
         .firstOrNull;
 
-    final production = existing ??
+    final production =
+        existing ??
         Production(
           id: productionId,
           title: title,
@@ -105,7 +106,8 @@ class DemoProductionService {
           .firstOrNull;
       // Fall back to whoever speaks most, so a re-cut demo script still
       // opens on somebody rather than silently on no one.
-      character = match?.name ??
+      character =
+          match?.name ??
           (script.characters.toList()
                 ..sort((a, b) => b.lineCount.compareTo(a.lineCount)))
               .first
@@ -117,7 +119,10 @@ class DemoProductionService {
 
   Future<ParsedScript> _parseBundledScript() async {
     final raw = await rootBundle.loadString(_assetPath);
-    final script = ScriptImportService().importFromText(raw, title: title);
+    final script = await ScriptImportService().importFromText(
+      raw,
+      title: title,
+    );
     if (script.lines.isEmpty || script.characters.isEmpty) {
       throw StateError(
         'The bundled demo script parsed to ${script.lines.length} lines and '

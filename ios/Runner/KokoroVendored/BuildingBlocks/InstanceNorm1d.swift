@@ -64,13 +64,14 @@ class _InstanceNorm {
 
     var mean: MLXArray
     var variance: MLXArray
+    var centered: MLXArray
 
     if training || !trackRunningStats {
       mean = MLX.mean(input, axes: reduceDims, keepDims: true)
       // Variance from the mean already in hand (E[(x-µ)²]) — MLX.variance
       // recomputes its own mean, a second full reduction over the tensor
       // on every decoder-block forward.
-      let centered = input - mean
+      centered = input - mean
       variance = MLX.mean(centered * centered, axes: reduceDims, keepDims: true)
 
       if trackRunningStats && training, let runningMean, let runningVar {
@@ -87,12 +88,13 @@ class _InstanceNorm {
 
       mean = runningMean.reshaped(meanShape)
       variance = runningVar.reshaped(varShape)
+      centered = input - mean
     } else {
       fatalError("Running statistics not available")
     }
 
-    // Normalize
-    let xNorm = (input - mean) / MLX.sqrt(variance + eps)
+    // Normalize using the centering pass already computed for variance.
+    let xNorm = centered / MLX.sqrt(variance + eps)
 
     // Apply bias if needed
     if affine, let weight = weight, let bias = bias {

@@ -6,8 +6,11 @@ import 'package:flutter_test/flutter_test.dart';
 /// The walkthrough is the first screen a new user meets, so it gets tested at
 /// the sizes that have actually broken screens in this app before: a narrow
 /// phone, and a narrow phone with the text scale turned up.
-Future<void> _pump(WidgetTester tester,
-    {Size size = const Size(400, 800), double textScale = 1.0}) async {
+Future<void> _pump(
+  WidgetTester tester, {
+  Size size = const Size(400, 800),
+  double textScale = 1.0,
+}) async {
   tester.view.physicalSize = size;
   tester.view.devicePixelRatio = 1.0;
   addTearDown(tester.view.reset);
@@ -27,8 +30,9 @@ Future<void> _pump(WidgetTester tester,
 }
 
 void main() {
-  testWidgets('opens on the first page and advances through all of them',
-      (tester) async {
+  testWidgets('opens on the first page and advances through all of them', (
+    tester,
+  ) async {
     await _pump(tester);
 
     expect(find.textContaining('Rehearse without'), findsOneWidget);
@@ -60,8 +64,9 @@ void main() {
     expect(find.textContaining('Cast & Roles'), findsOneWidget);
   });
 
-  testWidgets('no overflow on a narrow phone at large text scale',
-      (tester) async {
+  testWidgets('no overflow on a narrow phone at large text scale', (
+    tester,
+  ) async {
     await _pump(tester, size: const Size(360, 640), textScale: 1.6);
 
     for (var i = 0; i < 3; i++) {

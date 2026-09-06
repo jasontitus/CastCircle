@@ -12,11 +12,7 @@ class PendingJoin {
   final String? characterName;
   final String? actorName;
 
-  const PendingJoin({
-    required this.code,
-    this.characterName,
-    this.actorName,
-  });
+  const PendingJoin({required this.code, this.characterName, this.actorName});
 
   /// Join codes are always six uppercase alphanumerics (see
   /// SupabaseService.generateJoinCode) — anything else is a malformed or
@@ -30,14 +26,15 @@ class PendingJoin {
   /// Control, bidi-override and zero-width characters, which let link text
   /// masquerade as app chrome (line breaks, reversed text, invisible padding).
   static final _unsafeChars = RegExp(
-      r'[\x00-\x1F\x7F-\x9F\u200B-\u200F\u2028\u2029\u202A-\u202E'
-      r'\u2066-\u2069\uFEFF]');
+    r'[\x00-\x1F\x7F-\x9F\u200B-\u200F\u2028\u2029\u202A-\u202E'
+    r'\u2066-\u2069\uFEFF]',
+  );
 
   Map<String, String> toMap() => {
-        'code': code,
-        if (characterName != null) 'char': characterName!,
-        if (actorName != null) 'name': actorName!,
-      };
+    'code': code,
+    if (characterName != null) 'char': characterName!,
+    if (actorName != null) 'name': actorName!,
+  };
 
   static PendingJoin? fromUri(Uri uri) {
     // Handle: castcircle://join?code=X&char=Y&name=Z
@@ -102,14 +99,18 @@ class DeepLinkService {
     // Check for initial link (cold start) with a timeout —
     // app_links can hang on some iOS betas.
     try {
-      final initialUri = await _appLinks.getInitialLink()
-          .timeout(const Duration(seconds: 2));
+      final initialUri = await _appLinks.getInitialLink().timeout(
+        const Duration(seconds: 2),
+      );
       if (initialUri != null) {
         _handleUri(initialUri);
       }
     } on TimeoutException catch (e) {
       DebugLogService.instance.logError(
-          LogCategory.general, 'Deep link: getInitialLink timed out', e);
+        LogCategory.general,
+        'Deep link: getInitialLink timed out',
+        e,
+      );
     } catch (e) {
       debugPrint('Deep link: no initial link ($e)');
     }
@@ -118,13 +119,19 @@ class DeepLinkService {
     try {
       _appLinks.uriLinkStream.listen(
         _handleUri,
-        onError: (e) => DebugLogService.instance
-            .logError(LogCategory.general, 'Deep link stream error', e),
+        onError: (e) => DebugLogService.instance.logError(
+          LogCategory.general,
+          'Deep link stream error',
+          e,
+        ),
       );
     } catch (e) {
       // Invites tapped from now on will do nothing for the whole session.
-      DebugLogService.instance
-          .logError(LogCategory.general, 'Deep link: stream listen failed', e);
+      DebugLogService.instance.logError(
+        LogCategory.general,
+        'Deep link: stream listen failed',
+        e,
+      );
     }
   }
 
@@ -149,11 +156,15 @@ class DeepLinkService {
       );
       // On a cold start there is no messenger yet; the log above is then the
       // only record, and the join screen still lets them type the code.
-      rootScaffoldMessengerKey.currentState?.showAutoToast(const SnackBar(
-        content: Text("That invite link isn't valid — ask your director for "
-            'the 6-character join code.'),
-        duration: Duration(seconds: 6),
-      ));
+      rootScaffoldMessengerKey.currentState?.showAutoToast(
+        const SnackBar(
+          content: Text(
+            "That invite link isn't valid — ask your director for "
+            'the 6-character join code.',
+          ),
+          duration: Duration(seconds: 6),
+        ),
+      );
     }
   }
 

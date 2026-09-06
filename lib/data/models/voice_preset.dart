@@ -36,10 +36,10 @@ class CharacterVoiceConfig {
   });
 
   Map<String, dynamic> toJson() => {
-        'characterName': characterName,
-        'voiceId': voiceId,
-        'speed': speed,
-      };
+    'characterName': characterName,
+    'voiceId': voiceId,
+    'speed': speed,
+  };
 
   factory CharacterVoiceConfig.fromJson(Map<String, dynamic> json) =>
       CharacterVoiceConfig(
@@ -121,12 +121,25 @@ class VoicePresets {
     name: 'Mixed (All Voices)',
     description: 'Full variety — all accents and styles',
     femaleVoices: [
-      'af_heart', 'af_bella', 'af_jessica', 'af_nova', 'af_sarah',
-      'bf_alice', 'bf_emma', 'bf_isabella', 'bf_lily',
+      'af_heart',
+      'af_bella',
+      'af_jessica',
+      'af_nova',
+      'af_sarah',
+      'bf_alice',
+      'bf_emma',
+      'bf_isabella',
+      'bf_lily',
     ],
     maleVoices: [
-      'am_adam', 'am_eric', 'am_michael', 'am_onyx',
-      'bm_daniel', 'bm_fable', 'bm_george', 'bm_lewis',
+      'am_adam',
+      'am_eric',
+      'am_michael',
+      'am_onyx',
+      'bm_daniel',
+      'bm_fable',
+      'bm_george',
+      'bm_lewis',
     ],
     defaultSpeed: 1.0,
   );

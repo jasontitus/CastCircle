@@ -10,9 +10,14 @@
 
 set -euo pipefail
 
-CRASHDIR="/tmp/castcircle-crashes"
-CRASHDIR_LEGACY="/tmp/crashlogs"
-mkdir -p "$CRASHDIR"
+CRASHDIR=$(mktemp -d "${TMPDIR:-/tmp}/castcircle-crashes.XXXXXX")
+KEEP_CRASHDIR=0
+cleanup() {
+  if [[ "$KEEP_CRASHDIR" -eq 0 ]]; then
+    rm -rf "$CRASHDIR" || true
+  fi
+}
+trap cleanup EXIT
 
 # Resolve device
 TARGET="${1:-auto}"
@@ -44,11 +49,15 @@ fi
 echo "Device: $UDID"
 echo "Pulling crash logs..."
 
-# Pull crash logs (keep on device with -k)
-idevicecrashreport -u "$UDID" -k "$CRASHDIR" 2>/dev/null || true
+# Pull crash logs (keep on device with -k). A fresh directory ensures the
+# summary can only include reports returned by this invocation.
+if ! idevicecrashreport -u "$UDID" -k "$CRASHDIR"; then
+  echo "ERROR: Failed to pull crash logs from device $UDID." >&2
+  exit 1
+fi
 
-# Find Runner crash logs across all known dirs, sort by filename (contains timestamp)
-CRASHES=$(find "$CRASHDIR" "$CRASHDIR_LEGACY" \( -name "Runner-*.ips" -o -name "ExcUserFault_Runner-*.ips" \) 2>/dev/null | while read f; do echo "$(basename "$f") $f"; done | sort -r | awk '{print $2}')
+# Find Runner crash logs from this pull, sorted by filename (contains timestamp)
+CRASHES=$(find "$CRASHDIR" \( -name "Runner-*.ips" -o -name "ExcUserFault_Runner-*.ips" \) | while read f; do echo "$(basename "$f") $f"; done | sort -r | awk '{print $2}')
 
 if [[ -z "$CRASHES" ]]; then
   echo "No Runner crash logs found on device."
@@ -56,6 +65,9 @@ if [[ -z "$CRASHES" ]]; then
 fi
 
 LATEST=$(echo "$CRASHES" | head -1)
+# Keep this unique pull directory so the reported path remains usable after
+# the script exits.
+KEEP_CRASHDIR=1
 echo ""
 echo "=== MOST RECENT CRASH: $(basename "$LATEST") ==="
 echo ""
@@ -130,14 +142,14 @@ if crash.get('memoryStatus'):
     ms = crash['memoryStatus']
     print(f\"Memory: footprint={ms.get('memoryFootprint', '?')} limit={ms.get('memoryLimit', '?')}\")
 
-print(f\"Full crash log: $LATEST\")
 " 2>&1 || {
   # Fallback: just show raw header + exception
   echo "--- Raw crash header ---"
   head -5 "$LATEST"
   echo ""
-  grep -A5 -i "exception\|termination\|fault" "$LATEST" | head -30
+  grep -A5 -i "exception\|termination\|fault" "$LATEST" | head -30 || true
 }
+echo "Full crash log: $LATEST"
 
 # List other recent crashes
 OTHER=$(echo "$CRASHES" | tail -n +2 | head -5)

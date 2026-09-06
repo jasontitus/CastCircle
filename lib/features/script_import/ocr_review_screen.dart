@@ -78,9 +78,6 @@ class _OcrReviewScreenState extends State<OcrReviewScreen> {
     // Immutable originals: highlight matching must use the OCR'd text, not
     // the user's in-progress correction (which no longer matches the page).
     _origById = {for (final l in widget.lines) l.id: l};
-    for (final line in _reviewLines) {
-      _controllers[line.id] = TextEditingController(text: line.text);
-    }
     // Default the pinned detail pane to the first reviewable line that has a
     // known source page.
     final withPage = _reviewLines.where((l) => l.sourcePage != null);
@@ -115,15 +112,14 @@ class _OcrReviewScreenState extends State<OcrReviewScreen> {
     _orderedIndexCache = null;
   }
 
-  List<ScriptLine> get _orderedCurrentLines => _orderedCache ??= (widget.lines
-      .where((l) => !_removedIds.contains(l.id))
-      .toList()
-    ..sort((a, b) => a.orderIndex.compareTo(b.orderIndex)));
+  List<ScriptLine> get _orderedCurrentLines => _orderedCache ??=
+      (widget.lines.where((l) => !_removedIds.contains(l.id)).toList()
+        ..sort((a, b) => a.orderIndex.compareTo(b.orderIndex)));
 
   Map<String, int> get _orderedIndexById => _orderedIndexCache ??= {
-        for (var i = 0; i < _orderedCurrentLines.length; i++)
-          _orderedCurrentLines[i].id: i,
-      };
+    for (var i = 0; i < _orderedCurrentLines.length; i++)
+      _orderedCurrentLines[i].id: i,
+  };
 
   List<ScriptLine> _contextLinesFor(ScriptLine flagged, {int span = 3}) {
     // Work over the CURRENT (non-removed) lines so the window follows deletions.
@@ -145,7 +141,12 @@ class _OcrReviewScreenState extends State<OcrReviewScreen> {
 
   TextEditingController _contextController(ScriptLine l) =>
       _contextControllers.putIfAbsent(
-          l.id, () => TextEditingController(text: (_byId[l.id] ?? l).text));
+        l.id,
+        () => TextEditingController(text: (_byId[l.id] ?? l).text),
+      );
+
+  TextEditingController _controllerFor(ScriptLine line) => _controllers
+      .putIfAbsent(line.id, () => TextEditingController(text: line.text));
 
   void _onContextChanged(ScriptLine l, String value) {
     // Capture live so the edit is included when the user taps Done.
@@ -170,14 +171,17 @@ class _OcrReviewScreenState extends State<OcrReviewScreen> {
       .where((l) => l.reviewStatus == OcrReviewStatus.likelyNotScript)
       .toList();
 
-  int get _pendingReviewCount =>
-      _reviewLines.where((l) => !_removedIds.contains(l.id)).length;
+  int get _pendingReviewCount => _reviewLines.where((line) {
+    if (_removedIds.contains(line.id)) return false;
+    return (_byId[line.id]?.reviewStatus ?? line.reviewStatus) ==
+        OcrReviewStatus.review;
+  }).length;
 
   int get _pendingNotScriptCount =>
       _notScriptLines.where((l) => !_removedIds.contains(l.id)).length;
 
   void _saveEdit(ScriptLine line) {
-    final text = _controllers[line.id]?.text.trim() ?? line.text;
+    final text = _controllerFor(line).text.trim();
     setState(() {
       // Editing resolves the review flag for this line.
       _byId[line.id] = _byId[line.id]!.copyWith(
@@ -225,9 +229,8 @@ class _OcrReviewScreenState extends State<OcrReviewScreen> {
         ],
       ),
     );
-    if (confirmed == true) {
-      setState(() => _markRemoved(l.id));
-    }
+    if (!mounted || confirmed != true) return;
+    setState(() => _markRemoved(l.id));
   }
 
   /// Pins [line]'s source page in the right (detail) pane on wide layouts.
@@ -239,15 +242,14 @@ class _OcrReviewScreenState extends State<OcrReviewScreen> {
   /// Flagged lines still pending, in script order — the walk-through list
   /// for the page viewer's Prev/Next.
   List<ScriptLine> _pendingWithPages() => [
-        for (final l in _reviewLines)
-          // Still pending = not removed, not already resolved (Save /
-          // "Looks right" clears the flag), and locatable on a page.
-          if (!_removedIds.contains(l.id) &&
-              l.sourcePage != null &&
-              (_byId[l.id]?.reviewStatus ?? l.reviewStatus) !=
-                  OcrReviewStatus.ok)
-            l,
-      ];
+    for (final l in _reviewLines)
+      // Still pending = not removed, not already resolved (Save /
+      // "Looks right" clears the flag), and locatable on a page.
+      if (!_removedIds.contains(l.id) &&
+          l.sourcePage != null &&
+          (_byId[l.id]?.reviewStatus ?? l.reviewStatus) != OcrReviewStatus.ok)
+        l,
+  ];
 
   /// Opens the original scanned source page for [line] in a full-height modal
   /// bottom sheet so the user can read it while correcting the OCR text. Only
@@ -305,140 +307,144 @@ class _OcrReviewScreenState extends State<OcrReviewScreen> {
               duration: const Duration(milliseconds: 150),
               padding: EdgeInsets.only(bottom: insets),
               child: FractionallySizedBox(
-              heightFactor: 0.92,
-              child: Column(
-                children: [
-                  Padding(
-                    padding: const EdgeInsets.fromLTRB(16, 8, 8, 0),
-                    child: Row(
-                      children: [
-                        Expanded(
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Text(
-                                'Source page $page'
-                                '${current.character.isNotEmpty ? ' — ${current.character}' : ''}',
-                                style: theme.textTheme.titleMedium,
-                              ),
-                              Text(
-                                'Flagged line ${idx + 1} of '
-                                '${list.isEmpty ? idx + 1 : list.length}',
-                                style: theme.textTheme.labelSmall?.copyWith(
-                                  color: theme.colorScheme.onSurface
-                                      .withValues(alpha: 0.6),
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
-                        IconButton(
-                          icon: const Icon(Icons.close),
-                          tooltip: 'Close',
-                          onPressed: () => Navigator.of(sheetContext).pop(),
-                        ),
-                      ],
-                    ),
-                  ),
-                  // EDITABLE in place: the whole point of seeing the page is
-                  // spotting that the OCR text is wrong, so it has to be
-                  // fixable right here — an extra "Edit" button on an
-                  // already-busy rail would just be a detour to this field.
-                  // Shares the card's controller, so a fix made here is the
-                  // same edit "Looks right"/Save commits.
-                  Padding(
-                    padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
-                    child: TextField(
-                      controller: _controllers[current.id],
-                      maxLines: 3,
-                      minLines: 1,
-                      style: theme.textTheme.bodyMedium,
-                      decoration: InputDecoration(
-                        isDense: true,
-                        labelText: 'OCR text — tap to fix',
-                        border: const OutlineInputBorder(),
-                        suffixIcon: IconButton(
-                          icon: const Icon(Icons.undo, size: 18),
-                          tooltip: 'Restore what OCR read',
-                          onPressed: () => setSheetState(() {
-                            _controllers[current.id]?.text =
-                                (_origById[current.id] ?? current).text;
-                          }),
-                        ),
-                      ),
-                    ),
-                  ),
-                  Expanded(
-                    child: PdfPageView(
-                      // Key on the line so a step re-runs the locate.
-                      key: ValueKey('sheet-${current.id}'),
-                      pdfPath: pdfPath,
-                      pageNumber: page,
-                      lineOnPage: current.sourceLineOnPage,
-                      highlightText: (_origById[current.id] ?? current).text,
-                    ),
-                  ),
-                  SafeArea(
-                    top: false,
-                    child: Padding(
-                      padding: const EdgeInsets.fromLTRB(8, 4, 8, 4),
-                      child: Wrap(
-                        alignment: WrapAlignment.spaceEvenly,
-                        crossAxisAlignment: WrapCrossAlignment.center,
-                        spacing: 4,
-                        runSpacing: 4,
+                heightFactor: 0.92,
+                child: Column(
+                  children: [
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(16, 8, 8, 0),
+                      child: Row(
                         children: [
-                          TextButton.icon(
-                            onPressed: idx > 0
-                                ? () => setSheetState(() => idx--)
-                                : null,
-                            icon: const Icon(Icons.chevron_left),
-                            label: const Text('Prev'),
-                          ),
-                          // Remove sits with the navigation: the user is
-                          // looking AT the page when they decide the line
-                          // is crossed out.
-                          TextButton.icon(
-                            icon: const Icon(Icons.delete_outline, size: 18),
-                            label: const Text('Remove'),
-                            style: TextButton.styleFrom(
-                              foregroundColor: theme.colorScheme.error,
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  'Source page $page'
+                                  '${current.character.isNotEmpty ? ' — ${current.character}' : ''}',
+                                  style: theme.textTheme.titleMedium,
+                                ),
+                                Text(
+                                  'Flagged line ${idx + 1} of '
+                                  '${list.isEmpty ? idx + 1 : list.length}',
+                                  style: theme.textTheme.labelSmall?.copyWith(
+                                    color: theme.colorScheme.onSurface
+                                        .withValues(alpha: 0.6),
+                                  ),
+                                ),
+                              ],
                             ),
-                            onPressed: () {
-                              _removeLine(current); // setState on the screen
-                              setSheetState(() {}); // and refresh the sheet
-                              ScaffoldMessenger.of(context)
-                                ..hideCurrentSnackBar()
-                                ..showAutoToast(const SnackBar(
-                                    content: Text('Line removed')));
-                            },
                           ),
-                          // "The OCR is fine" — clears the flag and lands on
-                          // the next flagged line, so a clean pass is one
-                          // tap per line without leaving the page view.
-                          TextButton.icon(
-                            icon: const Icon(Icons.check_circle_outline,
-                                size: 18),
-                            label: const Text('Looks right'),
-                            onPressed: () {
-                              _saveEdit(current); // keeps any typed edit
-                              setSheetState(() {});
-                            },
-                          ),
-                          FilledButton.icon(
-                            onPressed: idx < list.length - 1
-                                ? () => setSheetState(() => idx++)
-                                : null,
-                            icon: const Icon(Icons.chevron_right),
-                            label: const Text('Next'),
+                          IconButton(
+                            icon: const Icon(Icons.close),
+                            tooltip: 'Close',
+                            onPressed: () => Navigator.of(sheetContext).pop(),
                           ),
                         ],
                       ),
                     ),
-                  ),
-                ],
+                    // EDITABLE in place: the whole point of seeing the page is
+                    // spotting that the OCR text is wrong, so it has to be
+                    // fixable right here — an extra "Edit" button on an
+                    // already-busy rail would just be a detour to this field.
+                    // Shares the card's controller, so a fix made here is the
+                    // same edit "Looks right"/Save commits.
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+                      child: TextField(
+                        controller: _controllerFor(current),
+                        maxLines: 3,
+                        minLines: 1,
+                        style: theme.textTheme.bodyMedium,
+                        decoration: InputDecoration(
+                          isDense: true,
+                          labelText: 'OCR text — tap to fix',
+                          border: const OutlineInputBorder(),
+                          suffixIcon: IconButton(
+                            icon: const Icon(Icons.undo, size: 18),
+                            tooltip: 'Restore what OCR read',
+                            onPressed: () => setSheetState(() {
+                              _controllerFor(current).text =
+                                  (_origById[current.id] ?? current).text;
+                            }),
+                          ),
+                        ),
+                      ),
+                    ),
+                    Expanded(
+                      child: PdfPageView(
+                        key: ValueKey('sheet-$pdfPath'),
+                        pdfPath: pdfPath,
+                        pageNumber: page,
+                        lineOnPage: current.sourceLineOnPage,
+                        highlightText: (_origById[current.id] ?? current).text,
+                      ),
+                    ),
+                    SafeArea(
+                      top: false,
+                      child: Padding(
+                        padding: const EdgeInsets.fromLTRB(8, 4, 8, 4),
+                        child: Wrap(
+                          alignment: WrapAlignment.spaceEvenly,
+                          crossAxisAlignment: WrapCrossAlignment.center,
+                          spacing: 4,
+                          runSpacing: 4,
+                          children: [
+                            TextButton.icon(
+                              onPressed: idx > 0
+                                  ? () => setSheetState(() => idx--)
+                                  : null,
+                              icon: const Icon(Icons.chevron_left),
+                              label: const Text('Prev'),
+                            ),
+                            // Remove sits with the navigation: the user is
+                            // looking AT the page when they decide the line
+                            // is crossed out.
+                            TextButton.icon(
+                              icon: const Icon(Icons.delete_outline, size: 18),
+                              label: const Text('Remove'),
+                              style: TextButton.styleFrom(
+                                foregroundColor: theme.colorScheme.error,
+                              ),
+                              onPressed: () {
+                                _removeLine(current); // setState on the screen
+                                setSheetState(() {}); // and refresh the sheet
+                                ScaffoldMessenger.of(context)
+                                  ..hideCurrentSnackBar()
+                                  ..showAutoToast(
+                                    const SnackBar(
+                                      content: Text('Line removed'),
+                                    ),
+                                  );
+                              },
+                            ),
+                            // "The OCR is fine" — clears the flag and lands on
+                            // the next flagged line, so a clean pass is one
+                            // tap per line without leaving the page view.
+                            TextButton.icon(
+                              icon: const Icon(
+                                Icons.check_circle_outline,
+                                size: 18,
+                              ),
+                              label: const Text('Looks right'),
+                              onPressed: () {
+                                _saveEdit(current); // keeps any typed edit
+                                setSheetState(() {});
+                              },
+                            ),
+                            FilledButton.icon(
+                              onPressed: idx < list.length - 1
+                                  ? () => setSheetState(() => idx++)
+                                  : null,
+                              icon: const Icon(Icons.chevron_right),
+                              label: const Text('Next'),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
               ),
-            ),
             );
           },
         );
@@ -446,12 +452,61 @@ class _OcrReviewScreenState extends State<OcrReviewScreen> {
     );
   }
 
-  void _removeAllNotScript() {
+  Future<void> _removeAllNotScript() async {
+    final remaining = _notScriptLines
+        .where((line) => !_removedIds.contains(line.id))
+        .toList();
+    if (remaining.isEmpty) return;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: Text('Remove ${remaining.length} lines?'),
+        content: const Text(
+          'All remaining lines marked as likely notes or handwriting will be '
+          'removed from the imported script.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            style: FilledButton.styleFrom(
+              backgroundColor: Theme.of(dialogContext).colorScheme.error,
+            ),
+            onPressed: () => Navigator.of(dialogContext).pop(true),
+            child: const Text('Remove all'),
+          ),
+        ],
+      ),
+    );
+    if (!mounted || confirmed != true) return;
+
+    final removed = {for (final line in remaining) line.id};
     setState(() {
-      for (final line in _notScriptLines) {
-        _markRemoved(line.id);
+      for (final id in removed) {
+        _markRemoved(id);
       }
     });
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showAutoToast(
+        SnackBar(
+          content: Text('${removed.length} lines removed'),
+          duration: const Duration(seconds: 8),
+          action: SnackBarAction(
+            label: 'Undo',
+            onPressed: () {
+              if (!mounted) return;
+              setState(() {
+                _removedIds.removeAll(removed);
+                _orderedCache = null;
+                _orderedIndexCache = null;
+              });
+            },
+          ),
+        ),
+      );
   }
 
   bool _popped = false;
@@ -462,7 +517,12 @@ class _OcrReviewScreenState extends State<OcrReviewScreen> {
     final result = <ScriptLine>[];
     for (final line in widget.lines) {
       if (_removedIds.contains(line.id)) continue;
-      result.add(_byId[line.id] ?? line);
+      var current = _byId[line.id] ?? line;
+      final controller = _controllers[line.id];
+      if (controller != null) {
+        current = current.copyWith(text: controller.text.trim());
+      }
+      result.add(current);
     }
     Navigator.of(context).pop(OcrReviewResult(result));
   }
@@ -470,8 +530,11 @@ class _OcrReviewScreenState extends State<OcrReviewScreen> {
   @override
   Widget build(BuildContext context) {
     final width = MediaQuery.sizeOf(context).width;
-    final reviewLines =
-        _reviewLines.where((l) => !_removedIds.contains(l.id)).toList();
+    final reviewLines = _reviewLines.where((line) {
+      if (_removedIds.contains(line.id)) return false;
+      return (_byId[line.id]?.reviewStatus ?? line.reviewStatus) ==
+          OcrReviewStatus.review;
+    }).toList();
     final notScriptLines = _notScriptLines;
     // The two-pane detail view is only useful when we can actually show a page.
     final twoPane = width >= _twoPaneBreakpoint && widget.pdfPath != null;
@@ -485,30 +548,28 @@ class _OcrReviewScreenState extends State<OcrReviewScreen> {
         if (!didPop) _done();
       },
       child: Scaffold(
-      appBar: AppBar(
-        title: const Text('Review OCR'),
-        leading: IconButton(
-          icon: const Icon(Icons.arrow_back),
-          onPressed: _done,
-        ),
-        actions: [
-          TextButton(
+        appBar: AppBar(
+          title: const Text('Review OCR'),
+          leading: IconButton(
+            icon: const Icon(Icons.arrow_back),
             onPressed: _done,
-            child: const Text('Done'),
           ),
-        ],
-      ),
-      body: twoPane
-          ? _buildTwoPaneBody(context, reviewLines, notScriptLines)
-          : _buildSinglePaneBody(context, reviewLines, notScriptLines),
+          actions: [TextButton(onPressed: _done, child: const Text('Done'))],
+        ),
+        body: twoPane
+            ? _buildTwoPaneBody(context, reviewLines, notScriptLines)
+            : _buildSinglePaneBody(context, reviewLines, notScriptLines),
       ),
     );
   }
 
   /// Phone / narrow layout: a single scrolling column. Source pages open in a
   /// modal bottom sheet via each card's "View page" button.
-  Widget _buildSinglePaneBody(BuildContext context,
-      List<ScriptLine> reviewLines, List<ScriptLine> notScriptLines) {
+  Widget _buildSinglePaneBody(
+    BuildContext context,
+    List<ScriptLine> reviewLines,
+    List<ScriptLine> notScriptLines,
+  ) {
     return Column(
       children: [
         _buildCountsBar(context),
@@ -525,8 +586,11 @@ class _OcrReviewScreenState extends State<OcrReviewScreen> {
 
   /// Tablet / wide layout: the editable list on the left, the selected line's
   /// source page pinned on the right so the user can read it while correcting.
-  Widget _buildTwoPaneBody(BuildContext context, List<ScriptLine> reviewLines,
-      List<ScriptLine> notScriptLines) {
+  Widget _buildTwoPaneBody(
+    BuildContext context,
+    List<ScriptLine> reviewLines,
+    List<ScriptLine> notScriptLines,
+  ) {
     return Column(
       children: [
         _buildCountsBar(context),
@@ -536,14 +600,14 @@ class _OcrReviewScreenState extends State<OcrReviewScreen> {
             children: [
               Expanded(
                 flex: 5,
-                child:
-                    _buildLazyList(reviewLines, notScriptLines, twoPane: true),
+                child: _buildLazyList(
+                  reviewLines,
+                  notScriptLines,
+                  twoPane: true,
+                ),
               ),
               const VerticalDivider(width: 1),
-              Expanded(
-                flex: 4,
-                child: _buildSourcePane(context),
-              ),
+              Expanded(flex: 4, child: _buildSourcePane(context)),
             ],
           ),
         ),
@@ -593,9 +657,9 @@ class _OcrReviewScreenState extends State<OcrReviewScreen> {
               Text(
                 twoPane
                     ? 'Tap a line to see its page on the right. '
-                        'Fix any misread text, then Done.'
+                          'Fix any misread text, then Done.'
                     : 'Fix any misread text, then Done. '
-                        'Editing a line clears its flag.',
+                          'Editing a line clears its flag.',
                 style: theme.textTheme.bodySmall?.copyWith(
                   color: theme.colorScheme.onSurface.withValues(alpha: 0.6),
                 ),
@@ -652,8 +716,11 @@ class _OcrReviewScreenState extends State<OcrReviewScreen> {
             padding: const EdgeInsets.fromLTRB(16, 12, 8, 4),
             child: Row(
               children: [
-                Icon(Icons.picture_as_pdf,
-                    size: 18, color: theme.colorScheme.primary),
+                Icon(
+                  Icons.picture_as_pdf,
+                  size: 18,
+                  color: theme.colorScheme.primary,
+                ),
                 const SizedBox(width: 8),
                 Expanded(
                   child: Column(
@@ -668,8 +735,9 @@ class _OcrReviewScreenState extends State<OcrReviewScreen> {
                         Text(
                           'Flagged line ${walkIdx + 1} of ${walk.length}',
                           style: theme.textTheme.labelSmall?.copyWith(
-                            color: theme.colorScheme.onSurface
-                                .withValues(alpha: 0.6),
+                            color: theme.colorScheme.onSurface.withValues(
+                              alpha: 0.6,
+                            ),
                           ),
                         ),
                     ],
@@ -692,7 +760,8 @@ class _OcrReviewScreenState extends State<OcrReviewScreen> {
                     ScaffoldMessenger.of(context)
                       ..hideCurrentSnackBar()
                       ..showAutoToast(
-                          const SnackBar(content: Text('Line removed')));
+                        const SnackBar(content: Text('Line removed')),
+                      );
                   },
                 ),
               ],
@@ -700,8 +769,7 @@ class _OcrReviewScreenState extends State<OcrReviewScreen> {
           ),
           Expanded(
             child: PdfPageView(
-              // Key: re-locate when the selection moves to another line.
-              key: ValueKey('src-${selected.id}'),
+              key: ValueKey('src-$pdfPath'),
               pdfPath: pdfPath,
               pageNumber: page,
               lineOnPage: selected.sourceLineOnPage,
@@ -716,7 +784,8 @@ class _OcrReviewScreenState extends State<OcrReviewScreen> {
                   TextButton.icon(
                     onPressed: walkIdx > 0
                         ? () => setState(
-                            () => _selectedLineId = walk[walkIdx - 1].id)
+                            () => _selectedLineId = walk[walkIdx - 1].id,
+                          )
                         : null,
                     icon: const Icon(Icons.chevron_left),
                     label: const Text('Previous'),
@@ -737,7 +806,8 @@ class _OcrReviewScreenState extends State<OcrReviewScreen> {
                   FilledButton.icon(
                     onPressed: walkIdx < walk.length - 1
                         ? () => setState(
-                            () => _selectedLineId = walk[walkIdx + 1].id)
+                            () => _selectedLineId = walk[walkIdx + 1].id,
+                          )
                         : null,
                     icon: const Icon(Icons.chevron_right),
                     label: const Text('Next'),
@@ -768,8 +838,7 @@ class _OcrReviewScreenState extends State<OcrReviewScreen> {
 
   Widget _buildReviewCard(ScriptLine line, {required bool twoPane}) {
     final theme = Theme.of(context);
-    final controller = _controllers[line.id]!;
-    final edited = _byId[line.id]?.reviewStatus == OcrReviewStatus.ok;
+    final controller = _controllerFor(line);
     final isSelected = twoPane && _selectedLineId == line.id;
     final canSelect = twoPane && line.sourcePage != null;
 
@@ -803,14 +872,10 @@ class _OcrReviewScreenState extends State<OcrReviewScreen> {
                   Text(
                     line.pageLineRef,
                     style: theme.textTheme.labelSmall?.copyWith(
-                      color:
-                          theme.colorScheme.onSurface.withValues(alpha: 0.5),
+                      color: theme.colorScheme.onSurface.withValues(alpha: 0.5),
                     ),
                   ),
                   const Spacer(),
-                  if (edited)
-                    Icon(Icons.check_circle,
-                        size: 18, color: theme.colorScheme.primary),
                 ],
               ),
               const SizedBox(height: 8),
@@ -920,63 +985,71 @@ class _OcrReviewScreenState extends State<OcrReviewScreen> {
             ),
           ),
           const SizedBox(height: 4),
-          ...ctx.map((l) => Padding(
-                padding: const EdgeInsets.only(bottom: 6),
-                child: Row(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    if (l.character.isNotEmpty)
-                      SizedBox(
-                        width: 60,
-                        child: Padding(
-                          padding: const EdgeInsets.only(top: 9, right: 6),
-                          child: Text(
-                            l.character,
-                            style: theme.textTheme.labelSmall
-                                ?.copyWith(fontWeight: FontWeight.bold),
-                            overflow: TextOverflow.ellipsis,
+          ...ctx.map(
+            (l) => Padding(
+              padding: const EdgeInsets.only(bottom: 6),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  if (l.character.isNotEmpty)
+                    SizedBox(
+                      width: 60,
+                      child: Padding(
+                        padding: const EdgeInsets.only(top: 9, right: 6),
+                        child: Text(
+                          l.character,
+                          style: theme.textTheme.labelSmall?.copyWith(
+                            fontWeight: FontWeight.bold,
                           ),
-                        ),
-                      ),
-                    Expanded(
-                      child: TextField(
-                        controller: _contextController(l),
-                        maxLines: null,
-                        onChanged: (v) => _onContextChanged(l, v),
-                        style: theme.textTheme.bodySmall,
-                        decoration: const InputDecoration(
-                          isDense: true,
-                          border: OutlineInputBorder(),
-                          contentPadding:
-                              EdgeInsets.symmetric(horizontal: 8, vertical: 8),
+                          overflow: TextOverflow.ellipsis,
                         ),
                       ),
                     ),
-                    IconButton(
-                      icon: const Icon(Icons.delete_outline, size: 18),
-                      tooltip: 'Remove this line',
-                      visualDensity: VisualDensity.compact,
-                      padding: EdgeInsets.zero,
-                      constraints: const BoxConstraints(
-                        minWidth: 32,
-                        minHeight: 32,
+                  Expanded(
+                    child: TextField(
+                      controller: _contextController(l),
+                      maxLines: null,
+                      onChanged: (v) => _onContextChanged(l, v),
+                      style: theme.textTheme.bodySmall,
+                      decoration: const InputDecoration(
+                        isDense: true,
+                        border: OutlineInputBorder(),
+                        contentPadding: EdgeInsets.symmetric(
+                          horizontal: 8,
+                          vertical: 8,
+                        ),
                       ),
-                      color: theme.colorScheme.onSurface.withValues(alpha: 0.6),
-                      onPressed: () => _removeContextLine(l),
                     ),
-                  ],
-                ),
-              )),
+                  ),
+                  IconButton(
+                    icon: const Icon(Icons.delete_outline, size: 18),
+                    tooltip: 'Remove this line',
+                    visualDensity: VisualDensity.compact,
+                    padding: EdgeInsets.zero,
+                    constraints: const BoxConstraints(
+                      minWidth: 32,
+                      minHeight: 32,
+                    ),
+                    color: theme.colorScheme.onSurface.withValues(alpha: 0.6),
+                    onPressed: () => _removeContextLine(l),
+                  ),
+                ],
+              ),
+            ),
+          ),
         ],
       ),
     );
   }
 
   Widget _buildNotScriptSection(
-      BuildContext context, List<ScriptLine> notScriptLines) {
+    BuildContext context,
+    List<ScriptLine> notScriptLines,
+  ) {
     final theme = Theme.of(context);
-    final remaining =
-        notScriptLines.where((l) => !_removedIds.contains(l.id)).toList();
+    final remaining = notScriptLines
+        .where((l) => !_removedIds.contains(l.id))
+        .toList();
 
     return Card(
       color: theme.colorScheme.surfaceContainerHighest,
@@ -984,7 +1057,8 @@ class _OcrReviewScreenState extends State<OcrReviewScreen> {
         data: theme.copyWith(dividerColor: Colors.transparent),
         child: ExpansionTile(
           initiallyExpanded: _notScriptExpanded,
-          onExpansionChanged: (v) => setState(() => _notScriptExpanded = v),
+          onExpansionChanged: (value) =>
+              setState(() => _notScriptExpanded = value),
           leading: const Icon(Icons.gesture),
           title: Text(
             'Likely not script (notes/handwriting)',
@@ -992,43 +1066,59 @@ class _OcrReviewScreenState extends State<OcrReviewScreen> {
           ),
           subtitle: Text('${remaining.length} lines'),
           childrenPadding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
-          children: [
-            Align(
-              alignment: Alignment.centerLeft,
-              child: Text(
-                'These are usually margin notes or handwriting, not dialogue. '
-                'Remove them to keep your script clean.',
-                style: theme.textTheme.bodySmall?.copyWith(
-                  color: theme.colorScheme.onSurface.withValues(alpha: 0.6),
-                ),
-              ),
-            ),
-            const SizedBox(height: 8),
-            ...remaining.map((line) => ListTile(
-                  dense: true,
-                  contentPadding: EdgeInsets.zero,
-                  title: Text(
-                    line.text,
-                    style: theme.textTheme.bodySmall,
+          children: _notScriptExpanded
+              ? [
+                  Align(
+                    alignment: Alignment.centerLeft,
+                    child: Text(
+                      'These are usually margin notes or handwriting, not '
+                      'dialogue. Remove them to keep your script clean.',
+                      style: theme.textTheme.bodySmall?.copyWith(
+                        color: theme.colorScheme.onSurface.withValues(
+                          alpha: 0.6,
+                        ),
+                      ),
+                    ),
                   ),
-                  subtitle: Text(line.pageLineRef),
-                  trailing: IconButton(
-                    icon: const Icon(Icons.delete_outline, size: 20),
-                    onPressed: () => _removeLine(line),
-                  ),
-                )),
-            if (remaining.isNotEmpty) ...[
-              const SizedBox(height: 8),
-              SizedBox(
-                width: double.infinity,
-                child: OutlinedButton.icon(
-                  onPressed: _removeAllNotScript,
-                  icon: const Icon(Icons.delete_sweep_outlined),
-                  label: Text('Remove these (${remaining.length})'),
-                ),
-              ),
-            ],
-          ],
+                  const SizedBox(height: 8),
+                  if (remaining.isNotEmpty)
+                    SizedBox(
+                      height: (remaining.length * 64.0)
+                          .clamp(64.0, 320.0)
+                          .toDouble(),
+                      child: ListView.builder(
+                        itemCount: remaining.length,
+                        itemBuilder: (context, index) {
+                          final line = remaining[index];
+                          return ListTile(
+                            dense: true,
+                            contentPadding: EdgeInsets.zero,
+                            title: Text(
+                              line.text,
+                              style: theme.textTheme.bodySmall,
+                            ),
+                            subtitle: Text(line.pageLineRef),
+                            trailing: IconButton(
+                              icon: const Icon(Icons.delete_outline, size: 20),
+                              onPressed: () => _removeLine(line),
+                            ),
+                          );
+                        },
+                      ),
+                    ),
+                  if (remaining.isNotEmpty) ...[
+                    const SizedBox(height: 8),
+                    SizedBox(
+                      width: double.infinity,
+                      child: OutlinedButton.icon(
+                        onPressed: _removeAllNotScript,
+                        icon: const Icon(Icons.delete_sweep_outlined),
+                        label: Text('Remove these (${remaining.length})'),
+                      ),
+                    ),
+                  ],
+                ]
+              : const [],
         ),
       ),
     );

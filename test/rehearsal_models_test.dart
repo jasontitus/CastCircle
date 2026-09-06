@@ -63,20 +63,32 @@ void main() {
     test('struggledLines returns lines below 0.7 score', () {
       final attempts = [
         const LineAttempt(
-          lineId: 'l1', lineText: 'Easy line', attemptCount: 1,
-          bestScore: 0.95, skipped: false,
+          lineId: 'l1',
+          lineText: 'Easy line',
+          attemptCount: 1,
+          bestScore: 0.95,
+          skipped: false,
         ),
         const LineAttempt(
-          lineId: 'l2', lineText: 'Hard line', attemptCount: 4,
-          bestScore: 0.45, skipped: false,
+          lineId: 'l2',
+          lineText: 'Hard line',
+          attemptCount: 4,
+          bestScore: 0.45,
+          skipped: false,
         ),
         const LineAttempt(
-          lineId: 'l3', lineText: 'Medium line', attemptCount: 2,
-          bestScore: 0.72, skipped: false,
+          lineId: 'l3',
+          lineText: 'Medium line',
+          attemptCount: 2,
+          bestScore: 0.72,
+          skipped: false,
         ),
         const LineAttempt(
-          lineId: 'l4', lineText: 'Skipped line', attemptCount: 1,
-          bestScore: 0.3, skipped: true,
+          lineId: 'l4',
+          lineText: 'Skipped line',
+          attemptCount: 1,
+          bestScore: 0.3,
+          skipped: true,
         ),
       ];
 
@@ -96,18 +108,27 @@ void main() {
       );
 
       expect(session.struggledLines.length, 2);
-      expect(session.struggledLines.map((a) => a.lineId), containsAll(['l2', 'l4']));
+      expect(
+        session.struggledLines.map((a) => a.lineId),
+        containsAll(['l2', 'l4']),
+      );
     });
 
     test('struggledLines is empty when all scores above threshold', () {
       final attempts = [
         const LineAttempt(
-          lineId: 'l1', lineText: 'Line 1', attemptCount: 1,
-          bestScore: 0.9, skipped: false,
+          lineId: 'l1',
+          lineText: 'Line 1',
+          attemptCount: 1,
+          bestScore: 0.9,
+          skipped: false,
         ),
         const LineAttempt(
-          lineId: 'l2', lineText: 'Line 2', attemptCount: 1,
-          bestScore: 0.85, skipped: false,
+          lineId: 'l2',
+          lineText: 'Line 2',
+          attemptCount: 1,
+          bestScore: 0.85,
+          skipped: false,
         ),
       ];
 

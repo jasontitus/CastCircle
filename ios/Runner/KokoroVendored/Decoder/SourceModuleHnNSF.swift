@@ -4,11 +4,8 @@
 import Foundation
 import MLX
 import MLXNN
-import MLXRandom
 
 class SourceModuleHnNSF: Module {
-  private let sineAmp: Float
-  private let noiseStd: Float
   private let lSinGen: SineGen
   private let lLinear: Linear
 
@@ -21,8 +18,6 @@ class SourceModuleHnNSF: Module {
     addNoiseStd: Float = 0.003,
     voicedThreshold: Float = 0
   ) {
-    self.sineAmp = sineAmp
-    noiseStd = addNoiseStd
 
     // To produce sine waveforms
     lSinGen = SineGen(
@@ -43,13 +38,8 @@ class SourceModuleHnNSF: Module {
     super.init()
   }
 
-  func callAsFunction(_ x: MLXArray) -> (MLXArray, MLXArray, MLXArray) {
-    let (sineWavs, uv, _) = lSinGen(x)
-    let sineMerge = tanh(lLinear(sineWavs))
-
-    let noise = MLXRandom.normal(uv.shape) * (sineAmp / 3)
-
-    // Note: Turns out we don't need noise or uv for that matter
-    return (sineMerge, noise, uv)
+  func callAsFunction(_ x: MLXArray) -> MLXArray {
+    let sineWavs = lSinGen(x)
+    return tanh(lLinear(sineWavs))
   }
 }

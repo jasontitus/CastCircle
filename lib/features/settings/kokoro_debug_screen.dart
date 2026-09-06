@@ -18,12 +18,13 @@ class _KokoroDebugScreenState extends State<KokoroDebugScreen> {
   final _textController = TextEditingController(
     text: 'Hello! This is a test of the Kokoro neural text to speech engine.',
   );
-  final _speakerController = TextEditingController(text: '0');
+  String _selectedVoice = TtsService.kokoroVoices.first;
 
   Map<String, String> _debugInfo = {};
   List<String> _modelFiles = [];
   bool _loading = true;
   bool _speaking = false;
+  bool _initializing = false;
   String _statusLog = '';
   double _speed = 1.0;
 
@@ -36,7 +37,6 @@ class _KokoroDebugScreenState extends State<KokoroDebugScreen> {
   @override
   void dispose() {
     _textController.dispose();
-    _speakerController.dispose();
     super.dispose();
   }
 
@@ -44,14 +44,23 @@ class _KokoroDebugScreenState extends State<KokoroDebugScreen> {
     if (!mounted) return;
     setState(() => _loading = true);
 
-    // Get TTS debug info
-    final info = await _tts.getDebugInfo();
+    // Get TTS debug info. Keep the diagnostics screen usable even if the
+    // service itself cannot provide diagnostics on this platform.
+    Map<String, String> info;
+    try {
+      info = await _tts.getDebugInfo();
+    } catch (error) {
+      info = {'Error': error.toString()};
+      _log('getDebugInfo() ERROR: $error');
+    }
 
     // List model files on disk
     final files = <String>[];
     try {
-      final dir = await ModelManager.instance.modelsDir;
-      final kokoroDir = Directory(p.join(dir, 'kokoro_mlx'));
+      final kokoroPath = Platform.isAndroid
+          ? await ModelManager.instance.kokoroModelDir
+          : p.join(await ModelManager.instance.modelsDir, 'kokoro_mlx');
+      final kokoroDir = Directory(kokoroPath);
       if (await kokoroDir.exists()) {
         await for (final entity in kokoroDir.list(recursive: false)) {
           final name = p.basename(entity.path);
@@ -87,42 +96,66 @@ class _KokoroDebugScreenState extends State<KokoroDebugScreen> {
     // screen is gone beats setState-after-dispose.
     if (!mounted) return;
     setState(() {
-      _statusLog = '${DateTime.now().toString().substring(11, 19)} $msg\n$_statusLog';
+      _statusLog =
+          '${DateTime.now().toString().substring(11, 19)} $msg\n$_statusLog';
     });
   }
 
   Future<void> _tryInit() async {
+    if (_initializing) return;
+    setState(() => _initializing = true);
     _log('Calling TtsService.init()...');
-    await _tts.init();
-    _log('init() complete. Engine: ${_tts.activeEngine.name}, Kokoro ready: ${_tts.isKokoroLoaded}');
-    await _loadDebugInfo();
+    try {
+      await _tts.init();
+      _log(
+        'init() complete. Engine: ${_tts.activeEngine.name}, '
+        'Kokoro ready: ${_tts.isKokoroLoaded}',
+      );
+      await _loadDebugInfo();
+    } catch (error) {
+      _log('init() ERROR: $error');
+    } finally {
+      if (mounted) setState(() => _initializing = false);
+    }
   }
 
   Future<void> _tryReload() async {
+    if (_initializing) return;
+    setState(() => _initializing = true);
     _log('Calling tryLoadKokoro()...');
-    final success = await _tts.tryLoadKokoro();
-    _log('tryLoadKokoro() → $success. Engine: ${_tts.activeEngine.name}');
-    await _loadDebugInfo();
+    try {
+      final success = await _tts.tryLoadKokoro();
+      _log('tryLoadKokoro() → $success. Engine: ${_tts.activeEngine.name}');
+      await _loadDebugInfo();
+    } catch (error) {
+      _log('tryLoadKokoro() ERROR: $error');
+    } finally {
+      if (mounted) setState(() => _initializing = false);
+    }
   }
 
   Future<void> _speak() async {
     final text = _textController.text.trim();
     if (text.isEmpty) return;
 
-    final sid = int.tryParse(_speakerController.text) ?? 0;
+    const debugCharacter = '__kokoro_debug__';
+    final voice = _selectedVoice;
+    final speaker = TtsService.kokoroVoices.indexOf(voice);
+    _tts.assignVoice(debugCharacter, speaker, voiceId: voice);
+
     setState(() => _speaking = true);
-    _log('Speaking with speaker $sid, speed $_speed...');
+    _log('Speaking with voice $voice, speed $_speed...');
     _log('Text: "${text.substring(0, text.length.clamp(0, 60))}..."');
 
     try {
       await _tts.setRate(_speed * 0.5);
-      await _tts.speak(text);
+      await _tts.speak(text, character: debugCharacter);
       _log('speak() complete (engine: ${_tts.activeEngine.name})');
     } catch (e) {
       _log('speak() ERROR: $e');
+    } finally {
+      if (mounted) setState(() => _speaking = false);
     }
-
-    if (mounted) setState(() => _speaking = false);
   }
 
   Future<void> _stop() async {
@@ -157,8 +190,10 @@ class _KokoroDebugScreenState extends State<KokoroDebugScreen> {
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Text('Engine Status',
-                            style: theme.textTheme.titleSmall),
+                        Text(
+                          'Engine Status',
+                          style: theme.textTheme.titleSmall,
+                        ),
                         const SizedBox(height: 8),
                         for (final entry in _debugInfo.entries)
                           Padding(
@@ -179,13 +214,16 @@ class _KokoroDebugScreenState extends State<KokoroDebugScreen> {
                                   child: Text(
                                     entry.value,
                                     style: theme.textTheme.bodySmall?.copyWith(
-                                      color: entry.value == 'true' ||
+                                      color:
+                                          entry.value == 'true' ||
                                               entry.value == 'kokoro'
                                           ? Colors.green
                                           : entry.value == 'false' ||
-                                                  entry.value.contains('not found')
-                                              ? Colors.red
-                                              : null,
+                                                entry.value.contains(
+                                                  'not found',
+                                                )
+                                          ? Colors.red
+                                          : null,
                                     ),
                                   ),
                                 ),
@@ -203,14 +241,14 @@ class _KokoroDebugScreenState extends State<KokoroDebugScreen> {
                   children: [
                     Expanded(
                       child: OutlinedButton(
-                        onPressed: _tryInit,
+                        onPressed: _initializing ? null : _tryInit,
                         child: const Text('Init TTS'),
                       ),
                     ),
                     const SizedBox(width: 8),
                     Expanded(
                       child: OutlinedButton(
-                        onPressed: _tryReload,
+                        onPressed: _initializing ? null : _tryReload,
                         child: const Text('Reload Kokoro'),
                       ),
                     ),
@@ -239,15 +277,34 @@ class _KokoroDebugScreenState extends State<KokoroDebugScreen> {
                         Row(
                           children: [
                             SizedBox(
-                              width: 80,
-                              child: TextField(
-                                controller: _speakerController,
-                                keyboardType: TextInputType.number,
+                              width: 160,
+                              child: DropdownButtonFormField<String>(
+                                value: _selectedVoice,
+                                isExpanded: true,
                                 decoration: const InputDecoration(
                                   border: OutlineInputBorder(),
-                                  labelText: 'Speaker',
+                                  labelText: 'Voice',
                                   isDense: true,
                                 ),
+                                items: [
+                                  for (final voice in TtsService.kokoroVoices)
+                                    DropdownMenuItem(
+                                      value: voice,
+                                      child: Text(
+                                        voice,
+                                        overflow: TextOverflow.ellipsis,
+                                      ),
+                                    ),
+                                ],
+                                onChanged: _speaking
+                                    ? null
+                                    : (voice) {
+                                        if (voice != null) {
+                                          setState(
+                                            () => _selectedVoice = voice,
+                                          );
+                                        }
+                                      },
                               ),
                             ),
                             const SizedBox(width: 12),
@@ -255,8 +312,10 @@ class _KokoroDebugScreenState extends State<KokoroDebugScreen> {
                               child: Column(
                                 crossAxisAlignment: CrossAxisAlignment.start,
                                 children: [
-                                  Text('Speed: ${_speed.toStringAsFixed(1)}x',
-                                      style: theme.textTheme.bodySmall),
+                                  Text(
+                                    'Speed: ${_speed.toStringAsFixed(1)}x',
+                                    style: theme.textTheme.bodySmall,
+                                  ),
                                   Slider(
                                     value: _speed,
                                     min: 0.5,
@@ -300,18 +359,21 @@ class _KokoroDebugScreenState extends State<KokoroDebugScreen> {
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Text('Model Files on Disk',
-                            style: theme.textTheme.titleSmall),
+                        Text(
+                          'Model Files on Disk',
+                          style: theme.textTheme.titleSmall,
+                        ),
                         const SizedBox(height: 8),
                         if (_modelFiles.isEmpty)
-                          const Text('No files found',
-                              style: TextStyle(color: Colors.red))
+                          const Text(
+                            'No files found',
+                            style: TextStyle(color: Colors.red),
+                          )
                         else
                           for (final f in _modelFiles)
                             Padding(
                               padding: const EdgeInsets.only(bottom: 2),
-                              child: Text(f,
-                                  style: theme.textTheme.bodySmall),
+                              child: Text(f, style: theme.textTheme.bodySmall),
                             ),
                       ],
                     ),

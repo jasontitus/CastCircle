@@ -24,7 +24,10 @@ void main() {
 
     test('long text splits at sentence boundaries', () {
       // Create text with multiple sentences that exceed 300 chars
-      final text = List.generate(10, (i) => 'This is sentence number $i which adds some length to the text.').join(' ');
+      final text = List.generate(
+        10,
+        (i) => 'This is sentence number $i which adds some length to the text.',
+      ).join(' ');
       expect(text.length, greaterThan(300));
 
       final chunks = splitTextForKokoro(text);
@@ -32,8 +35,11 @@ void main() {
 
       // Each chunk should be ≤ 300 chars
       for (final chunk in chunks) {
-        expect(chunk.length, lessThanOrEqualTo(300),
-            reason: 'Chunk too long: ${chunk.length} chars');
+        expect(
+          chunk.length,
+          lessThanOrEqualTo(300),
+          reason: 'Chunk too long: ${chunk.length} chars',
+        );
       }
 
       // Reconstructed text should match original (join with space)
@@ -43,13 +49,17 @@ void main() {
 
     test('splits at comma boundaries when sentences are too long', () {
       // Single long sentence with commas
-      final text = List.generate(20, (i) => 'clause number $i').join(', ') + '.';
+      final text =
+          List.generate(20, (i) => 'clause number $i').join(', ') + '.';
       expect(text.length, greaterThan(300));
 
       final chunks = splitTextForKokoro(text);
       for (final chunk in chunks) {
-        expect(chunk.length, lessThanOrEqualTo(300),
-            reason: 'Chunk too long: ${chunk.length} chars');
+        expect(
+          chunk.length,
+          lessThanOrEqualTo(300),
+          reason: 'Chunk too long: ${chunk.length} chars',
+        );
       }
     });
 
@@ -61,15 +71,18 @@ void main() {
     });
 
     test('preserves all text content', () {
-      final text = 'First sentence here. Second sentence there! Third one? '
-          'Fourth with semicolons; and more text. ' * 5;
+      final text =
+          'First sentence here. Second sentence there! Third one? '
+              'Fourth with semicolons; and more text. ' *
+          5;
       final chunks = splitTextForKokoro(text.trim());
       final joined = chunks.join(' ');
       expect(joined, text.trim());
     });
 
     test('handles exclamation marks and question marks as boundaries', () {
-      final text = 'What is happening! I cannot believe it? This is incredible. ' * 6;
+      final text =
+          'What is happening! I cannot believe it? This is incredible. ' * 6;
       final chunks = splitTextForKokoro(text.trim());
       expect(chunks.length, greaterThan(1));
       for (final chunk in chunks) {

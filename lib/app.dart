@@ -2,10 +2,12 @@ import 'dart:async';
 
 import 'package:firebase_analytics/firebase_analytics.dart';
 import 'package:flutter/material.dart';
-import 'main.dart' show firebaseAvailable, rootScaffoldMessengerKey;
+import 'main.dart'
+    show firebaseAvailable, rootScaffoldMessengerKey, sharedPreferencesProvider;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_riverpod/legacy.dart';
 import 'package:go_router/go_router.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 import 'core/theme/app_theme.dart';
 import 'data/services/debug_log_service.dart';
 import 'data/services/deep_link_service.dart';
@@ -43,6 +45,14 @@ final authGatePassedProvider = StateProvider<bool>((ref) {
   return false;
 });
 
+/// Whether Supabase is initialized and ready for authenticated cloud work.
+///
+/// This is reactive because initialization may complete after the app shell
+/// and persisted auth gate have already been built.
+final supabaseReadyProvider = StateProvider<bool>(
+  (ref) => SupabaseService.instance.isInitialized,
+);
+
 /// Human-readable screen names for analytics.
 const _screenNames = {
   '/': 'Home',
@@ -65,13 +75,12 @@ const _screenNames = {
   '/ai-models': 'AI Models',
   '/setup-models': 'AI Setup',
   '/debug-log': 'Debug Log',
+  '/kokoro-debug': 'Kokoro Debug',
 };
 
 GoRouter _buildRouter(Ref ref) => GoRouter(
   initialLocation: '/',
-  observers: [
-    AnalyticsRouteObserver(),
-  ],
+  observers: [AnalyticsRouteObserver()],
   redirect: (context, state) {
     final authed = ref.read(authGatePassedProvider);
     final onAuth = state.uri.toString() == '/auth';
@@ -204,11 +213,115 @@ class CastCircleApp extends ConsumerStatefulWidget {
 
 class _CastCircleAppState extends ConsumerState<CastCircleApp> {
   StreamSubscription<PendingJoin>? _deepLinkSub;
+  StreamSubscription<AuthState>? _authSub;
+  String? _routedUserId;
+  String? _restoringUserId;
+  String? _restoredUserId;
+  int _productionEpoch = 0;
 
   @override
   void initState() {
     super.initState();
     _setupDeepLinks();
+    unawaited(_watchSupabaseAuth());
+  }
+
+  Future<void> _watchSupabaseAuth() async {
+    final supabase = SupabaseService.instance;
+    final initialized = await supabase.initializationResult;
+    if (!mounted) return;
+
+    ref.read(supabaseReadyProvider.notifier).state = initialized;
+    if (!initialized) {
+      await _applyAccountIdentity(null);
+      return;
+    }
+
+    // Subscribe before sampling currentUser so an auth event cannot slip
+    // between the restored-session check and listener installation.
+    _authSub = supabase.authStateChanges.listen((state) {
+      unawaited(_applyAccountIdentity(state.session?.user.id));
+    });
+    await _applyAccountIdentity(supabase.currentUser?.id);
+  }
+
+  Future<void> _applyAccountIdentity(String? userId) async {
+    try {
+      await setAccountIdentity(ref, userId);
+    } catch (e, stack) {
+      DebugLogService.instance.logError(
+        LogCategory.error,
+        'Switching local account data failed',
+        e,
+        stack,
+      );
+      return;
+    }
+
+    if (!mounted || SupabaseService.instance.currentUser?.id != userId) return;
+    ref.read(authStateProvider.notifier).state = userId != null;
+    if (userId == null) {
+      _routedUserId = null;
+      _restoredUserId = null;
+      return;
+    }
+    await _handleSignedIn(userId);
+  }
+
+  Future<void> _handleSignedIn(String userId) async {
+    if (!mounted) return;
+
+    // Auth streams emit again for token refreshes. Only the first transition
+    // for this user may consume/navigation-route a pending invite.
+    if (_routedUserId != userId) {
+      _routedUserId = userId;
+      _passAuthGate();
+    }
+
+    if (_restoredUserId == userId || _restoringUserId == userId) return;
+    _restoringUserId = userId;
+    try {
+      // A real session supersedes guest mode. Leaving this preference set
+      // makes a later failed initialization silently reopen the guest gate.
+      await ref.read(sharedPreferencesProvider).remove('auth_skipped');
+      if (!mounted || SupabaseService.instance.currentUser?.id != userId) {
+        return;
+      }
+      await restoreCloudProductions(ref);
+      if (mounted && SupabaseService.instance.currentUser?.id == userId) {
+        _restoredUserId = userId;
+      }
+    } catch (e, stack) {
+      DebugLogService.instance.logError(
+        LogCategory.network,
+        'Restoring cloud productions after sign-in failed',
+        e,
+        stack,
+      );
+    } finally {
+      if (_restoringUserId == userId) _restoringUserId = null;
+    }
+  }
+
+  void _passAuthGate() {
+    if (!mounted) return;
+
+    final wasPassed = ref.read(authGatePassedProvider);
+    if (!wasPassed) {
+      ref.read(authGatePassedProvider.notifier).state = true;
+    }
+
+    final router = ref.read(_routerProvider);
+    if (ref.read(pendingJoinProvider) != null) {
+      // Restored sessions and email-confirmation auth events do not pass
+      // through AuthScreen's submit handler, but must honor the same pending
+      // deep link instead of falling back to Home.
+      router.go('/join');
+    } else if (!wasPassed) {
+      // GoRouter's redirect reads Riverpod state, so explicitly refresh it
+      // when late Supabase initialization restores a persisted session.
+      router.refresh();
+    }
   }
 
   Future<void> _setupDeepLinks() async {
@@ -218,8 +331,11 @@ class _CastCircleAppState extends ConsumerState<CastCircleApp> {
       await deepLinks.init();
     } catch (e) {
       // Invite links silently doing nothing is undiagnosable without this.
-      DebugLogService.instance
-          .logError(LogCategory.error, 'Deep link init failed', e);
+      DebugLogService.instance.logError(
+        LogCategory.error,
+        'Deep link init failed',
+        e,
+      );
     }
 
     // Handle initial link (cold start)
@@ -245,6 +361,7 @@ class _CastCircleAppState extends ConsumerState<CastCircleApp> {
   @override
   void dispose() {
     _deepLinkSub?.cancel();
+    _authSub?.cancel();
     super.dispose();
   }
 
@@ -256,7 +373,15 @@ class _CastCircleAppState extends ConsumerState<CastCircleApp> {
     // never capture a disposed widget ref). Loads this production's local
     // recordings and clears the previous production's downloaded cache first.
     ref.listen(currentProductionProvider, (prev, next) {
-      if (next == null || next.id == prev?.id) return;
+      if (next?.id == prev?.id) return;
+
+      final epoch = ++_productionEpoch;
+      // Invalidate callbacks and work from the previous production
+      // immediately; waiting for the new production's Drift load would leave
+      // the old run active throughout a slow database read.
+      final runToken = activateRecordingProduction(next?.id);
+      if (next == null) return;
+
       ref.read(understudyRecordingsProvider.notifier).clear();
       // Load this production's local recordings BEFORE the cloud sync runs, or
       // the sync mistakes not-yet-loaded recordings for missing ones (re-
@@ -267,10 +392,23 @@ class _CastCircleAppState extends ConsumerState<CastCircleApp> {
               .read(recordingsProvider.notifier)
               .loadForProduction(next.id);
         } catch (e) {
-          DebugLogService.instance.logError(LogCategory.error,
-              'Loading local recordings for ${next.id} failed', e);
+          DebugLogService.instance.logError(
+            LogCategory.error,
+            'Loading local recordings for ${next.id} failed',
+            e,
+          );
+          return;
         }
-        launchRecordingSync(ref, next.id);
+
+        // A rapid switch may finish an older database read after the newer
+        // selection. Only the latest transition may install global callbacks
+        // or launch reconciliation for its production.
+        if (!mounted ||
+            epoch != _productionEpoch ||
+            ref.read(currentProductionProvider)?.id != next.id) {
+          return;
+        }
+        launchRecordingSync(ref, next.id, runToken);
       }());
     });
 
@@ -309,9 +447,44 @@ class AnalyticsRouteObserver extends NavigatorObserver {
 
   final void Function(String screenName) _logScreenView;
 
+  static String? _pendingScreenName;
+
   static void _sendToFirebase(String screenName) {
+    if (!firebaseAvailable) {
+      // Keep the latest route: if auth restoration redirects before Firebase
+      // is ready, analytics should replay the screen the user actually sees.
+      _pendingScreenName = screenName;
+      return;
+    }
+    // A route observed after Firebase became available supersedes anything
+    // buffered during startup; flushing the old route later would regress the
+    // analytics screen attribution.
+    _pendingScreenName = null;
+    _recordScreenView(screenName);
+  }
+
+  /// Replay the latest route observed during asynchronous Firebase startup.
+  static void flushPendingScreenView() {
     if (!firebaseAvailable) return;
-    FirebaseAnalytics.instance.logScreenView(screenName: screenName);
+    final screenName = _pendingScreenName;
+    if (screenName == null) return;
+    _pendingScreenName = null;
+    _recordScreenView(screenName);
+  }
+
+  static void _recordScreenView(String screenName) {
+    unawaited(
+      FirebaseAnalytics.instance
+          .logScreenView(screenName: screenName)
+          .catchError((Object error) {
+            _pendingScreenName = screenName;
+            DebugLogService.instance.logError(
+              LogCategory.firebase,
+              'Firebase screen-view logging failed',
+              error,
+            );
+          }),
+    );
   }
 
   @override

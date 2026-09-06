@@ -1,0 +1,1 @@
+Improved script import for Stage Partners PDFs: indented pages, inline NAME: dialogue cues, and repeated scene-list preambles now parse correctly.

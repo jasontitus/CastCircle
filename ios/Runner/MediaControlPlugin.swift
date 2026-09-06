@@ -4,10 +4,9 @@ import MediaPlayer
 /// Registers for MPRemoteCommandCenter events (AirPods controls, lock screen,
 /// Action Button when configured as media control) and forwards them to Flutter.
 ///
-/// Mappings:
-///   - Previous track (double-tap left AirPod) → "jumpBack"
-///   - Play/Pause toggle                       → "playPause"
-///   - Next track (double-tap right AirPod)    → "skip"
+/// Every supported remote command maps to "jumpBack". AirPods may be
+/// configured to emit different command types, but rehearsal intentionally
+/// treats all of them as the same jump-back action.
 class MediaControlPlugin: NSObject {
     private let channel: FlutterMethodChannel
     private var isActive = false

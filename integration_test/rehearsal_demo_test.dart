@@ -6,6 +6,7 @@
 // with `xcrun simctl io recordVideo` to turn the session into an animated
 // webp suitable for README embedding.
 
+import 'package:drift/native.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show rootBundle;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -21,6 +22,7 @@ import 'package:castcircle/data/models/production_models.dart';
 import 'package:castcircle/data/services/script_import_service.dart';
 import 'package:castcircle/main.dart';
 import 'package:castcircle/providers/production_providers.dart';
+import 'package:castcircle/features/rehearsal/rehearsal_screen.dart';
 
 /// The full Hamlet script, loaded at test runtime from the bundled asset.
 const _hamletAssetPath = 'assets/test_scripts/hamlet.txt';
@@ -36,10 +38,11 @@ void main() {
     await prefs.setBool('auth_skipped', true);
     await prefs.setBool('screenshot_mode', true);
 
-    final db = AppDatabase();
+    final db = AppDatabase.forTesting(NativeDatabase.memory());
+    addTearDown(db.close);
     final rawHamlet = await rootBundle.loadString(_hamletAssetPath);
     final importer = ScriptImportService();
-    final hamlet = importer.importFromText(rawHamlet, title: 'Hamlet');
+    final hamlet = await importer.importFromText(rawHamlet, title: 'Hamlet');
     final production = Production(
       id: const Uuid().v4(),
       title: 'Hamlet',
@@ -62,23 +65,28 @@ void main() {
 
     // Seed production + script.
     final container = ProviderScope.containerOf(
-        tester.element(find.byType(CastCircleApp)));
+      tester.element(find.byType(CastCircleApp)),
+    );
     await container.read(productionsProvider.notifier).add(production);
     container.read(currentProductionProvider.notifier).state = production;
     container.read(currentScriptProvider.notifier).state = hamlet;
     await tester.pumpAndSettle(const Duration(seconds: 1));
 
     // Configure rehearsal: HAMLET as actor, cue practice mode, Scene 2.
+    expect(hamlet.scenes, isNotEmpty);
+    final rehearsalScene = hamlet.scenes.firstWhere(
+      (scene) => scene.characters.contains('HAMLET'),
+      orElse: () => hamlet.scenes.first,
+    );
+    final expectedActorLine = hamlet
+        .linesInScene(rehearsalScene)
+        .firstWhere((line) => line.isForCharacter('HAMLET'))
+        .text;
     container.read(rehearsalCharacterProvider.notifier).state = 'HAMLET';
     container.read(rehearsalModeProvider.notifier).state =
         RehearsalMode.cuePractice;
-    if (hamlet.scenes.isNotEmpty) {
-      container.read(selectedSceneProvider.notifier).state =
-          hamlet.scenes.firstWhere(
-        (s) => s.characters.contains('HAMLET'),
-        orElse: () => hamlet.scenes.first,
-      );
-    }
+    container.read(hideMyLinesProvider.notifier).state = false;
+    container.read(selectedSceneProvider.notifier).state = rehearsalScene;
 
     // Navigate to production hub (so the recording starts on a "real" screen)
     // then push rehearsal after a brief hold.
@@ -90,6 +98,21 @@ void main() {
 
     _context(tester).push('/rehearsal');
     await tester.pumpAndSettle(const Duration(seconds: 2));
+    expect(
+      find.byType(RehearsalScreen),
+      findsOneWidget,
+      reason: 'recording must show the rehearsal surface',
+    );
+    expect(
+      find.textContaining('HAMLET'),
+      findsWidgets,
+      reason: 'recording must render Hamlet rehearsal lines',
+    );
+    expect(
+      find.text(expectedActorLine),
+      findsOneWidget,
+      reason: 'recording must render dialogue from the selected scene',
+    );
 
     // Hold for 36s of real wall-clock time while the rehearsal plays through.
     // Pump periodically so frames render and TTS callbacks fire.
@@ -99,6 +122,6 @@ void main() {
       await Future<void>.delayed(const Duration(milliseconds: 100));
     }
 
-    await db.close();
+    // The in-memory database is closed by teardown, including on failure.
   });
 }

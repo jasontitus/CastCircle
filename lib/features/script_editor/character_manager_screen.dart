@@ -5,6 +5,8 @@ import 'package:go_router/go_router.dart';
 import '../../core/responsive.dart';
 import '../../core/theme/app_theme.dart';
 import '../../data/models/script_models.dart';
+import '../../data/models/cast_member_model.dart';
+import '../../data/models/voice_preset.dart';
 import '../../data/services/debug_log_service.dart';
 import '../../data/services/supabase_service.dart';
 import '../../data/services/voice_config_service.dart';
@@ -232,24 +234,42 @@ class _CharacterManagerScreenState
     CharacterGender.nonGendered => Colors.purple,
   };
 
-  void _toggleGender(WidgetRef ref, ScriptCharacter char, ParsedScript script) {
+  Future<void> _toggleGender(
+    WidgetRef ref,
+    ScriptCharacter char,
+    ParsedScript script,
+  ) async {
     final newGender = switch (char.gender) {
       CharacterGender.female => CharacterGender.male,
       CharacterGender.male => CharacterGender.nonGendered,
       CharacterGender.nonGendered => CharacterGender.female,
     };
 
-    // Persist gender
     final production = ref.read(currentProductionProvider);
     if (production != null) {
-      VoiceConfigService.instance.setGender(
-        production.id,
-        char.name,
-        newGender,
-      );
+      try {
+        await VoiceConfigService.instance.setGender(
+          production.id,
+          char.name,
+          newGender,
+        );
+      } catch (e) {
+        DebugLogService.instance.logError(
+          LogCategory.general,
+          'Gender update failed for "${char.name}"',
+          e,
+        );
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showAutoToast(
+          const SnackBar(
+            content: Text("Couldn't save the gender change. Please try again."),
+          ),
+        );
+        return;
+      }
+      if (!mounted) return;
     }
 
-    // Update in-memory script
     final updatedCharacters = script.characters.map((c) {
       if (c.name == char.name) return c.copyWith(gender: newGender);
       return c;
@@ -262,8 +282,6 @@ class _CharacterManagerScreenState
       scenes: script.scenes,
       rawText: script.rawText,
     );
-    // Editor mutations used to live in memory only — an app kill, or
-    // simply opening another production, silently discarded them.
     scheduleScriptSave(ref);
   }
 
@@ -301,11 +319,29 @@ class _CharacterManagerScreenState
             groupValue: currentLocale,
             title: Text(e.value),
             onChanged: (value) async {
-              await VoiceConfigService.instance.setLocale(
-                production.id,
-                char.name,
-                value,
-              );
+              try {
+                await VoiceConfigService.instance.setLocale(
+                  production.id,
+                  char.name,
+                  value,
+                );
+              } catch (e) {
+                DebugLogService.instance.logError(
+                  LogCategory.general,
+                  'Dialect update failed for "${char.name}"',
+                  e,
+                );
+                if (!mounted) return;
+                ScaffoldMessenger.of(this.context).showAutoToast(
+                  const SnackBar(
+                    content: Text(
+                      "Couldn't save the dialect change. Please try again.",
+                    ),
+                  ),
+                );
+                return;
+              }
+              if (!mounted) return;
               setState(() {
                 if (value == null) {
                   _charLocales.remove(char.name);
@@ -421,13 +457,32 @@ class _CharacterManagerScreenState
     ScriptCharacter char,
     ParsedScript script,
   ) {
+    final sharedCount = script.lines
+        .where((line) => line.multiCharacters.contains(char.name))
+        .length;
+    final removedCount = script.lines
+        .where(
+          (line) =>
+              (line.lineType == LineType.dialogue ||
+                  line.lineType == LineType.song) &&
+              line.character == char.name &&
+              !line.multiCharacters.contains(char.name),
+        )
+        .length;
+    final sharedDetail = sharedCount == 0
+        ? ''
+        : ' ${char.name} will also be removed from $sharedCount shared '
+              'line(s); the other speakers and dialogue will remain.';
+
     showDialog(
       context: context,
       builder: (context) => AlertDialog(
         title: Text('Delete "${char.name}"?'),
         content: Text(
-          'This will remove ${char.lineCount} line(s) attributed to ${char.name}. '
-          'This cannot be undone.',
+          'This will remove $removedCount line(s) attributed only to '
+          '${char.name}.$sharedDetail Any cast assignments and saved voice '
+          'settings for ${char.name} will also be removed. This cannot be '
+          'undone.',
         ),
         actions: [
           TextButton(
@@ -436,9 +491,9 @@ class _CharacterManagerScreenState
           ),
           FilledButton(
             style: FilledButton.styleFrom(backgroundColor: Colors.red),
-            onPressed: () {
-              _applyDelete(ref, script, char.name);
+            onPressed: () async {
               Navigator.pop(context);
+              await _applyDeleteWithCleanup(ref, char.name);
             },
             child: const Text('Delete'),
           ),
@@ -639,6 +694,7 @@ class _CharacterManagerScreenState
       // before ever opening Cast & Roles would see an empty list and skip the
       // migration entirely.
       await notifier.loadForProduction(productionId);
+      if (!mounted) return;
       final affected = ref
           .read(castMembersProvider)
           .where((m) => m.characterName == oldName)
@@ -654,9 +710,9 @@ class _CharacterManagerScreenState
           } catch (e) {
             // Still rename locally so the UI is coherent, but say so: the
             // cloud row wins on the next sync and will revert this.
-            failures.add(member.displayName.isNotEmpty
-                ? member.displayName
-                : oldName);
+            failures.add(
+              member.displayName.isNotEmpty ? member.displayName : oldName,
+            );
             DebugLogService.instance.logError(
               LogCategory.network,
               'Cloud cast rename "$oldName" → "$newName" failed for '
@@ -700,21 +756,275 @@ class _CharacterManagerScreenState
     );
   }
 
-  void _applyDelete(WidgetRef ref, ParsedScript script, String charName) {
-    final updatedLines = script.lines
-        .where(
-          (l) =>
-              !(l.lineType == LineType.dialogue && l.character == charName) &&
-              !(l.lineType == LineType.dialogue &&
-                  l.multiCharacters.contains(charName)),
-        )
-        .toList();
+  Future<void> _applyDeleteWithCleanup(WidgetRef ref, String charName) async {
+    final production = ref.read(currentProductionProvider);
+    final initialScript = ref.read(currentScriptProvider);
+    if (production == null || initialScript == null) return;
 
-    _rebuildScript(ref, script, updatedLines);
+    final productionState = ref.read(currentProductionProvider.notifier);
+    final scriptState = ref.read(currentScriptProvider.notifier);
+    final castNotifier = ref.read(castMembersProvider.notifier);
+    final repository = ref.read(productionRepositoryProvider);
+    final supa = SupabaseService.instance;
+    final voiceConfig = VoiceConfigService.instance;
+    final requiresCloud =
+        production.organizerId.isNotEmpty && production.organizerId != 'local';
+
+    if (requiresCloud && !supa.isSignedIn) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showAutoToast(
+          const SnackBar(
+            content: Text(
+              'Sign in before deleting this character so shared cast '
+              'assignments can be removed safely.',
+            ),
+          ),
+        );
+      }
+      return;
+    }
+
+    late final List<CastMemberModel> assigned;
+    late final List<CastMemberModel> remoteAssigned;
+    late final Map<String, CharacterVoiceConfig> voiceOverrides;
+    late final Map<String, CharacterGender> genders;
+    late final Map<String, String> locales;
+    try {
+      assigned = (await repository.getCastMembers(
+        production.id,
+      )).where((member) => member.characterName == charName).toList();
+      voiceOverrides = await voiceConfig.getOverrides(production.id);
+      genders = await voiceConfig.getGenders(production.id);
+      locales = await voiceConfig.getLocales(production.id);
+      if (requiresCloud) {
+        final rows = await supa.fetchCastMembers(production.id);
+        remoteAssigned = [
+          for (final row in rows)
+            if ((row['character_name'] as String? ?? '') == charName)
+              CastMemberModel(
+                id: row['id'] as String,
+                productionId: production.id,
+                userId: row['user_id'] as String?,
+                characterName: charName,
+                displayName: row['display_name'] as String? ?? '',
+                contactInfo: row['contact_info'] as String?,
+                role: CastRole.fromString(row['role'] as String? ?? 'actor'),
+                invitedAt: row['invited_at'] == null
+                    ? null
+                    : DateTime.tryParse(row['invited_at'] as String),
+                joinedAt: row['joined_at'] == null
+                    ? null
+                    : DateTime.tryParse(row['joined_at'] as String),
+              ),
+        ];
+      } else {
+        remoteAssigned = const [];
+      }
+    } catch (e) {
+      DebugLogService.instance.logError(
+        LogCategory.general,
+        'Could not snapshot "$charName" before deletion',
+        e,
+      );
+      if (mounted) {
+        ScaffoldMessenger.of(context).showAutoToast(
+          const SnackBar(
+            content: Text(
+              "Couldn't prepare a safe character deletion. Nothing changed.",
+            ),
+          ),
+        );
+      }
+      return;
+    }
+
+    Future<void> restoreDependencies() async {
+      try {
+        await voiceConfig.removeCharacterSettings(production.id, charName);
+        final override = voiceOverrides[charName];
+        if (override != null) {
+          await voiceConfig.setOverride(production.id, override);
+        }
+        final gender = genders[charName];
+        if (gender != null) {
+          await voiceConfig.setGender(production.id, charName, gender);
+        }
+        final locale = locales[charName];
+        if (locale != null) {
+          await voiceConfig.setLocale(production.id, charName, locale);
+        }
+      } catch (e) {
+        DebugLogService.instance.logError(
+          LogCategory.general,
+          'Voice rollback failed for "$charName"',
+          e,
+        );
+      }
+      for (final member in assigned) {
+        try {
+          await repository.saveCastMember(member);
+        } catch (e) {
+          DebugLogService.instance.logError(
+            LogCategory.general,
+            'Local cast rollback failed for ${member.id}',
+            e,
+          );
+        }
+      }
+      for (final member in remoteAssigned) {
+        try {
+          await supa.restoreCastMember(member);
+        } catch (e) {
+          DebugLogService.instance.logError(
+            LogCategory.network,
+            'Cloud cast rollback failed for ${member.id}',
+            e,
+          );
+        }
+      }
+    }
+
+    try {
+      if (requiresCloud) {
+        final remoteIds = {
+          for (final member in remoteAssigned) member.id,
+          for (final member in assigned) member.id,
+        };
+        for (final id in remoteIds) {
+          await supa.removeCastMember(
+            castMemberId: id,
+            productionId: production.id,
+          );
+        }
+      }
+      await voiceConfig.removeCharacterSettings(production.id, charName);
+      for (final member in assigned) {
+        await repository.deleteCastMember(member.id);
+      }
+    } catch (e) {
+      await restoreDependencies();
+      DebugLogService.instance.logError(
+        LogCategory.general,
+        'Character cleanup failed for "$charName"',
+        e,
+      );
+      if (mounted) {
+        ScaffoldMessenger.of(context).showAutoToast(
+          SnackBar(
+            content: Text(
+              "Couldn't safely remove $charName. The deletion was rolled "
+              'back; check your connection and try again.',
+            ),
+            duration: const Duration(seconds: 6),
+          ),
+        );
+      }
+      return;
+    }
+
+    final isStillCurrent = productionState.state?.id == production.id;
+    final baseScript = isStillCurrent
+        ? (scriptState.state ?? initialScript)
+        : initialScript;
+    final updated = _scriptWithoutCharacter(baseScript, charName);
+    try {
+      await repository.saveScriptLines(production.id, updated.lines);
+      await repository.saveScenes(production.id, updated.scenes);
+    } catch (e) {
+      await restoreDependencies();
+      try {
+        await repository.saveScriptLines(production.id, baseScript.lines);
+        await repository.saveScenes(production.id, baseScript.scenes);
+      } catch (rollbackError) {
+        DebugLogService.instance.logError(
+          LogCategory.general,
+          'Script rollback failed after deleting "$charName"',
+          rollbackError,
+        );
+      }
+      DebugLogService.instance.logError(
+        LogCategory.general,
+        'Script persistence failed while deleting "$charName"',
+        e,
+      );
+      if (mounted) {
+        ScaffoldMessenger.of(context).showAutoToast(
+          const SnackBar(
+            content: Text(
+              "The character couldn't be saved as deleted, so the operation "
+              'was rolled back.',
+            ),
+            duration: Duration(seconds: 6),
+          ),
+        );
+      }
+      return;
+    }
+
+    // The production-scoped repository operation always completes. Only
+    // provider/UI updates depend on this production still being current.
+    if (productionState.state?.id == production.id) {
+      try {
+        await castNotifier.loadForProduction(production.id);
+      } catch (e) {
+        DebugLogService.instance.logError(
+          LogCategory.general,
+          'Cast provider refresh failed after deleting "$charName"',
+          e,
+        );
+      }
+      if (productionState.state?.id != production.id) return;
+      scriptState.state = updated;
+      if (mounted) scheduleScriptSave(ref);
+    }
+  }
+
+  ParsedScript _scriptWithoutCharacter(ParsedScript script, String charName) {
+    final updatedLines = <ScriptLine>[];
+    for (final line in script.lines) {
+      if (line.lineType != LineType.dialogue &&
+          line.lineType != LineType.song) {
+        updatedLines.add(line);
+        continue;
+      }
+
+      if (line.multiCharacters.contains(charName)) {
+        final remaining = line.multiCharacters
+            .where((name) => name != charName)
+            .toList();
+        if (remaining.isEmpty) continue;
+        updatedLines.add(
+          line.copyWith(
+            character: remaining.join(', '),
+            multiCharacters: remaining.length == 1 ? const [] : remaining,
+          ),
+        );
+        continue;
+      }
+
+      if (line.character != charName) updatedLines.add(line);
+    }
+
+    return _buildRebuiltScript(script, updatedLines);
   }
 
   void _rebuildScript(
     WidgetRef ref,
+    ParsedScript script,
+    List<ScriptLine> updatedLines, {
+    String? renamedFrom,
+    String? renamedTo,
+  }) {
+    ref.read(currentScriptProvider.notifier).state = _buildRebuiltScript(
+      script,
+      updatedLines,
+      renamedFrom: renamedFrom,
+      renamedTo: renamedTo,
+    );
+    scheduleScriptSave(ref);
+  }
+
+  ParsedScript _buildRebuiltScript(
     ParsedScript script,
     List<ScriptLine> updatedLines, {
     String? renamedFrom,
@@ -729,12 +1039,22 @@ class _CharacterManagerScreenState
     // putIfAbsent so a merge target keeps its own gender.
     if (renamedFrom != null && renamedTo != null) {
       final carried = existingGenders[renamedFrom];
-      if (carried != null) existingGenders.putIfAbsent(renamedTo, () => carried);
+      if (carried != null)
+        existingGenders.putIfAbsent(renamedTo, () => carried);
     }
     final charCounts = <String, int>{};
     for (final line in updatedLines) {
-      if (line.lineType == LineType.dialogue && line.character.isNotEmpty) {
-        charCounts[line.character] = (charCounts[line.character] ?? 0) + 1;
+      if (line.lineType != LineType.dialogue &&
+          line.lineType != LineType.song) {
+        continue;
+      }
+      final speakers = line.multiCharacters.isNotEmpty
+          ? line.multiCharacters
+          : [line.character];
+      for (final speaker in speakers) {
+        if (speaker.isNotEmpty) {
+          charCounts[speaker] = (charCounts[speaker] ?? 0) + 1;
+        }
       }
     }
     var colorIdx = 0;
@@ -781,15 +1101,12 @@ class _CharacterManagerScreenState
       return scene.copyWith(characters: sceneChars.toList()..sort());
     }).toList();
 
-    ref.read(currentScriptProvider.notifier).state = ParsedScript(
+    return ParsedScript(
       title: script.title,
       lines: updatedLines,
       characters: charList,
       scenes: updatedScenes,
       rawText: script.rawText,
     );
-    // Editor mutations used to live in memory only — an app kill, or
-    // simply opening another production, silently discarded them.
-    scheduleScriptSave(ref);
   }
 }

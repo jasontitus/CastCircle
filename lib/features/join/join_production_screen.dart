@@ -34,6 +34,7 @@ class _JoinProductionScreenState extends ConsumerState<JoinProductionScreen> {
 
   // Deep link pre-fill
   String? _prefilledCharacter;
+  bool _prefilledCharacterUnavailable = false;
 
   @override
   void initState() {
@@ -45,18 +46,18 @@ class _JoinProductionScreenState extends ConsumerState<JoinProductionScreen> {
 
   void _checkPendingJoin() {
     final pending = ref.read(pendingJoinProvider);
-    if (pending != null) {
-      _codeController.text = pending.code;
-      _prefilledCharacter = pending.characterName;
-      if (pending.actorName != null) {
-        _nameController.text = pending.actorName!;
-      }
-      // Clear the pending join so it doesn't trigger again
-      ref.read(pendingJoinProvider.notifier).state = null;
-      DeepLinkService.instance.clearPending();
-      // Auto-lookup the code
-      _lookupCode();
+    if (pending == null) return;
+
+    _codeController.text = pending.code;
+    _prefilledCharacter = pending.characterName;
+    if (pending.actorName != null) {
+      _nameController.text = pending.actorName!;
     }
+
+    // Authentication may dispose this screen. Keep the pending invite intact
+    // so AuthScreen can route back here and the recreated screen can consume it.
+    if (!SupabaseService.instance.isSignedIn) return;
+    _lookupCode();
   }
 
   @override
@@ -240,6 +241,21 @@ class _JoinProductionScreenState extends ConsumerState<JoinProductionScreen> {
                   const SizedBox(height: 8),
                   ..._buildCharacterOptions(),
                 ],
+                if (_prefilledCharacterUnavailable)
+                  Card(
+                    color: Theme.of(context).colorScheme.errorContainer,
+                    child: Padding(
+                      padding: const EdgeInsets.all(12),
+                      child: Text(
+                        'The invited role "$_prefilledCharacter" is no longer '
+                        'available. Choose another role, or explicitly choose '
+                        'to join without a character.',
+                        style: TextStyle(
+                          color: Theme.of(context).colorScheme.onErrorContainer,
+                        ),
+                      ),
+                    ),
+                  ),
                 const SizedBox(height: 8),
                 // Option to join without a specific character
                 RadioListTile<String>(
@@ -267,20 +283,23 @@ class _JoinProductionScreenState extends ConsumerState<JoinProductionScreen> {
                 ValueListenableBuilder<TextEditingValue>(
                   valueListenable: _nameController,
                   builder: (context, nameValue, _) => FilledButton.icon(
-                  onPressed: _loading || nameValue.text.trim().isEmpty
-                      ? null
-                      : _joinProduction,
-                  icon: _loading
-                      ? const SizedBox(
-                          width: 16,
-                          height: 16,
-                          child: CircularProgressIndicator(strokeWidth: 2),
-                        )
-                      : const Icon(Icons.group_add),
-                  label: const Text('Join Production'),
-                  style: FilledButton.styleFrom(
-                    minimumSize: const Size.fromHeight(48),
-                  ),
+                    onPressed:
+                        _loading ||
+                            nameValue.text.trim().isEmpty ||
+                            _selectedCharacter == null
+                        ? null
+                        : _joinProduction,
+                    icon: _loading
+                        ? const SizedBox(
+                            width: 16,
+                            height: 16,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          )
+                        : const Icon(Icons.group_add),
+                    label: const Text('Join Production'),
+                    style: FilledButton.styleFrom(
+                      minimumSize: const Size.fromHeight(48),
+                    ),
                   ),
                 ),
                 const SizedBox(height: 12),
@@ -290,6 +309,8 @@ class _JoinProductionScreenState extends ConsumerState<JoinProductionScreen> {
                     _castMembers = null;
                     _selectedCharacter = null;
                     _error = null;
+                    _prefilledCharacter = null;
+                    _prefilledCharacterUnavailable = false;
                   }),
                   child: const Text('Try a different code'),
                 ),
@@ -308,10 +329,12 @@ class _JoinProductionScreenState extends ConsumerState<JoinProductionScreen> {
       canPop: !_loading,
       onPopInvokedWithResult: (didPop, _) {
         if (didPop || !_loading) return;
-        ScaffoldMessenger.of(context).showAutoToast(const SnackBar(
-          content: Text('Still contacting the server — one moment.'),
-          duration: Duration(seconds: 2),
-        ));
+        ScaffoldMessenger.of(context).showAutoToast(
+          const SnackBar(
+            content: Text('Still contacting the server — one moment.'),
+            duration: Duration(seconds: 2),
+          ),
+        );
       },
       child: scaffold,
     );
@@ -323,7 +346,7 @@ class _JoinProductionScreenState extends ConsumerState<JoinProductionScreen> {
     // Find unclaimed invitations (a character assigned by the director with no
     // user yet) — these are the roles a joiner can claim.
     final unclaimedInvitations = _castMembers!.where((cm) {
-      return cm['user_id'] == null &&
+      return cm['claimed'] == false &&
           (cm['character_name'] as String? ?? '').isNotEmpty;
     }).toList();
 
@@ -386,8 +409,7 @@ class _JoinProductionScreenState extends ConsumerState<JoinProductionScreen> {
         setState(() {
           _error =
               'No production found with code "$code". '
-              'Check the code and try again. '
-              '(signed in: ${supa.isSignedIn})';
+              'Check the code and try again.';
           _loading = false;
         });
         return;
@@ -397,8 +419,10 @@ class _JoinProductionScreenState extends ConsumerState<JoinProductionScreen> {
       // the caller isn't a member yet, and the v3 RPC authorizes pre-join
       // roster reads by code knowledge only.
       final productionId = production['id'] as String;
-      final cast = await supa.fetchCastMembers(productionId,
-          joinCode: _codeController.text.trim().toUpperCase());
+      final cast = await supa.fetchCastMembers(
+        productionId,
+        joinCode: _codeController.text.trim().toUpperCase(),
+      );
       if (!mounted) return;
 
       // Auto-select the character that was pre-filled from deep link
@@ -407,7 +431,7 @@ class _JoinProductionScreenState extends ConsumerState<JoinProductionScreen> {
         for (final cm in cast) {
           final charName = cm['character_name'] as String? ?? '';
           if (charName.toUpperCase() == _prefilledCharacter!.toUpperCase() &&
-              cm['user_id'] == null) {
+              cm['claimed'] == false) {
             autoSelected = charName;
             break;
           }
@@ -418,17 +442,34 @@ class _JoinProductionScreenState extends ConsumerState<JoinProductionScreen> {
         _foundProduction = production;
         _castMembers = cast;
         _selectedCharacter = autoSelected;
+        _prefilledCharacterUnavailable =
+            _prefilledCharacter != null && autoSelected == null;
         _loading = false;
       });
     } catch (e, stack) {
-      DebugLogService.instance
-          .logError(LogCategory.network, 'Join lookup failed', e, stack);
+      DebugLogService.instance.logError(
+        LogCategory.network,
+        'Join lookup failed',
+        e,
+        stack,
+      );
       if (!mounted) return;
       setState(() {
-        _error = 'Lookup failed: $e';
+        _error =
+            'Couldn\'t look up that code. '
+            'Check your connection and try again.';
         _loading = false;
       });
     }
+  }
+
+  void _clearConsumedPendingJoin() {
+    final pending = ref.read(pendingJoinProvider);
+    final joinedCode = _codeController.text.trim().toUpperCase();
+    if (pending == null || pending.code.toUpperCase() != joinedCode) return;
+
+    ref.read(pendingJoinProvider.notifier).state = null;
+    DeepLinkService.instance.clearPending();
   }
 
   Future<void> _joinProduction() async {
@@ -441,6 +482,8 @@ class _JoinProductionScreenState extends ConsumerState<JoinProductionScreen> {
     });
 
     final dlog = DebugLogService.instance;
+    var membershipCommitted = false;
+    var localMembershipDurable = false;
     try {
       final supa = SupabaseService.instance;
       final user = supa.currentUser;
@@ -458,15 +501,18 @@ class _JoinProductionScreenState extends ConsumerState<JoinProductionScreen> {
           ? ''
           : (_selectedCharacter ?? '');
 
-      dlog.log(LogCategory.network,
-          'Join: joining production $productionId as '
-          '"${characterName.isEmpty ? '(no character)' : characterName}" user=$userId');
+      dlog.log(
+        LogCategory.network,
+        'Join: joining production $productionId as '
+        '"${characterName.isEmpty ? '(no character)' : characterName}" user=$userId',
+      );
 
       // Check if there's an unclaimed invitation for this character
       CastMemberModel? localMember;
       if (_castMembers != null && characterName.isNotEmpty) {
         final invitation = _castMembers!.where((cm) {
-          return cm['user_id'] == null && cm['character_name'] == characterName;
+          return cm['claimed'] == false &&
+              cm['character_name'] == characterName;
         }).toList();
 
         if (invitation.isNotEmpty) {
@@ -475,7 +521,9 @@ class _JoinProductionScreenState extends ConsumerState<JoinProductionScreen> {
             castMemberId: invitation.first['id'] as String,
             userId: userId,
             joinCode: _codeController.text.trim().toUpperCase(),
+            displayName: name,
           );
+          membershipCommitted = true;
           localMember = CastMemberModel(
             id: invitation.first['id'] as String,
             productionId: productionId,
@@ -499,77 +547,99 @@ class _JoinProductionScreenState extends ConsumerState<JoinProductionScreen> {
           displayName: name,
           joinCode: _codeController.text.trim().toUpperCase(),
         );
+        membershipCommitted = true;
         localMember = CastMemberModel(
           id: row['id'] as String,
           productionId: productionId,
           userId: userId,
-          characterName: characterName,
-          displayName: name,
-          role: CastRole.primary,
-          joinedAt: DateTime.now(),
+          characterName: row['character_name'] as String? ?? characterName,
+          displayName: row['display_name'] as String? ?? name,
+          role: CastRole.fromString(row['role'] as String? ?? 'actor'),
+          joinedAt:
+              DateTime.tryParse(row['joined_at'] as String? ?? '') ??
+              DateTime.now(),
         );
       }
 
-      // Save production locally (including organizer's locale)
-      final production = Production(
-        id: productionId,
-        title: _foundProduction!['title'] as String? ?? 'Untitled',
-        organizerId: _foundProduction!['organizer_id'] as String? ?? '',
-        createdAt:
-            DateTime.tryParse(
-              _foundProduction!['created_at'] as String? ?? '',
-            ) ??
-            DateTime.now(),
-        status: ProductionStatus.draft,
-        joinCode: _foundProduction!['join_code'] as String?,
-        locale: _foundProduction!['locale'] as String? ?? 'en-US',
-      );
-
-      // The cast row now exists in the cloud. If the screen went away during
-      // those calls `ref` is dead, so stop here rather than throwing — the next
-      // sync pulls the production down.
+      // From here on the user is a cloud member. Everything else is local
+      // setup and must not turn a successful join into a reported join failure.
       if (!mounted) {
-        dlog.log(LogCategory.network,
-            'Join: screen closed mid-join — cloud row created, local save '
-            'deferred to the next sync');
+        dlog.log(
+          LogCategory.network,
+          'Join: screen closed after cloud membership commit — local setup '
+          'deferred to the next sync',
+        );
         return;
       }
+
+      // The pre-join lookup intentionally exposes only id/title. Membership
+      // now authorizes fetching the complete production row for local storage.
+      final productionRow = await supa.fetchProduction(productionId);
+      if (!mounted) return;
+      final production = Production(
+        id: productionId,
+        title: productionRow['title'] as String? ?? 'Untitled',
+        organizerId: productionRow['organizer_id'] as String? ?? '',
+        createdAt:
+            DateTime.tryParse(productionRow['created_at'] as String? ?? '') ??
+            DateTime.now(),
+        status: ProductionStatus.draft,
+        joinCode: productionRow['join_code'] as String?,
+        locale: productionRow['locale'] as String? ?? 'en-US',
+      );
 
       await ref.read(productionsProvider.notifier).add(production);
       if (!mounted) return;
       await ref.read(castMembersProvider.notifier).save(localMember);
+      localMembershipDurable = true;
       if (!mounted) return;
+
+      _clearConsumedPendingJoin();
       AnalyticsService.instance.logProductionJoined();
+      // Publish the production scope before its script. Hub listeners use this
+      // ordering to avoid applying a new production's script to old selection
+      // preferences.
+      ref.read(rehearsalCharacterProvider.notifier).state = null;
+      ref.read(selectedSceneProvider.notifier).state = null;
+      ref.read(currentProductionProvider.notifier).state = production;
+      ref.read(currentScriptProvider.notifier).state = null;
 
       // Sync script from cloud
       final cloudLines = await fetchCloudScriptLines(productionId);
       if (!mounted) return;
       if (cloudLines != null && cloudLines.isNotEmpty) {
-        dlog.log(LogCategory.network,
-            'Join: pulled ${cloudLines.length} script lines from cloud');
+        dlog.log(
+          LogCategory.network,
+          'Join: pulled ${cloudLines.length} script lines from cloud',
+        );
         final script = await buildParsedScriptWithCloudScenes(
-            production.title, cloudLines, production.id);
+          production.title,
+          cloudLines,
+          production.id,
+        );
         ref.read(currentScriptProvider.notifier).state = script;
-        ref.read(currentProductionProvider.notifier).state = production;
         // Local-only save: this script just came FROM the cloud. persistScript
         // would push it straight back (a delete+reinsert the joiner isn't even
         // allowed to do, racing the organizer if RLS ever permits it).
         await persistScriptLocally(ref, productionId, script);
         if (!mounted) return;
       } else {
-        dlog.log(LogCategory.network,
-            'Join: no cloud script yet — director may not have imported one');
-        ref.read(currentProductionProvider.notifier).state = production;
+        dlog.log(
+          LogCategory.network,
+          'Join: no cloud script yet — director may not have imported one',
+        );
       }
 
-      // Sync organizer's voice preset (from production row or lookup data)
-      final voicePreset = _foundProduction!['voice_preset'] as String?;
+      // Sync organizer's voice preset from the member-authorized full row.
+      final voicePreset = productionRow['voice_preset'] as String?;
       if (voicePreset != null) {
         await VoiceConfigService.instance.setPreset(productionId, voicePreset);
       }
 
-      dlog.log(LogCategory.network,
-          'Join: success — opening production "${production.title}"');
+      dlog.log(
+        LogCategory.network,
+        'Join: success — opening production "${production.title}"',
+      );
 
       // Navigate to production hub. Clear _loading first so the screen isn't
       // still holding the back gesture as the router swaps it out.
@@ -578,10 +648,46 @@ class _JoinProductionScreenState extends ConsumerState<JoinProductionScreen> {
         context.go('/production');
       }
     } catch (e, stack) {
+      if (membershipCommitted) {
+        dlog.logError(
+          LogCategory.network,
+          localMembershipDurable
+              ? 'Join membership saved locally, but optional setup failed'
+              : 'Join membership committed in cloud, but local save failed',
+          e,
+          stack,
+        );
+        if (!mounted) return;
+        if (!localMembershipDurable) {
+          setState(() {
+            _error =
+                'You joined in the cloud, but this device could not save '
+                'the production yet. Tap Join Production to retry setup.';
+            _loading = false;
+          });
+          return;
+        }
+
+        setState(() => _loading = false);
+        ScaffoldMessenger.of(context).showAutoToast(
+          const SnackBar(
+            content: Text(
+              'You joined successfully, but optional setup on this '
+              'device could not finish. Reopen the production to retry.',
+            ),
+            duration: Duration(seconds: 6),
+          ),
+        );
+        context.go('/');
+        return;
+      }
+
       dlog.logError(LogCategory.network, 'Join FAILED', e, stack);
       if (!mounted) return;
       setState(() {
-        _error = 'Failed to join: $e';
+        _error =
+            'Couldn\'t join this production. '
+            'Check your connection and try again.';
         _loading = false;
       });
     }

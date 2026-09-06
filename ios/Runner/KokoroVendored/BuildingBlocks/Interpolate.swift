@@ -105,7 +105,7 @@ func interpolate1d(
     MLX.floor(x).asType(.int32), min: MLXArray(0, dtype: .int32),
     max: MLXArray(inputWidth - 1, dtype: .int32))
   let xHigh = MLX.minimum(xLow + 1, MLXArray(inputWidth - 1, dtype: .int32))
-  let xFrac = x - xLow.asType(.float32)
+  let xFrac = MLX.clip(x - xLow.asType(.float32), min: 0, max: 1)
 
   let yLow = input[0..., 0..., xLow]
   let yHigh = input[0..., 0..., xHigh]

@@ -54,9 +54,9 @@ class _SceneEditorScreenState extends ConsumerState<SceneEditorScreen> {
         ),
         actions: [
           IconButton(
-            icon: const Icon(Icons.add),
-            tooltip: 'Add scene break',
-            onPressed: () => _showAddSceneBreak(context, script),
+            icon: const Icon(Icons.help_outline),
+            tooltip: 'Scene break help',
+            onPressed: () => _showSceneBreakHelp(context),
           ),
         ],
       ),
@@ -348,17 +348,15 @@ class _SceneEditorScreenState extends ConsumerState<SceneEditorScreen> {
     );
   }
 
-  void _showAddSceneBreak(BuildContext context, ParsedScript script) {
+  void _showSceneBreakHelp(BuildContext context) {
     showDialog(
       context: context,
       builder: (context) => AlertDialog(
-        title: const Text('Add Scene Break'),
+        title: const Text('Scene Break Help'),
         content: const Text(
-          'To add a new scene break, open the Script Editor and tap on the '
-          'line where you want the new scene to start. Then use the '
-          '"Split Scene" action on the scene containing that line.\n\n'
-          'Tip: Scene breaks are automatically detected from stage directions '
-          'like "Shift begins..." You can also add these manually.',
+          'To add a scene break, split the scene that contains the line where '
+          'the next scene should start. Expand that scene below and choose '
+          'Split, then move the slider to the correct dialogue line.',
         ),
         actions: [
           FilledButton(
@@ -383,7 +381,7 @@ class _SceneEditorScreenState extends ConsumerState<SceneEditorScreen> {
       final start = updated.startLineIndex.clamp(0, updatedLines.length - 1);
       final end = (updated.endLineIndex + 1).clamp(start, updatedLines.length);
       for (var i = start; i < end; i++) {
-        updatedLines[i] = updatedLines[i].copyWith(scene: updated.location);
+        updatedLines[i] = updatedLines[i].copyWith(scene: updated.sceneName);
       }
     }
 
@@ -425,16 +423,22 @@ class _SceneEditorScreenState extends ConsumerState<SceneEditorScreen> {
     final secondHalfLines = script.lines.sublist(splitAt, end);
 
     final firstChars = <String>{};
-    for (final l in firstHalfLines) {
-      if (l.lineType == LineType.dialogue && l.character.isNotEmpty) {
-        firstChars.add(l.character);
+    for (final line in firstHalfLines) {
+      if (line.lineType != LineType.dialogue) continue;
+      if (line.multiCharacters.isNotEmpty) {
+        firstChars.addAll(line.multiCharacters);
+      } else if (line.character.isNotEmpty) {
+        firstChars.add(line.character);
       }
     }
 
     final secondChars = <String>{};
-    for (final l in secondHalfLines) {
-      if (l.lineType == LineType.dialogue && l.character.isNotEmpty) {
-        secondChars.add(l.character);
+    for (final line in secondHalfLines) {
+      if (line.lineType != LineType.dialogue) continue;
+      if (line.multiCharacters.isNotEmpty) {
+        secondChars.addAll(line.multiCharacters);
+      } else if (line.character.isNotEmpty) {
+        secondChars.add(line.character);
       }
     }
 

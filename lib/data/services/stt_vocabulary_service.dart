@@ -10,6 +10,7 @@ final _wsRe = RegExp(r'\s+');
 final _nonWordRe = RegExp(r'[^\w]');
 final _nonWordSpaceRe = RegExp(r'[^\w\s]');
 final _nonWordSpaceApostropheRe = RegExp("[^\\w\\s']");
+final _tokenPartsRe = RegExp(r"^([^\w]*)([\w']+)([^\w]*)$");
 
 /// Vocabulary-aware post-processing for STT results.
 ///
@@ -34,10 +35,6 @@ class SttVocabularyService {
   // Per-actor correction patterns: productionId:actorId -> {wrong: right}
   final Map<String, Map<String, String>> _actorCorrections = {};
 
-  // Compiled search patterns for the learned corrections above, keyed by the
-  // misrecognized word.
-  final Map<String, RegExp> _correctionPatterns = {};
-
   // The expected line text is identical for every partial result of a line,
   // so its word set is tokenized once per line instead of once per result.
   String? _expectedCacheKey;
@@ -47,6 +44,11 @@ class SttVocabularyService {
 
   /// Build vocabulary from a parsed script. Call this when a script is loaded.
   void buildFromScript(String productionId, List<ScriptLine> lines) {
+    if (!_vocabularies.containsKey(productionId) &&
+        _vocabularies.length >= _maxLoadedProductions) {
+      clearProduction(_vocabularies.keys.first);
+    }
+
     final vocab = _ProductionVocabulary();
 
     // Extract character names
@@ -89,19 +91,11 @@ class SttVocabularyService {
       }
     }
 
-    // Store all unique line texts for line-level matching
-    for (final line in lines) {
-      if (line.lineType == LineType.dialogue && line.text.isNotEmpty) {
-        vocab.lineTexts[line.id] = line.text;
-      }
-    }
-
     _vocabularies[productionId] = vocab;
     debugPrint(
       'SttVocabulary: Built for production $productionId — '
       '${vocab.characterNames.length} characters, '
-      '${vocab.importantWords.length} important words, '
-      '${vocab.lineTexts.length} lines',
+      '${vocab.importantWords.length} important words',
     );
   }
 
@@ -126,24 +120,7 @@ class SttVocabularyService {
   /// Clear vocabulary for a production.
   void clearProduction(String productionId) {
     _vocabularies.remove(productionId);
-    // Collect the words whose corrections are being dropped so their
-    // compiled patterns go too — _correctionPatterns is process-global and
-    // used to grow for the lifetime of the app across every production.
-    final droppedWords = <String>{};
-    _actorCorrections.removeWhere((key, corrections) {
-      if (!key.startsWith('$productionId:')) return false;
-      droppedWords.addAll(corrections.keys);
-      return true;
-    });
-    if (droppedWords.isNotEmpty) {
-      // A word may also be corrected under another production; only evict
-      // patterns no surviving correction map still references.
-      final stillUsed = <String>{
-        for (final m in _actorCorrections.values) ...m.keys,
-      };
-      _correctionPatterns
-          .removeWhere((w, _) => droppedWords.contains(w) && !stillUsed.contains(w));
-    }
+    _actorCorrections.removeWhere((key, _) => key.startsWith('$productionId:'));
   }
 
   // ── Correction ───────────────────────────────────────
@@ -165,20 +142,13 @@ class SttVocabularyService {
 
     var result = recognized;
 
-    // 1. Apply per-actor learned corrections
+    // 1. Apply per-actor learned corrections in one token pass. Scanning the
+    // whole partial once also guarantees corrections never match substrings
+    // inside unrelated words.
     if (actorId != null) {
-      final key = '$productionId:$actorId';
-      final corrections = _actorCorrections[key];
-      if (corrections != null) {
-        for (final entry in corrections.entries) {
-          result = result.replaceAll(
-            // Cached: compiling the pattern per learned correction per
-            // partial result showed up in the rehearsal profile.
-            _correctionPatterns[entry.key] ??=
-                RegExp(RegExp.escape(entry.key), caseSensitive: false),
-            entry.value,
-          );
-        }
+      final corrections = _actorCorrections['$productionId:$actorId'];
+      if (corrections != null && corrections.isNotEmpty) {
+        result = _applyLearnedCorrections(result, corrections);
       }
     }
 
@@ -193,8 +163,9 @@ class SttVocabularyService {
         // word, and step 3 would align them straight back. Skipping them
         // keeps the result identical while removing nearly all of the
         // O(words × vocabulary) work on a line the actor is reading right.
-        resolvedWords:
-            expectedText == null ? null : _expectedWordSet(expectedText),
+        resolvedWords: expectedText == null
+            ? null
+            : _expectedWordSet(expectedText),
       );
     }
 
@@ -216,29 +187,32 @@ class SttVocabularyService {
   }) {
     final recognizedWords = _tokenize(recognized);
     final expectedWords = _tokenize(expected);
+    final substitutions = _exactAnchoredSubstitutions(
+      recognizedWords,
+      expectedWords,
+    );
+    Map<String, String>? corrections;
 
-    if (recognizedWords.length != expectedWords.length) return;
+    for (final (recognizedIndex, expectedIndex) in substitutions) {
+      final wrong = recognizedWords[recognizedIndex];
+      final right = expectedWords[expectedIndex];
+      if (wrong == right || wrong.length < 4 || right.length < 4) continue;
 
-    final key = '$productionId:$actorId';
-    _actorCorrections[key] ??= {};
+      // Short or proportionally large rewrites are generic words, not
+      // high-confidence pronunciations of the same token.
+      final maxDistance =
+          (wrong.length > right.length ? wrong.length : right.length) ~/ 3;
+      final threshold = maxDistance > 2 ? 2 : maxDistance;
+      if (_editDistanceAtMost(wrong, right, threshold) > threshold) continue;
 
-    for (var i = 0; i < recognizedWords.length; i++) {
-      if (recognizedWords[i] != expectedWords[i]) {
-        final wrong = recognizedWords[i];
-        final right = expectedWords[i];
-        // Only learn if the wrong version is close enough (likely same word)
-        if (_editDistanceAtMost(wrong, right, 3) <= 3) {
-          final map = _actorCorrections[key]!;
-          // Cap like correctionCache: every entry is a regex pass over every
-          // STT partial, so an unbounded map slowly taxes live matching.
-          if (map.length >= 500 && !map.containsKey(wrong)) {
-            final evict = map.keys.first;
-            map.remove(evict);
-            _correctionPatterns.remove(evict);
-          }
-          map[wrong] = right;
-        }
+      corrections ??= _actorCorrections.putIfAbsent(
+        '$productionId:$actorId',
+        () => <String, String>{},
+      );
+      if (corrections.length >= 500 && !corrections.containsKey(wrong)) {
+        corrections.remove(corrections.keys.first);
       }
+      corrections[wrong] = right;
     }
   }
 
@@ -326,7 +300,9 @@ class SttVocabularyService {
   /// or null. Character names win ties only if strictly closer, and the
   /// first candidate at a given distance wins — same as scanning naively.
   static String? _bestVocabularyMatch(
-      String lower, _ProductionVocabulary vocab) {
+    String lower,
+    _ProductionVocabulary vocab,
+  ) {
     String? bestMatch;
     var bestDistance = 3; // max edit distance to consider
 
@@ -358,67 +334,206 @@ class SttVocabularyService {
     return bestMatch;
   }
 
-  /// Correct recognized text against expected text using LCS word alignment.
-  ///
-  /// Uses dynamic programming to align recognized words to expected words,
-  /// then replaces near-matches with the expected word. Works regardless
-  /// of whether word counts match.
+  /// Correct near-matching words against the expected line with bounded,
+  /// ordered lookahead. Recognition partials are cumulative and mostly
+  /// aligned, so a small window handles insertions/deletions without rebuilding
+  /// an O(recognized × expected) matrix several times per second.
   String _correctAgainstExpected(String recognized, String expected) {
     final recWords = recognized.split(_wsRe);
     final expWords = expected.split(_wsRe);
     if (recWords.isEmpty || expWords.isEmpty) return recognized;
 
-    // Normalize once per word instead of once per DP cell — this used to run
-    // two lowercase+regex passes for every (recognized × expected) pair.
     final recNorm = [
-      for (final w in recWords) w.toLowerCase().replaceAll(_nonWordRe, '')
+      for (final w in recWords) w.toLowerCase().replaceAll(_nonWordRe, ''),
     ];
     final expNorm = [
-      for (final w in expWords) w.toLowerCase().replaceAll(_nonWordRe, '')
+      for (final w in expWords) w.toLowerCase().replaceAll(_nonWordRe, ''),
     ];
+    final corrected = List<String>.from(recWords);
+    for (final (recognizedIndex, expectedIndex) in _alignNearWords(
+      recNorm,
+      expNorm,
+    )) {
+      if (recNorm[recognizedIndex] != expNorm[expectedIndex]) {
+        corrected[recognizedIndex] = expWords[expectedIndex];
+      }
+    }
+    return corrected.join(' ');
+  }
 
-    // Build LCS alignment matrix. Backtracking needs the whole matrix, so
-    // it can't be two-row — but one flat Int32List replaces the
-    // list-of-lists (this also runs per recognition partial on the main
-    // isolate).
-    final m = recWords.length;
-    final n = expWords.length;
-    final w = n + 1;
-    final dp = Int32List((m + 1) * w);
+  static List<(int, int)> _alignNearWords(
+    List<String> recognized,
+    List<String> expected,
+  ) {
+    const lookahead = 3;
+    final aligned = <(int, int)>[];
+    var i = 0;
+    var j = 0;
 
+    bool near(int ri, int ej) =>
+        _editDistanceAtMost(recognized[ri], expected[ej], 2) <= 2;
+
+    while (i < recognized.length && j < expected.length) {
+      if (recognized[i] == expected[j]) {
+        aligned.add((i, j));
+        i++;
+        j++;
+        continue;
+      }
+
+      // Prefer exact anchors over a merely similar positional pair so an
+      // insertion/deletion shift does not cascade corrections across a
+      // partial result.
+      int? exactRecognizedAhead;
+      int? exactExpectedAhead;
+      for (var offset = 1; offset <= lookahead; offset++) {
+        if (exactRecognizedAhead == null &&
+            i + offset < recognized.length &&
+            recognized[i + offset] == expected[j]) {
+          exactRecognizedAhead = offset;
+        }
+        if (exactExpectedAhead == null &&
+            j + offset < expected.length &&
+            recognized[i] == expected[j + offset]) {
+          exactExpectedAhead = offset;
+        }
+      }
+      if (exactRecognizedAhead != null || exactExpectedAhead != null) {
+        if (exactRecognizedAhead != null &&
+            (exactExpectedAhead == null ||
+                exactRecognizedAhead <= exactExpectedAhead)) {
+          i++;
+        } else {
+          j++;
+        }
+        continue;
+      }
+
+      if (near(i, j)) {
+        aligned.add((i, j));
+        i++;
+        j++;
+        continue;
+      }
+
+      int? recognizedAhead;
+      int? expectedAhead;
+      for (var offset = 1; offset <= lookahead; offset++) {
+        if (recognizedAhead == null &&
+            i + offset < recognized.length &&
+            near(i + offset, j)) {
+          recognizedAhead = offset;
+        }
+        if (expectedAhead == null &&
+            j + offset < expected.length &&
+            near(i, j + offset)) {
+          expectedAhead = offset;
+        }
+      }
+      if (recognizedAhead != null &&
+          (expectedAhead == null || recognizedAhead <= expectedAhead)) {
+        i++;
+      } else if (expectedAhead != null) {
+        j++;
+      } else {
+        i++;
+        j++;
+      }
+    }
+    return aligned;
+  }
+
+  /// Find one-to-one substitution gaps bracketed by unambiguous exact anchors
+  /// in a full exact-word LCS alignment. Learning runs only after a completed
+  /// attempt, so the full matrix is appropriate here; speculative bounded
+  /// positional pairs are never persisted as actor corrections.
+  static List<(int, int)> _exactAnchoredSubstitutions(
+    List<String> recognized,
+    List<String> expected,
+  ) {
+    if (recognized.length < 2 || expected.length < 2) return const [];
+    final m = recognized.length;
+    final n = expected.length;
+    final width = n + 1;
+    final dp = Int32List((m + 1) * width);
     for (var i = 1; i <= m; i++) {
       for (var j = 1; j <= n; j++) {
-        if (_editDistanceAtMost(recNorm[i - 1], expNorm[j - 1], 2) <= 2) {
-          dp[i * w + j] = dp[(i - 1) * w + (j - 1)] + 1;
+        if (recognized[i - 1] == expected[j - 1]) {
+          dp[i * width + j] = dp[(i - 1) * width + j - 1] + 1;
         } else {
-          final up = dp[(i - 1) * w + j];
-          final left = dp[i * w + (j - 1)];
-          dp[i * w + j] = up > left ? up : left;
+          final up = dp[(i - 1) * width + j];
+          final left = dp[i * width + j - 1];
+          dp[i * width + j] = up > left ? up : left;
         }
       }
     }
 
-    // Backtrack to find aligned pairs and replace near-matches
-    final corrected = List<String>.from(recWords);
-    var i = m, j = n;
+    final reversedAnchors = <(int, int)>[];
+    var i = m;
+    var j = n;
     while (i > 0 && j > 0) {
-      final recLower = recNorm[i - 1];
-      final expLower = expNorm[j - 1];
-      if (_editDistanceAtMost(recLower, expLower, 2) <= 2) {
-        // Aligned pair — replace with expected word if close but not exact
-        if (recLower != expLower) {
-          corrected[i - 1] = expWords[j - 1];
-        }
+      if (recognized[i - 1] == expected[j - 1]) {
+        reversedAnchors.add((i - 1, j - 1));
         i--;
         j--;
-      } else if (dp[(i - 1) * w + j] > dp[i * w + (j - 1)]) {
-        i--; // recognized word not in expected — keep as-is
+      } else if (dp[(i - 1) * width + j] > dp[i * width + j - 1]) {
+        i--;
       } else {
-        j--; // expected word not in recognized — skip
+        j--;
       }
     }
+    final anchors = reversedAnchors.reversed.toList(growable: false);
+    if (anchors.isEmpty) return const [];
 
-    return corrected.join(' ');
+    final recognizedFrequency = <String, int>{};
+    final expectedFrequency = <String, int>{};
+    for (final word in recognized) {
+      recognizedFrequency[word] = (recognizedFrequency[word] ?? 0) + 1;
+    }
+    for (final word in expected) {
+      expectedFrequency[word] = (expectedFrequency[word] ?? 0) + 1;
+    }
+
+    bool isUniqueAnchor((int, int) anchor) {
+      final word = recognized[anchor.$1];
+      return recognizedFrequency[word] == 1 && expectedFrequency[word] == 1;
+    }
+
+    final substitutions = <(int, int)>[];
+    // Virtual start/end anchors admit a one-token prefix or suffix
+    // substitution (including a two-word line) when its sole adjacent real
+    // anchor is unique. Interior gaps require unique anchors on both sides.
+    for (var gapIndex = 0; gapIndex <= anchors.length; gapIndex++) {
+      final before = gapIndex == 0 ? const (-1, -1) : anchors[gapIndex - 1];
+      final after = gapIndex == anchors.length ? (m, n) : anchors[gapIndex];
+      if (after.$1 - before.$1 != 2 || after.$2 - before.$2 != 2) {
+        continue;
+      }
+      if (before.$1 >= 0 && !isUniqueAnchor(before)) continue;
+      if (after.$1 < m && !isUniqueAnchor(after)) continue;
+      substitutions.add((before.$1 + 1, before.$2 + 1));
+    }
+    return substitutions;
+  }
+
+  static String _applyLearnedCorrections(
+    String text,
+    Map<String, String> corrections,
+  ) {
+    return text
+        .split(_wsRe)
+        .map((token) {
+          final parts = _tokenPartsRe.firstMatch(token);
+          if (parts == null) return token;
+          final normalized = parts
+              .group(2)!
+              .toLowerCase()
+              .replaceAll(_nonWordRe, '');
+          final replacement = corrections[normalized];
+          if (replacement == null) return token;
+          return '${parts.group(1)}$replacement${parts.group(3)}';
+        })
+        .join(' ');
   }
 
   /// Levenshtein edit distance, capped at [maxDist].
@@ -504,6 +619,11 @@ class SttVocabularyService {
   }
 }
 
+/// Maximum number of production vocabularies retained by the process
+/// singleton. Opening another production evicts the oldest complete
+/// vocabulary and its actor corrections.
+const _maxLoadedProductions = 4;
+
 /// Cap on memoized word corrections per production. The keys are recognized
 /// words, so a long session with a bad recognizer could otherwise grow it
 /// without bound.
@@ -514,7 +634,6 @@ class _ProductionVocabulary {
   final Set<String> characterNames = {};
   final Set<String> importantWords = {};
   final Map<String, int> wordFrequency = {};
-  final Map<String, String> lineTexts = {}; // lineId -> text
 
   /// Memoized `_bestVocabularyMatch` results: recognized word -> correction
   /// (null means "leave it alone").

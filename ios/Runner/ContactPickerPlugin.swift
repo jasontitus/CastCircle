@@ -30,17 +30,29 @@ class ContactPickerPlugin: NSObject, FlutterPlugin, CNContactPickerDelegate {
     }
 
     private func pickContact(result: @escaping FlutterResult) {
-        pendingResult = result
-
-        let picker = CNContactPickerViewController()
-        picker.delegate = self
-
-        // Use scene-based window lookup (required for iOS 15+ / scenes)
-        guard let viewController = Self.topViewController() else {
-            result(FlutterError(code: "NO_VIEW_CONTROLLER", message: "Cannot present contact picker", details: nil))
+        guard pendingResult == nil else {
+            result(FlutterError(
+                code: "ALREADY_ACTIVE",
+                message: "A contact picker is already open",
+                details: nil
+            ))
             return
         }
 
+        // Use scene-based window lookup (required for iOS 15+ / scenes).
+        // Do not retain the result until all presentation preconditions pass.
+        guard let viewController = Self.topViewController() else {
+            result(FlutterError(
+                code: "NO_VIEW_CONTROLLER",
+                message: "Cannot present contact picker",
+                details: nil
+            ))
+            return
+        }
+
+        let picker = CNContactPickerViewController()
+        picker.delegate = self
+        pendingResult = result
         viewController.present(picker, animated: true)
     }
 
@@ -80,12 +92,14 @@ class ContactPickerPlugin: NSObject, FlutterPlugin, CNContactPickerDelegate {
         if let phone = phone { resultMap["phone"] = phone }
         if let email = email { resultMap["email"] = email }
 
-        pendingResult?(resultMap)
+        let result = pendingResult
         pendingResult = nil
+        result?(resultMap)
     }
 
     func contactPickerDidCancel(_ picker: CNContactPickerViewController) {
-        pendingResult?(FlutterError(code: "CANCELLED", message: "User cancelled", details: nil))
+        let result = pendingResult
         pendingResult = nil
+        result?(FlutterError(code: "CANCELLED", message: "User cancelled", details: nil))
     }
 }

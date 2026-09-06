@@ -30,13 +30,17 @@ void main() {
         productionId: 'prod-1',
         samples: [
           TrainingSample(
-            audioPath: '/a.m4a', transcript: 'Line 1',
-            character: 'HAMLET', durationMs: 10000,
+            audioPath: '/a.m4a',
+            transcript: 'Line 1',
+            character: 'HAMLET',
+            durationMs: 10000,
             recordedAt: DateTime.now(),
           ),
           TrainingSample(
-            audioPath: '/b.m4a', transcript: 'Line 2',
-            character: 'HAMLET', durationMs: 5000,
+            audioPath: '/b.m4a',
+            transcript: 'Line 2',
+            character: 'HAMLET',
+            durationMs: 5000,
             recordedAt: DateTime.now(),
           ),
         ],
@@ -47,17 +51,22 @@ void main() {
 
     test('readiness scales from 0 to 1 based on 300s target', () {
       final empty = const SttProfile(
-        actorId: 'X', productionId: 'p', samples: [],
+        actorId: 'X',
+        productionId: 'p',
+        samples: [],
       );
       expect(empty.readiness, 0.0);
 
       // 150s = 50% ready
       final half = SttProfile(
-        actorId: 'X', productionId: 'p',
+        actorId: 'X',
+        productionId: 'p',
         samples: [
           TrainingSample(
-            audioPath: '/a.m4a', transcript: 'L',
-            character: 'X', durationMs: 150000,
+            audioPath: '/a.m4a',
+            transcript: 'L',
+            character: 'X',
+            durationMs: 150000,
             recordedAt: DateTime.now(),
           ),
         ],
@@ -67,11 +76,14 @@ void main() {
 
     test('readiness caps at 1.0', () {
       final profile = SttProfile(
-        actorId: 'X', productionId: 'p',
+        actorId: 'X',
+        productionId: 'p',
         samples: [
           TrainingSample(
-            audioPath: '/a.m4a', transcript: 'L',
-            character: 'X', durationMs: 600000, // 10 minutes
+            audioPath: '/a.m4a',
+            transcript: 'L',
+            character: 'X',
+            durationMs: 600000, // 10 minutes
             recordedAt: DateTime.now(),
           ),
         ],
@@ -81,11 +93,14 @@ void main() {
 
     test('hasEnoughData requires 60s minimum', () {
       final notEnough = SttProfile(
-        actorId: 'X', productionId: 'p',
+        actorId: 'X',
+        productionId: 'p',
         samples: [
           TrainingSample(
-            audioPath: '/a.m4a', transcript: 'L',
-            character: 'X', durationMs: 30000, // 30s
+            audioPath: '/a.m4a',
+            transcript: 'L',
+            character: 'X',
+            durationMs: 30000, // 30s
             recordedAt: DateTime.now(),
           ),
         ],
@@ -93,11 +108,14 @@ void main() {
       expect(notEnough.hasEnoughData, isFalse);
 
       final enough = SttProfile(
-        actorId: 'X', productionId: 'p',
+        actorId: 'X',
+        productionId: 'p',
         samples: [
           TrainingSample(
-            audioPath: '/a.m4a', transcript: 'L',
-            character: 'X', durationMs: 65000, // 65s
+            audioPath: '/a.m4a',
+            transcript: 'L',
+            character: 'X',
+            durationMs: 65000, // 65s
             recordedAt: DateTime.now(),
           ),
         ],
@@ -180,23 +198,29 @@ void main() {
 
   group('SttAdaptationStatus', () {
     test('has all expected values', () {
-      expect(SttAdaptationStatus.values, containsAll([
-        SttAdaptationStatus.needsData,
-        SttAdaptationStatus.readyToTrain,
-        SttAdaptationStatus.training,
-        SttAdaptationStatus.trained,
-        SttAdaptationStatus.failed,
-      ]));
+      expect(
+        SttAdaptationStatus.values,
+        containsAll([
+          SttAdaptationStatus.needsData,
+          SttAdaptationStatus.readyToTrain,
+          SttAdaptationStatus.training,
+          SttAdaptationStatus.trained,
+          SttAdaptationStatus.failed,
+        ]),
+      );
     });
   });
 
   group('TrainingStrategy', () {
     test('has all expected values', () {
-      expect(TrainingStrategy.values, containsAll([
-        TrainingStrategy.perActor,
-        TrainingStrategy.perProduction,
-        TrainingStrategy.notReady,
-      ]));
+      expect(
+        TrainingStrategy.values,
+        containsAll([
+          TrainingStrategy.perActor,
+          TrainingStrategy.perProduction,
+          TrainingStrategy.notReady,
+        ]),
+      );
     });
   });
 }

@@ -18,6 +18,7 @@ Usage:
     python3 scripts/pdf_to_script.py <input.pdf> [output.txt]
 """
 
+from collections import Counter
 import re
 import sys
 from pathlib import Path
@@ -69,24 +70,32 @@ _STAGE_DIR_STARTERS = (
     'Re-enter',
 )
 
-_STAGE_DIR_ENDERS = (
-    ' exit.', ' exits.', ' exit', ' exits',
-)
 
 
 def _is_stage_direction(text: str) -> bool:
-    """Check if text looks like a stage direction."""
-    for s in _STAGE_DIR_STARTERS:
-        if text.startswith(s):
+    """Check if text uses a narrow, direction-specific lexical form."""
+    for starter in _STAGE_DIR_STARTERS:
+        if text.startswith(starter):
             return True
-    for s in _STAGE_DIR_ENDERS:
-        if text.endswith(s):
-            return True
-    if text in ('They exit.', 'They exit'):
+    if re.match(
+        r'^(?:He|She|It) (?:exits?|enters?|falls?|is led)(?:[.,]|$)',
+        text,
+    ):
         return True
-    if re.match(r'^(He |She |They |It |The .+ (exit|is led|are led|enters?|falls?))', text):
+    if re.match(
+        r'^They (?:exit|enter|fall|are led)(?:[.,]|$)',
+        text,
+    ):
         return True
-    if re.match(r'^(A bell|Drum |Knock|Music|Sound|Wind|Storm|Rain|Lightning|A sennet)', text):
+    if re.match(
+        r"^[A-Z][A-Za-z’'-]*(?: and [A-Z][A-Za-z’'-]*)* exits?\.$",
+        text,
+    ):
+        return True
+    if re.match(
+        r'^(?:A bell|Drum |Knock|Music|Sound|Wind|Storm|Rain|Lightning|A sennet)',
+        text,
+    ):
         return True
     return False
 
@@ -121,64 +130,99 @@ def _is_folger_pdf(doc: pymupdf.Document) -> bool:
 # Folger PDF extraction
 # ---------------------------------------------------------------------------
 
-def _detect_characters_from_pdf(doc: pymupdf.Document) -> set[str]:
-    """Auto-detect character names from a Folger PDF by scanning margin labels."""
+def _iter_layout_lines(page_dict: dict):
+    """Yield nonempty (text, x, y) lines from one cached page dictionary."""
+    for block in page_dict["blocks"]:
+        if "lines" not in block:
+            continue
+        for line_obj in block["lines"]:
+            text = "".join(span["text"] for span in line_obj["spans"]).strip()
+            if text:
+                yield text, line_obj["bbox"][0], line_obj["bbox"][1]
+
+
+def _detect_running_headers(page_dicts: list[dict]) -> set[str]:
+    """Find short centered top-of-page strings repeated across the document."""
+    counts: Counter[str] = Counter()
+    for page_dict in page_dicts:
+        candidates = {
+            text
+            for text, x, y in _iter_layout_lines(page_dict)
+            if y < 90
+            and 150 < x < 350
+            and len(text) <= 80
+            and not re.match(r'^(?:ACT|SCENE|FTLN)\b', text, re.IGNORECASE)
+        }
+        counts.update(candidates)
+
+    minimum_repetitions = 3 if len(page_dicts) >= 3 else 2
+    return {
+        text
+        for text, count in counts.items()
+        if count >= minimum_repetitions
+    }
+
+
+def _find_play_start(page_dicts: list[dict]) -> int:
+    """Locate Act 1 using generic Folger layout and content evidence."""
+    for page_index, page_dict in enumerate(page_dicts):
+        lines = list(_iter_layout_lines(page_dict))
+        has_act_one = any(
+            x > 200 and re.fullmatch(r'ACT\s+(?:1|I)', text, re.IGNORECASE)
+            for text, x, _ in lines
+        )
+        if not has_act_one:
+            continue
+
+        has_scene_one = any(
+            x > 200 and re.fullmatch(r'SCENE\s+(?:1|I)\.?', text, re.IGNORECASE)
+            for text, x, _ in lines
+        )
+        has_play_content = any(
+            re.match(r'^FTLN\s+\d+', text)
+            or (80 <= x <= 95 and text.isupper())
+            or (x > 120 and _is_stage_direction(text))
+            for text, x, _ in lines
+        )
+        if has_scene_one and has_play_content:
+            return page_index
+
+    raise ValueError(
+        "could not locate the first act in this Folger PDF; "
+        "refusing to include front matter"
+    )
+
+
+def _detect_characters_from_pdf(page_dicts: list[dict]) -> set[str]:
+    """Auto-detect character names from cached Folger margin labels."""
     chars = set()
-    for pg_idx in range(doc.page_count):
-        page = doc[pg_idx]
-        blocks = page.get_text("dict")["blocks"]
-        for block in blocks:
-            if "lines" not in block:
-                continue
-            for line_obj in block["lines"]:
-                text = "".join(span["text"] for span in line_obj["spans"]).strip()
-                x0 = line_obj["bbox"][0]
-                # Character labels are at x≈88-90 in Folger PDFs
-                if 80 <= x0 <= 95 and text.isupper() and 2 <= len(text) <= 30:
-                    if not re.match(r'^(ACT|SCENE|FTLN|SETTING|NOTE)\b', text):
-                        chars.add(text)
+    for page_dict in page_dicts:
+        for text, x0, _ in _iter_layout_lines(page_dict):
+            # Character labels are at x≈88-90 in Folger PDFs.
+            if 80 <= x0 <= 95 and text.isupper() and 2 <= len(text) <= 30:
+                if not re.match(r'^(ACT|SCENE|FTLN|SETTING|NOTE)\b', text):
+                    chars.add(text)
     return chars
 
 
 def _extract_folger(doc: pymupdf.Document) -> str:
     """Extract text from a Folger Shakespeare PDF using position-based parsing."""
-    # Auto-detect characters from margin labels
-    detected_chars = _detect_characters_from_pdf(doc)
+    # Layout extraction is the expensive operation. Cache it once for character
+    # detection, boundary/header detection, and the main extraction pass.
+    page_dicts = [
+        doc[page_index].get_text("dict")
+        for page_index in range(doc.page_count)
+    ]
+    detected_chars = _detect_characters_from_pdf(page_dicts)
     all_chars = KNOWN_CHARACTERS | detected_chars
+    running_headers = _detect_running_headers(page_dicts)
 
     output: list[str] = []
-    in_play = False
     current_char = ''
-    play_start_page = -1
-
-    # Find the page where ACT 1 appears as a centered header (not TOC)
-    for pg_idx in range(doc.page_count):
-        page = doc[pg_idx]
-        blocks = page.get_text("dict")["blocks"]
-        for block in blocks:
-            if "lines" not in block:
-                continue
-            for line_obj in block["lines"]:
-                text = "".join(span["text"] for span in line_obj["spans"]).strip()
-                x0 = line_obj["bbox"][0]
-                # ACT 1 as a centered header (x > 200) on a page that also has
-                # Scene 1 and stage directions
-                if text == 'ACT 1' and x0 > 200:
-                    # Verify this page has actual play content (stage dirs or dialogue)
-                    page_text = page.get_text()
-                    if ('Enter ' in page_text or 'FTLN' in page_text or
-                            any(c in page_text for c in ['WITCH', 'DUNCAN', 'MACBETH'])):
-                        play_start_page = pg_idx
-                        break
-        if play_start_page >= 0:
-            break
-
-    if play_start_page < 0:
-        play_start_page = 0  # fallback
+    play_start_page = _find_play_start(page_dicts)
 
     for pg_idx in range(play_start_page, doc.page_count):
-        page = doc[pg_idx]
-        blocks = page.get_text("dict")["blocks"]
+        blocks = page_dicts[pg_idx]["blocks"]
 
         # Collect all text elements with position
         elements: list[tuple[float, float, str]] = []
@@ -225,8 +269,8 @@ def _extract_folger(doc: pymupdf.Document) -> str:
                 # Skip right-margin line numbers
                 if x > 400 and re.match(r'^\d+$', text):
                     continue
-                # Skip running header "Macbeth" (centered)
-                if text == 'Macbeth' and 200 < x < 280:
+                # Skip dynamically detected repeated centered running headers.
+                if text in running_headers and y < 90 and 150 < x < 350:
                     continue
                 # Skip running "ACT X. SC. Y" header
                 if x > 350 and re.match(r'^ACT \d+\. SC\. \d+', text):
@@ -242,32 +286,32 @@ def _extract_folger(doc: pymupdf.Document) -> str:
                 if text in all_chars and 80 <= x <= 95:
                     char_name = text
                 # ACT header (centered)
-                elif re.match(r'^ACT \d+$', text) and x > 200:
+                elif re.match(r'^ACT\s+(?:\d+|[IVX]+)$', text, re.IGNORECASE) and x > 200:
                     act_header = text
                 # Scene header
-                elif re.match(r'^Scene \d+$', text) and x > 200:
+                elif re.match(r'^Scene\s+(?:\d+|[IVX]+)\.?$', text, re.IGNORECASE) and x > 200:
                     scene_header = text
                 # Stage direction (centered, high x)
                 elif x > 120 and _is_stage_direction(text):
                     stage_dir = text
-                # Stage direction continuation (starts with comma from prev)
-                elif x > 120 and text.startswith(', ') and not char_name:
-                    stage_dir = text
+                # A direction split into multiple spans on the same visual line.
+                elif x > 120 and text.startswith(', ') and stage_dir is not None:
+                    stage_dir = f'{stage_dir}{text}'
                 # Dialogue text (x >= 95)
                 elif x >= 95:
                     dialogue_parts.append(text)
 
             # Emit structured lines
             if act_header:
-                if not in_play:
-                    in_play = True
-                num = int(re.search(r'\d+', act_header).group())
-                output.append(f'\n\nACT {_roman(num)}\n')
+                act_number = act_header.split()[-1].upper()
+                if act_number.isdigit():
+                    act_number = _roman(int(act_number))
+                output.append(f'\n\nACT {act_number}\n')
                 current_char = ''
 
             if scene_header:
-                num = scene_header.split()[-1]
-                output.append(f'\nSCENE {num}.\n')
+                scene_number = scene_header.rstrip('.').split()[-1].upper()
+                output.append(f'\nSCENE {scene_number}.\n')
                 current_char = ''
 
             if stage_dir:
@@ -285,9 +329,13 @@ def _extract_folger(doc: pymupdf.Document) -> str:
                 if dialogue_parts:
                     output.append(' '.join(dialogue_parts))
             elif dialogue_parts:
-                if not current_char and not stage_dir:
-                    # Orphan dialogue — could be continuation from prev page
-                    pass
+                if not current_char:
+                    print(
+                        f"Warning: discarded orphan dialogue on PDF page {pg_idx + 1}: "
+                        f"{' '.join(dialogue_parts)[:80]}",
+                        file=sys.stderr,
+                    )
+                    continue
                 output.append(' '.join(dialogue_parts))
 
     return '\n'.join(output)
@@ -353,14 +401,18 @@ def main():
         print(f"Error: File not found: {pdf_path}")
         sys.exit(1)
 
-    result = convert_pdf_to_script(pdf_path)
+    try:
+        result = convert_pdf_to_script(pdf_path)
+    except ValueError as error:
+        print(f"Error: {error}", file=sys.stderr)
+        return 1
 
     if len(sys.argv) >= 3:
         output_path = sys.argv[2]
     else:
         output_path = str(Path(pdf_path).with_suffix('.converted.txt'))
 
-    Path(output_path).write_text(result)
+    Path(output_path).write_text(result, encoding='utf-8')
     print(f"Written {len(result)} chars to {output_path}")
 
     # Quick stats
@@ -372,6 +424,8 @@ def main():
     if char_names:
         print(f"Characters: {', '.join(sorted(char_names))}")
 
+    return 0
+
 
 if __name__ == '__main__':
-    main()
+    sys.exit(main())

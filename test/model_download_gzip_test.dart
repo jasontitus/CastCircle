@@ -15,7 +15,8 @@ import 'package:flutter_test/flutter_test.dart';
 void main() {
   // The real tokens.txt shape: highly compressible text.
   final payload = utf8.encode(
-      List.generate(652, (i) => '▁token$i $i').join('\n'));
+    List.generate(652, (i) => '▁token$i $i').join('\n'),
+  );
 
   late HttpServer server;
   late List<String?> seenAcceptEncoding;
@@ -31,8 +32,7 @@ void main() {
       final wantsGzip = alwaysGzip || (accept?.contains('gzip') ?? false);
       if (wantsGzip) {
         final gzipped = gzip.encode(payload);
-        req.response.headers
-            .set(HttpHeaders.contentEncodingHeader, 'gzip');
+        req.response.headers.set(HttpHeaders.contentEncodingHeader, 'gzip');
         req.response.headers.contentLength = gzipped.length;
         req.response.add(gzipped);
       } else {
@@ -56,8 +56,9 @@ void main() {
     req.headers.set(HttpHeaders.acceptEncodingHeader, 'identity');
     final res = await req.close();
 
-    final encoding =
-        res.headers.value(HttpHeaders.contentEncodingHeader)?.toLowerCase();
+    final encoding = res.headers
+        .value(HttpHeaders.contentEncodingHeader)
+        ?.toLowerCase();
     final compressed = encoding != null && encoding.contains('gzip');
     Stream<List<int>> body = res;
     if (compressed) body = gzip.decoder.bind(body);
@@ -87,23 +88,32 @@ void main() {
     // and every size/sha check downstream fails.
     expect(bytes.length, payload.length);
     expect(bytes, payload);
-    expect(gzip.encode(payload).length, lessThan(payload.length),
-        reason: 'the fixture must actually compress or this proves nothing');
+    expect(
+      gzip.encode(payload).length,
+      lessThan(payload.length),
+      reason: 'the fixture must actually compress or this proves nothing',
+    );
   });
 
-  test('the size check that caught it still catches a truncated file',
-      () async {
-    final model = ModelDownloadService.availableModels
-        .firstWhere((m) => m.id == 'live_asr_tokens');
-    final dir = await Directory.systemTemp.createTemp('modeldl');
-    addTearDown(() => dir.delete(recursive: true));
+  test(
+    'the size check that caught it still catches a truncated file',
+    () async {
+      final model = ModelDownloadService.availableModels.firstWhere(
+        (m) => m.id == 'live_asr_tokens',
+      );
+      final dir = await Directory.systemTemp.createTemp('modeldl');
+      addTearDown(() => dir.delete(recursive: true));
 
-    final short = File('${dir.path}/tokens.txt')
-      ..writeAsBytesSync(gzip.encode(payload));
-    expect(ModelDownloadService.fileProblem(model, short), isNotNull,
-        reason: 'a gzipped body saved as the file must not pass as installed');
+      final short = File('${dir.path}/tokens.txt')
+        ..writeAsBytesSync(gzip.encode(payload));
+      expect(
+        ModelDownloadService.fileProblem(model, short),
+        isNotNull,
+        reason: 'a gzipped body saved as the file must not pass as installed',
+      );
 
-    final missing = File('${dir.path}/nope.txt');
-    expect(ModelDownloadService.fileProblem(model, missing), 'file missing');
-  });
+      final missing = File('${dir.path}/nope.txt');
+      expect(ModelDownloadService.fileProblem(model, missing), 'file missing');
+    },
+  );
 }

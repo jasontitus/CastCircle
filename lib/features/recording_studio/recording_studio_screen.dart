@@ -50,8 +50,9 @@ class _RecordingStudioScreenState extends ConsumerState<RecordingStudioScreen> {
   // the ENTIRE studio screen for the whole recording (re-running the
   // recorded-count scan and context-line walk while the device encoded
   // audio). Only the timer label listens now.
-  final ValueNotifier<Duration> _recordingDuration =
-      ValueNotifier(Duration.zero);
+  final ValueNotifier<Duration> _recordingDuration = ValueNotifier(
+    Duration.zero,
+  );
   Timer? _durationTimer;
   String? _initError;
 
@@ -63,11 +64,16 @@ class _RecordingStudioScreenState extends ConsumerState<RecordingStudioScreen> {
   /// `ref` is touched once the widget is gone, and a take that is still saving
   /// when the user leaves the studio must survive exactly that moment.
   RecordingsNotifier? _recordingsNotifier;
+  Map<String, Recording> _recordingsSnapshot = const {};
   String? _productionId;
 
-  /// True while [_stopRecording] owns the recorder. dispose() must not stop or
-  /// release it during that window — it would kill the take mid-save.
+  /// Recorder transitions own the recorder across async platform calls.
+  /// dispose() leaves it alone until that transition either transfers a live
+  /// take to the screen or cleans up its candidate file.
+  bool _startInFlight = false;
   bool _stopInFlight = false;
+  ScriptLine? _recordingLine;
+  String? _recordingCharacter;
 
   @override
   void initState() {
@@ -94,21 +100,24 @@ class _RecordingStudioScreenState extends ConsumerState<RecordingStudioScreen> {
     _durationTimer?.cancel();
     _recordingDuration.dispose();
     final recorder = _recorder;
-    if (_stopInFlight) {
-      // _stopRecording is mid-save and will release the recorder itself.
+    if (_startInFlight || _stopInFlight) {
+      // The in-flight transition owns the recorder and will release it if the
+      // screen has gone away.
     } else if (recorder != null && _status == RecordingStatus.recording) {
       // Closing the studio mid-take used to hand the recorder straight to
       // dispose(): the capture was abandoned, the take never registered, and
       // nothing said so. Finish and register it instead — off the widget,
       // using the values cached in build().
-      unawaited(_finishTakeAfterDispose(
-        recorder: recorder,
-        line: _myLines[_currentLineIdx],
-        character: _character,
-        notifier: _recordingsNotifier,
-        productionId: _productionId,
-        durationMs: _recordingDuration.value.inMilliseconds,
-      ));
+      unawaited(
+        _finishTakeAfterDispose(
+          recorder: recorder,
+          line: _recordingLine ?? _myLines[_currentLineIdx],
+          character: _recordingCharacter ?? _character,
+          notifier: _recordingsNotifier,
+          productionId: _productionId,
+          durationMs: _recordingDuration.value.inMilliseconds,
+        ),
+      );
     } else {
       recorder?.dispose();
     }
@@ -127,19 +136,38 @@ class _RecordingStudioScreenState extends ConsumerState<RecordingStudioScreen> {
     required String? productionId,
     required int durationMs,
   }) async {
+    String? stoppedPath;
     try {
-      final path = await recorder.stop();
+      stoppedPath = await recorder.stop();
+      final path = stoppedPath;
       if (path == null || character == null || notifier == null) {
         DebugLogService.instance.logError(
-            LogCategory.error,
-            'Studio: take lost on close — recorder returned '
-            '${path == null ? 'no file' : 'no character/notifier'} '
-            'for line=${line.id}');
-        rootScaffoldMessengerKey.currentState?.showAutoToast(const SnackBar(
-          content: Text('The recording in progress was lost when the studio '
-              'closed — please record that line again.'),
-          duration: Duration(seconds: 6),
-        ));
+          LogCategory.error,
+          'Studio: take lost on close — recorder returned '
+          '${path == null ? 'no file' : 'no character/notifier'} '
+          'for line=${line.id}',
+        );
+        if (path != null) {
+          try {
+            final failedTake = File(path);
+            if (await failedTake.exists()) await failedTake.delete();
+          } catch (cleanupError) {
+            DebugLogService.instance.logError(
+              LogCategory.error,
+              'Studio: could not remove unsaved take at $path',
+              cleanupError,
+            );
+          }
+        }
+        rootScaffoldMessengerKey.currentState?.showAutoToast(
+          const SnackBar(
+            content: Text(
+              'The recording in progress was lost when the studio '
+              'closed — please record that line again.',
+            ),
+            duration: Duration(seconds: 6),
+          ),
+        );
         return;
       }
       await _registerTake(
@@ -150,17 +178,39 @@ class _RecordingStudioScreenState extends ConsumerState<RecordingStudioScreen> {
         productionId: productionId,
         durationMs: durationMs,
       );
-      rootScaffoldMessengerKey.currentState?.showAutoToast(SnackBar(
-        content: Text('Saved the take for ${character.toUpperCase()} that was '
-            'still recording when you left the studio.'),
-      ));
+      rootScaffoldMessengerKey.currentState?.showAutoToast(
+        SnackBar(
+          content: Text(
+            'Saved the take for ${character.toUpperCase()} that was '
+            'still recording when you left the studio.',
+          ),
+        ),
+      );
     } catch (e) {
-      DebugLogService.instance.logError(LogCategory.error,
-          'Studio: saving the in-progress take on close failed', e);
-      rootScaffoldMessengerKey.currentState?.showAutoToast(SnackBar(
-        content: Text("Couldn't save the recording that was in progress: $e"),
-        duration: const Duration(seconds: 6),
-      ));
+      DebugLogService.instance.logError(
+        LogCategory.error,
+        'Studio: saving the in-progress take on close failed',
+        e,
+      );
+      final path = stoppedPath;
+      if (path != null) {
+        try {
+          final failedTake = File(path);
+          if (await failedTake.exists()) await failedTake.delete();
+        } catch (cleanupError) {
+          DebugLogService.instance.logError(
+            LogCategory.error,
+            'Studio: could not remove unpublished take at $path',
+            cleanupError,
+          );
+        }
+      }
+      rootScaffoldMessengerKey.currentState?.showAutoToast(
+        SnackBar(
+          content: Text("Couldn't save the recording that was in progress: $e"),
+          duration: const Duration(seconds: 6),
+        ),
+      );
     } finally {
       await recorder.dispose();
     }
@@ -178,7 +228,7 @@ class _RecordingStudioScreenState extends ConsumerState<RecordingStudioScreen> {
     required String? productionId,
     required int durationMs,
   }) async {
-    // Re-recording reuses the same filename — drop any stale loudness gain.
+    final previousPath = _recordingsSnapshot[line.id]?.localPath;
     AudioLevelService.instance.invalidate(path);
     final recording = Recording(
       id: const Uuid().v4(),
@@ -188,38 +238,71 @@ class _RecordingStudioScreenState extends ConsumerState<RecordingStudioScreen> {
       durationMs: durationMs,
       recordedAt: DateTime.now(),
     );
+    if (productionId != null) {
+      // Durably install the immutable take token before local persistence can
+      // await. If checkpointing fails, publication stops and the prior take
+      // remains committed.
+      await SyncQueue.instance.enqueue(
+        productionId: productionId,
+        recordingId: recording.id,
+        characterName: character,
+        lineId: line.id,
+        localPath: path,
+        durationMs: durationMs,
+        recordedAt: recording.recordedAt,
+      );
+    }
+
     await notifier.add(recording);
 
-    if (productionId == null) return;
+    if (productionId != null) {
+      // STT adaptation: recording + transcript as training data
+      SttAdaptationService.instance.addSample(
+        productionId: productionId,
+        actorId: character,
+        audioPath: path,
+        transcript: line.text,
+        durationMs: durationMs,
+      );
+    }
 
-    // Upload to cloud via sync queue
-    SyncQueue.instance.enqueue(
-      productionId: productionId,
-      characterName: character,
-      lineId: line.id,
-      localPath: path,
-      durationMs: durationMs,
-      recordedAt: recording.recordedAt,
-    );
-
-    // STT adaptation: recording + transcript as training data
-    SttAdaptationService.instance.addSample(
-      productionId: productionId,
-      actorId: character,
-      audioPath: path,
-      transcript: line.text,
-      durationMs: durationMs,
-    );
+    // The new row and queue entry now point at the unique new file. Only now
+    // is it safe to remove the committed take that this one replaced.
+    if (previousPath != null && previousPath != path) {
+      AudioLevelService.instance.invalidate(previousPath);
+      try {
+        var previousFile = File(previousPath);
+        if (!await previousFile.exists()) {
+          // Absolute app-container paths change across reinstalls. Resolve the
+          // committed take by basename in the current recordings directory.
+          previousFile = File(
+            p.join(p.dirname(path), p.basename(previousPath)),
+          );
+        }
+        if (await previousFile.exists()) {
+          AudioLevelService.instance.invalidate(previousFile.path);
+          await previousFile.delete();
+        }
+      } catch (e) {
+        DebugLogService.instance.logError(
+          LogCategory.error,
+          'Studio: could not remove replaced take at $previousPath',
+          e,
+        );
+      }
+    }
   }
 
   @override
   Widget build(BuildContext context) {
     final script = ref.watch(currentScriptProvider);
     final character = ref.watch(recordingCharacterProvider);
+    final recordings = ref.watch(recordingsProvider);
 
     // Kept fresh here so a take can still be saved after this widget is gone
     // (see [_recordingsNotifier]).
     _recordingsNotifier = ref.read(recordingsProvider.notifier);
+    _recordingsSnapshot = recordings;
     _productionId = ref.read(currentProductionProvider)?.id;
 
     if (script == null || character == null) {
@@ -236,36 +319,66 @@ class _RecordingStudioScreenState extends ConsumerState<RecordingStudioScreen> {
       );
     }
 
-    // Memoized: build() ticks at 10 Hz while recording (the duration timer),
-    // and linesForCharacter walks the whole script per call.
+    // Memoized: linesForCharacter walks the whole script per call. A refreshed
+    // list may be shorter, so its index and line-specific playback state must
+    // be updated together before either is read.
     if (_character != character || _myLinesScript != script) {
       _myLinesScript = script;
       _myLines = script.linesForCharacter(character);
+      final activeLine = _recordingLine;
+      final captureActive =
+          _status == RecordingStatus.recording || _startInFlight;
+      if (activeLine != null &&
+          captureActive &&
+          !_myLines.any((line) => line.id == activeLine.id)) {
+        // Keep the stop control tied to the line actually being captured if a
+        // live script/character edit removes it. The completed-take rebuild
+        // refreshes the list again.
+        _myLines = [activeLine, ..._myLines];
+      }
+      if (_myLines.isEmpty) {
+        _currentLineIdx = 0;
+      } else if (activeLine != null && captureActive) {
+        _currentLineIdx = _myLines.indexWhere(
+          (line) => line.id == activeLine.id,
+        );
+      } else {
+        _currentLineIdx = _currentLineIdx.clamp(0, _myLines.length - 1);
+      }
+      if (_status != RecordingStatus.recording &&
+          !_startInFlight &&
+          !_stopInFlight) {
+        _player?.stop();
+        _currentRecordingPath = null;
+        final line = _myLines.isEmpty ? null : _myLines[_currentLineIdx];
+        _status = line != null && recordings.containsKey(line.id)
+            ? RecordingStatus.recorded
+            : RecordingStatus.idle;
+      }
     }
     _character = character;
 
     if (_myLines.isEmpty) {
       return Scaffold(
         appBar: AppBar(title: const Text('Recording Studio')),
-        body: Center(
-          child: Text('$character has no dialogue lines'),
-        ),
+        body: Center(child: Text('$character has no dialogue lines')),
       );
     }
 
-    final recordings = ref.watch(recordingsProvider);
-    final recordedCount =
-        _myLines.where((l) => recordings.containsKey(l.id)).length;
+    final recordedCount = _myLines
+        .where((l) => recordings.containsKey(l.id))
+        .length;
     final progress = _myLines.isEmpty ? 0.0 : recordedCount / _myLines.length;
     final currentLine = _myLines[_currentLineIdx];
-    final hasRecording = recordings.containsKey(currentLine.id) ||
+    final hasRecording =
+        recordings.containsKey(currentLine.id) ||
         _status == RecordingStatus.recorded ||
         _status == RecordingStatus.playing;
 
-    final charIdx =
-        script.characters.indexWhere((c) => c.name == character);
-    final charColor =
-        charIdx >= 0 ? AppTheme.colorForCharacter(charIdx) : Colors.blue;
+    final charIdx = script.characters.indexWhere((c) => c.name == character);
+    final charColor = charIdx >= 0
+        ? AppTheme.colorForCharacter(charIdx)
+        : Colors.blue;
 
     return Scaffold(
       backgroundColor: Colors.black,
@@ -295,7 +408,11 @@ class _RecordingStudioScreenState extends ConsumerState<RecordingStudioScreen> {
                     const Spacer(),
                     // Recording controls
                     _buildRecordingControls(
-                        context, currentLine, hasRecording, charColor),
+                      context,
+                      currentLine,
+                      hasRecording,
+                      charColor,
+                    ),
                     const SizedBox(height: 16),
                     // Navigation
                     _buildNavigation(context, hasRecording, charColor),
@@ -310,8 +427,12 @@ class _RecordingStudioScreenState extends ConsumerState<RecordingStudioScreen> {
     );
   }
 
-  Widget _buildTopBar(BuildContext context, String character, double progress,
-      int recordedCount) {
+  Widget _buildTopBar(
+    BuildContext context,
+    String character,
+    double progress,
+    int recordedCount,
+  ) {
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
       child: Row(
@@ -354,7 +475,10 @@ class _RecordingStudioScreenState extends ConsumerState<RecordingStudioScreen> {
   ParsedScript? _fullIdxScript;
 
   Widget _buildContextLines(
-      BuildContext context, ParsedScript script, Color charColor) {
+    BuildContext context,
+    ParsedScript script,
+    Color charColor,
+  ) {
     if (_fullIdxScript != script) {
       _fullIdxScript = script;
       _fullIdxById = {
@@ -379,7 +503,7 @@ class _RecordingStudioScreenState extends ConsumerState<RecordingStudioScreen> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: contextLines.map((line) {
-        final isMe = line.character == _character;
+        final isMe = _character != null && line.isForCharacter(_character!);
         return Padding(
           padding: const EdgeInsets.symmetric(vertical: 4),
           child: Opacity(
@@ -410,7 +534,10 @@ class _RecordingStudioScreenState extends ConsumerState<RecordingStudioScreen> {
   }
 
   Widget _buildCurrentLine(
-      BuildContext context, ScriptLine line, Color charColor) {
+    BuildContext context,
+    ScriptLine line,
+    Color charColor,
+  ) {
     return Container(
       width: double.infinity,
       padding: const EdgeInsets.all(24),
@@ -446,8 +573,11 @@ class _RecordingStudioScreenState extends ConsumerState<RecordingStudioScreen> {
             const SizedBox(height: 12),
             Row(
               children: [
-                const Icon(Icons.fiber_manual_record,
-                    color: Colors.red, size: 12),
+                const Icon(
+                  Icons.fiber_manual_record,
+                  color: Colors.red,
+                  size: 12,
+                ),
                 const SizedBox(width: 6),
                 ValueListenableBuilder<Duration>(
                   valueListenable: _recordingDuration,
@@ -464,14 +594,17 @@ class _RecordingStudioScreenState extends ConsumerState<RecordingStudioScreen> {
     );
   }
 
-  Widget _buildRecordingControls(BuildContext context, ScriptLine line,
-      bool hasRecording, Color charColor) {
+  Widget _buildRecordingControls(
+    BuildContext context,
+    ScriptLine line,
+    bool hasRecording,
+    Color charColor,
+  ) {
     return Row(
       mainAxisAlignment: MainAxisAlignment.center,
       children: [
         // Play existing recording
-        if (hasRecording &&
-            _status != RecordingStatus.recording) ...[
+        if (hasRecording && _status != RecordingStatus.recording) ...[
           _circleButton(
             icon: _status == RecordingStatus.playing
                 ? Icons.stop
@@ -486,20 +619,15 @@ class _RecordingStudioScreenState extends ConsumerState<RecordingStudioScreen> {
         ],
         // Record button
         _circleButton(
-          icon: _status == RecordingStatus.recording
-              ? Icons.stop
-              : Icons.mic,
-          color: _status == RecordingStatus.recording
-              ? Colors.red
-              : charColor,
+          icon: _status == RecordingStatus.recording ? Icons.stop : Icons.mic,
+          color: _status == RecordingStatus.recording ? Colors.red : charColor,
           size: 72,
           onTap: _status == RecordingStatus.recording
               ? _stopRecording
               : _startRecording,
           filled: true,
         ),
-        if (hasRecording &&
-            _status != RecordingStatus.recording) ...[
+        if (hasRecording && _status != RecordingStatus.recording) ...[
           const SizedBox(width: 24),
           // Re-record
           _circleButton(
@@ -514,20 +642,27 @@ class _RecordingStudioScreenState extends ConsumerState<RecordingStudioScreen> {
   }
 
   Widget _buildNavigation(
-      BuildContext context, bool hasRecording, Color charColor) {
+    BuildContext context,
+    bool hasRecording,
+    Color charColor,
+  ) {
+    final canNavigate =
+        _status != RecordingStatus.recording &&
+        !_startInFlight &&
+        !_stopInFlight;
     return Row(
       mainAxisAlignment: MainAxisAlignment.spaceBetween,
       children: [
         // Previous
         TextButton.icon(
-          onPressed: _currentLineIdx > 0 ? _previousLine : null,
+          onPressed: canNavigate && _currentLineIdx > 0 ? _previousLine : null,
           icon: const Icon(Icons.chevron_left),
           label: const Text('Previous'),
           style: TextButton.styleFrom(foregroundColor: Colors.white70),
         ),
         // Skip
         TextButton(
-          onPressed: _currentLineIdx < _myLines.length - 1
+          onPressed: canNavigate && _currentLineIdx < _myLines.length - 1
               ? () => _goToLine(_currentLineIdx + 1)
               : null,
           style: TextButton.styleFrom(foregroundColor: Colors.grey[600]),
@@ -535,11 +670,11 @@ class _RecordingStudioScreenState extends ConsumerState<RecordingStudioScreen> {
         ),
         // Next
         TextButton.icon(
-          onPressed: _currentLineIdx < _myLines.length - 1
+          onPressed: canNavigate && _currentLineIdx < _myLines.length - 1
               ? _nextLine
               : null,
-          icon: const Text('Next'),
-          label: const Icon(Icons.chevron_right),
+          icon: const Icon(Icons.chevron_right),
+          label: const Text('Next'),
           style: TextButton.styleFrom(foregroundColor: charColor),
         ),
       ],
@@ -571,177 +706,298 @@ class _RecordingStudioScreenState extends ConsumerState<RecordingStudioScreen> {
   // ── Recording Actions ─────────────────────────────────
 
   Future<void> _startRecording() async {
-    if (_recorder == null) return;
-
-    if (_status == RecordingStatus.playing) {
-      await _player?.stop();
-    }
-
-    final hasPermission = await _recorder!.hasPermission();
-    if (!hasPermission) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showAutoToast(
-          const SnackBar(content: Text('Microphone permission required')),
-        );
-      }
+    final recorder = _recorder;
+    if (recorder == null ||
+        _startInFlight ||
+        _stopInFlight ||
+        _status == RecordingStatus.recording) {
       return;
     }
 
-    final dir = await getApplicationDocumentsDirectory();
-    final recordingsDir = Directory(p.join(dir.path, 'recordings'));
-    if (!recordingsDir.existsSync()) {
-      recordingsDir.createSync(recursive: true);
-    }
-
     final line = _myLines[_currentLineIdx];
-    final filePath = p.join(recordingsDir.path,
-        '${line.id}${AppConstants.audioExtension}');
+    final character = _character;
+    if (character == null) return;
 
+    _startInFlight = true;
+    _recordingLine = line;
+    _recordingCharacter = character;
+    setState(() {});
+
+    String? candidatePath;
+    var captureTransferred = false;
     try {
-      await _recorder!.start(
+      if (_status == RecordingStatus.playing) {
+        await _player?.stop();
+        if (!mounted) return;
+        setState(() => _status = RecordingStatus.recorded);
+      }
+
+      final hasPermission = await recorder.hasPermission();
+      if (!mounted) return;
+      if (!hasPermission) {
+        ScaffoldMessenger.of(context).showAutoToast(
+          const SnackBar(content: Text('Microphone permission required')),
+        );
+        return;
+      }
+
+      final dir = await getApplicationDocumentsDirectory();
+      if (!mounted) return;
+      final recordingsDir = Directory(p.join(dir.path, 'recordings'));
+      await recordingsDir.create(recursive: true);
+      if (!mounted) return;
+
+      // Every take gets its own file. A failed or interrupted re-record can no
+      // longer truncate the last committed take or mutate a queued upload.
+      final takeId = const Uuid().v4();
+      candidatePath = p.join(
+        recordingsDir.path,
+        '${line.id}_$takeId${AppConstants.audioExtension}',
+      );
+      await recorder.start(
         const RecordConfig(
           encoder: AudioEncoder.aacLc,
           sampleRate: AppConstants.sampleRate,
           bitRate: 128000,
         ),
-        path: filePath,
+        path: candidatePath,
       );
+      if (!mounted) return;
+
+      _currentRecordingPath = candidatePath;
+      _recordingDuration.value = Duration.zero;
+      _durationTimer = Timer.periodic(const Duration(milliseconds: 100), (_) {
+        if (mounted) {
+          _recordingDuration.value += const Duration(milliseconds: 100);
+        }
+      });
+
+      // Transfer ownership to the normal recording/stop lifecycle before
+      // rebuilding. dispose() can now finish and register this take.
+      _startInFlight = false;
+      captureTransferred = true;
+      setState(() => _status = RecordingStatus.recording);
     } catch (e) {
-      DebugLogService.instance
-          .logError(LogCategory.error, 'Studio: recorder.start failed', e);
+      DebugLogService.instance.logError(
+        LogCategory.error,
+        'Studio: recorder.start failed',
+        e,
+      );
       if (mounted) {
         ScaffoldMessenger.of(context).showAutoToast(
           SnackBar(content: Text("Couldn't start recording: $e")),
         );
       }
-      return;
-    }
-
-    // Closing the studio during the permission prompt / recorder start
-    // disposes the State; stop the recorder we just started and bail.
-    if (!mounted) {
-      try {
-        await _recorder?.stop();
-      } catch (_) {}
-      return;
-    }
-
-    _currentRecordingPath = filePath;
-    _recordingDuration.value = Duration.zero;
-    _durationTimer = Timer.periodic(const Duration(milliseconds: 100), (_) {
-      if (mounted) {
-        _recordingDuration.value += const Duration(milliseconds: 100);
+    } finally {
+      if (!captureTransferred) {
+        String? stoppedPath;
+        if (candidatePath != null) {
+          try {
+            stoppedPath = await recorder.stop();
+          } catch (e) {
+            DebugLogService.instance.logError(
+              LogCategory.error,
+              'Studio: cleanup after interrupted recorder start failed',
+              e,
+            );
+          }
+          final orphanPath = stoppedPath ?? candidatePath;
+          try {
+            final orphan = File(orphanPath);
+            if (await orphan.exists()) await orphan.delete();
+          } catch (e) {
+            DebugLogService.instance.logError(
+              LogCategory.error,
+              'Studio: could not remove interrupted take at $orphanPath',
+              e,
+            );
+          }
+        }
+        _startInFlight = false;
+        _recordingLine = null;
+        _recordingCharacter = null;
+        if (mounted) {
+          setState(() {});
+        } else {
+          await recorder.dispose();
+        }
       }
-    });
-
-    setState(() => _status = RecordingStatus.recording);
+    }
   }
 
   Future<void> _stopRecording() async {
+    if (_stopInFlight || _status != RecordingStatus.recording) return;
     _durationTimer?.cancel();
-
     // Snapshot what the save needs before the first await: the user can leave
     // the studio while stop() is running, and everything below must still work
     // with this widget gone.
-    final line = _myLines[_currentLineIdx];
-    final character = _character;
+    final line = _recordingLine ?? _myLines[_currentLineIdx];
+    final character = _recordingCharacter ?? _character;
     final notifier = _recordingsNotifier;
     final productionId = _productionId;
     final durationMs = _recordingDuration.value.inMilliseconds;
 
-    String? path;
-    _stopInFlight = true; // dispose() must leave the recorder alone until we're done
+    _stopInFlight = true;
     try {
-      path = await _recorder?.stop();
-    } catch (e) {
-      DebugLogService.instance
-          .logError(LogCategory.error, 'Studio: recorder.stop failed', e);
+      String? path;
+      try {
+        path = await _recorder?.stop();
+      } catch (e) {
+        DebugLogService.instance.logError(
+          LogCategory.error,
+          'Studio: recorder.stop failed',
+          e,
+        );
+      }
+
+      if (path == null) {
+        DebugLogService.instance.logError(
+          LogCategory.error,
+          'Studio: recorder.stop returned no file',
+        );
+        rootScaffoldMessengerKey.currentState?.showAutoToast(
+          const SnackBar(
+            content: Text('Recording failed — nothing was saved. Try again.'),
+          ),
+        );
+        if (mounted) {
+          setState(() {
+            _currentRecordingPath = null;
+            _status = _recordingsSnapshot.containsKey(line.id)
+                ? RecordingStatus.recorded
+                : RecordingStatus.idle;
+          });
+        }
+        return;
+      }
+
+      // Registering the take is NOT conditional on the screen still being
+      // mounted. Only widget state and context access require a mounted guard.
+      if (character == null || notifier == null) {
+        DebugLogService.instance.logError(
+          LogCategory.error,
+          'Studio: no character selected — take at $path not registered',
+        );
+        try {
+          final failedTake = File(path);
+          if (await failedTake.exists()) await failedTake.delete();
+        } catch (cleanupError) {
+          DebugLogService.instance.logError(
+            LogCategory.error,
+            'Studio: could not remove unregistered take at $path',
+            cleanupError,
+          );
+        }
+        rootScaffoldMessengerKey.currentState?.showAutoToast(
+          const SnackBar(
+            content: Text(
+              "Couldn't save the recording — no character selected.",
+            ),
+          ),
+        );
+        if (mounted) {
+          setState(() {
+            _currentRecordingPath = null;
+            _status = _recordingsSnapshot.containsKey(line.id)
+                ? RecordingStatus.recorded
+                : RecordingStatus.idle;
+          });
+        }
+        return;
+      }
+
+      try {
+        await _registerTake(
+          path: path,
+          line: line,
+          character: character,
+          notifier: notifier,
+          productionId: productionId,
+          durationMs: durationMs,
+        );
+      } catch (e) {
+        DebugLogService.instance.logError(
+          LogCategory.error,
+          'Studio: saving the take failed for ${line.id}',
+          e,
+        );
+        try {
+          final failedTake = File(path);
+          if (await failedTake.exists()) await failedTake.delete();
+        } catch (cleanupError) {
+          DebugLogService.instance.logError(
+            LogCategory.error,
+            'Studio: could not remove unregistered take at $path',
+            cleanupError,
+          );
+        }
+        rootScaffoldMessengerKey.currentState?.showAutoToast(
+          SnackBar(
+            content: Text("Couldn't save that take: $e"),
+            duration: const Duration(seconds: 6),
+          ),
+        );
+        if (mounted) {
+          setState(() {
+            _currentRecordingPath = null;
+            _status = _recordingsSnapshot.containsKey(line.id)
+                ? RecordingStatus.recorded
+                : RecordingStatus.idle;
+          });
+        }
+        return;
+      }
+
+      _myLinesScript = null;
+      if (mounted) setState(() => _status = RecordingStatus.recorded);
     } finally {
       _stopInFlight = false;
-      // dispose() ran during the stop and deferred the recorder to us.
-      if (!mounted) _recorder?.dispose();
+      _recordingLine = null;
+      _recordingCharacter = null;
+      // dispose() defers the recorder to this operation if the screen closes
+      // during stop, persistence, or replacement cleanup.
+      if (!mounted) await _recorder?.dispose();
     }
-
-    if (path == null) {
-      // Nothing was saved — say so instead of staying stuck on "recording".
-      DebugLogService.instance.logError(
-          LogCategory.error, 'Studio: recorder.stop returned no file');
-      rootScaffoldMessengerKey.currentState?.showAutoToast(const SnackBar(
-        content: Text('Recording failed — nothing was saved. Try again.'),
-      ));
-      if (mounted) setState(() => _status = RecordingStatus.idle);
-      return;
-    }
-
-    // Registering the take is NOT conditional on the screen still being
-    // mounted: stopping and immediately navigating away used to leave the
-    // audio on disk, unregistered and never queued — castmates never heard it
-    // and nothing was logged. Only the setState calls need the guard.
-    if (character == null || notifier == null) {
-      DebugLogService.instance.logError(LogCategory.error,
-          'Studio: no character selected — take at $path not registered');
-      rootScaffoldMessengerKey.currentState?.showAutoToast(const SnackBar(
-        content: Text("Couldn't save the recording — no character selected."),
-      ));
-      if (mounted) setState(() => _status = RecordingStatus.idle);
-      return;
-    }
-
-    try {
-      await _registerTake(
-        path: path,
-        line: line,
-        character: character,
-        notifier: notifier,
-        productionId: productionId,
-        durationMs: durationMs,
-      );
-    } catch (e) {
-      DebugLogService.instance.logError(
-          LogCategory.error, 'Studio: saving the take failed for ${line.id}', e);
-      // The app-wide messenger, not this screen's: the failure has to be seen
-      // even when the user has already navigated away.
-      rootScaffoldMessengerKey.currentState?.showAutoToast(SnackBar(
-        content: Text("Couldn't save that take: $e"),
-        duration: const Duration(seconds: 6),
-      ));
-      if (mounted) setState(() => _status = RecordingStatus.idle);
-      return;
-    }
-
-    if (mounted) setState(() => _status = RecordingStatus.recorded);
   }
 
   Future<void> _playRecording() async {
     final line = _myLines[_currentLineIdx];
     final recordings = ref.read(recordingsProvider);
+    final speed = ref.read(playbackSpeedProvider);
     final recording = recordings[line.id];
+    final player = _player;
 
     final path = _currentRecordingPath ?? recording?.localPath;
-    if (path == null) return;
+    if (path == null || player == null) return;
 
     try {
       // The recorder leaves iOS in the .record category; without this the
       // player runs silently. Force a playback session first.
       await PlaybackSession.ensurePlayback();
-      await _player!.setFilePath(path);
-      final speed = ref.read(playbackSpeedProvider);
-      await _player!.setSpeed(speed);
-      await _player!.setVolume(await AudioLevelService.instance.volumeFor(path));
+      if (!mounted) return;
+      await player.setFilePath(path);
+      if (!mounted) return;
+      await player.setSpeed(speed);
+      if (!mounted) return;
+      final volume = await AudioLevelService.instance.volumeFor(path);
+      if (!mounted) return;
+      await player.setVolume(volume);
+      if (!mounted) return;
       setState(() => _status = RecordingStatus.playing);
-      await _player!.play();
+      await player.play();
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showAutoToast(
-          SnackBar(content: Text('Playback error: $e')),
-        );
+        setState(() => _status = RecordingStatus.recorded);
+        ScaffoldMessenger.of(
+          context,
+        ).showAutoToast(SnackBar(content: Text('Playback error: $e')));
       }
     }
   }
 
   Future<void> _stopPlayback() async {
     await _player?.stop();
-    setState(() => _status = RecordingStatus.recorded);
+    if (mounted) setState(() => _status = RecordingStatus.recorded);
   }
 
   void _nextLine() {
@@ -757,6 +1013,11 @@ class _RecordingStudioScreenState extends ConsumerState<RecordingStudioScreen> {
   }
 
   void _goToLine(int index) {
+    if (_status == RecordingStatus.recording ||
+        _startInFlight ||
+        _stopInFlight) {
+      return;
+    }
     _player?.stop();
     _durationTimer?.cancel();
     setState(() {

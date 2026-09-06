@@ -16,6 +16,7 @@ import '../../data/services/debug_log_service.dart';
 import '../../data/services/audio_level_service.dart';
 import '../../data/services/playback_session.dart';
 import '../../data/services/supabase_service.dart';
+import '../../data/services/sync_queue.dart';
 import '../../providers/production_providers.dart';
 import '../../core/toast.dart';
 
@@ -33,6 +34,8 @@ class _RecordingsBrowserScreenState
   final AudioPlayer _player = AudioPlayer();
   StreamSubscription? _playerSub;
   String? _playingLineId;
+  String? _pendingLineId;
+  int _playbackGeneration = 0;
   String? _filterCharacter; // null = show all
 
   /// recording.id → whether its audio actually resolves on disk. Resolving a
@@ -55,6 +58,7 @@ class _RecordingsBrowserScreenState
 
   @override
   void dispose() {
+    _playbackGeneration++;
     _playerSub?.cancel();
     _player.dispose();
     super.dispose();
@@ -64,7 +68,9 @@ class _RecordingsBrowserScreenState
   (List<ScriptLine>, Map<String, Recording>, String?)? _entriesKey;
 
   List<_RecordedLine> _memoEntries(
-      ParsedScript script, Map<String, Recording> recordings) {
+    ParsedScript script,
+    Map<String, Recording> recordings,
+  ) {
     if (_entriesCache != null &&
         identical(_entriesKey?.$1, script.lines) &&
         identical(_entriesKey?.$2, recordings) &&
@@ -76,7 +82,8 @@ class _RecordingsBrowserScreenState
     for (final entry in recordings.entries) {
       final line = linesById[entry.key];
       if (line != null &&
-          (_filterCharacter == null || line.character == _filterCharacter)) {
+          (_filterCharacter == null ||
+              entry.value.character == _filterCharacter)) {
         entries.add(_RecordedLine(line: line, recording: entry.value));
       }
     }
@@ -196,18 +203,21 @@ class _RecordingsBrowserScreenState
     final key = entries.map((e) => e.recording.id).join('|');
     if (key == _scannedKey) return;
     _scannedKey = key;
+    final scanKey = key;
     unawaited(() async {
       final resolved = <String, bool>{};
       for (final entry in entries) {
         resolved[entry.recording.id] =
             await _resolveRecordingPath(entry.recording) != null;
       }
-      if (!mounted) return;
+      if (!mounted || _scannedKey != scanKey) return;
       final missing = resolved.values.where((ok) => !ok).length;
       if (missing > 0) {
-        DebugLogService.instance.log(LogCategory.general,
-            'Recordings: $missing of ${resolved.length} recording file(s) '
-            'missing on this device');
+        DebugLogService.instance.log(
+          LogCategory.general,
+          'Recordings: $missing of ${resolved.length} recording file(s) '
+          'missing on this device',
+        );
       }
       setState(() {
         _fileResolved
@@ -316,10 +326,10 @@ class _RecordingsBrowserScreenState
     final isPlaying = _playingLineId == line.id;
 
     final charIdx = script.characters.indexWhere(
-      (c) => c.name == line.character,
+      (c) => c.name == recording.character,
     );
     final charColor = charIdx >= 0
-        ? AppTheme.colorForCharacter(charIdx)
+        ? AppTheme.colorForCharacter(script.characters[charIdx].colorIndex)
         : Colors.blue;
     // Optimistic until the async scan says otherwise (see [_fileResolved]);
     // the resolver, not a raw path check, decides — stale container paths and
@@ -339,33 +349,7 @@ class _RecordingsBrowserScreenState
         ),
         child: const Icon(Icons.delete, color: Colors.white),
       ),
-      confirmDismiss: (_) async {
-        return await showDialog<bool>(
-          context: context,
-          builder: (ctx) => AlertDialog(
-            title: const Text('Delete Recording?'),
-            content: Text(
-              'Delete recording for "${line.text.length > 50 ? '${line.text.substring(0, 47)}...' : line.text}"?\n\n'
-              'It is removed from this device and from the cast\'s cloud copy. '
-              'Castmates who already downloaded it keep theirs.',
-            ),
-            actions: [
-              TextButton(
-                onPressed: () => Navigator.pop(ctx, false),
-                child: const Text('Cancel'),
-              ),
-              TextButton(
-                onPressed: () => Navigator.pop(ctx, true),
-                child: const Text(
-                  'Delete',
-                  style: TextStyle(color: Colors.red),
-                ),
-              ),
-            ],
-          ),
-        );
-      },
-      onDismissed: (_) => _deleteRecording(recording),
+      confirmDismiss: (_) => _confirmDeleteRecording(line, recording),
       child: Card(
         margin: const EdgeInsets.only(bottom: 8),
         child: InkWell(
@@ -417,7 +401,7 @@ class _RecordingsBrowserScreenState
                               borderRadius: BorderRadius.circular(4),
                             ),
                             child: Text(
-                              line.character,
+                              recording.character,
                               style: TextStyle(
                                 color: charColor,
                                 fontSize: 11,
@@ -466,10 +450,11 @@ class _RecordingsBrowserScreenState
                   ],
                 ),
                 const SizedBox(width: 4),
-                // Re-record button
+                // Generic record button. The studio has no line-selection
+                // route state, so this must not promise a line-specific retry.
                 IconButton(
                   icon: const Icon(Icons.mic, size: 18),
-                  tooltip: 'Re-record',
+                  tooltip: 'Record',
                   onPressed: () {
                     context.push('/record');
                   },
@@ -487,107 +472,224 @@ class _RecordingsBrowserScreenState
     );
   }
 
-  Future<void> _deleteRecording(Recording recording) async {
-    final dlog = DebugLogService.instance;
-    // Read providers before the first await: riverpod throws if `ref` is used
-    // after the user navigates away mid-delete.
-    final notifier = ref.read(recordingsProvider.notifier);
+  Future<bool> _confirmDeleteRecording(
+    ScriptLine line,
+    Recording recording,
+  ) async {
+    // Snapshot all non-widget deletion dependencies before opening the dialog.
+    // Once cloud deletion starts, cleanup must finish even if this screen pops.
     final productionId = ref.read(currentProductionProvider)?.id;
+    final notifier = ref.read(recordingsProvider.notifier);
+    final localFile = File(recording.localPath);
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Delete Recording?'),
+        content: Text(
+          'Delete recording for "${line.text.length > 50 ? '${line.text.substring(0, 47)}...' : line.text}"?\n\n'
+          'It is removed from this device and from the cast\'s cloud copy. '
+          'Castmates who already downloaded it keep theirs.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Delete', style: TextStyle(color: Colors.red)),
+          ),
+        ],
+      ),
+    );
+    if (!mounted || confirmed != true) return false;
 
-    // Provider state FIRST — remove() drops the row from state
-    // synchronously before its own await, which is what lets the
-    // Dismissible leave the tree this frame. File and cloud cleanup follow.
-    try {
-      await notifier.remove(recording.scriptLineId);
-    } catch (e) {
-      dlog.logError(LogCategory.error,
-          'Delete: could not remove recording row ${recording.id}', e);
+    // Fail closed before local state loses the retry target.
+    final cloud = await _deleteCloudCopy(recording, productionId);
+    switch (cloud) {
+      case _CloudDelete.notNeeded:
+      case _CloudDelete.deleted:
+        await _deleteRecording(recording, productionId, notifier, localFile);
+        // Provider removal already removed the tile; never ask Dismissible to
+        // run a second deletion callback.
+        return false;
+      case _CloudDelete.signInRequired:
+        if (mounted) {
+          ScaffoldMessenger.of(context).showAutoToast(
+            const SnackBar(
+              content: Text(
+                'Sign in before deleting this recording so its shared cloud copy '
+                'can be removed too.',
+              ),
+              duration: Duration(seconds: 8),
+            ),
+          );
+        }
+        return false;
+      case _CloudDelete.failed:
+        if (mounted) {
+          ScaffoldMessenger.of(context).showAutoToast(
+            const SnackBar(
+              content: Text(
+                "Couldn't remove the shared cloud copy. The recording was not "
+                'deleted; try again.',
+              ),
+              duration: Duration(seconds: 8),
+            ),
+          );
+        }
+        return false;
+    }
+  }
+
+  Future<void> _deleteRecording(
+    Recording recording,
+    String? productionId,
+    RecordingsNotifier notifier,
+    File localFile,
+  ) async {
+    final dlog = DebugLogService.instance;
+    if (productionId == null) {
+      dlog.logError(
+        LogCategory.error,
+        'Delete: no production snapshot for recording ${recording.id}',
+      );
       if (mounted) {
-        ScaffoldMessenger.of(context).showAutoToast(SnackBar(
-          content: Text("Couldn't delete that recording: $e"),
-          duration: const Duration(seconds: 6),
-        ));
+        ScaffoldMessenger.of(context).showAutoToast(
+          const SnackBar(
+            content: Text(
+              "Couldn't safely delete that recording because its production "
+              'is no longer selected.',
+            ),
+            duration: Duration(seconds: 6),
+          ),
+        );
+      }
+      return;
+    }
+    final deletingPlayback =
+        _playingLineId == recording.scriptLineId ||
+        _pendingLineId == recording.scriptLineId;
+    if (deletingPlayback) {
+      _playbackGeneration++;
+      _pendingLineId = null;
+      _playingLineId = null;
+      if (mounted) {
+        try {
+          await _player.stop();
+        } catch (e) {
+          dlog.logError(
+            LogCategory.error,
+            'Delete: could not stop playback for ${recording.id}',
+            e,
+          );
+        }
+      }
+    }
+
+    // Delete the exact captured Drift row; the notifier only removes live
+    // provider state if this production and recording ID are still current.
+    try {
+      await notifier.removeRecording(
+        productionId,
+        recording.scriptLineId,
+        recording.id,
+      );
+    } catch (e) {
+      dlog.logError(
+        LogCategory.error,
+        'Delete: could not remove recording row ${recording.id}',
+        e,
+      );
+      if (mounted) {
+        ScaffoldMessenger.of(context).showAutoToast(
+          SnackBar(
+            content: Text("Couldn't safely delete that recording: $e"),
+            duration: const Duration(seconds: 6),
+          ),
+        );
       }
       return;
     }
 
-    // Delete local file
     var localFileGone = true;
     try {
-      final file = File(recording.localPath);
-      if (file.existsSync()) await file.delete();
+      if (await localFile.exists()) await localFile.delete();
     } catch (e) {
-      // Was a bare `catch (_) {}`: the take stayed on disk and kept playing
-      // through the path resolver, with the UI insisting it was deleted.
       localFileGone = false;
-      dlog.logError(LogCategory.error,
-          'Delete: could not remove file ${recording.localPath}', e);
+      dlog.logError(
+        LogCategory.error,
+        'Delete: could not remove file ${localFile.path}',
+        e,
+      );
     }
-
-    final cloud = await _deleteCloudCopy(recording, productionId);
 
     if (!mounted) return;
     final problems = <String>[
       if (!localFileGone) 'the audio file is still on this device',
-      if (cloud == _CloudDelete.failed)
-        'the cloud copy could not be removed, so castmates may still hear it',
     ];
-    ScaffoldMessenger.of(context).showAutoToast(SnackBar(
-      content: Text(problems.isEmpty
-          ? 'Recording deleted'
-          : 'Recording removed here, but ${problems.join(', and ')}.'),
-      duration: Duration(seconds: problems.isEmpty ? 4 : 8),
-    ));
+    ScaffoldMessenger.of(context).showAutoToast(
+      SnackBar(
+        content: Text(
+          problems.isEmpty
+              ? 'Recording deleted'
+              : 'Recording removed here, but ${problems.join(', and ')}.',
+        ),
+        duration: Duration(seconds: problems.isEmpty ? 4 : 8),
+      ),
+    );
   }
 
-  /// Delete this take's cloud row so castmates stop syncing it.
+  /// Delete this take's cloud metadata, then durably queue its storage object.
   ///
-  /// The row — not the storage object — is what every castmate's sync reads;
-  /// uploads already orphan their previous objects by design (a unique key per
-  /// take), so leaving the blob behind changes nothing that plays.
-  /// Castmates who already downloaded the take keep their cached copy.
+  /// Metadata goes first so a metadata failure leaves playable storage intact.
+  /// Once metadata is gone, the durable cleanup queue owns blob deletion and
+  /// retries storage failures without blocking local cleanup.
   Future<_CloudDelete> _deleteCloudCopy(
-      Recording recording, String? productionId) async {
+    Recording recording,
+    String? productionId,
+  ) async {
     final supa = SupabaseService.instance;
-    if (!supa.isInitialized || !supa.isSignedIn) return _CloudDelete.skipped;
-    final userId = supa.currentUser?.id;
-    if (productionId == null || userId == null) return _CloudDelete.skipped;
+    final localUrl = recording.remoteUrl;
+    final wasUploaded = localUrl != null && localUrl.isNotEmpty;
     // A castmate's take cached on this device is not ours to delete from the
     // cloud; removing it here just stops it playing locally.
-    if (recording.id.startsWith('cache_')) return _CloudDelete.skipped;
+    if (recording.id.startsWith('cache_')) return _CloudDelete.notNeeded;
+    if (!supa.isInitialized || !supa.isSignedIn) {
+      return wasUploaded ? _CloudDelete.signInRequired : _CloudDelete.notNeeded;
+    }
+    if (productionId == null) {
+      return wasUploaded ? _CloudDelete.failed : _CloudDelete.notNeeded;
+    }
 
-    final wasUploaded =
-        recording.remoteUrl != null && recording.remoteUrl!.isNotEmpty;
     try {
-      final removed = await supa.client
-          .from('recordings')
-          .delete()
-          .eq('production_id', productionId)
-          .eq('line_id', recording.scriptLineId)
-          .eq('user_id', userId)
-          .select();
-      if (removed.isNotEmpty) {
-        DebugLogService.instance.log(
-            LogCategory.network,
-            'Delete: removed cloud recording row for '
-            'line=${recording.scriptLineId}');
-        return _CloudDelete.deleted;
+      final deletedUrl = await supa.deleteRecordingMetadata(
+        productionId: productionId,
+        lineId: recording.scriptLineId,
+      );
+      // A prior attempt may have deleted metadata and then failed before its
+      // cleanup URL was persisted. The captured local URL closes that retry
+      // gap when the RPC reports the row already absent.
+      final cleanupUrl = deletedUrl ?? (wasUploaded ? localUrl : null);
+      if (cleanupUrl != null) {
+        await SyncQueue.instance.enqueueObjectCleanup(cleanupUrl);
       }
-      // No rows came back. If this take was never uploaded there was nothing
-      // to delete; if it WAS, the delete was refused (the recordings table has
-      // no DELETE policy today) and the cast still has it.
-      if (!wasUploaded) return _CloudDelete.skipped;
       DebugLogService.instance.log(
-          LogCategory.error,
-          'Delete: cloud row for line=${recording.scriptLineId} was NOT '
-          'removed (no rows deleted — RLS has no delete policy?); castmates '
-          'will keep syncing this take');
-      return _CloudDelete.failed;
+        LogCategory.network,
+        'Delete: removed cloud recording metadata for '
+        'line=${recording.scriptLineId}'
+        '${cleanupUrl != null ? ' and queued object cleanup' : ''}',
+      );
+      return deletedUrl == null && !wasUploaded
+          ? _CloudDelete.notNeeded
+          : _CloudDelete.deleted;
     } catch (e) {
       DebugLogService.instance.logError(
-          LogCategory.error,
-          'Delete: cloud delete failed for line=${recording.scriptLineId}',
-          e);
+        LogCategory.error,
+        'Delete: cloud metadata/cleanup handoff failed for '
+        'line=${recording.scriptLineId}',
+        e,
+      );
       return _CloudDelete.failed;
     }
   }
@@ -615,8 +717,7 @@ class _RecordingsBrowserScreenState
     // call janked the browser when many rows needed it.
     final cachePath = (await _cachedRecordingPaths(docsDir.path)).firstWhere(
       (path) =>
-          p.basename(path) == filename ||
-          path.contains(recording.scriptLineId),
+          p.basename(path) == filename || path.contains(recording.scriptLineId),
       orElse: () => '',
     );
     if (cachePath.isNotEmpty) return cachePath;
@@ -643,19 +744,25 @@ class _RecordingsBrowserScreenState
 
   Future<void> _playRecording(Recording recording, String lineId) async {
     final dlog = DebugLogService.instance;
+    final generation = ++_playbackGeneration;
+    _pendingLineId = lineId;
+    bool isCurrent() => mounted && generation == _playbackGeneration;
+
     dlog.log(
       LogCategory.general,
       'Play: resolving ${recording.scriptLineId.substring(0, 8)}... stored=${recording.localPath.split("/").last}',
     );
 
-    final resolvedPath = await _resolveRecordingPath(recording);
+    try {
+      final resolvedPath = await _resolveRecordingPath(recording);
+      if (!isCurrent()) return;
 
-    if (resolvedPath == null) {
-      dlog.log(
-        LogCategory.error,
-        'Play: file NOT FOUND for ${recording.scriptLineId.substring(0, 8)}',
-      );
-      if (mounted) {
+      if (resolvedPath == null) {
+        _pendingLineId = null;
+        dlog.log(
+          LogCategory.error,
+          'Play: file NOT FOUND for ${recording.scriptLineId.substring(0, 8)}',
+        );
         ScaffoldMessenger.of(context).showAutoToast(
           SnackBar(
             content: Text(
@@ -663,52 +770,62 @@ class _RecordingsBrowserScreenState
             ),
           ),
         );
+        return;
       }
-      return;
-    }
 
-    final size = File(resolvedPath).lengthSync();
-    dlog.log(
-      LogCategory.general,
-      'Play: found at ${resolvedPath.split("/").last} (${size ~/ 1024}KB)',
-    );
+      final size = await File(resolvedPath).length();
+      if (!isCurrent()) return;
+      dlog.log(
+        LogCategory.general,
+        'Play: found at ${resolvedPath.split("/").last} (${size ~/ 1024}KB)',
+      );
 
-    if (size < 100) {
-      dlog.log(LogCategory.error, 'Play: file empty (${size}B)');
-      if (mounted) {
+      if (size < 100) {
+        _pendingLineId = null;
+        dlog.log(LogCategory.error, 'Play: file empty (${size}B)');
         ScaffoldMessenger.of(context).showAutoToast(
           const SnackBar(content: Text('Recording file is empty')),
         );
+        return;
       }
-      return;
-    }
 
-    try {
       await _player.stop();
+      if (!isCurrent()) return;
       // Rehearsal capture leaves iOS in the .record category; without this the
       // player runs silently. Force a playback session first.
       await PlaybackSession.ensurePlayback();
+      if (!isCurrent()) return;
       await _player.setFilePath(resolvedPath);
-      await _player.setVolume(
-        await AudioLevelService.instance.volumeFor(resolvedPath),
-      );
+      if (!isCurrent()) return;
+      final volume = await AudioLevelService.instance.volumeFor(resolvedPath);
+      if (!isCurrent()) return;
+      await _player.setVolume(volume);
+      if (!isCurrent()) return;
+      _pendingLineId = null;
       setState(() => _playingLineId = lineId);
       await _player.play();
+      if (!isCurrent()) return;
     } catch (e) {
       debugPrint('PlayRecording ERROR: $e');
       dlog.logError(LogCategory.error, 'Play: playback failed', e);
-      if (mounted) {
+      if (isCurrent()) {
+        _pendingLineId = null;
         setState(() => _playingLineId = null);
+        final message = e is FileSystemException
+            ? 'Recording file is no longer available'
+            : 'Playback error: $e';
         ScaffoldMessenger.of(
           context,
-        ).showAutoToast(SnackBar(content: Text('Playback error: $e')));
+        ).showAutoToast(SnackBar(content: Text(message)));
       }
     }
   }
 
   Future<void> _stopPlayback() async {
+    _playbackGeneration++;
+    _pendingLineId = null;
     await _player.stop();
-    setState(() => _playingLineId = null);
+    if (mounted) setState(() => _playingLineId = null);
   }
 
   String _formatDuration(Duration d) {
@@ -735,10 +852,11 @@ class _RecordedLine {
   const _RecordedLine({required this.line, required this.recording});
 }
 
-/// Outcome of removing a take's cloud row.
+/// Outcome of removing a take's storage object and cloud metadata row.
 enum _CloudDelete {
-  /// Nothing to delete (signed out, never uploaded, or not our recording).
-  skipped,
+  /// The take was never uploaded, or is another castmate's cached copy.
+  notNeeded,
   deleted,
+  signInRequired,
   failed,
 }

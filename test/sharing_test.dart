@@ -18,18 +18,17 @@ ScriptLine _line({
   String text = 'Hello.',
   LineType lineType = LineType.dialogue,
   String stageDirection = '',
-}) =>
-    ScriptLine(
-      id: id,
-      act: act,
-      scene: scene,
-      lineNumber: lineNumber,
-      orderIndex: orderIndex,
-      character: character,
-      text: text,
-      lineType: lineType,
-      stageDirection: stageDirection,
-    );
+}) => ScriptLine(
+  id: id,
+  act: act,
+  scene: scene,
+  lineNumber: lineNumber,
+  orderIndex: orderIndex,
+  character: character,
+  text: text,
+  lineType: lineType,
+  stageDirection: stageDirection,
+);
 
 void main() {
   // ── buildParsedScript ──────────────────────────────────
@@ -70,18 +69,20 @@ void main() {
     test('ignores non-dialogue lines for character counts', () {
       final lines = [
         _line(
-            id: '1',
-            character: '',
-            text: 'ACT I',
-            lineType: LineType.header,
-            orderIndex: 0),
+          id: '1',
+          character: '',
+          text: 'ACT I',
+          lineType: LineType.header,
+          orderIndex: 0,
+        ),
         _line(id: '2', character: 'ELIZABETH', text: 'Hello.', orderIndex: 1),
         _line(
-            id: '3',
-            character: '',
-            text: '(exits)',
-            lineType: LineType.stageDirection,
-            orderIndex: 2),
+          id: '3',
+          character: '',
+          text: '(exits)',
+          lineType: LineType.stageDirection,
+          orderIndex: 2,
+        ),
       ];
 
       final script = buildParsedScript('Test', lines);
@@ -94,26 +95,29 @@ void main() {
     test('builds scenes from act/scene tags', () {
       final lines = [
         _line(
-            id: '1',
-            act: 'ACT I',
-            scene: 'Ball',
-            character: 'ELIZABETH',
-            text: 'a',
-            orderIndex: 0),
+          id: '1',
+          act: 'ACT I',
+          scene: 'Ball',
+          character: 'ELIZABETH',
+          text: 'a',
+          orderIndex: 0,
+        ),
         _line(
-            id: '2',
-            act: 'ACT I',
-            scene: 'Ball',
-            character: 'DARCY',
-            text: 'b',
-            orderIndex: 1),
+          id: '2',
+          act: 'ACT I',
+          scene: 'Ball',
+          character: 'DARCY',
+          text: 'b',
+          orderIndex: 1,
+        ),
         _line(
-            id: '3',
-            act: 'ACT II',
-            scene: 'Garden',
-            character: 'ELIZABETH',
-            text: 'c',
-            orderIndex: 2),
+          id: '3',
+          act: 'ACT II',
+          scene: 'Garden',
+          character: 'ELIZABETH',
+          text: 'c',
+          orderIndex: 2,
+        ),
       ];
 
       final script = buildParsedScript('Test', lines);
@@ -136,9 +140,10 @@ void main() {
 
     test('preserves all lines in output', () {
       final lines = List.generate(
-          50,
-          (i) =>
-              _line(id: '$i', character: 'CHAR', text: 'Line $i', orderIndex: i));
+        50,
+        (i) =>
+            _line(id: '$i', character: 'CHAR', text: 'Line $i', orderIndex: i),
+      );
 
       final script = buildParsedScript('Big', lines);
       expect(script.lines.length, 50);
@@ -168,9 +173,7 @@ void main() {
     });
 
     test('detects added lines in cloud', () {
-      final local = [
-        _line(id: '1', character: 'A', text: 'Hello'),
-      ];
+      final local = [_line(id: '1', character: 'A', text: 'Hello')];
       final cloud = [
         _line(id: '1', character: 'A', text: 'Hello'),
         _line(id: '2', character: 'B', text: 'New line'),
@@ -189,9 +192,7 @@ void main() {
         _line(id: '1', character: 'A', text: 'Hello'),
         _line(id: '2', character: 'B', text: 'Goodbye'),
       ];
-      final cloud = [
-        _line(id: '1', character: 'A', text: 'Hello'),
-      ];
+      final cloud = [_line(id: '1', character: 'A', text: 'Hello')];
 
       final diffs = diffScriptLines(local, cloud);
 
@@ -202,12 +203,8 @@ void main() {
     });
 
     test('detects changed text', () {
-      final local = [
-        _line(id: '1', character: 'A', text: 'Original'),
-      ];
-      final cloud = [
-        _line(id: '1', character: 'A', text: 'Modified'),
-      ];
+      final local = [_line(id: '1', character: 'A', text: 'Original')];
+      final cloud = [_line(id: '1', character: 'A', text: 'Modified')];
 
       final diffs = diffScriptLines(local, cloud);
 
@@ -218,12 +215,8 @@ void main() {
     });
 
     test('detects changed character', () {
-      final local = [
-        _line(id: '1', character: 'A', text: 'Hello'),
-      ];
-      final cloud = [
-        _line(id: '1', character: 'B', text: 'Hello'),
-      ];
+      final local = [_line(id: '1', character: 'A', text: 'Hello')];
+      final cloud = [_line(id: '1', character: 'B', text: 'Hello')];
 
       final diffs = diffScriptLines(local, cloud);
 
@@ -232,14 +225,20 @@ void main() {
 
     test('detects changed lineType', () {
       final local = [
-        _line(id: '1', character: 'A', text: 'Hello', lineType: LineType.dialogue),
+        _line(
+          id: '1',
+          character: 'A',
+          text: 'Hello',
+          lineType: LineType.dialogue,
+        ),
       ];
       final cloud = [
         _line(
-            id: '1',
-            character: 'A',
-            text: 'Hello',
-            lineType: LineType.stageDirection),
+          id: '1',
+          character: 'A',
+          text: 'Hello',
+          lineType: LineType.stageDirection,
+        ),
       ];
 
       final diffs = diffScriptLines(local, cloud);
@@ -253,10 +252,11 @@ void main() {
       ];
       final cloud = [
         _line(
-            id: '1',
-            character: 'A',
-            text: 'Hello',
-            stageDirection: '(laughing)'),
+          id: '1',
+          character: 'A',
+          text: 'Hello',
+          stageDirection: '(laughing)',
+        ),
       ];
 
       final diffs = diffScriptLines(local, cloud);
@@ -270,9 +270,7 @@ void main() {
     });
 
     test('handles local empty, cloud has lines', () {
-      final cloud = [
-        _line(id: '1', character: 'A', text: 'New'),
-      ];
+      final cloud = [_line(id: '1', character: 'A', text: 'New')];
 
       final diffs = diffScriptLines([], cloud);
 
@@ -281,9 +279,7 @@ void main() {
     });
 
     test('handles cloud empty, local has lines', () {
-      final local = [
-        _line(id: '1', character: 'A', text: 'Deleted'),
-      ];
+      final local = [_line(id: '1', character: 'A', text: 'Deleted')];
 
       final diffs = diffScriptLines(local, []);
 
@@ -443,12 +439,14 @@ void main() {
 
       // Find primary for HAMLET
       final hamletPrimary = members.firstWhere(
-          (m) => m.characterName == 'HAMLET' && m.role == CastRole.primary);
+        (m) => m.characterName == 'HAMLET' && m.role == CastRole.primary,
+      );
       expect(hamletPrimary.displayName, 'John');
 
       // Find understudy for HAMLET
       final hamletUnderstudy = members.firstWhere(
-          (m) => m.characterName == 'HAMLET' && m.role == CastRole.understudy);
+        (m) => m.characterName == 'HAMLET' && m.role == CastRole.understudy,
+      );
       expect(hamletUnderstudy.displayName, 'Bob');
 
       // Unique characters in production
@@ -508,7 +506,8 @@ void main() {
         'line_number': 3,
         'order_index': 10,
         'character': 'CLAUDIUS',
-        'text': 'Though yet of Hamlet our dear brother\'s death the memory be green.',
+        'text':
+            'Though yet of Hamlet our dear brother\'s death the memory be green.',
         'line_type': 'dialogue',
         'stage_direction': '',
       };
@@ -568,12 +567,30 @@ void main() {
   group('buildParsedScript scene reconstruction', () {
     test('groups consecutive lines by act+scene into scenes', () {
       final lines = [
-        _line(id: '1', act: 'ACT I', scene: 'Scene 1', character: 'A',
-            text: 'hi', orderIndex: 0),
-        _line(id: '2', act: 'ACT I', scene: 'Scene 1', character: 'B',
-            text: 'hey', orderIndex: 1),
-        _line(id: '3', act: 'ACT I', scene: 'Scene 2', character: 'A',
-            text: 'bye', orderIndex: 2),
+        _line(
+          id: '1',
+          act: 'ACT I',
+          scene: 'Scene 1',
+          character: 'A',
+          text: 'hi',
+          orderIndex: 0,
+        ),
+        _line(
+          id: '2',
+          act: 'ACT I',
+          scene: 'Scene 1',
+          character: 'B',
+          text: 'hey',
+          orderIndex: 1,
+        ),
+        _line(
+          id: '3',
+          act: 'ACT I',
+          scene: 'Scene 2',
+          character: 'A',
+          text: 'bye',
+          orderIndex: 2,
+        ),
       ];
 
       final script = buildParsedScript('Test', lines);
@@ -585,14 +602,38 @@ void main() {
 
     test('scene line indices are correct', () {
       final lines = [
-        _line(id: '1', act: 'ACT I', scene: 'S1', character: 'A',
-            text: 'a', orderIndex: 0),
-        _line(id: '2', act: 'ACT I', scene: 'S1', character: 'B',
-            text: 'b', orderIndex: 1),
-        _line(id: '3', act: 'ACT II', scene: 'S1', character: 'C',
-            text: 'c', orderIndex: 2),
-        _line(id: '4', act: 'ACT II', scene: 'S1', character: 'D',
-            text: 'd', orderIndex: 3),
+        _line(
+          id: '1',
+          act: 'ACT I',
+          scene: 'S1',
+          character: 'A',
+          text: 'a',
+          orderIndex: 0,
+        ),
+        _line(
+          id: '2',
+          act: 'ACT I',
+          scene: 'S1',
+          character: 'B',
+          text: 'b',
+          orderIndex: 1,
+        ),
+        _line(
+          id: '3',
+          act: 'ACT II',
+          scene: 'S1',
+          character: 'C',
+          text: 'c',
+          orderIndex: 2,
+        ),
+        _line(
+          id: '4',
+          act: 'ACT II',
+          scene: 'S1',
+          character: 'D',
+          text: 'd',
+          orderIndex: 3,
+        ),
       ];
 
       final script = buildParsedScript('Test', lines);
@@ -606,20 +647,22 @@ void main() {
     test('skips scenes with no dialogue lines', () {
       final lines = [
         _line(
-            id: '1',
-            act: 'ACT I',
-            scene: 'S1',
-            character: '',
-            text: 'ACT I',
-            lineType: LineType.header,
-            orderIndex: 0),
+          id: '1',
+          act: 'ACT I',
+          scene: 'S1',
+          character: '',
+          text: 'ACT I',
+          lineType: LineType.header,
+          orderIndex: 0,
+        ),
         _line(
-            id: '2',
-            act: 'ACT I',
-            scene: 'S2',
-            character: 'A',
-            text: 'Hello',
-            orderIndex: 1),
+          id: '2',
+          act: 'ACT I',
+          scene: 'S2',
+          character: 'A',
+          text: 'Hello',
+          orderIndex: 1,
+        ),
       ];
 
       final script = buildParsedScript('Test', lines);
@@ -631,14 +674,16 @@ void main() {
 
     test('handles single scene spanning entire script', () {
       final lines = List.generate(
-          10,
-          (i) => _line(
-              id: '$i',
-              act: 'ACT I',
-              scene: 'S1',
-              character: i.isEven ? 'A' : 'B',
-              text: 'Line $i',
-              orderIndex: i));
+        10,
+        (i) => _line(
+          id: '$i',
+          act: 'ACT I',
+          scene: 'S1',
+          character: i.isEven ? 'A' : 'B',
+          text: 'Line $i',
+          orderIndex: i,
+        ),
+      );
 
       final script = buildParsedScript('Test', lines);
 
@@ -651,12 +696,13 @@ void main() {
     test('scene names incorporate act and scene tags', () {
       final lines = [
         _line(
-            id: '1',
-            act: 'ACT III',
-            scene: 'Throne Room',
-            character: 'KING',
-            text: 'Enter!',
-            orderIndex: 0),
+          id: '1',
+          act: 'ACT III',
+          scene: 'Throne Room',
+          character: 'KING',
+          text: 'Enter!',
+          orderIndex: 0,
+        ),
       ];
 
       final script = buildParsedScript('Test', lines);
@@ -701,12 +747,15 @@ void main() {
 
   group('DiffType', () {
     test('all types exist', () {
-      expect(DiffType.values, containsAll([
-        DiffType.added,
-        DiffType.removed,
-        DiffType.changed,
-        DiffType.unchanged,
-      ]));
+      expect(
+        DiffType.values,
+        containsAll([
+          DiffType.added,
+          DiffType.removed,
+          DiffType.changed,
+          DiffType.unchanged,
+        ]),
+      );
     });
   });
 
@@ -751,24 +800,27 @@ void main() {
   group('diffScriptLines edge cases', () {
     test('large script diff performance', () {
       final local = List.generate(
-          500,
-          (i) => _line(
-              id: '$i', character: 'A', text: 'Line $i', orderIndex: i));
+        500,
+        (i) => _line(id: '$i', character: 'A', text: 'Line $i', orderIndex: i),
+      );
       final cloud = List.generate(
-          500,
-          (i) => _line(
-              id: '$i',
-              character: 'A',
-              text: i == 250 ? 'Changed line' : 'Line $i',
-              orderIndex: i));
+        500,
+        (i) => _line(
+          id: '$i',
+          character: 'A',
+          text: i == 250 ? 'Changed line' : 'Line $i',
+          orderIndex: i,
+        ),
+      );
 
       final sw = Stopwatch()..start();
       final diffs = diffScriptLines(local, cloud);
       sw.stop();
 
       expect(diffs.length, 500);
-      final changedCount =
-          diffs.where((d) => d.type == DiffType.changed).length;
+      final changedCount = diffs
+          .where((d) => d.type == DiffType.changed)
+          .length;
       expect(changedCount, 1);
       // Should complete quickly
       // No wall-clock assertion: it flaked on loaded CI without any real
@@ -797,12 +849,8 @@ void main() {
     });
 
     test('lines with only whitespace differences count as changed', () {
-      final local = [
-        _line(id: '1', character: 'A', text: 'Hello world'),
-      ];
-      final cloud = [
-        _line(id: '1', character: 'A', text: 'Hello  world'),
-      ];
+      final local = [_line(id: '1', character: 'A', text: 'Hello world')];
+      final cloud = [_line(id: '1', character: 'A', text: 'Hello  world')];
 
       final diffs = diffScriptLines(local, cloud);
 

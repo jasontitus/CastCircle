@@ -16,11 +16,8 @@ class OcrHighlightMatcher {
   static final _junkRe = RegExp(r'[^a-z0-9 ]');
   static final _wsRe = RegExp(r'\s+');
 
-  static String normalize(String s) => s
-      .toLowerCase()
-      .replaceAll(_junkRe, ' ')
-      .replaceAll(_wsRe, ' ')
-      .trim();
+  static String normalize(String s) =>
+      s.toLowerCase().replaceAll(_junkRe, ' ').replaceAll(_wsRe, ' ').trim();
 
   /// Raw OCR lines keep the speaker cue the parser consumed
   /// ("MRS. BENNET. Bingley." → the parsed line is just "Bingley."), so
@@ -48,8 +45,7 @@ class OcrHighlightMatcher {
       if (i < 0) return false;
       final beforeOk = i == 0 || haystack[i - 1] == ' ';
       final endIdx = i + needle.length;
-      final afterOk =
-          endIdx == haystack.length || haystack[endIdx] == ' ';
+      final afterOk = endIdx == haystack.length || haystack[endIdx] == ' ';
       if (beforeOk && afterOk) return true;
       from = i + 1;
     }
@@ -61,49 +57,59 @@ class OcrHighlightMatcher {
   static List<Rect> locate(String target, List<OcrPageLine> lines) {
     final normTarget = normalize(target);
     if (normTarget.isEmpty || lines.isEmpty) return const [];
+    final candidates = prepareCandidates([for (final line in lines) line.text]);
+
     // Micro-targets ("a", "no.") overlap-match half the page; only an
     // exact line hit is trustworthy for them.
     if (normTarget.length < 6) {
       // Word-boundary containment against the line and its post-cue body;
-      // among candidates prefer the one whose body is closest in length to
-      // the target ("Jane." prefers the line that IS "Jane.", not a long
-      // sentence mentioning Jane).
-      OcrPageLine? best;
+      // among candidates prefer the matching representation closest in
+      // length to the target.
+      var bestIdx = -1;
       var bestExcess = 1 << 30;
-      for (final l in lines) {
-        final body = normalize(stripCue(l.text));
-        final full = normalize(l.text);
-        // Exact post-cue body ("MRS. BENNET. La." → "la") is the only
-        // confident location for a 2-3 char line; longer short targets may
-        // also match inside a line, but only a nearby-length one.
-        if (body == normTarget) return [_rectOf(l)];
+      for (var i = 0; i < candidates.length; i++) {
+        final candidate = candidates[i];
+        if (candidate.body == normTarget) return [_rectOf(lines[i])];
         if (normTarget.length < 4) continue;
-        if (!_containsWord(body, normTarget) &&
-            !_containsWord(full, normTarget)) {
-          continue;
+
+        String? matched;
+        if (_containsWord(candidate.body, normTarget)) {
+          matched = candidate.body;
+        } else if (_containsWord(candidate.full, normTarget)) {
+          matched = candidate.full;
         }
-        final excess = body.length - normTarget.length;
+        if (matched == null) continue;
+
+        final excess = matched.length - normTarget.length;
         if (excess >= 0 && excess < bestExcess) {
           bestExcess = excess;
-          best = l;
+          bestIdx = i;
         }
       }
       // A short target buried in a much longer line is not a confident
       // location — better to say so than to point at the wrong place.
-      if (best != null && bestExcess <= 25) return [_rectOf(best)];
+      if (bestIdx >= 0 && bestExcess <= 25) {
+        return [_rectOf(lines[bestIdx])];
+      }
       return const [];
     }
     final targetTokens = normTarget.split(' ').toSet();
 
     var bestIdx = -1;
     var bestScore = 0.0;
-    for (var i = 0; i < lines.length; i++) {
-      final normLine = normalize(lines[i].text);
-      if (normLine.isEmpty) continue;
-      final normBody = normalize(stripCue(lines[i].text));
+    for (var i = 0; i < candidates.length; i++) {
+      final candidate = candidates[i];
+      if (candidate.full.isEmpty) continue;
       final score = math.max(
-        _score(normTarget, targetTokens, normLine),
-        normBody == normLine ? 0.0 : _score(normTarget, targetTokens, normBody),
+        _score(normTarget, targetTokens, candidate.full, candidate.fullTokens),
+        candidate.body == candidate.full
+            ? 0.0
+            : _score(
+                normTarget,
+                targetTokens,
+                candidate.body,
+                candidate.bodyTokens,
+              ),
       );
       if (score > bestScore) {
         bestScore = score;
@@ -114,14 +120,12 @@ class OcrHighlightMatcher {
     if (bestIdx < 0 || bestScore < 0.45) return const [];
 
     // A speech's SECOND raw line often outscores its first (the first
-    // carries the "DARCY." cue prefix, breaking containment) — walk
-    // backward to include earlier lines that still cover target tokens,
-    // so the highlight starts where the speech starts.
+    // carries the cue prefix) — walk backward using the cached token sets.
     var startIdx = bestIdx;
     while (startIdx > 0 && bestIdx - startIdx < 3) {
-      final prevTokens = normalize(lines[startIdx - 1].text).split(' ').toSet();
+      final prevTokens = candidates[startIdx - 1].fullTokens;
       if (prevTokens.isEmpty) break;
-      final overlap = targetTokens.intersection(prevTokens).length;
+      final overlap = _overlapCount(targetTokens, prevTokens);
       if (overlap / math.max(prevTokens.length, 1) < 0.5) break;
       startIdx--;
     }
@@ -133,15 +137,14 @@ class OcrHighlightMatcher {
     // Extend over following lines while they keep covering target tokens
     // the matched region hasn't consumed yet (multi-line dialogue).
     final consumed = <String>{
-      for (var j = startIdx; j <= bestIdx; j++)
-        ...normalize(lines[j].text).split(' '),
+      for (var j = startIdx; j <= bestIdx; j++) ...candidates[j].fullTokens,
     };
     var remaining = targetTokens.difference(consumed);
     var i = bestIdx + 1;
     while (i < lines.length && rects.length < 4 && remaining.length >= 2) {
-      final nextTokens = normalize(lines[i].text).split(' ').toSet();
+      final nextTokens = candidates[i].fullTokens;
       if (nextTokens.isEmpty) break;
-      final overlap = remaining.intersection(nextTokens).length;
+      final overlap = _overlapCount(remaining, nextTokens);
       if (overlap / math.max(nextTokens.length, 1) < 0.5) break;
       rects.add(_rectOf(lines[i]));
       remaining = remaining.difference(nextTokens);
@@ -163,30 +166,82 @@ class OcrHighlightMatcher {
     int start = 0,
     int? end,
   }) {
+    return bestPreparedMatch(
+      target,
+      prepareCandidates(candidates),
+      minScore: minScore,
+      strongScore: strongScore,
+      start: start,
+      end: end,
+    );
+  }
+
+  /// Normalize and tokenize a candidate set once when several adjacent
+  /// targets will be matched against the same OCR page/document window.
+  static List<OcrMatchCandidate> prepareCandidates(List<String> candidates) {
+    return [
+      for (var i = 0; i < candidates.length; i++)
+        (() {
+          final full = normalize(candidates[i]);
+          final body = normalize(stripCue(candidates[i]));
+          final fullTokens = full.isEmpty
+              ? const <String>{}
+              : full.split(' ').toSet();
+          return OcrMatchCandidate(
+            index: i,
+            full: full,
+            body: body,
+            fullTokens: fullTokens,
+            bodyTokens: body == full
+                ? fullTokens
+                : body.isEmpty
+                ? const <String>{}
+                : body.split(' ').toSet(),
+          );
+        })(),
+    ];
+  }
+
+  /// Match against candidates prepared by [prepareCandidates].
+  static ({int index, double score})? bestPreparedMatch(
+    String target,
+    List<OcrMatchCandidate> candidates, {
+    double minScore = 0.45,
+    double strongScore = 0.8,
+    int start = 0,
+    int? end,
+  }) {
     final normTarget = normalize(target);
     if (normTarget.isEmpty) return null;
     final targetTokens = normTarget.split(' ').toSet();
-    final last = end == null || end > candidates.length ? candidates.length : end;
+    final last = end == null || end > candidates.length
+        ? candidates.length
+        : end;
     var bestIdx = -1;
     var best = 0.0;
     for (var i = start; i < last; i++) {
-      final normLine = normalize(candidates[i]);
-      if (normLine.isEmpty) continue;
-      final normBody = normalize(stripCue(candidates[i]));
+      final candidate = candidates[i];
+      if (candidate.full.isEmpty) continue;
       final score = math.max(
-        _score(normTarget, targetTokens, normLine),
-        normBody == normLine ? 0.0 : _score(normTarget, targetTokens, normBody),
+        _score(normTarget, targetTokens, candidate.full, candidate.fullTokens),
+        candidate.body == candidate.full
+            ? 0.0
+            : _score(
+                normTarget,
+                targetTokens,
+                candidate.body,
+                candidate.bodyTokens,
+              ),
       );
       // LOCALITY FIRST: the caller scans forward through a document, so the
-      // earliest STRONG match is the right one. Taking the global best in
-      // the window instead let a distant better-scoring line win, dragging
-      // the caller's cursor past everything between (measured: mapping
-      // accuracy collapsed from 46% to 14%). Only when nothing is strong
+      // earliest STRONG match is the right one. Only when nothing is strong
       // does the best weak candidate win.
-      if (score >= strongScore) return (index: i, score: score);
+      if (score >= strongScore) {
+        return (index: candidate.index, score: score);
+      }
       if (score > best) {
         best = score;
-        bestIdx = i;
+        bestIdx = candidate.index;
       }
     }
     if (bestIdx < 0 || best < minScore) return null;
@@ -195,35 +250,69 @@ class OcrHighlightMatcher {
 
   static Rect _rectOf(OcrPageLine l) =>
       Rect.fromLTWH(l.left, l.top, l.width, l.height);
+  static int _overlapCount(Set<String> a, Set<String> b) {
+    final smaller = a.length <= b.length ? a : b;
+    final larger = identical(smaller, a) ? b : a;
+    var count = 0;
+    for (final token in smaller) {
+      if (larger.contains(token)) count++;
+    }
+    return count;
+  }
 
   static double _score(
-      String normTarget, Set<String> targetTokens, String normLine) {
-    // Strong: substantial containment either way.
-    if (normLine.length >= 8 && normTarget.contains(normLine)) return 1.0;
-    if (normTarget.length >= 8 && normLine.contains(normTarget)) return 1.0;
+    String normTarget,
+    Set<String> targetTokens,
+    String normLine,
+    Set<String> lineTokens,
+  ) {
+    // Strong: substantial containment either way. A candidate fragment
+    // contained in a long target earns perfection only when it covers a
+    // meaningful share of the target's words; generic fragments otherwise
+    // cannot tie a later exact source.
+    if (normLine.length >= 8 && _containsWord(normTarget, normLine)) {
+      final overlap = _overlapCount(targetTokens, lineTokens);
+      final targetCoverage = targetTokens.isEmpty
+          ? 0.0
+          : overlap / targetTokens.length;
+      if (targetCoverage >= 0.5) return 1.0;
+    }
+    if (normTarget.length >= 8 && _containsWord(normLine, normTarget)) {
+      return 1.0;
+    }
     // Medium: same opening (heavily-rewritten lines).
     if (normLine.length >= 12 &&
         normTarget.length >= 12 &&
         normLine.substring(0, 12) == normTarget.substring(0, 12)) {
       return 0.8;
     }
-    // Weak: how much of the TARGET this line covers. Dividing by the
-    // shorter side instead let a one-word OCR line ("Lydia.") score 0.7
-    // just by appearing in the target — outscoring the line the text
-    // actually came from. Coverage can't be gamed that way, and multi-line
-    // speeches are handled by the forward/backward extension, not here.
-    final lineTokens = normLine.split(' ').toSet();
-    final overlap = targetTokens.intersection(lineTokens).length;
+    final overlap = _overlapCount(targetTokens, lineTokens);
     if (overlap < 2 || targetTokens.isEmpty || lineTokens.isEmpty) return 0.0;
-    // A parsed line is often assembled from SEVERAL raw OCR lines, so a raw
-    // line covering only part of it must still score well: divide by the
-    // shorter side (precision when the raw line is a subset). But a
-    // one-or-two-token line ("Lydia.") would then score 1.0 for merely
-    // appearing in the target, outscoring the real source line — so tiny
-    // lines are scored on target coverage (recall) instead.
+    // A parsed line is often assembled from several raw OCR lines, so partial
+    // candidates remain usable. Tiny candidates are scored on target coverage.
     final denom = lineTokens.length >= 3
         ? math.min(targetTokens.length, lineTokens.length)
         : targetTokens.length;
-    return 0.9 * overlap / denom;
+    final score = 0.9 * overlap / denom;
+    // Contained fragments with little target coverage must remain below the
+    // early-return threshold so a later exact candidate gets considered.
+    if (_containsWord(normTarget, normLine)) return math.min(score, 0.79);
+    return score;
   }
+}
+
+class OcrMatchCandidate {
+  final int index;
+  final String full;
+  final String body;
+  final Set<String> fullTokens;
+  final Set<String> bodyTokens;
+
+  const OcrMatchCandidate({
+    required this.index,
+    required this.full,
+    required this.body,
+    required this.fullTokens,
+    required this.bodyTokens,
+  });
 }

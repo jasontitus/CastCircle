@@ -39,34 +39,72 @@ class OcrConfidenceService {
   // and asterisks (markdown emphasis) are separators so `“I`→`I`,
   // `_emphasis_`→`emphasis`. The trailing-apostrophe strip below handles
   // possessives like `Darcy’s`→`darcy`.
-  static final _split = RegExp(
-    '[\\s.,;:!?()\\[\\]{}"‘’“”\'_*\\/\\-–—→]+',
-  );
+  static final _split = RegExp('[\\s.,;:!?()\\[\\]{}"‘’“”\'_*\\/\\-–—→]+');
   static final _allDigits = RegExp(r'^\d+$');
   static final _allCaps = RegExp(r'^[A-Z][A-Z]+$');
   static final _edgeApostrophes = RegExp("^['‘’]+|['‘’]+\$");
 
   // Latin diacritic fold — OCR sprinkles spurious accents (speáks → speaks).
   static const _diacriticMap = {
-    'á': 'a', 'à': 'a', 'â': 'a', 'ä': 'a', 'ã': 'a', 'å': 'a',
-    'é': 'e', 'è': 'e', 'ê': 'e', 'ë': 'e',
-    'í': 'i', 'ì': 'i', 'î': 'i', 'ï': 'i',
-    'ó': 'o', 'ò': 'o', 'ô': 'o', 'ö': 'o', 'õ': 'o',
-    'ú': 'u', 'ù': 'u', 'û': 'u', 'ü': 'u',
-    'ñ': 'n', 'ç': 'c', 'ý': 'y', 'ÿ': 'y',
-    'Á': 'A', 'À': 'A', 'Â': 'A', 'Ä': 'A', 'Ã': 'A', 'Å': 'A',
-    'É': 'E', 'È': 'E', 'Ê': 'E', 'Ë': 'E',
-    'Í': 'I', 'Ì': 'I', 'Î': 'I', 'Ï': 'I',
-    'Ó': 'O', 'Ò': 'O', 'Ô': 'O', 'Ö': 'O', 'Õ': 'O',
-    'Ú': 'U', 'Ù': 'U', 'Û': 'U', 'Ü': 'U',
-    'Ñ': 'N', 'Ç': 'C', 'Ý': 'Y',
+    'á': 'a',
+    'à': 'a',
+    'â': 'a',
+    'ä': 'a',
+    'ã': 'a',
+    'å': 'a',
+    'é': 'e',
+    'è': 'e',
+    'ê': 'e',
+    'ë': 'e',
+    'í': 'i',
+    'ì': 'i',
+    'î': 'i',
+    'ï': 'i',
+    'ó': 'o',
+    'ò': 'o',
+    'ô': 'o',
+    'ö': 'o',
+    'õ': 'o',
+    'ú': 'u',
+    'ù': 'u',
+    'û': 'u',
+    'ü': 'u',
+    'ñ': 'n',
+    'ç': 'c',
+    'ý': 'y',
+    'ÿ': 'y',
+    'Á': 'A',
+    'À': 'A',
+    'Â': 'A',
+    'Ä': 'A',
+    'Ã': 'A',
+    'Å': 'A',
+    'É': 'E',
+    'È': 'E',
+    'Ê': 'E',
+    'Ë': 'E',
+    'Í': 'I',
+    'Ì': 'I',
+    'Î': 'I',
+    'Ï': 'I',
+    'Ó': 'O',
+    'Ò': 'O',
+    'Ô': 'O',
+    'Ö': 'O',
+    'Õ': 'O',
+    'Ú': 'U',
+    'Ù': 'U',
+    'Û': 'U',
+    'Ü': 'U',
+    'Ñ': 'N',
+    'Ç': 'C',
+    'Ý': 'Y',
   };
 
   /// Initialize the spell checker (loads dictionary into memory).
   void _ensureLoaded() {
     if (_checker != null) return;
     SimpleSpellCheckerEnRegister.registerLan(preferEnglish: 'en');
-    SimpleSpellCheckerEnRegister.registerLan(preferEnglish: 'en-gb');
     _checker = SimpleSpellChecker(language: 'en');
   }
 
@@ -114,13 +152,25 @@ class OcrConfidenceService {
   /// - Character names and their parts
   /// - Words that appear 3+ times (likely correct proper nouns/place names)
   /// - Common abbreviations and titles
-  void _buildWhitelist(List<ScriptLine> lines, List<ScriptCharacter> characters) {
+  void _buildWhitelist(
+    List<ScriptLine> lines,
+    List<ScriptCharacter> characters,
+  ) {
     _whitelist = {};
 
     // Common titles and abbreviations
     _whitelist.addAll([
-      'mr', 'mrs', 'ms', 'dr', 'st', 'sr', 'jr',
-      'sir', 'madam', 'lord', 'lady',
+      'mr',
+      'mrs',
+      'ms',
+      'dr',
+      'st',
+      'sr',
+      'jr',
+      'sir',
+      'madam',
+      'lord',
+      'lady',
     ]);
 
     // Character names and their parts
@@ -158,7 +208,9 @@ class OcrConfidenceService {
         .map((w) => w.replaceAll(_edgeApostrophes, ''))
         .where((w) => w.length >= 2)
         .where((w) => !_allDigits.hasMatch(w))
-        .where((w) => !_allCaps.hasMatch(w)) // skip ALL CAPS (speaker names etc.)
+        .where(
+          (w) => !_allCaps.hasMatch(w),
+        ) // skip ALL CAPS (speaker names etc.)
         .toList();
   }
 
@@ -184,27 +236,30 @@ class OcrConfidenceService {
   /// once per distinct word per import, not once per occurrence.
   final _wordValidCache = <String, bool>{};
 
-  bool _isValidWord(String word) =>
-      _wordValidCache.putIfAbsent(word, () {
-        final stripped = stripDiacritics(word);
-        final low = stripped.toLowerCase();
-        if (_whitelist.contains(low)) return true;
-        if (_theatricalVocab.contains(low)) return true;
-        final results = _checker!.checkBuilder<bool>(
-          stripped,
-          builder: (w, isCorrect) => isCorrect,
-        );
-        return results != null && results.isNotEmpty && results.first;
-      });
+  bool _isValidWord(String word) => _wordValidCache.putIfAbsent(word, () {
+    final stripped = stripDiacritics(word);
+    final low = stripped.toLowerCase();
+    if (_whitelist.contains(low)) return true;
+    if (_theatricalVocab.contains(low)) return true;
+    final results = _checker!.checkBuilder<bool>(
+      stripped,
+      builder: (w, isCorrect) => isCorrect,
+    );
+    return results != null && results.isNotEmpty && results.first;
+  });
 
   /// Score a single line of text.
-  /// Returns 0.0 (all misspelled) to 1.0 (all correct).
+  /// Returns 0.0 (all misspelled) to 1.0 (all correct). Text with no scorable
+  /// tokens retains the historical 1.0 here; [scoreScript] treats that case
+  /// separately because it must produce a conservative review status.
   double scoreLine(String text) {
     _ensureLoaded();
-    final words = _tokenize(text);
-    if (words.isEmpty) return 1.0;
+    return _scoreWords(_tokenize(text));
+  }
 
-    int correct = 0;
+  double _scoreWords(List<String> words) {
+    if (words.isEmpty) return 1.0;
+    var correct = 0;
     for (final word in words) {
       if (_isValidWord(word)) correct++;
     }
@@ -235,17 +290,21 @@ class OcrConfidenceService {
     return OcrReviewStatus.ok;
   }
 
-  /// Score all lines in a parsed script, updating ocrConfidence and reviewStatus.
+  /// Score all lines in a parsed script, updating OCR confidence and review
+  /// status.
   ///
-  /// Reads each line's existing [ScriptLine.ocrConfidence] as the Paddle
-  /// rec-confidence BEFORE overwriting it. The new display confidence is the
-  /// min of the dictionary fraction and the rec-confidence, so the existing
-  /// `< 0.8` highlighting still fires for genuinely-bad lines.
+  /// Each line's existing [ScriptLine.ocrConfidence] is the recognition
+  /// confidence. It is used only with a low dictionary score to identify the
+  /// likely-not-script junk bucket. Display confidence and ordinary review
+  /// status intentionally follow the dictionary score alone because native
+  /// recognition confidence is too noisy for clean dialogue.
   ///
   /// Call [ensureVocabLoaded] before this (the import service does so) to get
   /// the theatrical-vocab boost; it still works without it.
-  List<ScriptLine> scoreScript(List<ScriptLine> lines,
-      {List<ScriptCharacter> characters = const []}) {
+  List<ScriptLine> scoreScript(
+    List<ScriptLine> lines, {
+    List<ScriptCharacter> characters = const [],
+  }) {
     _ensureLoaded();
     _buildWhitelist(lines, characters);
     // The memo's validity depends on the whitelist, which is per-script:
@@ -258,18 +317,15 @@ class OcrConfidenceService {
       if (line.text.trim().isEmpty) return line;
       if (line.lineType == LineType.header) return line;
 
-      final dictNew = scoreLine(line.text);
+      final words = _tokenize(line.text);
+      // Nonempty, non-header text with no dictionary evidence (punctuation,
+      // digits, or all-caps OCR debris) must not receive a perfect score.
+      final dictNew = words.isEmpty ? 0.0 : _scoreWords(words);
       final recConf = line.ocrConfidence ?? 1.0;
       final status = classify(dictNew, recConf);
-      // Display/highlight confidence tracks the dictionary signal (what drives
-      // the review decision), not the noisy Paddle rec-confidence — otherwise
-      // the editor would highlight clean lines whose recConf merely dipped.
       final display = dictNew;
 
-      return line.copyWith(
-        ocrConfidence: () => display,
-        reviewStatus: status,
-      );
+      return line.copyWith(ocrConfidence: () => display, reviewStatus: status);
     }).toList();
   }
 }

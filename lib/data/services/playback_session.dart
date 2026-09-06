@@ -31,7 +31,10 @@ class PlaybackSession {
       await session.setActive(true);
     } catch (e) {
       DebugLogService.instance.logError(
-          LogCategory.error, 'PlaybackSession.ensurePlayback failed', e);
+        LogCategory.error,
+        'PlaybackSession.ensurePlayback failed',
+        e,
+      );
     }
   }
 }

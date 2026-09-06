@@ -178,21 +178,21 @@ class _AuthScreenState extends ConsumerState<AuthScreen> {
                         padding: const EdgeInsets.all(16),
                         child: Column(
                           children: [
-                            Icon(Icons.mark_email_unread_outlined,
-                                size: 36,
-                                color: Theme.of(context)
-                                    .colorScheme
-                                    .onSecondaryContainer),
+                            Icon(
+                              Icons.mark_email_unread_outlined,
+                              size: 36,
+                              color: Theme.of(
+                                context,
+                              ).colorScheme.onSecondaryContainer,
+                            ),
                             const SizedBox(height: 8),
                             Text(
                               'Confirm your email',
-                              style: Theme.of(context)
-                                  .textTheme
-                                  .titleMedium
+                              style: Theme.of(context).textTheme.titleMedium
                                   ?.copyWith(
-                                    color: Theme.of(context)
-                                        .colorScheme
-                                        .onSecondaryContainer,
+                                    color: Theme.of(
+                                      context,
+                                    ).colorScheme.onSecondaryContainer,
                                     fontWeight: FontWeight.bold,
                                   ),
                             ),
@@ -201,9 +201,7 @@ class _AuthScreenState extends ConsumerState<AuthScreen> {
                               'We sent a link to $_awaitingConfirmationFor. '
                               'Tap it, then come back and sign in.',
                               textAlign: TextAlign.center,
-                              style: Theme.of(context)
-                                  .textTheme
-                                  .bodySmall
+                              style: Theme.of(context).textTheme.bodySmall
                                   ?.copyWith(
                                     color: Theme.of(context)
                                         .colorScheme
@@ -217,8 +215,9 @@ class _AuthScreenState extends ConsumerState<AuthScreen> {
                               spacing: 8,
                               children: [
                                 TextButton.icon(
-                                  onPressed:
-                                      _isLoading ? null : _resendConfirmation,
+                                  onPressed: _isLoading
+                                      ? null
+                                      : _resendConfirmation,
                                   icon: const Icon(Icons.refresh, size: 18),
                                   label: const Text('Resend email'),
                                 ),
@@ -226,10 +225,10 @@ class _AuthScreenState extends ConsumerState<AuthScreen> {
                                   onPressed: _isLoading
                                       ? null
                                       : () => setState(() {
-                                            _awaitingConfirmationFor = null;
-                                            _isSignUp = false;
-                                            _error = null;
-                                          }),
+                                          _awaitingConfirmationFor = null;
+                                          _isSignUp = false;
+                                          _error = null;
+                                        }),
                                   child: const Text('I confirmed — sign in'),
                                 ),
                               ],
@@ -289,7 +288,7 @@ class _AuthScreenState extends ConsumerState<AuthScreen> {
                     ),
                   ] else ...[
                     OutlinedButton(
-                      onPressed: _skipAuth,
+                      onPressed: _isLoading ? null : _skipAuth,
                       child: const Text('Continue without account'),
                     ),
                     const SizedBox(height: 8),
@@ -311,7 +310,8 @@ class _AuthScreenState extends ConsumerState<AuthScreen> {
 
   Future<void> _submit() async {
     final email = _emailController.text.trim();
-    final password = _passwordController.text.trim();
+    final password = _passwordController.text;
+    final isSignUp = _isSignUp;
 
     if (email.isEmpty || password.isEmpty) {
       setState(() => _error = 'Please enter email and password');
@@ -324,8 +324,11 @@ class _AuthScreenState extends ConsumerState<AuthScreen> {
     });
 
     try {
-      if (_isSignUp) {
-        final res = await SupabaseService.instance.signUpWithEmail(email, password);
+      if (isSignUp) {
+        final res = await SupabaseService.instance.signUpWithEmail(
+          email,
+          password,
+        );
         // With email confirmation enabled the server returns a user but NO
         // session — the account isn't usable until the link is clicked. The
         // old code navigated straight into the app, leaving the user
@@ -356,6 +359,11 @@ class _AuthScreenState extends ConsumerState<AuthScreen> {
         }
       }
     } catch (e) {
+      DebugLogService.instance.logError(
+        LogCategory.network,
+        isSignUp ? 'Email signup failed' : 'Email sign-in failed',
+        e,
+      );
       if (mounted) {
         setState(() => _error = _friendlyAuthError(e, email));
       }
@@ -383,7 +391,7 @@ class _AuthScreenState extends ConsumerState<AuthScreen> {
         text.contains('already been registered')) {
       return 'That email already has an account — try signing in.';
     }
-    return e.toString();
+    return 'Something went wrong. Please try again.';
   }
 
   Future<void> _resendConfirmation() async {
@@ -391,25 +399,33 @@ class _AuthScreenState extends ConsumerState<AuthScreen> {
     if (email == null) return;
     setState(() => _isLoading = true);
     try {
-      await SupabaseService.instance.client.auth
-          .resend(type: OtpType.signup, email: email);
+      await SupabaseService.instance.client.auth.resend(
+        type: OtpType.signup,
+        email: email,
+      );
       if (mounted) {
         ScaffoldMessenger.of(context).showAutoToast(
           SnackBar(content: Text('Confirmation email re-sent to $email')),
         );
       }
     } catch (e) {
-      DebugLogService.instance
-          .logError(LogCategory.network, 'Resend confirmation failed', e);
+      DebugLogService.instance.logError(
+        LogCategory.network,
+        'Resend confirmation failed',
+        e,
+      );
       if (mounted) {
-        setState(() => _error = "Couldn't resend the email: $e");
+        setState(
+          () => _error =
+              "Couldn't resend the email. Check your connection and try again.",
+        );
       }
     } finally {
       if (mounted) setState(() => _isLoading = false);
     }
   }
 
-  void _skipAuth() {
+  Future<void> _skipAuth() async {
     // Guest mode is a SUPPORTED product state (confirmed 2026-07-30): the
     // whole local experience works without an account; an email/sign-in is
     // required only to join or share productions, and every cloud entry
@@ -417,10 +433,34 @@ class _AuthScreenState extends ConsumerState<AuthScreen> {
     // isSignedIn. The flag below is therefore a UX convenience, not a
     // security boundary — a spuriously-restored flag grants nothing that
     // tapping "skip" wouldn't.
-    // Persist the skip choice so the user isn't asked again on next launch.
-    ref.read(sharedPreferencesProvider).setBool('auth_skipped', true);
-    ref.read(authStateProvider.notifier).state = true;
-    ref.read(authGatePassedProvider.notifier).state = true;
-    context.go('/');
+    setState(() {
+      _isLoading = true;
+      _error = null;
+    });
+    try {
+      // Persist the skip choice before navigating so the user isn't asked
+      // again on next launch.
+      final saved = await ref
+          .read(sharedPreferencesProvider)
+          .setBool('auth_skipped', true);
+      if (!saved) {
+        throw StateError('SharedPreferences rejected auth_skipped write');
+      }
+      if (!mounted) return;
+      ref.read(authStateProvider.notifier).state = true;
+      ref.read(authGatePassedProvider.notifier).state = true;
+      context.go('/');
+    } catch (e) {
+      DebugLogService.instance.logError(
+        LogCategory.error,
+        'Could not persist guest mode choice',
+        e,
+      );
+      if (mounted) {
+        setState(() => _error = "Couldn't save guest mode. Please try again.");
+      }
+    } finally {
+      if (mounted) setState(() => _isLoading = false);
+    }
   }
 }

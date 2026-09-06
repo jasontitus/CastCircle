@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
@@ -22,8 +23,10 @@ import '../../providers/production_providers.dart';
 import '../../core/toast.dart';
 
 /// FutureProvider that loads the saved character name for a production.
-final savedCharacterProvider =
-    FutureProvider.family<String?, String>((ref, productionId) async {
+final savedCharacterProvider = FutureProvider.family<String?, String>((
+  ref,
+  productionId,
+) async {
   final prefs = await SharedPreferences.getInstance();
   return prefs.getString('rehearsal_character_$productionId');
 });
@@ -39,7 +42,10 @@ bool shouldReuseLoadedScript({
 }
 
 class HomeScreen extends ConsumerStatefulWidget {
-  const HomeScreen({super.key});
+  const HomeScreen({super.key, this.createProduction});
+
+  @visibleForTesting
+  final Future<void> Function(Production production)? createProduction;
 
   @override
   ConsumerState<HomeScreen> createState() => _HomeScreenState();
@@ -48,6 +54,7 @@ class HomeScreen extends ConsumerStatefulWidget {
 class _HomeScreenState extends ConsumerState<HomeScreen> {
   bool _submittingProduction = false;
   bool _loadingDemo = false;
+  int _productionActivationGeneration = 0;
 
   @override
   void initState() {
@@ -98,10 +105,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
             onPressed: () => context.push('/join'),
             icon: const Icon(Icons.vpn_key),
             label: const Text('Join Production'),
-            backgroundColor:
-                Theme.of(context).colorScheme.secondaryContainer,
-            foregroundColor:
-                Theme.of(context).colorScheme.onSecondaryContainer,
+            backgroundColor: Theme.of(context).colorScheme.secondaryContainer,
+            foregroundColor: Theme.of(context).colorScheme.onSecondaryContainer,
           ),
           const SizedBox(height: 12),
           FloatingActionButton.extended(
@@ -125,7 +130,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
             Icon(
               Icons.theater_comedy,
               size: 80,
-              color: Theme.of(context).colorScheme.primary.withValues(alpha: 0.5),
+              color: Theme.of(
+                context,
+              ).colorScheme.primary.withValues(alpha: 0.5),
             ),
             const SizedBox(height: 24),
             Text(
@@ -137,11 +144,10 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
               'Create a production and import a script\nto start learning your lines.',
               textAlign: TextAlign.center,
               style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                    color: Theme.of(context)
-                        .colorScheme
-                        .onSurface
-                        .withValues(alpha: 0.6),
-                  ),
+                color: Theme.of(
+                  context,
+                ).colorScheme.onSurface.withValues(alpha: 0.6),
+              ),
             ),
             const SizedBox(height: 28),
             // Somewhere to go for anyone who doesn't have a script in hand.
@@ -158,7 +164,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                       ? const SizedBox(
                           width: 16,
                           height: 16,
-                          child: CircularProgressIndicator(strokeWidth: 2))
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
                       : const Icon(Icons.play_circle_outline),
                   label: Text(_loadingDemo ? 'Opening…' : 'Try the demo'),
                 ),
@@ -188,13 +195,19 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
       if (!mounted) return;
       context.push('/production');
     } catch (e, stack) {
-      DebugLogService.instance
-          .logError(LogCategory.general, 'Loading the demo failed', e, stack);
+      DebugLogService.instance.logError(
+        LogCategory.general,
+        'Loading the demo failed',
+        e,
+        stack,
+      );
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showAutoToast(SnackBar(
-        content: Text("Couldn't open the demo: $e"),
-        duration: const Duration(seconds: 6),
-      ));
+      ScaffoldMessenger.of(context).showAutoToast(
+        SnackBar(
+          content: Text("Couldn't open the demo: $e"),
+          duration: const Duration(seconds: 6),
+        ),
+      );
     } finally {
       if (mounted) setState(() => _loadingDemo = false);
     }
@@ -226,9 +239,11 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
             onSetUp: () => _openProductionForSetup(context, ref, production),
             onMenuAction: (action) =>
                 _handleMenuAction(context, ref, production, action),
-          onDelete: () async {
-              final confirmed =
-                  await _confirmDeleteProduction(context, production);
+            onDelete: () async {
+              final confirmed = await _confirmDeleteProduction(
+                context,
+                production,
+              );
               if (confirmed == true) {
                 if (!context.mounted) return;
                 await _deleteProduction(context, ref, production);
@@ -254,8 +269,10 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
           onMenuAction: (action) =>
               _handleMenuAction(context, ref, production, action),
           onDelete: () async {
-            final confirmed =
-                await _confirmDeleteProduction(context, production);
+            final confirmed = await _confirmDeleteProduction(
+              context,
+              production,
+            );
             if (confirmed == true) {
               if (!context.mounted) return;
               await _deleteProduction(context, ref, production);
@@ -266,27 +283,59 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     );
   }
 
+  int _activateProduction(
+    WidgetRef ref,
+    Production production, {
+    required bool resetRehearsalSelection,
+  }) {
+    final generation = ++_productionActivationGeneration;
+    final previousProduction = ref.read(currentProductionProvider);
+    final switchingProduction = previousProduction?.id != production.id;
+    if (switchingProduction) {
+      ref.read(understudyRecordingsProvider.notifier).clear();
+    }
+
+    if (resetRehearsalSelection) {
+      ref.read(rehearsalCharacterProvider.notifier).state = null;
+      ref.read(selectedSceneProvider.notifier).state = null;
+    }
+    ref.read(currentProductionProvider.notifier).state = production;
+    if (switchingProduction) {
+      // Publish the new scope before clearing/loading its script so mounted hub
+      // listeners never attribute the next script event to the old production.
+      ref.read(currentScriptProvider.notifier).state = null;
+    }
+    ref.read(recordingsProvider.notifier).loadForProduction(production.id);
+    ref.read(castMembersProvider.notifier).loadForProduction(production.id);
+    return generation;
+  }
+
+  bool _isActiveProduction(
+    WidgetRef ref,
+    Production production,
+    int generation,
+  ) {
+    return mounted &&
+        generation == _productionActivationGeneration &&
+        ref.read(currentProductionProvider)?.id == production.id;
+  }
+
   Future<void> _openProduction(
     BuildContext context,
     WidgetRef ref,
     Production production,
   ) async {
-    final previousProduction = ref.read(currentProductionProvider);
-    if (previousProduction?.id != production.id) {
-      ref.read(currentScriptProvider.notifier).state = null;
-      ref.read(understudyRecordingsProvider.notifier).clear();
-    }
-
-    ref.read(currentProductionProvider.notifier).state = production;
-    ref.read(rehearsalCharacterProvider.notifier).state = null;
-    ref.read(selectedSceneProvider.notifier).state = null;
-    ref.read(recordingsProvider.notifier).loadForProduction(production.id);
-    ref.read(castMembersProvider.notifier).loadForProduction(production.id);
+    final generation = _activateProduction(
+      ref,
+      production,
+      resetRehearsalSelection: true,
+    );
 
     // Recording sync (upload local + download others' + realtime) is started by
     // the production hub's init, so it covers opening AND joining a production.
 
     final savedScript = await loadPersistedScript(ref, production.id);
+    if (!_isActiveProduction(ref, production, generation)) return;
 
     if (savedScript != null) {
       final script = ParsedScript(
@@ -305,7 +354,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
       // may have edited the script since this castmate joined. Pull the latest
       // shared version in the background and adopt it if it changed (stable line
       // IDs keep recordings matched). Never blocks the open.
-      unawaited(_refreshScriptFromCloud(ref, production, messenger));
+      unawaited(
+        _refreshScriptFromCloud(ref, production, messenger, generation),
+      );
       return;
     }
 
@@ -313,9 +364,10 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     // then check the cloud in the background — a slow Supabase round-trip must
     // not block opening the production. If a cloud script exists (e.g. imported
     // on another device), load it and let the user reopen to rehearse.
+    if (!context.mounted) return;
     final messenger = ScaffoldMessenger.of(context);
     if (context.mounted) context.push('/import');
-    unawaited(_reconcileCloudScript(ref, production, messenger));
+    unawaited(_reconcileCloudScript(ref, production, messenger, generation));
   }
 
   /// Background: pull a script from the cloud (if any) and persist it locally.
@@ -324,12 +376,18 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     WidgetRef ref,
     Production production,
     ScaffoldMessengerState messenger,
+    int generation,
   ) async {
     try {
       final cloudLines = await fetchCloudScriptLines(production.id);
+      if (!_isActiveProduction(ref, production, generation)) return;
       if (cloudLines == null || cloudLines.isEmpty) return;
       final script = await buildParsedScriptWithCloudScenes(
-          production.title, cloudLines, production.id);
+        production.title,
+        cloudLines,
+        production.id,
+      );
+      if (!_isActiveProduction(ref, production, generation)) return;
 
       // Persist under the production we FETCHED for, never "whatever is
       // current now": the user can open another production while this is in
@@ -337,18 +395,23 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
       // — this used to overwrite B's script with A's (and push it to B's cloud
       // on the next save).
       await persistScriptLocally(ref, production.id, script);
+      if (!_isActiveProduction(ref, production, generation)) return;
 
-      // Only swap the on-screen script if we're still on this production.
-      if (ref.read(currentProductionProvider)?.id != production.id) return;
       ref.read(currentScriptProvider.notifier).state = script;
-      messenger.showAutoToast(SnackBar(
-        content: Text(
-            'Loaded ${cloudLines.length} lines from cloud — reopen to rehearse'),
-        duration: const Duration(seconds: 4),
-      ));
+      messenger.showAutoToast(
+        SnackBar(
+          content: Text(
+            'Loaded ${cloudLines.length} lines from cloud — reopen to rehearse',
+          ),
+          duration: const Duration(seconds: 4),
+        ),
+      );
     } catch (e) {
       DebugLogService.instance.logError(
-          LogCategory.network, 'Cloud script fetch failed', e);
+        LogCategory.network,
+        'Cloud script fetch failed',
+        e,
+      );
     }
   }
 
@@ -363,16 +426,19 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     WidgetRef ref,
     Production production,
     ScaffoldMessengerState messenger,
+    int generation,
   ) async {
     try {
       final myUserId = SupabaseService.instance.currentUser?.id;
       if (myUserId != null && production.organizerId == myUserId) return;
 
       final cloudLines = await fetchCloudScriptLines(production.id);
+      if (!_isActiveProduction(ref, production, generation)) return;
       if (cloudLines == null || cloudLines.isEmpty) return;
 
       final local = ref.read(currentScriptProvider);
-      if (local != null && _sameLines(local.lines, cloudLines)) return; // already current
+      if (local != null && _sameLines(local.lines, cloudLines))
+        return; // already current
 
       // The cloud push is a non-atomic delete+insert; a push that died halfway
       // leaves a truncated cloud script. Adopting it here would propagate that
@@ -391,25 +457,35 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
       }
 
       final updated = await buildParsedScriptWithCloudScenes(
-          production.title, cloudLines, production.id);
+        production.title,
+        cloudLines,
+        production.id,
+      );
+      if (!_isActiveProduction(ref, production, generation)) return;
       await persistScriptLocally(ref, production.id, updated);
+      if (!_isActiveProduction(ref, production, generation)) return;
 
-      // Only swap the in-memory script if we're still on this production.
-      if (ref.read(currentProductionProvider)?.id == production.id) {
-        ref.read(currentScriptProvider.notifier).state = updated;
-      }
+      // Swap only after the activation-generation check above.
+      ref.read(currentScriptProvider.notifier).state = updated;
       DebugLogService.instance.log(
         LogCategory.general,
         'Script re-synced from cloud: ${cloudLines.length} lines '
         '(was ${local?.lines.length ?? 0})',
       );
-      messenger.showAutoToast(SnackBar(
-        content: Text('Script updated from the cast (${cloudLines.length} lines)'),
-        duration: const Duration(seconds: 3),
-      ));
+      messenger.showAutoToast(
+        SnackBar(
+          content: Text(
+            'Script updated from the cast (${cloudLines.length} lines)',
+          ),
+          duration: const Duration(seconds: 3),
+        ),
+      );
     } catch (e) {
       DebugLogService.instance.logError(
-          LogCategory.network, 'Script cloud refresh failed', e);
+        LogCategory.network,
+        'Script cloud refresh failed',
+        e,
+      );
     }
   }
 
@@ -431,17 +507,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     WidgetRef ref,
     Production production,
   ) async {
-    final previousProduction = ref.read(currentProductionProvider);
-    if (previousProduction?.id != production.id) {
-      ref.read(currentScriptProvider.notifier).state = null;
-      ref.read(understudyRecordingsProvider.notifier).clear();
-    }
-
-    ref.read(currentProductionProvider.notifier).state = production;
-    ref.read(rehearsalCharacterProvider.notifier).state = null;
-    ref.read(selectedSceneProvider.notifier).state = null;
-    ref.read(recordingsProvider.notifier).loadForProduction(production.id);
-    ref.read(castMembersProvider.notifier).loadForProduction(production.id);
+    _activateProduction(ref, production, resetRehearsalSelection: true);
 
     if (context.mounted) context.push('/import');
   }
@@ -452,19 +518,14 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     Production production,
     String action,
   ) {
-    final previousProduction = ref.read(currentProductionProvider);
-    if (previousProduction?.id != production.id) {
-      ref.read(currentScriptProvider.notifier).state = null;
-      ref.read(understudyRecordingsProvider.notifier).clear();
-    }
-
-    // Set as current production first
-    ref.read(currentProductionProvider.notifier).state = production;
-    ref.read(recordingsProvider.notifier).loadForProduction(production.id);
-    ref.read(castMembersProvider.notifier).loadForProduction(production.id);
+    final generation = _activateProduction(
+      ref,
+      production,
+      resetRehearsalSelection: false,
+    );
 
     // Load script in background for routes that need it
-    _ensureScriptLoaded(ref, production);
+    _ensureScriptLoaded(ref, production, generation);
 
     switch (action) {
       case 'editor':
@@ -486,17 +547,21 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
       case 'web-editor':
         final email = SupabaseService.instance.currentUser?.email ?? '';
         final prodTitle = production.title;
-        final url = 'https://castcircle-app.web.app?production=${production.id}';
-        final text = 'Edit "$prodTitle" on the web:\n'
+        final url =
+            'https://castcircle-app.web.app?production=${production.id}';
+        final text =
+            'Edit "$prodTitle" on the web:\n'
             '$url'
             '${email.isNotEmpty ? '\n\nSign in with: $email' : ''}';
         Share.share(text, subject: 'CastCircle: Edit $prodTitle');
     }
   }
 
-
   Future<void> _ensureScriptLoaded(
-      WidgetRef ref, Production production) async {
+    WidgetRef ref,
+    Production production,
+    int generation,
+  ) async {
     final currentProduction = ref.read(currentProductionProvider);
     final current = ref.read(currentScriptProvider);
     if (shouldReuseLoadedScript(
@@ -508,6 +573,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     }
 
     final saved = await loadPersistedScript(ref, production.id);
+    if (!_isActiveProduction(ref, production, generation)) return;
     if (saved != null) {
       ref.read(currentScriptProvider.notifier).state = ParsedScript(
         title: production.title,
@@ -528,25 +594,30 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     // cloud restore (the membership/production still exists in Supabase).
     final supa = SupabaseService.instance;
     final mine = isOwnProduction(production);
-    final cloudBacked = production.organizerId.isNotEmpty &&
-        production.organizerId != 'local';
+    final cloudBacked =
+        production.organizerId.isNotEmpty && production.organizerId != 'local';
     if (cloudBacked && !(supa.isInitialized && supa.isSignedIn)) {
       // Deleting locally while the cloud row survives guarantees the
       // production reappears on the next restore — refuse instead of
       // pretending it worked.
       DebugLogService.instance.log(
-          LogCategory.network,
-          'Delete refused for "${production.title}" — cloud unavailable '
-          '(initialized=${supa.isInitialized} signedIn=${supa.isSignedIn})');
+        LogCategory.network,
+        'Delete refused for "${production.title}" — cloud unavailable '
+        '(initialized=${supa.isInitialized} signedIn=${supa.isSignedIn})',
+      );
       if (context.mounted) {
-        ScaffoldMessenger.of(context).showAutoToast(SnackBar(
-          content: Text(mine
-              ? "Can't delete \"${production.title}\" while offline — it "
-                  'would come back on the next sync. Try again when connected.'
-              : "Can't leave \"${production.title}\" while offline — try "
-                  'again when connected.'),
-          duration: const Duration(seconds: 6),
-        ));
+        ScaffoldMessenger.of(context).showAutoToast(
+          SnackBar(
+            content: Text(
+              mine
+                  ? "Can't delete \"${production.title}\" while offline — it "
+                        'would come back on the next sync. Try again when connected.'
+                  : "Can't leave \"${production.title}\" while offline — try "
+                        'again when connected.',
+            ),
+            duration: const Duration(seconds: 6),
+          ),
+        );
       }
       return;
     }
@@ -559,20 +630,25 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
         }
       } catch (e) {
         DebugLogService.instance.logError(
-            LogCategory.network,
-            '${mine ? 'Cloud delete' : 'Leave'} failed for '
-            '"${production.title}"',
-            e);
+          LogCategory.network,
+          '${mine ? 'Cloud delete' : 'Leave'} failed for '
+          '"${production.title}"',
+          e,
+        );
         if (context.mounted) {
-          ScaffoldMessenger.of(context).showAutoToast(SnackBar(
-            content: Text(mine
-                ? 'Couldn\'t delete "${production.title}" from the cloud — '
-                    'check your connection and try again. (Nothing was '
-                    'removed, or it would reappear on the next sync.)'
-                : 'Couldn\'t leave "${production.title}" — check your '
-                    'connection and try again.'),
-            duration: const Duration(seconds: 6),
-          ));
+          ScaffoldMessenger.of(context).showAutoToast(
+            SnackBar(
+              content: Text(
+                mine
+                    ? 'Couldn\'t delete "${production.title}" from the cloud — '
+                          'check your connection and try again. (Nothing was '
+                          'removed, or it would reappear on the next sync.)'
+                    : 'Couldn\'t leave "${production.title}" — check your '
+                          'connection and try again.',
+              ),
+              duration: const Duration(seconds: 6),
+            ),
+          );
         }
         return; // keep local state consistent with the cloud
       }
@@ -605,9 +681,12 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     if (context.mounted) {
       ScaffoldMessenger.of(context).showAutoToast(
         SnackBar(
-            content: Text(mine
+          content: Text(
+            mine
                 ? 'Deleted "${production.title}" for the whole cast'
-                : 'Left "${production.title}"')),
+                : 'Left "${production.title}"',
+          ),
+        ),
       );
     }
   }
@@ -651,13 +730,14 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     final title = controller.text.trim();
     if (title.isEmpty) return;
     if (_submittingProduction) {
-      dlog.log(LogCategory.general,
-          '_submitProduction: BLOCKED by _submittingProduction guard');
+      dlog.log(
+        LogCategory.general,
+        '_submitProduction: BLOCKED by _submittingProduction guard',
+      );
       return;
     }
     _submittingProduction = true;
-    dlog.log(LogCategory.general,
-        '_submitProduction: starting for "$title"');
+    dlog.log(LogCategory.general, '_submitProduction: starting for "$title"');
 
     // Capture the router NOW, while the dialog's context is still valid. We
     // pop the dialog below (invalidating its context), so navigating later with
@@ -685,35 +765,77 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     // Optimistic: persist locally and navigate immediately so the new
     // production appears instantly. The cloud insert runs in the background
     // using the same id + join code, so local and cloud stay consistent.
-    dlog.log(LogCategory.general,
-        '_submitProduction: adding production id=$productionId (optimistic)');
-    await ref.read(productionsProvider.notifier).add(production);
+    dlog.log(
+      LogCategory.general,
+      '_submitProduction: adding production id=$productionId (optimistic)',
+    );
+    try {
+      final createProduction = widget.createProduction;
+      if (createProduction != null) {
+        await createProduction(production);
+      } else {
+        await ref.read(productionsProvider.notifier).add(production);
+      }
+    } catch (e, stack) {
+      dlog.logError(
+        LogCategory.error,
+        '_submitProduction: local persistence failed for "$title"',
+        e,
+        stack,
+      );
+      rootScaffoldMessengerKey.currentState?.showAutoToast(
+        const SnackBar(
+          content: Text(
+            "Couldn't save the production on this device. "
+            'Check available storage and try again.',
+          ),
+          duration: Duration(seconds: 6),
+        ),
+      );
+      return;
+    } finally {
+      _submittingProduction = false;
+    }
     ref.read(currentProductionProvider.notifier).state = production;
     AnalyticsService.instance.logProductionCreated();
-    _submittingProduction = false;
 
     if (supa.isSignedIn) {
       // Fire-and-forget so the UI isn't blocked — but a failure means the
       // join code resolves to NOTHING for every invited castmate and no
       // retry exists, so it must be loud, not just a log line.
-      unawaited(supa
-          .createProduction(title: title, id: productionId, joinCode: joinCode)
-          .catchError((Object e) {
-        dlog.logError(LogCategory.error,
-            '_submitProduction: background cloud create failed — invites for '
-            '"$title" will not work until this heals', e);
-        rootScaffoldMessengerKey.currentState?.showAutoToast(SnackBar(
-          content: Text('"$title" was saved on this device but couldn\'t be '
-              'created in the cloud — invites won\'t work yet. Check your '
-              'connection.'),
-          duration: const Duration(seconds: 8),
-        ));
-        return <String, dynamic>{};
-      }));
+      unawaited(
+        supa
+            .createProduction(
+              title: title,
+              id: productionId,
+              joinCode: joinCode,
+            )
+            .catchError((Object e) {
+              dlog.logError(
+                LogCategory.error,
+                '_submitProduction: background cloud create failed — invites for '
+                '"$title" will not work until this heals',
+                e,
+              );
+              rootScaffoldMessengerKey.currentState?.showAutoToast(
+                SnackBar(
+                  content: Text(
+                    '"$title" was saved on this device but couldn\'t be '
+                    'created in the cloud — invites won\'t work yet. Check your '
+                    'connection.',
+                  ),
+                  duration: const Duration(seconds: 8),
+                ),
+              );
+              return <String, dynamic>{};
+            }),
+      );
     }
 
-    dlog.log(LogCategory.general,
-        '_submitProduction: done, navigating to /import');
+    dlog.log(
+      LogCategory.general,
+      '_submitProduction: done, navigating to /import',
+    );
     // Use the router captured before the dialog was popped — the dialog's
     // context is dead by now, so context.push here would throw.
     router.push('/import');
@@ -731,11 +853,11 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
         content: Text(
           mine
               ? 'Delete "${production.title}" for the ENTIRE cast? This '
-                  'removes the cloud copy — the script, shared recordings, '
-                  'and every member\'s access. This cannot be undone.'
+                    'removes the cloud copy — the script, shared recordings, '
+                    'and every member\'s access. This cannot be undone.'
               : '"${production.title}" was created by someone else — you '
-                  'joined it. Leaving removes it from your devices only; '
-                  'the organizer\'s production is not affected.',
+                    'joined it. Leaving removes it from your devices only; '
+                    'the organizer\'s production is not affected.',
         ),
         actions: [
           TextButton(
@@ -840,15 +962,18 @@ class _ProductionCard extends StatelessWidget {
                   children: [
                     Text(
                       production.title,
-                      style: theme.textTheme.titleMedium
-                          ?.copyWith(fontWeight: FontWeight.bold),
+                      style: theme.textTheme.titleMedium?.copyWith(
+                        fontWeight: FontWeight.bold,
+                      ),
                     ),
                     if (hasCharacter) ...[
                       const SizedBox(height: 2),
                       Text(
                         'Playing: $savedCharacterName',
                         style: theme.textTheme.bodySmall?.copyWith(
-                          color: theme.colorScheme.onSurface.withValues(alpha: 0.6),
+                          color: theme.colorScheme.onSurface.withValues(
+                            alpha: 0.6,
+                          ),
                         ),
                       ),
                     ],
@@ -862,12 +987,11 @@ class _ProductionCard extends StatelessWidget {
                           DemoProductionService.isDemo(production)
                               ? Icons.play_circle_outline
                               : mine
-                                  ? Icons.verified_user
-                                  : Icons.group,
+                              ? Icons.verified_user
+                              : Icons.group,
                           size: 12,
                           color: mine
-                              ? theme.colorScheme.primary
-                                  .withValues(alpha: 0.7)
+                              ? theme.colorScheme.primary.withValues(alpha: 0.7)
                               : theme.colorScheme.tertiary,
                         ),
                         const SizedBox(width: 4),
@@ -875,12 +999,13 @@ class _ProductionCard extends StatelessWidget {
                           DemoProductionService.isDemo(production)
                               ? 'Demo — sample script, stays on this device'
                               : mine
-                                  ? 'Created by you'
-                                  : 'Joined — someone else\'s',
+                              ? 'Created by you'
+                              : 'Joined — someone else\'s',
                           style: theme.textTheme.labelSmall?.copyWith(
                             color: mine
-                                ? theme.colorScheme.onSurface
-                                    .withValues(alpha: 0.5)
+                                ? theme.colorScheme.onSurface.withValues(
+                                    alpha: 0.5,
+                                  )
                                 : theme.colorScheme.tertiary,
                           ),
                         ),
@@ -890,8 +1015,10 @@ class _ProductionCard extends StatelessWidget {
                 ),
               ),
               PopupMenuButton<String>(
-                icon: Icon(Icons.more_vert,
-                    color: theme.colorScheme.onSurface.withValues(alpha: 0.5)),
+                icon: Icon(
+                  Icons.more_vert,
+                  color: theme.colorScheme.onSurface.withValues(alpha: 0.5),
+                ),
                 onSelected: (action) {
                   if (action == 'delete') {
                     onDelete();
@@ -901,78 +1028,98 @@ class _ProductionCard extends StatelessWidget {
                 },
                 itemBuilder: (context) => [
                   const PopupMenuItem(
-                      value: 'editor',
-                      child: ListTile(
-                          leading: Icon(Icons.edit_note),
-                          title: Text('Edit Script'),
-                          dense: true,
-                          contentPadding: EdgeInsets.zero)),
+                    value: 'editor',
+                    child: ListTile(
+                      leading: Icon(Icons.edit_note),
+                      title: Text('Edit Script'),
+                      dense: true,
+                      contentPadding: EdgeInsets.zero,
+                    ),
+                  ),
                   const PopupMenuItem(
-                      value: 'characters',
-                      child: ListTile(
-                          leading: Icon(Icons.person_search),
-                          title: Text('Characters'),
-                          dense: true,
-                          contentPadding: EdgeInsets.zero)),
+                    value: 'characters',
+                    child: ListTile(
+                      leading: Icon(Icons.person_search),
+                      title: Text('Characters'),
+                      dense: true,
+                      contentPadding: EdgeInsets.zero,
+                    ),
+                  ),
                   const PopupMenuItem(
-                      value: 'cast',
-                      child: ListTile(
-                          leading: Icon(Icons.people_outline),
-                          title: Text('Cast'),
-                          dense: true,
-                          contentPadding: EdgeInsets.zero)),
+                    value: 'cast',
+                    child: ListTile(
+                      leading: Icon(Icons.people_outline),
+                      title: Text('Cast'),
+                      dense: true,
+                      contentPadding: EdgeInsets.zero,
+                    ),
+                  ),
                   const PopupMenuItem(
-                      value: 'voice-config',
-                      child: ListTile(
-                          leading: Icon(Icons.record_voice_over),
-                          title: Text('Voice Config'),
-                          dense: true,
-                          contentPadding: EdgeInsets.zero)),
+                    value: 'voice-config',
+                    child: ListTile(
+                      leading: Icon(Icons.record_voice_over),
+                      title: Text('Voice Config'),
+                      dense: true,
+                      contentPadding: EdgeInsets.zero,
+                    ),
+                  ),
                   const PopupMenuItem(
-                      value: 'record',
-                      child: ListTile(
-                          leading: Icon(Icons.mic),
-                          title: Text('Record Lines'),
-                          dense: true,
-                          contentPadding: EdgeInsets.zero)),
+                    value: 'record',
+                    child: ListTile(
+                      leading: Icon(Icons.mic),
+                      title: Text('Record Lines'),
+                      dense: true,
+                      contentPadding: EdgeInsets.zero,
+                    ),
+                  ),
                   const PopupMenuItem(
-                      value: 'history',
-                      child: ListTile(
-                          leading: Icon(Icons.history),
-                          title: Text('History'),
-                          dense: true,
-                          contentPadding: EdgeInsets.zero)),
+                    value: 'history',
+                    child: ListTile(
+                      leading: Icon(Icons.history),
+                      title: Text('History'),
+                      dense: true,
+                      contentPadding: EdgeInsets.zero,
+                    ),
+                  ),
                   const PopupMenuItem(
-                      value: 'ai-models',
-                      child: ListTile(
-                          leading: Icon(Icons.smart_toy),
-                          title: Text('AI Models'),
-                          dense: true,
-                          contentPadding: EdgeInsets.zero)),
+                    value: 'ai-models',
+                    child: ListTile(
+                      leading: Icon(Icons.smart_toy),
+                      title: Text('AI Models'),
+                      dense: true,
+                      contentPadding: EdgeInsets.zero,
+                    ),
+                  ),
                   const PopupMenuItem(
-                      value: 'settings',
-                      child: ListTile(
-                          leading: Icon(Icons.settings),
-                          title: Text('Settings'),
-                          dense: true,
-                          contentPadding: EdgeInsets.zero)),
+                    value: 'settings',
+                    child: ListTile(
+                      leading: Icon(Icons.settings),
+                      title: Text('Settings'),
+                      dense: true,
+                      contentPadding: EdgeInsets.zero,
+                    ),
+                  ),
                   const PopupMenuItem(
-                      value: 'web-editor',
-                      child: ListTile(
-                          leading: Icon(Icons.language),
-                          title: Text('Edit on Web'),
-                          dense: true,
-                          contentPadding: EdgeInsets.zero)),
+                    value: 'web-editor',
+                    child: ListTile(
+                      leading: Icon(Icons.language),
+                      title: Text('Edit on Web'),
+                      dense: true,
+                      contentPadding: EdgeInsets.zero,
+                    ),
+                  ),
                   const PopupMenuDivider(),
                   PopupMenuItem(
                     value: 'delete',
                     child: ListTile(
                       leading: Icon(
-                          mine ? Icons.delete_forever : Icons.logout,
-                          color: theme.colorScheme.error),
-                      title: Text(mine ? 'Delete' : 'Leave',
-                          style:
-                              TextStyle(color: theme.colorScheme.error)),
+                        mine ? Icons.delete_forever : Icons.logout,
+                        color: theme.colorScheme.error,
+                      ),
+                      title: Text(
+                        mine ? 'Delete' : 'Leave',
+                        style: TextStyle(color: theme.colorScheme.error),
+                      ),
                       dense: true,
                       contentPadding: EdgeInsets.zero,
                     ),

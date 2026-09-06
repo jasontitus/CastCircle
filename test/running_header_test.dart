@@ -39,12 +39,16 @@ Pride and Prejudice
   test('header detected from text even when the production title differs', () {
     final parser = ScriptParser();
     final script = parser.parse(raw, title: 'test5');
-    final dialogue =
-        script.lines.where((l) => l.lineType == LineType.dialogue).toList();
+    final dialogue = script.lines
+        .where((l) => l.lineType == LineType.dialogue)
+        .toList();
     expect(dialogue.length, 5);
     for (final l in dialogue) {
-      expect(l.text.contains('Pride and Prejudice'), false,
-          reason: 'header leaked into: "${l.text}"');
+      expect(
+        l.text.contains('Pride and Prejudice'),
+        false,
+        reason: 'header leaked into: "${l.text}"',
+      );
     }
   });
 
@@ -52,8 +56,12 @@ Pride and Prejudice
     final parser = ScriptParser();
     final script = parser.parse(raw, title: 'whatever');
     final polluted = script.lines.firstWhere(
-        (l) => l.text.contains('propensity to hate everybody'));
-    expect(polluted.text.trim(), 'And your defect is a propensity to hate everybody.');
+      (l) => l.text.contains('propensity to hate everybody'),
+    );
+    expect(
+      polluted.text.trim(),
+      'And your defect is a propensity to hate everybody.',
+    );
   });
 
   test('lowercase in-dialogue mention of the title survives', () {
@@ -72,8 +80,7 @@ Pride and Prejudice
 ''';
     final parser = ScriptParser();
     final script = parser.parse(withMention, title: 'test');
-    final liz = script.lines
-        .firstWhere((l) => l.character == 'ELIZABETH');
+    final liz = script.lines.firstWhere((l) => l.character == 'ELIZABETH');
     expect(liz.text.contains('pride and prejudice'), true);
   });
 
@@ -106,8 +113,11 @@ ELIZABETH. So you say.
     // header-shaped, except they cluster in one number instead of recurring
     // across the whole document. The spread requirement must protect them.
     final filler = List.generate(
-        40, (i) => 'ENSEMBLE. Business line number $i to pad the scene out.');
-    final withSong = '''
+      40,
+      (i) => 'ENSEMBLE. Business line number $i to pad the scene out.',
+    );
+    final withSong =
+        '''
 ACT I
 
 ${filler.take(20).join('\n\n')}
@@ -127,8 +137,11 @@ ${filler.skip(20).join('\n\n')}
     final parser = ScriptParser();
     final script = parser.parse(withSong, title: 'test');
     final all = script.lines.map((l) => l.text).join('\n');
-    expect('All that jazz'.allMatches(all).length >= 3, true,
-        reason: 'clustered refrain must not be stripped as a header');
+    expect(
+      'All that jazz'.allMatches(all).length >= 3,
+      true,
+      reason: 'clustered refrain must not be stripped as a header',
+    );
   });
 
   test('repeated catchphrase with OCR-dropped punctuation is kept', () {
@@ -136,8 +149,11 @@ ${filler.skip(20).join('\n\n')}
     // rule — the cue-line exclusion must protect it, even spread across
     // the document.
     final filler = List.generate(
-        30, (i) => 'ELIZABETH. Padding line $i so the spread test is real.');
-    final withCatchphrase = '''
+      30,
+      (i) => 'ELIZABETH. Padding line $i so the spread test is real.',
+    );
+    final withCatchphrase =
+        '''
 ACT I
 
 JANE. I always speak what I think

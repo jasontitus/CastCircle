@@ -17,8 +17,7 @@ enum LogCategory {
   firebase('FIR', '🔥'),
   general('GEN', '📋'),
   ai('AI', '✨'),
-  error('ERR', '❌'),
-  ;
+  error('ERR', '❌');
 
   const LogCategory(this.tag, this.icon);
   final String tag;
@@ -39,10 +38,23 @@ class LogEntry {
   final String message;
   final bool isError;
 
+  static final _joinCodePattern = RegExp(
+    r'(\b(?:join[_ -]?code|code)\s*[=:]\s*)[A-Z0-9]{6}\b',
+    caseSensitive: false,
+  );
+
   String get timeString => timestamp.toString().substring(11, 19);
 
-  String toLine() =>
-      '${timestamp.toIso8601String()} [${category.tag}] $message';
+  String toLine() {
+    // Export and persistence are a final safety boundary: sanitize historical
+    // entries too, including logs written by older builds that recorded a
+    // reusable production join credential.
+    final safeMessage = message.replaceAllMapped(
+      _joinCodePattern,
+      (match) => '${match.group(1)}[REDACTED]',
+    );
+    return '${timestamp.toIso8601String()} [${category.tag}] $safeMessage';
+  }
 
   static LogEntry? fromLine(String line) {
     try {
@@ -124,8 +136,10 @@ class DebugLogService {
     // share it), so we log the full version+build. Best-effort; never blocks.
     try {
       final info = await PackageInfo.fromPlatform();
-      log(LogCategory.general,
-          'app build: ${info.version}+${info.buildNumber} (${info.packageName})');
+      log(
+        LogCategory.general,
+        'app build: ${info.version}+${info.buildNumber} (${info.packageName})',
+      );
     } catch (e) {
       debugPrint('PackageInfo failed: $e');
     }
@@ -136,7 +150,10 @@ class DebugLogService {
   void startMemoryMonitoring() {
     _memoryTimer?.cancel();
     _memoryTimer = Timer.periodic(_memoryInterval, (_) => _logMemory());
-    log(LogCategory.memory, 'Memory monitoring started (${_memoryInterval.inSeconds}s interval)');
+    log(
+      LogCategory.memory,
+      'Memory monitoring started (${_memoryInterval.inSeconds}s interval)',
+    );
   }
 
   /// Stop periodic memory monitoring.
@@ -184,15 +201,21 @@ class DebugLogService {
       // No flush: an fsync per entry on the CALLER'S thread (often the UI
       // isolate mid-rehearsal) costs milliseconds each. The OS buffers the
       // append; the periodic _flushTimer and crash reports cover durability.
-      File(path).writeAsStringSync('${entry.toLine()}\n',
-          mode: FileMode.append);
+      File(
+        path,
+      ).writeAsStringSync('${entry.toLine()}\n', mode: FileMode.append);
     } catch (e) {
       debugPrint('Log append failed: $e');
     }
   }
 
   /// Log an error with optional stack trace.
-  void logError(LogCategory category, String message, [Object? error, StackTrace? stack]) {
+  void logError(
+    LogCategory category,
+    String message, [
+    Object? error,
+    StackTrace? stack,
+  ]) {
     final errorMsg = error != null ? '$message: $error' : message;
     log(LogCategory.error, '[${category.tag}] $errorMsg');
     if (stack != null) {
@@ -203,7 +226,9 @@ class DebugLogService {
   /// Get current memory usage from native.
   Future<Map<String, int>> getMemoryUsage() async {
     try {
-      final result = await _channel.invokeMapMethod<String, dynamic>('getMemoryUsage');
+      final result = await _channel.invokeMapMethod<String, dynamic>(
+        'getMemoryUsage',
+      );
       if (result != null) {
         _lastPhysicalMB = result['physicalFootprintMB'] as int? ?? 0;
         _lastAvailableMB = result['availableMemoryMB'] as int? ?? 0;

@@ -7,16 +7,24 @@ import MLXUtilsLibrary
 
 /// A G2P processor that uses the MisakiSwift library for English phonemization.
 final class MisakiG2PProcessor : G2PProcessor {
-  /// The underlying MisakiSwift English G2P engine instance.
-  var misaki: EnglishG2P?
+  /// Lazily initialized once per accent; switching reuses parsed lexicons.
+  private var americanEnglish: EnglishG2P?
+  private var britishEnglish: EnglishG2P?
+  private var misaki: EnglishG2P?
 
   /// Configures the processor for the specified language.
   func setLanguage(_ language: Language) throws {
     switch language {
     case .enUS:
-      misaki = EnglishG2P(british: false)
+      if americanEnglish == nil {
+        americanEnglish = EnglishG2P(british: false)
+      }
+      misaki = americanEnglish
     case .enGB:
-      misaki = EnglishG2P(british: true)
+      if britishEnglish == nil {
+        britishEnglish = EnglishG2P(british: true)
+      }
+      misaki = britishEnglish
     default:
       throw G2PProcessorError.unsupportedLanguage
     }

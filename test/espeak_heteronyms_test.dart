@@ -14,12 +14,13 @@ import 'package:flutter_test/flutter_test.dart';
 void main() {
   group('rewrite', () {
     test('fixes the subjunctive and imperative', () {
-      expect(EspeakHeteronyms.apply('Long live the King!'),
-          'Long liv the King!');
+      expect(
+        EspeakHeteronyms.apply('Long live the King!'),
+        'Long liv the King!',
+      );
       expect(EspeakHeteronyms.apply('Let him live.'), 'Let him liv.');
       expect(EspeakHeteronyms.apply('May he live long.'), 'May he liv long.');
-      expect(EspeakHeteronyms.apply('Live and let live.'),
-          'Liv and let liv.');
+      expect(EspeakHeteronyms.apply('Live and let live.'), 'Liv and let liv.');
     });
 
     test('leaves alone what espeak already gets right', () {
@@ -45,26 +46,31 @@ void main() {
     });
 
     test('preserves surrounding text and casing', () {
-      expect(EspeakHeteronyms.apply('LONG LIVE THE KING'),
-          'LONG LIV THE KING');
-      expect(EspeakHeteronyms.apply('Long Live the King'),
-          'Long Liv the King');
+      expect(EspeakHeteronyms.apply('LONG LIVE THE KING'), 'LONG LIV THE KING');
+      expect(EspeakHeteronyms.apply('Long Live the King'), 'Long Liv the King');
       expect(EspeakHeteronyms.apply(''), '');
-      expect(EspeakHeteronyms.apply('No heteronym here.'),
-          'No heteronym here.');
+      expect(
+        EspeakHeteronyms.apply('No heteronym here.'),
+        'No heteronym here.',
+      );
     });
   });
 
   group('espeak-ng agrees', () {
-    late final bool available = Process.runSync('which', ['espeak-ng'])
-            .exitCode ==
-        0;
+    late final bool available =
+        Process.runSync('which', ['espeak-ng']).exitCode == 0;
 
-    String ipa(String text) => (Process.runSync(
-                'espeak-ng', ['-v', 'en-gb', '--ipa', '-q', text])
-            .stdout as String)
-        .replaceAll('\n', ' ')
-        .trim();
+    String ipa(String text) =>
+        (Process.runSync('espeak-ng', [
+                  '-v',
+                  'en-gb',
+                  '--ipa',
+                  '-q',
+                  text,
+                ]).stdout
+                as String)
+            .replaceAll('\n', ' ')
+            .trim();
 
     /// The wrong reading is the diphthong /aɪv/; the right one is /ɪv/.
     bool saysLong(String out) => out.contains('aɪv');
@@ -80,11 +86,18 @@ void main() {
         'May he live long.',
         'Live and let live.',
       ]) {
-        expect(saysLong(ipa(line)), isTrue,
-            reason: 'precondition: espeak should mispronounce "$line" — if '
-                'this fails espeak improved and the rule may be obsolete');
-        expect(saysLong(ipa(EspeakHeteronyms.apply(line))), isFalse,
-            reason: 'the rewrite of "$line" should fix it');
+        expect(
+          saysLong(ipa(line)),
+          isTrue,
+          reason:
+              'precondition: espeak should mispronounce "$line" — if '
+              'this fails espeak improved and the rule may be obsolete',
+        );
+        expect(
+          saysLong(ipa(EspeakHeteronyms.apply(line))),
+          isFalse,
+          reason: 'the rewrite of "$line" should fix it',
+        );
       }
     });
 

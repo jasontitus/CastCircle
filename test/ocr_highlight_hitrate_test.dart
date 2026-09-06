@@ -20,8 +20,12 @@ void main() {
     final conf = <int, double>{
       for (var i = 0; i < rawLines.length; i++) i: 0.55, // force flagging
     };
-    final script =
-        ScriptImportService.parseAndMapOcr(raw, 'PP', conf, linePageMap);
+    final script = ScriptImportService.parseAndMapOcr(
+      raw,
+      'PP',
+      conf,
+      linePageMap,
+    );
 
     // Page number -> its OCR lines, as the viewer would receive them.
     final byPage = <int, List<OcrPageLine>>{};
@@ -29,9 +33,15 @@ void main() {
       final page = linePageMap[i]!;
       final text = rawLines[i].trim();
       if (text.isEmpty) continue;
-      (byPage[page] ??= []).add(OcrPageLine(
-          text: text, left: 0.1, top: (i % perPage) / perPage, width: 0.8,
-          height: 0.02));
+      (byPage[page] ??= []).add(
+        OcrPageLine(
+          text: text,
+          left: 0.1,
+          top: (i % perPage) / perPage,
+          width: 0.8,
+          height: 0.02,
+        ),
+      );
     }
 
     var attempted = 0, hit = 0, nowhere = 0;
@@ -72,8 +82,10 @@ void main() {
     final rate = hit / attempted;
     print('HIT RATE: $hit/$attempted = ${(rate * 100).toStringAsFixed(1)}%');
     final near = offBy.where((d) => d.abs() <= 2).length;
-    print('MISSES: ${offBy.length} found on another page '
-        '($near within +/-2 pages), $nowhere found nowhere');
+    print(
+      'MISSES: ${offBy.length} found on another page '
+      '($near within +/-2 pages), $nowhere found nowhere',
+    );
     print('--- sample misses ---');
     for (final m in misses) {
       print(m);
@@ -81,7 +93,10 @@ void main() {
     // Pins the fix for the cursor-overshoot collapse (46% → 98%): the
     // import's page mapping and the viewer's highlight share one scorer,
     // so a mapped page must be a page the viewer can find the line on.
-    expect(rate, greaterThan(0.90),
-        reason: 'the viewer should locate the large majority of lines');
+    expect(
+      rate,
+      greaterThan(0.90),
+      reason: 'the viewer should locate the large majority of lines',
+    );
   });
 }

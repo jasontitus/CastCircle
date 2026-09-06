@@ -1,158 +1,180 @@
 // ignore_for_file: avoid_print
 //
 // Analyze orphaned recordings for a production: recordings whose line_id is
-// not present in the production's current cloud script_lines. These play as
-// "computer voices" for the cast (the rehearsal orphan banner).
+// not present in the production's current cloud script_lines.
 //
-//   dart run tool/analyze_orphaned_recordings.dart <productionId>
+//   CASTCIRCLE_AUDIT_EMAIL=... CASTCIRCLE_AUDIT_PASSWORD=... \
+//     dart run tool/analyze_orphaned_recordings.dart <productionId> <joinCode>
 //
-// Auths a throwaway account and self-joins as understudy to satisfy RLS
-// (same pattern as verify_cloud_recordings.dart), then removes its own
-// cast_members row at the end.
+// Uses a dedicated audit account and a unique, code-validating membership
+// lease that is released even if analysis fails.
 
-import 'dart:convert';
 import 'dart:io';
-import 'dart:math';
 
 import 'package:supabase/supabase.dart';
 
+import 'supabase_tool_auth.dart';
+
 const _url = 'https://vngpbmqymdaxxnvqptsk.supabase.co';
 const _key = 'sb_publishable_f3YAIMI4GIEIPdDwnvfO3Q_stwSCxXI';
+const _pageSize = 500;
 
 Future<void> main(List<String> args) async {
-  final productionId =
-      args.isNotEmpty ? args[0] : 'ca0cde7d-5eef-4231-a584-03f935e3879b';
-
-  final rnd = Random().nextInt(1 << 31);
-  final email = 'orphan_audit_$rnd@example.com';
-  const pass = 'Test-passw0rd!';
-
-  final cred = await _auth(email, pass);
-  if (cred == null) {
-    print('auth failed');
-    exit(1);
+  if (args.length != 2) {
+    stderr.writeln(
+      'usage: dart run tool/analyze_orphaned_recordings.dart '
+      '<productionId> <joinCode>',
+    );
+    exitCode = 2;
+    return;
   }
-  final c = SupabaseClient(_url, _key,
-      headers: {'Authorization': 'Bearer ${cred.accessToken}'});
 
-  String? memberRowId;
   try {
-    final row = await c
-        .from('cast_members')
-        .insert({
-          'production_id': productionId,
-          'user_id': cred.userId,
-          'character_name': '',
-          'role': 'understudy',
-          'joined_at': DateTime.now().toIso8601String(),
-        })
-        .select('id')
-        .single();
-    memberRowId = row['id'] as String?;
-  } catch (e) {
-    print('join failed: $e');
+    await _run(args[0], args[1]);
+  } catch (error) {
+    stderr.writeln('orphan analysis failed: $error');
+    exitCode = 1;
   }
+}
 
-  final prod = await c
-      .from('productions')
-      .select('title, created_at')
-      .eq('id', productionId)
-      .maybeSingle();
-  print('Production: ${prod?['title']} ($productionId)');
+Future<void> _run(String productionId, String joinCode) async {
+  print('Target production: $productionId');
+  final credentials = await authenticateToolUser(
+    _url,
+    _key,
+    requireToolEnvironment('CASTCIRCLE_AUDIT_EMAIL'),
+    requireToolEnvironment('CASTCIRCLE_AUDIT_PASSWORD'),
+  );
+  final client = SupabaseClient(
+    _url,
+    _key,
+    headers: {'Authorization': 'Bearer ${credentials.accessToken}'},
+  );
 
-  final lines = (await c
-          .from('script_lines')
-          .select('id, character, order_index')
-          .eq('production_id', productionId) as List)
-      .cast<Map<String, dynamic>>();
-  final lineIds = lines.map((l) => l['id'] as String).toSet();
-  print('script_lines: ${lines.length}');
+  AuditMembershipLease? lease;
+  try {
+    lease = await beginAuditMembership(
+      client,
+      productionId,
+      joinCode,
+      displayName: 'Orphan audit',
+    );
 
-  final recs = (await c
-          .from('recordings')
-          .select('line_id, user_id, audio_url, duration_ms, recorded_at')
-          .eq('production_id', productionId)
-          .order('recorded_at') as List)
-      .cast<Map<String, dynamic>>();
-  print('recordings:   ${recs.length}');
+    final production = await client
+        .from('productions')
+        .select('title, created_at')
+        .eq('id', productionId)
+        .maybeSingle();
+    print('Production: ${production?['title']} ($productionId)');
 
-  final matched = recs.where((r) => lineIds.contains(r['line_id'])).toList();
-  final orphans = recs.where((r) => !lineIds.contains(r['line_id'])).toList();
-  print('matched:      ${matched.length}');
-  print('ORPHANED:     ${orphans.length}\n');
+    final lines = await _fetchScriptLines(client, lease, productionId);
+    final lineIds = lines.map((line) => line['id'] as String).toSet();
+    print('script_lines: ${lines.length}');
 
-  // Compiled once — this runs per recording in two loops below.
-  final charRe = RegExp('/$productionId/([^/]+)/');
-  String charOf(String url) {
-    final m = charRe.firstMatch(Uri.decodeFull(url));
-    return m?.group(1) ?? '?';
-  }
+    final recordings = await _fetchRecordings(client, lease, productionId);
+    print('recordings:   ${recordings.length}');
 
-  // Group orphans by user + character + day for a readable report.
-  print('--- orphans ---');
-  for (final r in orphans) {
-    print('  ${(r['recorded_at'] as String? ?? '?').substring(0, 16)}  '
-        'user=${(r['user_id'] as String? ?? '?').substring(0, 8)}  '
-        'char=${charOf(r['audio_url'] as String? ?? '')}  '
-        '${r['duration_ms']}ms  line=${(r['line_id'] as String? ?? '?').substring(0, 8)}');
-  }
+    final matched = recordings.where(
+      (recording) => lineIds.contains(recording['line_id']),
+    );
+    final orphans = recordings
+        .where((recording) => !lineIds.contains(recording['line_id']))
+        .toList();
+    print('matched:      ${matched.length}');
+    print('ORPHANED:     ${orphans.length}\n');
 
-  // Do the orphaned lines' characters also have CURRENT matched recordings
-  // by the same user? If yes they're stale duplicates, safe to delete.
-  print('\n--- per user+character: matched vs orphaned counts ---');
-  final counts = <String, List<int>>{};
-  for (final r in recs) {
-    final key =
-        '${(r['user_id'] as String? ?? '?').substring(0, 8)} ${charOf(r['audio_url'] as String? ?? '')}';
-    counts.putIfAbsent(key, () => [0, 0]);
-    counts[key]![lineIds.contains(r['line_id']) ? 0 : 1]++;
-  }
-  counts.forEach((k, v) => print('  $k: matched=${v[0]} orphaned=${v[1]}'));
-
-  // Clean up the throwaway's membership row.
-  if (memberRowId != null) {
-    try {
-      await c.from('cast_members').delete().eq('id', memberRowId);
-      print('\n(cleaned up audit membership row)');
-    } catch (e) {
-      print('\n(could not remove audit membership row: $e)');
+    final characterPattern = RegExp('/$productionId/([^/]+)/');
+    String characterOf(String url) {
+      final match = characterPattern.firstMatch(Uri.decodeFull(url));
+      return match?.group(1) ?? '?';
     }
-  }
-  exit(0);
-}
 
-class _Cred {
-  final String accessToken;
-  final String userId;
-  _Cred(this.accessToken, this.userId);
-}
+    print('--- orphans ---');
+    for (final recording in orphans) {
+      if (lease.renewalDue) {
+        await renewAuditMembership(client, lease);
+      }
+      print(
+        '  ${(recording['recorded_at'] as String? ?? '?').substring(0, 16)}  '
+        'user=${(recording['user_id'] as String? ?? '?').substring(0, 8)}  '
+        'char=${characterOf(recording['audio_url'] as String? ?? '')}  '
+        '${recording['duration_ms']}ms  '
+        'line=${(recording['line_id'] as String? ?? '?').substring(0, 8)}',
+      );
+    }
 
-Future<_Cred?> _auth(String email, String pass) async {
-  final body = jsonEncode({'email': email, 'password': pass});
-  var res = await _post('$_url/auth/v1/signup', body);
-  if (res == null || res['access_token'] == null) {
-    res = await _post('$_url/auth/v1/token?grant_type=password', body);
-  }
-  final at = res?['access_token'] as String?;
-  final uid = (res?['user'] as Map?)?['id'] as String?;
-  if (at == null || uid == null) return null;
-  return _Cred(at, uid);
-}
-
-Future<Map<String, dynamic>?> _post(String url, String body) async {
-  final client = HttpClient();
-  try {
-    final req = await client.postUrl(Uri.parse(url));
-    req.headers.set('Content-Type', 'application/json');
-    req.headers.set('apikey', _key);
-    req.add(utf8.encode(body));
-    final resp = await req.close();
-    final text = await resp.transform(utf8.decoder).join();
-    if (text.isEmpty) return null;
-    return jsonDecode(text) as Map<String, dynamic>;
-  } catch (_) {
-    return null;
+    print('\n--- per user+character: matched vs orphaned counts ---');
+    final counts = <String, List<int>>{};
+    for (final recording in recordings) {
+      if (lease.renewalDue) {
+        await renewAuditMembership(client, lease);
+      }
+      final key =
+          '${(recording['user_id'] as String? ?? '?').substring(0, 8)} '
+          '${characterOf(recording['audio_url'] as String? ?? '')}';
+      counts.putIfAbsent(key, () => [0, 0]);
+      counts[key]![lineIds.contains(recording['line_id']) ? 0 : 1]++;
+    }
+    counts.forEach(
+      (key, values) =>
+          print('  $key: matched=${values[0]} orphaned=${values[1]}'),
+    );
   } finally {
-    client.close();
+    if (lease != null) {
+      try {
+        await endAuditMembership(client, lease);
+        print('\n(released audit membership lease ${lease.id})');
+      } catch (error) {
+        stderr.writeln('could not release audit membership lease: $error');
+        exitCode = 1;
+      }
+    }
+    await client.dispose();
+  }
+}
+
+Future<List<Map<String, dynamic>>> _fetchScriptLines(
+  SupabaseClient client,
+  AuditMembershipLease lease,
+  String productionId,
+) async {
+  final rows = <Map<String, dynamic>>[];
+  for (var offset = 0; ; offset += _pageSize) {
+    await renewAuditMembership(client, lease);
+    final page =
+        (await client
+                    .from('script_lines')
+                    .select('id, character, order_index')
+                    .eq('production_id', productionId)
+                    .order('id')
+                    .range(offset, offset + _pageSize - 1)
+                as List)
+            .cast<Map<String, dynamic>>();
+    rows.addAll(page);
+    if (page.length < _pageSize) return rows;
+  }
+}
+
+Future<List<Map<String, dynamic>>> _fetchRecordings(
+  SupabaseClient client,
+  AuditMembershipLease lease,
+  String productionId,
+) async {
+  final rows = <Map<String, dynamic>>[];
+  for (var offset = 0; ; offset += _pageSize) {
+    await renewAuditMembership(client, lease);
+    final page =
+        (await client
+                    .from('recordings')
+                    .select(
+                      'id, line_id, user_id, audio_url, duration_ms, recorded_at',
+                    )
+                    .eq('production_id', productionId)
+                    .order('id')
+                    .range(offset, offset + _pageSize - 1)
+                as List)
+            .cast<Map<String, dynamic>>();
+    rows.addAll(page);
+    if (page.length < _pageSize) return rows;
   }
 }

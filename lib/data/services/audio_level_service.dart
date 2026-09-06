@@ -16,8 +16,9 @@ class AudioLevelService {
   AudioLevelService._();
   static final AudioLevelService instance = AudioLevelService._();
 
-  static const MethodChannel _channel =
-      MethodChannel('com.lineguide/audio_analysis');
+  static const MethodChannel _channel = MethodChannel(
+    'com.lineguide/audio_analysis',
+  );
 
   /// Target playback loudness (RMS dBFS). Recordings hotter than this are
   /// attenuated toward it. -18 dBFS is a comfortable speech reference.
@@ -34,13 +35,19 @@ class AudioLevelService {
   /// channel is missing (e.g. Android, where it's not yet implemented), the
   /// file can't be decoded, or anything throws.
   Future<double> volumeFor(String path) async {
-    final cached = _gainCache[path];
-    if (cached != null) return cached;
+    final cached = _gainCache.remove(path);
+    if (cached != null) {
+      // Map iteration order is insertion order, so reinserting a cache hit
+      // makes the first key the least recently used one.
+      _gainCache[path] = cached;
+      return cached;
+    }
 
     var volume = 1.0;
     try {
-      final res =
-          await _channel.invokeMethod<dynamic>('loudness', {'path': path});
+      final res = await _channel.invokeMethod<dynamic>('loudness', {
+        'path': path,
+      });
       if (res is Map) {
         final rms = (res['rmsDbfs'] as num?)?.toDouble();
         if (rms != null && rms.isFinite && rms < 0) {

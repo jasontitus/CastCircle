@@ -28,9 +28,11 @@ class DefaultFirebaseOptions {
       case TargetPlatform.iOS:
         return ios;
       case TargetPlatform.macOS:
+        // CastCircle's macOS build is intentionally offline for Firebase:
+        // no macOS Firebase app/GoogleService-Info.plist has been provisioned.
+        // Keep this explicit rather than silently reusing the iOS credentials.
         throw UnsupportedError(
-          'DefaultFirebaseOptions have not been configured for macos - '
-          'you can reconfigure this by running the FlutterFire CLI again.',
+          'DefaultFirebaseOptions are intentionally unavailable for macos.',
         );
       case TargetPlatform.windows:
         throw UnsupportedError(
@@ -65,5 +67,4 @@ class DefaultFirebaseOptions {
     projectId: 'castcircle-app',
     storageBucket: 'castcircle-app.firebasestorage.app',
   );
-
 }

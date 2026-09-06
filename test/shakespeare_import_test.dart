@@ -23,8 +23,9 @@ Some licensing text here.
 ''';
       final parser = ScriptParser();
       final script = parser.parse(text, title: 'Gutenberg Test');
-      final lines =
-          script.lines.where((l) => l.lineType == LineType.dialogue).toList();
+      final lines = script.lines
+          .where((l) => l.lineType == LineType.dialogue)
+          .toList();
       expect(lines.length, 1);
       expect(lines.first.character, 'ELIZABETH');
     });
@@ -84,8 +85,9 @@ All hail, Macbeth, that shalt be king hereafter!
 ''';
       final parser = ScriptParser();
       final script = parser.parse(text, title: 'Macbeth Style');
-      final lines =
-          script.lines.where((l) => l.lineType == LineType.dialogue).toList();
+      final lines = script.lines
+          .where((l) => l.lineType == LineType.dialogue)
+          .toList();
       expect(lines.length, 6);
       expect(lines[0].character, 'MACBETH');
       expect(lines[0].text, contains('foul and fair'));
@@ -111,8 +113,9 @@ Enter Barnardo and Francisco.
 ''';
       final parser = ScriptParser();
       final script = parser.parse(text, title: 'First Folio');
-      final lines =
-          script.lines.where((l) => l.lineType == LineType.dialogue).toList();
+      final lines = script.lines
+          .where((l) => l.lineType == LineType.dialogue)
+          .toList();
       // Should detect characters and lines
       expect(lines.length, greaterThanOrEqualTo(5));
       // Bar/Barn should be merged via prefix matching
@@ -156,8 +159,9 @@ THIRD WITCH.
 That will be ere the set of sun.
 ''';
       final script = parser.parse(text, title: 'Macbeth Scene 1');
-      final lines =
-          script.lines.where((l) => l.lineType == LineType.dialogue).toList();
+      final lines = script.lines
+          .where((l) => l.lineType == LineType.dialogue)
+          .toList();
       expect(lines.length, 3);
       expect(lines[0].character, 'FIRST WITCH');
       expect(lines[0].text, contains('meet again'));
@@ -177,8 +181,9 @@ LADY MACBETH.
 Out, damned spot! Out, I say!
 ''';
       final script = parser.parse(text, title: 'Macbeth Multiline');
-      final lines =
-          script.lines.where((l) => l.lineType == LineType.dialogue).toList();
+      final lines = script.lines
+          .where((l) => l.lineType == LineType.dialogue)
+          .toList();
       expect(lines.length, 2);
       expect(lines[0].character, 'MACBETH');
       expect(lines[0].text, contains('Tomorrow'));
@@ -202,12 +207,15 @@ The worthy Thane of Ross.
           .toList();
       expect(directions.length, greaterThanOrEqualTo(1));
       expect(
-        directions.any((d) => d.text.contains('Ross') || d.text.contains('Enter')),
+        directions.any(
+          (d) => d.text.contains('Ross') || d.text.contains('Enter'),
+        ),
         isTrue,
       );
       // Dialogue should not include the stage direction text
-      final dialogue =
-          script.lines.where((l) => l.lineType == LineType.dialogue).toList();
+      final dialogue = script.lines
+          .where((l) => l.lineType == LineType.dialogue)
+          .toList();
       for (final line in dialogue) {
         expect(line.text, isNot(contains('Enter Ross')));
       }
@@ -242,10 +250,12 @@ LADY MACBETH.
 That which hath made them drunk hath made me bold.
 ''';
       final script = parser.parse(text, title: 'Macbeth Alarmd');
-      final dialogue =
-          script.lines.where((l) => l.lineType == LineType.dialogue).toList();
-      final macbethLines =
-          dialogue.where((l) => l.character == 'MACBETH').toList();
+      final dialogue = script.lines
+          .where((l) => l.lineType == LineType.dialogue)
+          .toList();
+      final macbethLines = dialogue
+          .where((l) => l.character == 'MACBETH')
+          .toList();
       expect(macbethLines.length, 1);
       // "Alarum'd" should be part of dialogue, not split out
       expect(macbethLines[0].text, contains("Alarum'd"));
@@ -271,25 +281,31 @@ LADY MACBETH.
 That which hath made them drunk hath made me bold.
 ''';
       final script = parser.parse(text, title: 'Macbeth Dagger');
-      final dialogue =
-          script.lines.where((l) => l.lineType == LineType.dialogue).toList();
+      final dialogue = script.lines
+          .where((l) => l.lineType == LineType.dialogue)
+          .toList();
 
       // MACBETH should have 3 speeches (split by stage directions)
       // 1. "Go bid thy mistress..."
       // 2. "Is this a dagger..."
       // 3. "I go, and it is done..."
-      final macbethLines =
-          dialogue.where((l) => l.character == 'MACBETH').toList();
-      expect(macbethLines.length, 3,
-          reason: 'Macbeth speaks 3 times, split by stage directions');
+      final macbethLines = dialogue
+          .where((l) => l.character == 'MACBETH')
+          .toList();
+      expect(
+        macbethLines.length,
+        3,
+        reason: 'Macbeth speaks 3 times, split by stage directions',
+      );
 
       expect(macbethLines[0].text, contains('Go bid thy mistress'));
       expect(macbethLines[1].text, contains('dagger'));
       expect(macbethLines[2].text, contains('bell invites me'));
 
       // LADY MACBETH gets her own line
-      final ladyLines =
-          dialogue.where((l) => l.character == 'LADY MACBETH').toList();
+      final ladyLines = dialogue
+          .where((l) => l.character == 'LADY MACBETH')
+          .toList();
       expect(ladyLines.length, 1);
     });
 
@@ -306,14 +322,19 @@ But soft, behold: Loe, where it comes againe.
   Mar. Shall I strike at it with my Partizan?
 ''';
       final script = parser.parse(text, title: 'Hamlet Ghost');
-      final dialogue =
-          script.lines.where((l) => l.lineType == LineType.dialogue).toList();
+      final dialogue = script.lines
+          .where((l) => l.lineType == LineType.dialogue)
+          .toList();
 
       // HOR(ATIO) should have 2 speeches (split by stage direction)
-      final horLines =
-          dialogue.where((l) => l.character.startsWith('HOR')).toList();
-      expect(horLines.length, 2,
-          reason: 'Horatio speaks before and after the Ghost enters');
+      final horLines = dialogue
+          .where((l) => l.character.startsWith('HOR'))
+          .toList();
+      expect(
+        horLines.length,
+        2,
+        reason: 'Horatio speaks before and after the Ghost enters',
+      );
       expect(horLines[0].text, contains('particular thought'));
       expect(horLines[1].text, contains('behold'));
     });
@@ -340,8 +361,9 @@ MACBETH.
 Is this a dagger which I see before me?
 ''';
       final script = parser.parse(text, title: 'Macbeth Acts');
-      final headers =
-          script.lines.where((l) => l.lineType == LineType.header).toList();
+      final headers = script.lines
+          .where((l) => l.lineType == LineType.header)
+          .toList();
       expect(headers.length, 2);
       expect(headers[0].text, contains('ACT I'));
       expect(headers[1].text, contains('ACT II'));
@@ -375,10 +397,12 @@ Gracious my lord,
 I should report that which I say I saw.
 ''';
       final script = parser.parse(text, title: 'Macbeth Tomorrow');
-      final dialogue =
-          script.lines.where((l) => l.lineType == LineType.dialogue).toList();
-      final macbethLines =
-          dialogue.where((l) => l.character == 'MACBETH').toList();
+      final dialogue = script.lines
+          .where((l) => l.lineType == LineType.dialogue)
+          .toList();
+      final macbethLines = dialogue
+          .where((l) => l.character == 'MACBETH')
+          .toList();
 
       // MACBETH has 2 speeches: the soliloquy, then addressing the Messenger
       expect(macbethLines.length, 2);
@@ -410,23 +434,19 @@ GENTLEWOMAN.
 She has spoke what she should not.
 ''';
       final script = parser.parse(text, title: 'Macbeth Spot');
-      final dialogue =
-          script.lines.where((l) => l.lineType == LineType.dialogue).toList();
+      final dialogue = script.lines
+          .where((l) => l.lineType == LineType.dialogue)
+          .toList();
       expect(dialogue.length, 5);
 
-      final ladyLines =
-          dialogue.where((l) => l.character == 'LADY MACBETH').toList();
+      final ladyLines = dialogue
+          .where((l) => l.character == 'LADY MACBETH')
+          .toList();
       expect(ladyLines.length, 2);
       expect(ladyLines[1].text, contains('Out, damned spot'));
 
-      expect(
-        dialogue.where((l) => l.character == 'DOCTOR').length,
-        2,
-      );
-      expect(
-        dialogue.where((l) => l.character == 'GENTLEWOMAN').length,
-        1,
-      );
+      expect(dialogue.where((l) => l.character == 'DOCTOR').length, 2);
+      expect(dialogue.where((l) => l.character == 'GENTLEWOMAN').length, 1);
     });
 
     test('finds all major Macbeth characters', () {
@@ -533,23 +553,29 @@ Be all my sinnes remembred
 How does your Honor for this many a day?
 ''';
       final script = parser.parse(text, title: 'Hamlet Soliloquy');
-      final dialogue =
-          script.lines.where((l) => l.lineType == LineType.dialogue).toList();
+      final dialogue = script.lines
+          .where((l) => l.lineType == LineType.dialogue)
+          .toList();
 
       // POL(ONIUS), HAM(LET), OPHE(LIA) should all have dialogue
       expect(dialogue.length, greaterThanOrEqualTo(3));
 
       // The "To be" speech should be a single long dialogue line for HAM(LET)
-      final hamLines =
-          dialogue.where((l) => l.character.startsWith('HAM')).toList();
+      final hamLines = dialogue
+          .where((l) => l.character.startsWith('HAM'))
+          .toList();
       expect(hamLines, isNotEmpty);
       expect(hamLines.first.text, contains('To be, or not to be'));
-      expect(hamLines.first.text, contains('loose the name of Action'),
-          reason: 'Full soliloquy should be captured as one speech');
+      expect(
+        hamLines.first.text,
+        contains('loose the name of Action'),
+        reason: 'Full soliloquy should be captured as one speech',
+      );
 
       // Ophelia's response should be captured
-      final opheLines =
-          dialogue.where((l) => l.character.startsWith('OPHE')).toList();
+      final opheLines = dialogue
+          .where((l) => l.character.startsWith('OPHE'))
+          .toList();
       expect(opheLines, isNotEmpty);
       expect(opheLines.first.text, contains('Good my Lord'));
 
@@ -573,8 +599,9 @@ How does your Honor for this many a day?
   Ham. Thrift, thrift, Horatio!
 ''';
       final script = parser.parse(text, title: 'Hamlet Dialogue');
-      final lines =
-          script.lines.where((l) => l.lineType == LineType.dialogue).toList();
+      final lines = script.lines
+          .where((l) => l.lineType == LineType.dialogue)
+          .toList();
       expect(lines.length, 5);
       // HAM should be detected (and possibly resolved to HAMLET via aliases)
       final hamletChar = lines[0].character;
@@ -629,16 +656,14 @@ Enter King and Queen.
   Queen. Good Hamlet, cast thy nightly colour off.
 ''';
       final script = parser.parse(text, title: 'Hamlet Acts');
-      final headers =
-          script.lines.where((l) => l.lineType == LineType.header).toList();
+      final headers = script.lines
+          .where((l) => l.lineType == LineType.header)
+          .toList();
       expect(headers.length, greaterThanOrEqualTo(1));
       // Should detect characters across scenes
       final charNames = script.characters.map((c) => c.name).toSet();
       expect(charNames, isNotEmpty);
-      expect(
-        charNames.any((c) => c.startsWith('KING')),
-        isTrue,
-      );
+      expect(charNames.any((c) => c.startsWith('KING')), isTrue);
     });
 
     test('merges prefix abbreviations (Bar → Barn → Barnardo)', () {
@@ -681,8 +706,9 @@ Exit the Ghost.
           .toList();
       expect(directions.length, greaterThanOrEqualTo(2));
       // Dialogue should not contain Enter/Exit text
-      final dialogue =
-          script.lines.where((l) => l.lineType == LineType.dialogue).toList();
+      final dialogue = script.lines
+          .where((l) => l.lineType == LineType.dialogue)
+          .toList();
       expect(dialogue.length, greaterThanOrEqualTo(2));
       for (final line in dialogue) {
         expect(line.text, isNot(startsWith('Enter')));
@@ -703,16 +729,23 @@ Exit the Ghost.
       final script = parser.parse(rawText, title: 'Macbeth');
 
       final charNames = script.characters.map((c) => c.name).toSet();
-      final dialogue =
-          script.lines.where((l) => l.lineType == LineType.dialogue).toList();
+      final dialogue = script.lines
+          .where((l) => l.lineType == LineType.dialogue)
+          .toList();
 
       // Must have characters
-      expect(script.characters.length, greaterThan(10),
-          reason: 'Macbeth has 20+ speaking characters');
+      expect(
+        script.characters.length,
+        greaterThan(10),
+        reason: 'Macbeth has 20+ speaking characters',
+      );
 
       // Must have substantial dialogue
-      expect(dialogue.length, greaterThan(200),
-          reason: 'Macbeth has 600+ speeches');
+      expect(
+        dialogue.length,
+        greaterThan(200),
+        reason: 'Macbeth has 600+ speeches',
+      );
 
       // Key characters must be present
       expect(charNames, contains('MACBETH'));
@@ -725,17 +758,23 @@ Exit the Ghost.
       expect(charNames, contains('LENNOX'));
 
       // MACBETH should have the most lines
-      final macbeth =
-          script.characters.firstWhere((c) => c.name == 'MACBETH');
+      final macbeth = script.characters.firstWhere((c) => c.name == 'MACBETH');
       expect(macbeth.lineCount, greaterThan(50));
-      expect(script.characters.first.name, 'MACBETH',
-          reason: 'MACBETH should be the character with the most lines');
+      expect(
+        script.characters.first.name,
+        'MACBETH',
+        reason: 'MACBETH should be the character with the most lines',
+      );
 
       // Should have multiple acts
-      final headers =
-          script.lines.where((l) => l.lineType == LineType.header).toList();
-      expect(headers.length, greaterThanOrEqualTo(4),
-          reason: 'Macbeth has 5 acts');
+      final headers = script.lines
+          .where((l) => l.lineType == LineType.header)
+          .toList();
+      expect(
+        headers.length,
+        greaterThanOrEqualTo(4),
+        reason: 'Macbeth has 5 acts',
+      );
     });
 
     test('Hamlet text file produces characters and dialogue', () {
@@ -749,29 +788,41 @@ Exit the Ghost.
       final script = parser.parse(rawText, title: 'Hamlet');
 
       final charNames = script.characters.map((c) => c.name).toSet();
-      final dialogue =
-          script.lines.where((l) => l.lineType == LineType.dialogue).toList();
+      final dialogue = script.lines
+          .where((l) => l.lineType == LineType.dialogue)
+          .toList();
 
       // Must have characters
-      expect(script.characters.length, greaterThan(5),
-          reason: 'Hamlet has many speaking characters');
+      expect(
+        script.characters.length,
+        greaterThan(5),
+        reason: 'Hamlet has many speaking characters',
+      );
 
       // Must have substantial dialogue
-      expect(dialogue.length, greaterThan(200),
-          reason: 'Hamlet has 1000+ speeches');
+      expect(
+        dialogue.length,
+        greaterThan(200),
+        reason: 'Hamlet has 1000+ speeches',
+      );
 
       // Key characters should be present (resolved from abbreviations)
       // Ham → HAMLET (via Enter stage directions)
-      expect(charNames, contains('HAMLET'),
-          reason: 'Ham. should resolve to HAMLET via Enter directions');
+      expect(
+        charNames,
+        contains('HAMLET'),
+        reason: 'Ham. should resolve to HAMLET via Enter directions',
+      );
 
       // Hor → HORATIO
-      expect(charNames, contains('HORATIO'),
-          reason: 'Hor. should resolve to HORATIO');
+      expect(
+        charNames,
+        contains('HORATIO'),
+        reason: 'Hor. should resolve to HORATIO',
+      );
 
       // HAMLET should have the most lines
-      final hamlet =
-          script.characters.firstWhere((c) => c.name == 'HAMLET');
+      final hamlet = script.characters.firstWhere((c) => c.name == 'HAMLET');
       expect(hamlet.lineCount, greaterThan(50));
     });
   });
@@ -809,8 +860,9 @@ DARCY. My good opinion once lost is lost forever.
       expect(charNames, contains('MRS. BENNET'));
       expect(charNames, contains('BINGLEY'));
 
-      final dialogue =
-          script.lines.where((l) => l.lineType == LineType.dialogue).toList();
+      final dialogue = script.lines
+          .where((l) => l.lineType == LineType.dialogue)
+          .toList();
       expect(dialogue.length, 8);
 
       // Stage direction should be detected
@@ -834,8 +886,9 @@ DARCY. Indeed.
 ''';
       final parser = ScriptParser();
       final script = parser.parse(text, title: 'Continuation Test');
-      final lines =
-          script.lines.where((l) => l.lineType == LineType.dialogue).toList();
+      final lines = script.lines
+          .where((l) => l.lineType == LineType.dialogue)
+          .toList();
       expect(lines.length, 2);
       expect(lines[0].text, contains('forgive'));
       expect(lines[0].text, contains('mortified'));
@@ -848,8 +901,9 @@ ELIZABETH. (sarcastically:) How delightful.
 ''';
       final parser = ScriptParser();
       final script = parser.parse(text, title: 'Inline Direction');
-      final line =
-          script.lines.firstWhere((l) => l.lineType == LineType.dialogue);
+      final line = script.lines.firstWhere(
+        (l) => l.lineType == LineType.dialogue,
+      );
       expect(line.stageDirection, 'sarcastically');
       expect(line.text, 'How delightful.');
     });

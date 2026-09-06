@@ -69,76 +69,76 @@ class _CharacterList extends ConsumerWidget {
       }
     }
     return Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Padding(
-            padding: const EdgeInsets.all(16),
-            child: Text(
-              'Choose a character to record:',
-              style: Theme.of(context).textTheme.titleMedium,
-            ),
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Padding(
+          padding: const EdgeInsets.all(16),
+          child: Text(
+            'Choose a character to record:',
+            style: Theme.of(context).textTheme.titleMedium,
           ),
-          Expanded(
-            child: ContentConstraint(
-              maxWidth: 700,
-              child: ListView.builder(
-                padding: const EdgeInsets.symmetric(horizontal: 16),
-                itemCount: script.characters.length,
-                itemBuilder: (context, index) {
-                  final char = script.characters[index];
-                  final color = AppTheme.colorForCharacter(char.colorIndex);
-                  final charLines = linesByChar[char.name] ?? const [];
-                  final recordedCount = charLines
-                      .where((l) => recordings.containsKey(l.id))
-                      .length;
-                  final progress = charLines.isEmpty
-                      ? 0.0
-                      : recordedCount / charLines.length;
+        ),
+        Expanded(
+          child: ContentConstraint(
+            maxWidth: 700,
+            child: ListView.builder(
+              padding: const EdgeInsets.symmetric(horizontal: 16),
+              itemCount: script.characters.length,
+              itemBuilder: (context, index) {
+                final char = script.characters[index];
+                final color = AppTheme.colorForCharacter(char.colorIndex);
+                final charLines = linesByChar[char.name] ?? const [];
+                final recordedCount = charLines
+                    .where((l) => recordings.containsKey(l.id))
+                    .length;
+                final progress = charLines.isEmpty
+                    ? 0.0
+                    : recordedCount / charLines.length;
 
-                  return Card(
-                    margin: const EdgeInsets.only(bottom: 8),
-                    child: ListTile(
-                      leading: CircleAvatar(
-                        backgroundColor: color,
-                        child: Text(
-                          char.name[0],
-                          style: const TextStyle(
-                            color: Colors.white,
-                            fontWeight: FontWeight.bold,
-                          ),
+                return Card(
+                  margin: const EdgeInsets.only(bottom: 8),
+                  child: ListTile(
+                    leading: CircleAvatar(
+                      backgroundColor: color,
+                      child: Text(
+                        char.name[0],
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontWeight: FontWeight.bold,
                         ),
                       ),
-                      title: Text(char.name),
-                      subtitle: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text('${char.lineCount} lines'),
-                          const SizedBox(height: 4),
-                          LinearProgressIndicator(
-                            value: progress,
-                            backgroundColor: color.withValues(alpha: 0.1),
-                            color: color,
-                          ),
-                          const SizedBox(height: 2),
-                          Text(
-                            '$recordedCount / ${charLines.length} recorded',
-                            style: Theme.of(context).textTheme.bodySmall,
-                          ),
-                        ],
-                      ),
-                      trailing: const Icon(Icons.mic),
-                      onTap: () {
-                        ref.read(recordingCharacterProvider.notifier).state =
-                            char.name;
-                        context.push('/recording-studio');
-                      },
                     ),
-                  );
-                },
-              ),
+                    title: Text(char.name),
+                    subtitle: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text('${char.lineCount} lines'),
+                        const SizedBox(height: 4),
+                        LinearProgressIndicator(
+                          value: progress,
+                          backgroundColor: color.withValues(alpha: 0.1),
+                          color: color,
+                        ),
+                        const SizedBox(height: 2),
+                        Text(
+                          '$recordedCount / ${charLines.length} recorded',
+                          style: Theme.of(context).textTheme.bodySmall,
+                        ),
+                      ],
+                    ),
+                    trailing: const Icon(Icons.mic),
+                    onTap: () {
+                      ref.read(recordingCharacterProvider.notifier).state =
+                          char.name;
+                      context.push('/recording-studio');
+                    },
+                  ),
+                );
+              },
             ),
           ),
-        ],
+        ),
+      ],
     );
   }
 }

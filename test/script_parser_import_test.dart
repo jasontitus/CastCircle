@@ -18,7 +18,10 @@ DARCY. I have been meditating on the very great pleasure which a pair of fine ey
 ''';
       final script = parser.parse(rawText, title: 'P&P Test');
       expect(script.title, 'P&P Test');
-      expect(script.lines.where((l) => l.lineType == LineType.dialogue).length, 2);
+      expect(
+        script.lines.where((l) => l.lineType == LineType.dialogue).length,
+        2,
+      );
 
       final chars = script.characters.map((c) => c.name).toSet();
       expect(chars, contains('ELIZABETH'));
@@ -36,7 +39,9 @@ ACT II
 DARCY. Second act line.
 ''';
       final script = parser.parse(rawText);
-      final headers = script.lines.where((l) => l.lineType == LineType.header).toList();
+      final headers = script.lines
+          .where((l) => l.lineType == LineType.header)
+          .toList();
       expect(headers.length, 2);
       expect(headers[0].text, 'ACT I');
       expect(headers[1].text, 'ACT II');
@@ -55,7 +60,9 @@ SCENE 2
 DARCY. Second scene line.
 ''';
       final script = parser.parse(rawText);
-      final lines = script.lines.where((l) => l.lineType == LineType.dialogue).toList();
+      final lines = script.lines
+          .where((l) => l.lineType == LineType.dialogue)
+          .toList();
       expect(lines.length, 2);
     });
 
@@ -84,7 +91,9 @@ mortified mine.
 DARCY. Indeed.
 ''';
       final script = parser.parse(rawText);
-      final lines = script.lines.where((l) => l.lineType == LineType.dialogue).toList();
+      final lines = script.lines
+          .where((l) => l.lineType == LineType.dialogue)
+          .toList();
       expect(lines.length, 2);
       // First line should contain the full continuation
       expect(lines[0].text, contains('forgive'));
@@ -104,7 +113,9 @@ ELIZABETH. A real line of dialogue here.
 Jon Jory 12
 ''';
       final script = parser.parse(rawText);
-      final lines = script.lines.where((l) => l.lineType == LineType.dialogue).toList();
+      final lines = script.lines
+          .where((l) => l.lineType == LineType.dialogue)
+          .toList();
       expect(lines.length, 1);
       expect(lines.first.character, 'ELIZABETH');
     });
@@ -114,7 +125,9 @@ Jon Jory 12
 ELIZABETH. I could | easily forgive~ his pride°.
 ''';
       final script = parser.parse(rawText);
-      final line = script.lines.firstWhere((l) => l.lineType == LineType.dialogue);
+      final line = script.lines.firstWhere(
+        (l) => l.lineType == LineType.dialogue,
+      );
       expect(line.text, isNot(contains('|')));
       expect(line.text, isNot(contains('~')));
       expect(line.text, isNot(contains('°')));
@@ -125,7 +138,9 @@ ELIZABETH. I could | easily forgive~ his pride°.
 ELIZABETH. (sarcastically:) How delightful.
 ''';
       final script = parser.parse(rawText);
-      final line = script.lines.firstWhere((l) => l.lineType == LineType.dialogue);
+      final line = script.lines.firstWhere(
+        (l) => l.lineType == LineType.dialogue,
+      );
       expect(line.stageDirection, 'sarcastically');
       expect(line.text, 'How delightful.');
     });
@@ -154,7 +169,11 @@ LIZZY. Same character.
       final script = parser.parse(rawText);
       final chars = script.characters.map((c) => c.name).toSet();
       expect(chars, contains('ELIZABETH'));
-      // LIZZY should have been normalized to ELIZABETH
+      expect(chars, isNot(contains('LIZZY')));
+      expect(
+        script.characters.firstWhere((c) => c.name == 'ELIZABETH').lineCount,
+        2,
+      );
     });
 
     test('characters sorted by line count descending', () {
@@ -181,25 +200,30 @@ ELIZABETH. She speaks.
 DARCY. He replies.
 ''';
       final script = parser.parse(rawText);
-      final elizabeth = script.characters.firstWhere((c) => c.name == 'ELIZABETH');
+      final elizabeth = script.characters.firstWhere(
+        (c) => c.name == 'ELIZABETH',
+      );
       final darcy = script.characters.firstWhere((c) => c.name == 'DARCY');
       expect(elizabeth.gender, CharacterGender.female);
       expect(darcy.gender, CharacterGender.male);
     });
 
-    test('title prefix characters skipped (MR, MRS are not standalone characters)', () {
-      const rawText = '''
+    test(
+      'title prefix characters skipped (MR, MRS are not standalone characters)',
+      () {
+        const rawText = '''
 MR. BENNET. I have the pleasure.
 MRS. BENNET. Oh my nerves!
 ''';
-      final script = parser.parse(rawText);
-      final charNames = script.characters.map((c) => c.name).toSet();
-      // MR and MRS should NOT appear as standalone characters
-      expect(charNames, isNot(contains('MR')));
-      expect(charNames, isNot(contains('MRS')));
-      expect(charNames, contains('MR. BENNET'));
-      expect(charNames, contains('MRS. BENNET'));
-    });
+        final script = parser.parse(rawText);
+        final charNames = script.characters.map((c) => c.name).toSet();
+        // MR and MRS should NOT appear as standalone characters
+        expect(charNames, isNot(contains('MR')));
+        expect(charNames, isNot(contains('MRS')));
+        expect(charNames, contains('MR. BENNET'));
+        expect(charNames, contains('MRS. BENNET'));
+      },
+    );
   });
 
   group('ScriptParser noise detection', () {
@@ -217,7 +241,9 @@ ELIZABETH. Before.
 DARCY. After.
 ''';
       final script = parser.parse(rawText);
-      final lines = script.lines.where((l) => l.lineType == LineType.dialogue).toList();
+      final lines = script.lines
+          .where((l) => l.lineType == LineType.dialogue)
+          .toList();
       expect(lines.length, 2);
     });
 
@@ -228,7 +254,9 @@ ELIZABETH. Before.
 DARCY. After.
 ''';
       final script = parser.parse(rawText);
-      final lines = script.lines.where((l) => l.lineType == LineType.dialogue).toList();
+      final lines = script.lines
+          .where((l) => l.lineType == LineType.dialogue)
+          .toList();
       expect(lines.length, 2);
     });
 
@@ -239,7 +267,9 @@ ELIZABETH. Real line.
 DARCY. Another real line.
 ''';
       final script = parser.parse(rawText);
-      final lines = script.lines.where((l) => l.lineType == LineType.dialogue).toList();
+      final lines = script.lines
+          .where((l) => l.lineType == LineType.dialogue)
+          .toList();
       expect(lines.length, 2);
     });
   });

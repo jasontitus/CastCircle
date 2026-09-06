@@ -71,8 +71,10 @@ class PdfTextPlugin: NSObject {
             pageTexts.reserveCapacity(pageCount)
 
             for i in 0..<pageCount {
-                guard let page = document.page(at: i) else { continue }
-                if let pageText = page.string {
+                let pageText: String? = autoreleasepool {
+                    document.page(at: i)?.string
+                }
+                if let pageText {
                     pageTexts.append(pageText)
                 }
             }
@@ -110,7 +112,9 @@ class PdfTextPlugin: NSObject {
             var hasAnyText = false
 
             for i in 0..<document.pageCount {
-                let pageText = document.page(at: i)?.string ?? ""
+                let pageText: String = autoreleasepool {
+                    document.page(at: i)?.string ?? ""
+                }
                 pages.append(pageText)
                 if !pageText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                     hasAnyText = true

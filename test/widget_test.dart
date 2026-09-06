@@ -98,8 +98,10 @@ void main() {
       final result = parser.parse(_sampleScript, title: 'Test Play');
 
       for (var i = 1; i < result.lines.length; i++) {
-        expect(result.lines[i].orderIndex,
-            greaterThan(result.lines[i - 1].orderIndex));
+        expect(
+          result.lines[i].orderIndex,
+          greaterThan(result.lines[i - 1].orderIndex),
+        );
       }
     });
   });
@@ -114,28 +116,37 @@ void main() {
     test('detects scenes from Shift stage directions', () {
       final result = parser.parse(_sampleScript, title: 'Test Play');
 
-      expect(result.scenes.length, greaterThanOrEqualTo(3),
-          reason: 'Should detect at least 3 scenes '
-              '(opening, ball, return to Longbourn or Pemberley)');
+      expect(
+        result.scenes.length,
+        greaterThanOrEqualTo(3),
+        reason:
+            'Should detect at least 3 scenes '
+            '(opening, ball, return to Longbourn or Pemberley)',
+      );
     });
 
     test('scenes have characters listed', () {
       final result = parser.parse(_sampleScript, title: 'Test Play');
 
       for (final scene in result.scenes) {
-        expect(scene.characters, isNotEmpty,
-            reason: 'Scene "${scene.sceneName}" should have characters');
+        expect(
+          scene.characters,
+          isNotEmpty,
+          reason: 'Scene "${scene.sceneName}" should have characters',
+        );
       }
     });
 
     test('ball scene detects Ball location', () {
       final result = parser.parse(_sampleScript, title: 'Test Play');
 
-      final ballScene = result.scenes.where(
-        (s) => s.location.contains('Ball'),
+      final ballScene = result.scenes.where((s) => s.location.contains('Ball'));
+      expect(
+        ballScene,
+        isNotEmpty,
+        reason:
+            'Should detect a Ball scene from "Shift begins into First Ball"',
       );
-      expect(ballScene, isNotEmpty,
-          reason: 'Should detect a Ball scene from "Shift begins into First Ball"');
     });
 
     test('Pemberley scene detected in Act II', () {
@@ -144,8 +155,11 @@ void main() {
       final pemberleyScene = result.scenes.where(
         (s) => s.location.contains('Pemberley'),
       );
-      expect(pemberleyScene, isNotEmpty,
-          reason: 'Should detect Pemberley from "Shift begins into Pemberley"');
+      expect(
+        pemberleyScene,
+        isNotEmpty,
+        reason: 'Should detect Pemberley from "Shift begins into Pemberley"',
+      );
     });
 
     test('scenes have valid line index ranges', () {
@@ -167,9 +181,11 @@ void main() {
         // All lines should be within the scene's act
         for (final line in lines) {
           if (line.lineType == LineType.dialogue) {
-            expect(scene.characters, contains(line.character),
-                reason:
-                    '${line.character} should be in scene ${scene.sceneName}');
+            expect(
+              scene.characters,
+              contains(line.character),
+              reason: '${line.character} should be in scene ${scene.sceneName}',
+            );
           }
         }
       }
@@ -220,7 +236,7 @@ void main() {
 
       expect(md, contains('# Test Play'));
       expect(md, contains('**MR. BENNET.**'));
-      expect(md, contains('*'));
+      expect(md, contains('*(The lights come up on the Bennet household.)*'));
     });
 
     test('toCharacterLines shows character lines with >>> marker', () {
@@ -318,7 +334,9 @@ void main() {
       final checks = validateScript(script);
 
       // Should have characters
-      final charCheck = checks.firstWhere((c) => c.label == 'Cast list detected');
+      final charCheck = checks.firstWhere(
+        (c) => c.label == 'Cast list detected',
+      );
       expect(charCheck.passed, isTrue);
 
       // Should have scenes
@@ -326,19 +344,25 @@ void main() {
       expect(sceneCheck.passed, isTrue);
 
       // Should have act structure
-      final actCheck = checks.firstWhere((c) => c.label == 'Act structure detected');
+      final actCheck = checks.firstWhere(
+        (c) => c.label == 'Act structure detected',
+      );
       expect(actCheck.passed, isTrue);
     });
 
     test('detects healthy dialogue ratio', () {
       final checks = validateScript(script);
-      final ratioCheck = checks.firstWhere((c) => c.label == 'Healthy dialogue ratio');
+      final ratioCheck = checks.firstWhere(
+        (c) => c.label == 'Healthy spoken-line ratio',
+      );
       expect(ratioCheck.passed, isTrue);
     });
 
     test('all lines attributed', () {
       final checks = validateScript(script);
-      final attrCheck = checks.firstWhere((c) => c.label == 'All lines attributed');
+      final attrCheck = checks.firstWhere(
+        (c) => c.label == 'All spoken lines attributed',
+      );
       expect(attrCheck.passed, isTrue);
     });
   });

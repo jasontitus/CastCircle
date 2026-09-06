@@ -10,40 +10,87 @@ Usage:
     python3 scripts/compare_macbeth_versions.py
 """
 
+import difflib
 import re
 import sys
+import subprocess
+import tempfile
 from pathlib import Path
 
 SAMPLE_DIR = Path(__file__).parent.parent / 'sample-scripts'
 
+CUE_RE = re.compile(r'^([A-Z][A-Z. ]+)\.\s*$')
+STRUCTURAL_RE = re.compile(r'^(?:ACT|SCENE)\s+(?:\d+|[IVX]+)\.?\s*$', re.IGNORECASE)
+MIN_CUES_PER_VERSION = 50
+MIN_CHARACTER_OVERLAP = 0.70
+MIN_SCENE_DIALOGUE_BLOCKS = 5
+MIN_SCENE_CHARACTER_MATCH = 0.50
+MIN_SCENE_TEXT_SIMILARITY = 0.40
+CONVERTER_TIMEOUT_SECONDS = 120
+
+
+def _match_cue(line: str) -> re.Match[str] | None:
+    """Match a character cue while excluding act and scene headings."""
+    if STRUCTURAL_RE.match(line.strip()):
+        return None
+    return CUE_RE.match(line)
+
+
+def _first_scene(text: str) -> str:
+    """Return the first scene section that contains character cues."""
+    lines = text.splitlines()
+    scene_re = re.compile(r'^SCENE\s+(?:1|I)\b', re.IGNORECASE)
+    boundary_re = re.compile(r'^(?:ACT|SCENE)\s+(?:\d+|[IVX]+)\b', re.IGNORECASE)
+    for start, line in enumerate(lines):
+        if not scene_re.match(line.strip()):
+            continue
+        end = start + 1
+        while end < len(lines) and not boundary_re.match(lines[end].strip()):
+            end += 1
+        section = '\n'.join(lines[start:end])
+        if any(_match_cue(candidate) for candidate in lines[start:end]):
+            return section
+    return ''
+
 
 def get_characters(text: str) -> dict[str, int]:
     """Extract character names and their cue counts."""
-    cues = re.findall(r'^([A-Z][A-Z. ]+)\.\s*$', text, re.MULTILINE)
     counts: dict[str, int] = {}
-    for c in cues:
-        name = c.strip()
-        counts[name] = counts.get(name, 0) + 1
+    for line in text.splitlines():
+        match = _match_cue(line)
+        if match:
+            name = match.group(1).strip()
+            counts[name] = counts.get(name, 0) + 1
     return counts
 
 
 def get_dialogue_blocks(text: str) -> list[tuple[str, str]]:
-    """Extract (character, first_line_of_dialogue) pairs."""
+    """Extract each character cue and its full following speech."""
     blocks = []
     lines = text.splitlines()
-    i = 0
-    while i < len(lines):
-        m = re.match(r'^([A-Z][A-Z. ]+)\.\s*$', lines[i])
-        if m:
-            char = m.group(1).strip()
-            # Next non-empty line is the dialogue
-            i += 1
-            while i < len(lines) and not lines[i].strip():
-                i += 1
-            if i < len(lines):
-                blocks.append((char, lines[i].strip()))
-        i += 1
+    for i, line in enumerate(lines):
+        match = _match_cue(line)
+        if not match:
+            continue
+
+        dialogue_parts = []
+        candidate_index = i + 1
+        while candidate_index < len(lines):
+            candidate = lines[candidate_index].strip()
+            if _match_cue(candidate) or STRUCTURAL_RE.match(candidate):
+                break
+            if candidate:
+                dialogue_parts.append(candidate)
+            candidate_index += 1
+
+        if dialogue_parts:
+            blocks.append((match.group(1).strip(), ' '.join(dialogue_parts)))
     return blocks
+
+def _normalized_dialogue(blocks: list[tuple[str, str]], limit: int) -> str:
+    """Join comparable dialogue text with case and punctuation normalized."""
+    dialogue = ' '.join(text for _, text in blocks[:limit]).casefold()
+    return re.sub(r'[^a-z0-9]+', ' ', dialogue).strip()
 
 
 def main():
@@ -52,25 +99,34 @@ def main():
     if not gut_path.exists():
         print(f"Error: {gut_path} not found")
         sys.exit(1)
-    gutenberg = gut_path.read_text()
+    gutenberg = gut_path.read_text(encoding='utf-8')
 
-    # Load Folger converted text
-    fol_path = SAMPLE_DIR / 'macbeth_folger_converted.txt'
-    if not fol_path.exists():
-        print("Folger converted text not found. Running converter...")
-        import subprocess
-        result = subprocess.run([
-            sys.executable,
-            str(Path(__file__).parent / 'pdf_to_script.py'),
-            str(SAMPLE_DIR / 'macbeth_PDF_FolgerShakespeare.pdf'),
-            str(fol_path),
-        ], capture_output=True, text=True)
-        print(result.stdout)
+    # Always compare against the current converter implementation. A temporary
+    # destination avoids both stale checked-in output and fixture mutation.
+    pdf_path = SAMPLE_DIR / 'macbeth_PDF_FolgerShakespeare.pdf'
+    if not pdf_path.exists():
+        print(f"Error: {pdf_path} not found", file=sys.stderr)
+        return 1
+    print("Running current Folger converter...")
+    with tempfile.TemporaryDirectory() as temp_dir:
+        fol_path = Path(temp_dir) / 'macbeth_folger_converted.txt'
+        try:
+            result = subprocess.run([
+                sys.executable,
+                str(Path(__file__).parent / 'pdf_to_script.py'),
+                str(pdf_path),
+                str(fol_path),
+            ], timeout=CONVERTER_TIMEOUT_SECONDS)
+        except subprocess.TimeoutExpired:
+            print(
+                f"Error: converter exceeded {CONVERTER_TIMEOUT_SECONDS} seconds",
+                file=sys.stderr,
+            )
+            return 1
         if result.returncode != 0:
-            print(result.stderr)
-            sys.exit(1)
-
-    folger = fol_path.read_text()
+            print(f"Error: converter exited with status {result.returncode}", file=sys.stderr)
+            return 1
+        folger = fol_path.read_text(encoding='utf-8')
 
     # Compare characters
     gut_chars = get_characters(gutenberg)
@@ -113,12 +169,12 @@ def main():
         for c in sorted(only_fol):
             print(f"  {c}: {fol_chars[c]} cues")
 
-    # Compare dialogue attribution for Scene 1
+    # Compare dialogue attribution within the first actual scene, excluding
+    # front matter and tables of contents.
     print(f"\n--- Scene 1 Dialogue Comparison ---")
-    gut_blocks = get_dialogue_blocks(gutenberg)
-    fol_blocks = get_dialogue_blocks(folger)
+    gut_blocks = get_dialogue_blocks(_first_scene(gutenberg))
+    fol_blocks = get_dialogue_blocks(_first_scene(folger))
 
-    # Find Scene 1 blocks (first 10 in both)
     print(f"\n{'#':>3}  {'Gutenberg':30s}  {'Folger':30s}  Match")
     print(f"{'─'*3}  {'─'*30}  {'─'*30}  {'─'*5}")
     for i in range(min(12, len(gut_blocks), len(fol_blocks))):
@@ -128,10 +184,75 @@ def main():
         text_sim = "~" if gt[:20] == ft[:20] else "≠"
         print(f"{i+1:3d}  {gc + ': ' + gt[:20]:30s}  {fc + ': ' + ft[:20]:30s}  {char_match}{text_sim}")
 
-    # Summary
+    # Summary and compatibility checks. These deliberately test broad parser
+    # invariants rather than requiring the two editions to have identical
+    # editorial choices.
+    max_characters = max(len(gut_chars), len(fol_chars), 1)
+    overlap_ratio = len(common) / max_characters
+    compared_blocks = min(12, len(gut_blocks), len(fol_blocks))
+    matching_characters = sum(
+        gut_blocks[i][0] == fol_blocks[i][0]
+        for i in range(compared_blocks)
+    )
+    dialogue_match_ratio = (
+        matching_characters / compared_blocks if compared_blocks else 0.0
+    )
+    normalized_gutenberg = _normalized_dialogue(gut_blocks, compared_blocks)
+    normalized_folger = _normalized_dialogue(fol_blocks, compared_blocks)
+    text_similarity = difflib.SequenceMatcher(
+        None,
+        normalized_gutenberg,
+        normalized_folger,
+        autojunk=False,
+    ).ratio()
+
+    failures = []
+    for label, cues in (
+        ("Gutenberg", sum(gut_chars.values())),
+        ("Folger", sum(fol_chars.values())),
+    ):
+        if cues < MIN_CUES_PER_VERSION:
+            failures.append(
+                f"{label} has {cues} cues; expected at least {MIN_CUES_PER_VERSION}"
+            )
+    if overlap_ratio < MIN_CHARACTER_OVERLAP:
+        failures.append(
+            f"character overlap is {overlap_ratio:.0%}; "
+            f"expected at least {MIN_CHARACTER_OVERLAP:.0%}"
+        )
+    if compared_blocks < MIN_SCENE_DIALOGUE_BLOCKS:
+        failures.append(
+            f"only {compared_blocks} comparable Scene 1 dialogue blocks; "
+            f"expected at least {MIN_SCENE_DIALOGUE_BLOCKS}"
+        )
+    elif dialogue_match_ratio < MIN_SCENE_CHARACTER_MATCH:
+        failures.append(
+            f"Scene 1 character attribution matches {dialogue_match_ratio:.0%}; "
+            f"expected at least {MIN_SCENE_CHARACTER_MATCH:.0%}"
+        )
+    if text_similarity < MIN_SCENE_TEXT_SIMILARITY:
+        failures.append(
+            f"normalized Scene 1 dialogue similarity is {text_similarity:.0%}; "
+            f"expected at least {MIN_SCENE_TEXT_SIMILARITY:.0%}"
+        )
+
     print(f"\n--- Summary ---")
-    print(f"Both versions detected as 'nameOnOwnLine' format: ✓")
-    print(f"Character set overlap: {len(common)}/{max(len(gut_chars), len(fol_chars))}")
+    print(
+        "Name-on-own-line cue threshold: "
+        f"{'✓' if all(sum(chars.values()) >= MIN_CUES_PER_VERSION for chars in (gut_chars, fol_chars)) else 'FAILED'}"
+    )
+    print(
+        f"Character set overlap: {len(common)}/{max_characters} "
+        f"({overlap_ratio:.0%}, minimum {MIN_CHARACTER_OVERLAP:.0%})"
+    )
+    print(
+        f"Scene 1 character attribution: {matching_characters}/{compared_blocks} "
+        f"({dialogue_match_ratio:.0%}, minimum {MIN_SCENE_CHARACTER_MATCH:.0%})"
+    )
+    print(
+        f"Scene 1 normalized dialogue similarity: {text_similarity:.0%} "
+        f"(minimum {MIN_SCENE_TEXT_SIMILARITY:.0%})"
+    )
 
     # Known editorial differences
     print(f"\n--- Expected Editorial Differences ---")
@@ -141,7 +262,13 @@ def main():
     print(f"  Minor spelling: 'hurlyburly' vs 'hurly-burly', etc.")
     print(f"  Stage direction style: '[_Exeunt._]' vs '[They exit.]'")
 
-    print(f"\nAll expected. Both versions are parser-compatible.")
+    if failures:
+        print("\nParser compatibility checks failed:", file=sys.stderr)
+        for failure in failures:
+            print(f"  - {failure}", file=sys.stderr)
+        return 1
+
+    print(f"\nBoth versions passed parser-compatibility thresholds.")
     return 0
 
 

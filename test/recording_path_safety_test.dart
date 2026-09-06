@@ -7,9 +7,9 @@ import 'package:castcircle/data/services/recording_sync_service.dart';
 void main() {
   test('accepts normal uuid line ids', () {
     expect(
-        RecordingSyncService.isSafePathId(
-            'd46cafee-3bb8-46ee-b733-54938254f106'),
-        isTrue);
+      RecordingSyncService.isSafePathId('d46cafee-3bb8-46ee-b733-54938254f106'),
+      isTrue,
+    );
     expect(RecordingSyncService.isSafePathId('line_1'), isTrue);
   });
 
@@ -24,8 +24,11 @@ void main() {
       'has space',
       '',
     ]) {
-      expect(RecordingSyncService.isSafePathId(hostile), isFalse,
-          reason: 'must reject $hostile');
+      expect(
+        RecordingSyncService.isSafePathId(hostile),
+        isFalse,
+        reason: 'must reject $hostile',
+      );
     }
   });
 }

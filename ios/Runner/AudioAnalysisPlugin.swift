@@ -4,9 +4,8 @@ import AVFoundation
 /// Native plugin that measures the loudness of a recorded audio file so the
 /// Dart side can normalize playback volume across cast recordings.
 ///
-/// Reads the file's PCM via AVAudioFile and returns peak/RMS in dBFS. Line
-/// recordings are short, so reading the whole buffer is cheap; results are
-/// cached on the Dart side keyed by path.
+/// Reads the file's PCM via AVAudioFile in fixed-size chunks and returns
+/// peak/RMS in dBFS. Results are cached on the Dart side keyed by path.
 class AudioAnalysisPlugin: NSObject {
     private let channel: FlutterMethodChannel
 
@@ -47,37 +46,57 @@ class AudioAnalysisPlugin: NSObject {
             }
 
             let format = file.processingFormat
-            let frameCount = AVAudioFrameCount(file.length)
-            guard frameCount > 0,
-                  let buffer = AVAudioPCMBuffer(pcmFormat: format,
-                                                frameCapacity: frameCount),
-                  (try? file.read(into: buffer)) != nil,
-                  let channelData = buffer.floatChannelData else {
-                DispatchQueue.main.async { result(nil) }
-                return
-            }
-
             let channels = Int(format.channelCount)
-            let n = Int(buffer.frameLength)
-            if n == 0 {
+            let chunkFrameCount: AVAudioFrameCount = 32 * 1024
+            guard file.length > 0,
+                  channels > 0,
+                  let buffer = AVAudioPCMBuffer(
+                    pcmFormat: format,
+                    frameCapacity: chunkFrameCount
+                  ) else {
                 DispatchQueue.main.async { result(nil) }
                 return
             }
 
+            var sampleCount: UInt64 = 0
             var sumSquares: Double = 0
             var peak: Float = 0
-            for c in 0..<channels {
-                let samples = channelData[c]
-                for i in 0..<n {
-                    let s = samples[i]
-                    sumSquares += Double(s) * Double(s)
-                    let a = abs(s)
-                    if a > peak { peak = a }
+
+            do {
+                while file.framePosition < file.length {
+                    let remaining = file.length - file.framePosition
+                    let requestedFrames = AVAudioFrameCount(
+                        min(AVAudioFramePosition(chunkFrameCount), remaining)
+                    )
+                    try file.read(into: buffer, frameCount: requestedFrames)
+
+                    let frameCount = Int(buffer.frameLength)
+                    guard frameCount > 0,
+                          let channelData = buffer.floatChannelData else {
+                        break
+                    }
+
+                    for channel in 0..<channels {
+                        let samples = channelData[channel]
+                        for frame in 0..<frameCount {
+                            let sample = samples[frame]
+                            sumSquares += Double(sample) * Double(sample)
+                            peak = max(peak, abs(sample))
+                        }
+                    }
+                    sampleCount += UInt64(frameCount) * UInt64(channels)
                 }
+            } catch {
+                DispatchQueue.main.async { result(nil) }
+                return
             }
 
-            let total = Double(n * channels)
-            let rms = total > 0 ? (sumSquares / total).squareRoot() : 0
+            guard sampleCount > 0 else {
+                DispatchQueue.main.async { result(nil) }
+                return
+            }
+
+            let rms = (sumSquares / Double(sampleCount)).squareRoot()
             let rmsDb = rms > 0 ? 20 * log10(rms) : -160.0
             let peakDb = peak > 0 ? 20 * log10(Double(peak)) : -160.0
 

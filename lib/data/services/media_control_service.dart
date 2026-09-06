@@ -38,8 +38,10 @@ class MediaControlService {
     } on MissingPluginException {
       // Plugin not registered (e.g., on Android or simulator) — log once so
       // "AirPods controls do nothing" is diagnosable from a device report.
-      DebugLogService.instance.log(LogCategory.general,
-          'Media controls unavailable on this platform (plugin not registered)');
+      DebugLogService.instance.log(
+        LogCategory.general,
+        'Media controls unavailable on this platform (plugin not registered)',
+      );
     }
   }
 
@@ -80,12 +82,8 @@ class MediaControlService {
       final command = call.arguments as String;
       switch (command) {
         case 'jumpBack':
+          onJumpBack?.call();
         case 'playPause':
-          // Rehearsal wires a real pause handler (_handleRemotePlayPause);
-          // this used to misroute to jump-back, so tapping play/pause on
-          // AirPods/lock screen jumped back instead of pausing. (The iOS
-          // plugin currently only emits jumpBack, so this is future-proofing
-          // plus contract correctness, not a behavior change there.)
           onPlayPause?.call();
         case 'skip':
           onSkip?.call();

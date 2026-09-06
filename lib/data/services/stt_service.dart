@@ -5,6 +5,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import 'stt_channel.dart';
 import 'debug_log_service.dart';
+
 /// Speech-to-text service.
 ///
 /// Primary engine: Apple SFSpeechRecognizer via custom platform channel
@@ -21,6 +22,9 @@ class SttService {
   /// Bumped on every listen()/stop() so delayed continuous-mode restarts can
   /// tell whether they belong to the current session.
   int _sessionGen = 0;
+  int _nativeSessionId = 0;
+  int? _currentLevelSessionId;
+  int? _recordingLevelSessionId;
 
   String _locale = 'en-US';
 
@@ -42,7 +46,9 @@ class SttService {
       final prefs = await SharedPreferences.getInstance();
       if (prefs.getBool('screenshot_mode') == true) {
         DebugLogService.instance.log(
-            LogCategory.stt, 'Screenshot mode: skipping STT init');
+          LogCategory.stt,
+          'Screenshot mode: skipping STT init',
+        );
         return false;
       }
     } catch (_) {}
@@ -50,12 +56,17 @@ class SttService {
     // Apple SFSpeechRecognizer — real-time streaming with vocabulary hints
     final appleOk = await _sttChannel.initialize(locale: locale);
     if (appleOk) {
-      DebugLogService.instance.log(LogCategory.stt,
-          'STT ready (locale=$locale, contextualStrings)');
+      DebugLogService.instance.log(
+        LogCategory.stt,
+        'STT ready (locale=$locale, contextualStrings)',
+      );
       return true;
     }
 
-    DebugLogService.instance.logError(LogCategory.stt, 'No STT engine available');
+    DebugLogService.instance.logError(
+      LogCategory.stt,
+      'No STT engine available',
+    );
     return false;
   }
 
@@ -82,6 +93,8 @@ class SttService {
   // 1-pole low-pass for UI and track how long the input has been
   // below the speech threshold for end-of-utterance detection.
   double _smoothedLevel = 0;
+  bool _recordOnlyCapture = false;
+
   DateTime? _silenceStart;
   bool _hasSpeechInUtterance = false;
 
@@ -97,8 +110,8 @@ class SttService {
   /// OS audio interruption (phone call, Siri, alarm) — pass-through from the
   /// native channel. Set/cleared by the rehearsal screen.
   set onAudioInterruption(
-          void Function(bool began, bool shouldResume)? callback) =>
-      _sttChannel.onAudioInterruption = callback;
+    void Function(bool began, bool shouldResume)? callback,
+  ) => _sttChannel.onAudioInterruption = callback;
 
   /// Input route lost (headphones unplugged) — pass-through.
   set onAudioRouteLost(void Function()? callback) =>
@@ -176,6 +189,7 @@ class SttService {
     _lastPartial = '';
     _silenceStart = null;
     _hasSpeechInUtterance = false;
+    _smoothedLevel = 0;
     _sttChannel.onLevel = _handleLevel;
 
     await _startAppleSession();
@@ -185,19 +199,27 @@ class SttService {
     if (!_isListening) return;
     final gen = _sessionGen;
 
+    final nativeSessionId = ++_nativeSessionId;
+    _currentLevelSessionId = nativeSessionId;
     final ok = await _sttChannel.listen(
+      sessionId: nativeSessionId,
+      onDevice: true,
       contextualStrings: _vocabHints,
       onResult: (text, isFinal) {
+        if (gen != _sessionGen) return;
         _lastPartial = text;
         _onResult?.call(mergeTranscripts(_carriedTranscript, text));
       },
       onDone: () {
+        if (gen != _sessionGen) return;
         if (_continuous && _isListening) {
           // The recognizer auto-finalized (intra-utterance pause).
           // Carry the finalized text forward and restart so the
           // transcript keeps accumulating.
-          _carriedTranscript =
-              mergeTranscripts(_carriedTranscript, _lastPartial);
+          _carriedTranscript = mergeTranscripts(
+            _carriedTranscript,
+            _lastPartial,
+          );
           _lastPartial = '';
           // Auto-restart after brief pause. Guard on the session generation:
           // if a NEW listen() started during the 200ms (next actor line),
@@ -216,6 +238,7 @@ class SttService {
         }
       },
     );
+    if (gen != _sessionGen) return;
 
     if (!ok) {
       _isListening = false;
@@ -232,6 +255,9 @@ class SttService {
   Future<void> stop({bool discard = false}) async {
     _sessionGen++;
     _isListening = false;
+    _recordOnlyCapture = false;
+    _currentLevelSessionId = null;
+    _recordingLevelSessionId = null;
     _continuous = false;
     _onResult = null;
     _onDone = null;
@@ -240,8 +266,10 @@ class SttService {
     _lastPartial = '';
     _silenceStart = null;
     _hasSpeechInUtterance = false;
+    _smoothedLevel = 0;
     onSilence = null;
     onLevel = null;
+    _sttChannel.onLevel = null;
     await _sttChannel.stop();
   }
 
@@ -280,15 +308,13 @@ class SttService {
     // Hyphens become spaces BEFORE normalizing: _normalize deletes them,
     // gluing "good-humoured" into one token the recognizer (which emits
     // "good humoured") could never produce.
-    final exp = _normalize(_dialogueOnly(expected).replaceAll('-', ' '))
-        .split(_wsRe)
-        .where((w) => w.isNotEmpty)
-        .toList();
+    final exp = _normalize(
+      _dialogueOnly(expected).replaceAll('-', ' '),
+    ).split(_wsRe).where((w) => w.isNotEmpty).toList();
     if (exp.isEmpty) return true;
-    final spo = _normalize(spoken.replaceAll('-', ' '))
-        .split(_wsRe)
-        .where((w) => w.isNotEmpty)
-        .toList();
+    final spo = _normalize(
+      spoken.replaceAll('-', ' '),
+    ).split(_wsRe).where((w) => w.isNotEmpty).toList();
     if (spo.isEmpty) return false;
     // Anchor: the transcript must actually END at the line's ending — one
     // of the line's last two words must be among the last two heard words.
@@ -304,7 +330,14 @@ class SttService {
 
     final tail = exp.length <= 3 ? exp : exp.sublist(exp.length - 3);
     final window = spo.length <= 8 ? spo : spo.sublist(spo.length - 8);
-    final hits = tail.where(window.contains).length;
+    var hits = 0;
+    var windowIndex = 0;
+    for (final word in tail) {
+      final match = window.indexOf(word, windowIndex);
+      if (match < 0) continue;
+      hits++;
+      windowIndex = match + 1;
+    }
     return hits >= (tail.length <= 2 ? 1 : 2);
   }
 
@@ -312,14 +345,15 @@ class SttService {
     // Stage directions in parentheses/brackets aren't spoken by the actor, so
     // don't count them as expected words (otherwise "(crossing)" would make
     // "crossing" a word the actor is penalized for not saying).
-    final dialogueExpected = _dialogueOnly(expected);
+    final dialogueExpected = _dialogueOnly(expected).replaceAll('-', ' ');
     final normalizedExpected = _normalize(dialogueExpected);
     if (normalizedExpected.isEmpty) return 1.0;
 
     final expectedWords = normalizedExpected.split(_wsRe);
-    final spokenWords = _normalize(spoken).split(_wsRe);
+    final spokenWords = _normalize(spoken.replaceAll('-', ' ')).split(_wsRe);
 
-    if (spokenWords.isEmpty || (spokenWords.length == 1 && spokenWords[0].isEmpty)) {
+    if (spokenWords.isEmpty ||
+        (spokenWords.length == 1 && spokenWords[0].isEmpty)) {
       return 0.0;
     }
 
@@ -393,6 +427,15 @@ class SttService {
   /// though no recognition is running. Returns false if recording can't start —
   /// the caller MUST surface that (never silently treat it as recording).
   Future<bool> startLineCapture(String path) async {
+    _sessionGen++;
+    _recordOnlyCapture = true;
+    _currentLevelSessionId = ++_nativeSessionId;
+    _continuous = false;
+    _onResult = null;
+    _onDone = null;
+    _vocabHints = null;
+    _carriedTranscript = '';
+    _lastPartial = '';
     _isListening = true;
     _hasSpeechInUtterance = false;
     _silenceStart = null;
@@ -402,9 +445,13 @@ class SttService {
     final ok = await startRecording(path);
     if (!ok) {
       _isListening = false;
+      _recordOnlyCapture = false;
+      _currentLevelSessionId = null;
       _sttChannel.onLevel = null;
       DebugLogService.instance.logError(
-          LogCategory.stt, 'startLineCapture: recorder refused to start ($path)');
+        LogCategory.stt,
+        'startLineCapture: recorder refused to start ($path)',
+      );
     }
     return ok;
   }
@@ -412,26 +459,66 @@ class SttService {
   /// Start recording audio alongside STT (same mic tap).
   /// The audio file will be saved to [path] as .m4a.
   Future<bool> startRecording(String path) async {
-    DebugLogService.instance.log(LogCategory.rehearsal,
-        'STT.startRecording: $path');
-    final ok = await _sttChannel.startRecording(path);
-    DebugLogService.instance.log(LogCategory.rehearsal,
-        'STT.startRecording → $ok');
+    final sessionId = _currentLevelSessionId ?? ++_nativeSessionId;
+    _currentLevelSessionId ??= sessionId;
+    _recordingLevelSessionId = sessionId;
+    DebugLogService.instance.log(
+      LogCategory.rehearsal,
+      'STT.startRecording: $path',
+    );
+    final ok = await _sttChannel.startRecording(path, sessionId: sessionId);
+    if (!ok && !_isListening && _currentLevelSessionId == sessionId) {
+      _currentLevelSessionId = null;
+      _recordingLevelSessionId = null;
+    }
+    DebugLogService.instance.log(
+      LogCategory.rehearsal,
+      'STT.startRecording → $ok',
+    );
     return ok;
   }
 
   /// Stop recording and finalize the file.
   /// Returns {path, durationMs} or null.
   Future<Map<String, dynamic>?> stopRecording() async {
-    DebugLogService.instance.log(LogCategory.rehearsal,
-        'STT.stopRecording: calling...');
+    if (_recordOnlyCapture) {
+      _sessionGen++;
+      _recordOnlyCapture = false;
+      _continuous = false;
+      _onResult = null;
+      _onDone = null;
+      _vocabHints = null;
+      _carriedTranscript = '';
+      _lastPartial = '';
+      _isListening = false;
+      _hasSpeechInUtterance = false;
+      _currentLevelSessionId = null;
+      _silenceStart = null;
+      _smoothedLevel = 0;
+      onSilence = null;
+      onLevel = null;
+      _sttChannel.onLevel = null;
+    }
+    DebugLogService.instance.log(
+      LogCategory.rehearsal,
+      'STT.stopRecording: calling...',
+    );
+    final recordingSessionId = _recordingLevelSessionId;
     final result = await _sttChannel.stopRecording();
+    _recordingLevelSessionId = null;
+    if (!_isListening && _currentLevelSessionId == recordingSessionId) {
+      _currentLevelSessionId = null;
+    }
     if (result != null) {
-      DebugLogService.instance.log(LogCategory.rehearsal,
-          'STT.stopRecording → path=${result['path']}, duration=${result['durationMs']}ms');
+      DebugLogService.instance.log(
+        LogCategory.rehearsal,
+        'STT.stopRecording → path=${result['path']}, duration=${result['durationMs']}ms',
+      );
     } else {
-      DebugLogService.instance.log(LogCategory.rehearsal,
-          'STT.stopRecording → null (not recording?)');
+      DebugLogService.instance.log(
+        LogCategory.rehearsal,
+        'STT.stopRecording → null (not recording?)',
+      );
     }
     return result;
   }

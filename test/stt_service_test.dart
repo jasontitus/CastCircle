@@ -14,8 +14,10 @@ void main() {
 
   group('SttService.mergeTranscripts', () {
     test('joins carried and partial with a single space', () {
-      expect(SttService.mergeTranscripts('to be or not to be', 'that is'),
-          'to be or not to be that is');
+      expect(
+        SttService.mergeTranscripts('to be or not to be', 'that is'),
+        'to be or not to be that is',
+      );
     });
 
     test('handles empty sides', () {
@@ -25,8 +27,10 @@ void main() {
     });
 
     test('trims stray whitespace from both fragments', () {
-      expect(SttService.mergeTranscripts('  hello  ', '  world  '),
-          'hello world');
+      expect(
+        SttService.mergeTranscripts('  hello  ', '  world  '),
+        'hello world',
+      );
     });
 
     test('accumulates across multiple auto-finalizations', () {
@@ -52,10 +56,7 @@ void main() {
 
   group('SttService.matchScore', () {
     test('perfect match returns 1.0', () {
-      expect(
-        SttService.matchScore('Hello world', 'hello world'),
-        1.0,
-      );
+      expect(SttService.matchScore('Hello world', 'hello world'), 1.0);
     });
 
     test('partial match returns fraction', () {
@@ -66,10 +67,7 @@ void main() {
     });
 
     test('no match returns 0.0', () {
-      expect(
-        SttService.matchScore('Hello world', 'goodbye universe'),
-        0.0,
-      );
+      expect(SttService.matchScore('Hello world', 'goodbye universe'), 0.0);
     });
 
     test('empty expected returns 1.0', () {
@@ -87,46 +85,51 @@ void main() {
     });
 
     test('case insensitive', () {
-      expect(
-        SttService.matchScore('HELLO WORLD', 'hello world'),
-        1.0,
-      );
+      expect(SttService.matchScore('HELLO WORLD', 'hello world'), 1.0);
     });
 
     test('handles extra spoken words gracefully', () {
       // Extra words in spoken should not reduce score
-      expect(
-        SttService.matchScore('hello', 'hello world goodbye'),
-        1.0,
-      );
+      expect(SttService.matchScore('hello', 'hello world goodbye'), 1.0);
     });
 
-    test('ignores parenthetical/bracketed stage directions in the expected line',
-        () {
-      // The actor says only the dialogue, never the direction — so a perfect
-      // delivery of the dialogue should score 1.0 even though the line text
-      // contains "(crossing)" / "[aside]".
-      expect(SttService.matchScore('Hello (crossing) world', 'hello world'), 1.0);
-      expect(SttService.matchScore('[aside] He is a fool', 'he is a fool'), 1.0);
-      // Unclosed direction (OCR dropped the ')') running to end of line.
-      expect(
-        SttService.matchScore(
-          'Nothing would delight me more. (MRS. GARDINER and ELIZABETH turn to',
-          'nothing would delight me more',
-        ),
-        1.0,
-      );
-    });
+    test(
+      'ignores parenthetical/bracketed stage directions in the expected line',
+      () {
+        // The actor says only the dialogue, never the direction — so a perfect
+        // delivery of the dialogue should score 1.0 even though the line text
+        // contains "(crossing)" / "[aside]".
+        expect(
+          SttService.matchScore('Hello (crossing) world', 'hello world'),
+          1.0,
+        );
+        expect(
+          SttService.matchScore('[aside] He is a fool', 'he is a fool'),
+          1.0,
+        );
+        // Unclosed direction (OCR dropped the ')') running to end of line.
+        expect(
+          SttService.matchScore(
+            'Nothing would delight me more. (MRS. GARDINER and ELIZABETH turn to',
+            'nothing would delight me more',
+          ),
+          1.0,
+        );
+      },
+    );
   });
 
   group('SttService.heardLineEnding', () {
-    const line = 'He is just what a young man ought to be: '
+    const line =
+        'He is just what a young man ought to be: '
         'sensible, good-humoured, lively.';
 
     test('true when the transcript reaches the closing words', () {
       expect(
         SttService.heardLineEnding(
-            line, 'what a young man ought to be sensible good humoured lively'),
+          line,
+          'what a young man ought to be sensible good humoured lively',
+        ),
         true,
       );
     });
@@ -146,7 +149,9 @@ void main() {
       // "lively" misheard, but "good-humoured" (2 of last 3) present.
       expect(
         SttService.heardLineEnding(
-            line, 'ought to be sensible good humoured lovely'),
+          line,
+          'ought to be sensible good humoured lovely',
+        ),
         true,
       );
     });
@@ -159,8 +164,9 @@ void main() {
     test('ignores stage directions in the expected text', () {
       expect(
         SttService.heardLineEnding(
-            'I always speak what I think. (turning away)',
-            'i always speak what i think'),
+          'I always speak what I think. (turning away)',
+          'i always speak what i think',
+        ),
         true,
       );
     });
@@ -168,8 +174,9 @@ void main() {
     test('early words alone never count as the ending', () {
       expect(
         SttService.heardLineEnding(
-            'Your partner is the only handsome girl in the room',
-            'your partner is the'),
+          'Your partner is the only handsome girl in the room',
+          'your partner is the',
+        ),
         false,
       );
     });
@@ -179,18 +186,23 @@ void main() {
       // common enough to appear mid-line. The transcript below contains
       // both but the actor is clearly still mid-sentence — must NOT count
       // as the ending.
-      const line = 'or you are conscious that your figures appear to the '
+      const line =
+          'or you are conscious that your figures appear to the '
           'greatest advantage in walking; I can admire you much better '
           'as I sit by the fire.';
       expect(
         SttService.heardLineEnding(
-            line, 'figures appear to the greatest advantage in walking'),
+          line,
+          'figures appear to the greatest advantage in walking',
+        ),
         false,
       );
       // Reaching the actual ending still fires.
       expect(
         SttService.heardLineEnding(
-            line, 'i can admire you much better as i sit by the fire'),
+          line,
+          'i can admire you much better as i sit by the fire',
+        ),
         true,
       );
     });
@@ -198,8 +210,9 @@ void main() {
     test('one trailing recognizer word after the ending still fires', () {
       expect(
         SttService.heardLineEnding(
-            'I can admire you much better as I sit by the fire.',
-            'admire you much better as i sit by the fire um'),
+          'I can admire you much better as I sit by the fire.',
+          'admire you much better as i sit by the fire um',
+        ),
         true,
       );
     });

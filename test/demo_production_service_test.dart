@@ -37,21 +37,25 @@ void main() {
     await tester.pumpWidget(
       ProviderScope(
         overrides: [databaseProvider.overrideWithValue(db)],
-        child: Consumer(builder: (context, ref, _) {
-          captured = ref;
-          return const SizedBox();
-        }),
+        child: Consumer(
+          builder: (context, ref, _) {
+            captured = ref;
+            return const SizedBox();
+          },
+        ),
       ),
     );
     return captured;
   }
 
-  testWidgets('creates a British-voiced demo production with a part chosen',
-      (tester) async {
+  testWidgets('creates a British-voiced demo production with a part chosen', (
+    tester,
+  ) async {
     final ref = await refFor(tester);
 
     final production = (await tester.runAsync(
-        () => DemoProductionService.instance.load(ref)))!;
+      () => DemoProductionService.instance.load(ref),
+    ))!;
 
     expect(production.id, DemoProductionService.productionId);
     expect(production.title, contains('Demo'));
@@ -70,11 +74,16 @@ void main() {
     expect(ref.read(rehearsalCharacterProvider), isNotNull);
     expect(ref.read(rehearsalCharacterProvider), 'HAMLET');
 
-    final preset = await VoiceConfigService.instance
-        .getPreset(production.id, locale: production.locale);
+    final preset = await VoiceConfigService.instance.getPreset(
+      production.id,
+      locale: production.locale,
+    );
     expect(preset.id, 'shakespearean');
-    expect(preset.maleVoices.every((v) => v.startsWith('bm_')), isTrue,
-        reason: 'the demo is meant to sound British');
+    expect(
+      preset.maleVoices.every((v) => v.startsWith('bm_')),
+      isTrue,
+      reason: 'the demo is meant to sound British',
+    );
     expect(preset.femaleVoices.every((v) => v.startsWith('bf_')), isTrue);
   });
 

@@ -97,12 +97,12 @@ class _BulkCastSetupScreenState extends ConsumerState<BulkCastSetupScreen> {
             valueListenable: _filledTick,
             builder: (context, _, __) =>
                 unassigned.every((c) => _nameFor(c.name).text.trim().isEmpty)
-                    ? const SizedBox.shrink()
-                    : TextButton.icon(
-                        onPressed: _saving ? null : _saveAndShowInvites,
-                        icon: const Icon(Icons.check),
-                        label: const Text('Save'),
-                      ),
+                ? const SizedBox.shrink()
+                : TextButton.icon(
+                    onPressed: _saving ? null : _saveAndShowInvites,
+                    icon: const Icon(Icons.check),
+                    label: const Text('Save'),
+                  ),
           ),
         ],
       ),
@@ -248,81 +248,271 @@ class _BulkCastSetupScreenState extends ConsumerState<BulkCastSetupScreen> {
   Future<void> _pickContact(String charName) async {
     try {
       final contact = await ContactPickerService.instance.pickContact();
-      if (contact == null) return;
+      if (contact == null || !mounted) return;
 
       _nameFor(charName).text = contact.displayName;
       _contactFor(charName).text = contact.phone ?? contact.email ?? '';
       setState(() {});
-    } catch (e) {
-      debugPrint('Contact pick failed: $e');
+    } catch (e, stack) {
+      DebugLogService.instance.logError(
+        LogCategory.general,
+        'Bulk cast contact pick failed',
+        e,
+        stack,
+      );
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showAutoToast(
+        const SnackBar(
+          content: Text(
+            "Couldn't open your contacts — check that CastCircle has "
+            'Contacts permission, or type the name in by hand.',
+          ),
+          duration: Duration(seconds: 5),
+        ),
+      );
     }
   }
 
-  /// Characters whose cloud invitation failed in the last save — their join
-  /// links won't resolve until re-saved online.
   final List<String> _failedCloudInvites = [];
+  final List<String> _skippedAssignedCharacters = [];
+  final List<MapEntry<String, String>> _savedInviteActors = [];
+  bool _lastSaveHasCloudBacking = false;
 
-  Future<void> _saveCastAssignments() async {
+  Future<int> _saveCastAssignments() async {
     final production = ref.read(currentProductionProvider);
-    if (production == null) return;
+    if (production == null) return 0;
 
     final supa = SupabaseService.instance;
+    final notifier = ref.read(castMembersProvider.notifier);
+    final requiresCloudInvite =
+        production.organizerId.isNotEmpty && production.organizerId != 'local';
+    final hasCloudBacking = supa.isSignedIn && requiresCloudInvite;
+    _lastSaveHasCloudBacking = hasCloudBacking;
     _failedCloudInvites.clear();
+    _skippedAssignedCharacters.clear();
+    _savedInviteActors.clear();
 
+    final initialMembers = ref.read(castMembersProvider);
+    final candidates = <({String charName, String name, String contact})>[];
     for (final entry in _nameControllers.entries) {
-      final charName = entry.key;
       final name = entry.value.text.trim();
       if (name.isEmpty) continue;
-
-      final contact = _contactFor(charName).text.trim();
-
-      // Create in Supabase first so we can use its ID locally
-      String memberId = const Uuid().v4();
-      if (supa.isSignedIn) {
-        try {
-          final row = await supa.createCastInvitation(
-            productionId: production.id,
-            characterName: charName,
-            displayName: name,
-            contactInfo: contact.isNotEmpty ? contact : null,
-            role: 'actor',
-          );
-          memberId = row['id'] as String;
-        } catch (e) {
-          // The invite link for this character will point at a cloud row that
-          // doesn't exist — record it so the save summary can say so.
-          _failedCloudInvites.add(charName);
-          DebugLogService.instance.logError(LogCategory.network,
-              'Cloud cast invitation failed for "$name" ($charName)', e);
-        }
+      final alreadyAssigned = initialMembers.any(
+        (member) =>
+            member.characterName == entry.key &&
+            member.role == CastRole.primary,
+      );
+      if (alreadyAssigned) {
+        _skippedAssignedCharacters.add(entry.key);
+        continue;
       }
+      candidates.add((
+        charName: entry.key,
+        name: name,
+        contact: _contactFor(entry.key).text.trim(),
+      ));
+    }
 
-      final member = CastMemberModel(
-        id: memberId,
-        productionId: production.id,
-        characterName: charName,
-        displayName: name,
-        contactInfo: contact.isNotEmpty ? contact : null,
-        role: CastRole.primary,
-        invitedAt: DateTime.now(),
+    // Keep cloud latency bounded without launching an unbounded request burst,
+    // then commit every successful local row in one transaction/provider
+    // update.
+    final pendingMembers = <CastMemberModel>[];
+    final pendingActors = <MapEntry<String, String>>[];
+    const maxInFlight = 4;
+    for (var start = 0; start < candidates.length; start += maxInFlight) {
+      final end = start + maxInFlight < candidates.length
+          ? start + maxInFlight
+          : candidates.length;
+      final window = candidates.sublist(start, end);
+      final prepared = await Future.wait(
+        window.map((candidate) async {
+          if (requiresCloudInvite && !hasCloudBacking) {
+            return (
+              candidate: candidate,
+              member: null as CastMemberModel?,
+              alreadyAssigned: false,
+            );
+          }
+          var memberId = const Uuid().v4();
+          if (hasCloudBacking) {
+            try {
+              final row = await supa.createCastInvitation(
+                productionId: production.id,
+                characterName: candidate.charName,
+                displayName: candidate.name,
+                contactInfo: candidate.contact.isNotEmpty
+                    ? candidate.contact
+                    : null,
+                role: 'actor',
+              );
+              memberId = row['id'] as String;
+            } on CastPrimaryAlreadyAssignedException {
+              DebugLogService.instance.log(
+                LogCategory.network,
+                'Skipped cloud invitation for ${candidate.charName}: '
+                'primary actor already assigned',
+              );
+              return (
+                candidate: candidate,
+                member: null as CastMemberModel?,
+                alreadyAssigned: true,
+              );
+            } catch (e, stack) {
+              DebugLogService.instance.logError(
+                LogCategory.network,
+                'Cloud cast invitation failed for "${candidate.name}" '
+                '(${candidate.charName})',
+                e,
+                stack,
+              );
+              return (
+                candidate: candidate,
+                member: null as CastMemberModel?,
+                alreadyAssigned: false,
+              );
+            }
+          }
+
+          return (
+            candidate: candidate,
+            member:
+                CastMemberModel(
+                      id: memberId,
+                      productionId: production.id,
+                      characterName: candidate.charName,
+                      displayName: candidate.name,
+                      contactInfo: candidate.contact.isNotEmpty
+                          ? candidate.contact
+                          : null,
+                      role: CastRole.primary,
+                      invitedAt: DateTime.now(),
+                    )
+                    as CastMemberModel?,
+            alreadyAssigned: false,
+          );
+        }),
       );
 
-      await ref.read(castMembersProvider.notifier).save(member);
+      for (final result in prepared) {
+        final candidate = result.candidate;
+        final member = result.member;
+        if (member == null) {
+          if (result.alreadyAssigned) {
+            _skippedAssignedCharacters.add(candidate.charName);
+          } else {
+            _failedCloudInvites.add(candidate.charName);
+          }
+          continue;
+        }
+
+        pendingMembers.add(member);
+        pendingActors.add(MapEntry(candidate.charName, candidate.name));
+      }
     }
+    if (!mounted) {
+      if (hasCloudBacking) {
+        await _cleanupCloudInvitations(supa, production.id, pendingMembers);
+      }
+      return 0;
+    }
+    final primaryIdsAtCommit = <String, Set<String>>{};
+    for (final current in ref.read(castMembersProvider)) {
+      if (current.role == CastRole.primary) {
+        (primaryIdsAtCommit[current.characterName] ??= {}).add(current.id);
+      }
+    }
+    final acceptedMembers = <CastMemberModel>[];
+    final acceptedActors = <MapEntry<String, String>>[];
+    final staleCloudMembers = <CastMemberModel>[];
+    for (var i = 0; i < pendingMembers.length; i++) {
+      final member = pendingMembers[i];
+      final currentPrimaryIds = primaryIdsAtCommit[member.characterName];
+      final hasDifferentPrimary =
+          currentPrimaryIds != null && !currentPrimaryIds.contains(member.id);
+      if (hasDifferentPrimary) {
+        _skippedAssignedCharacters.add(member.characterName);
+        if (hasCloudBacking) staleCloudMembers.add(member);
+      } else {
+        // Cloud sync may have imported this exact invitation while its create
+        // request was in flight. The matching ID is our successful row, not a
+        // competing assignment.
+        acceptedMembers.add(member);
+        acceptedActors.add(pendingActors[i]);
+      }
+    }
+
+    if (acceptedMembers.isNotEmpty) {
+      await notifier.applyChanges(
+        upserts: acceptedMembers,
+        deleteIds: const {},
+      );
+      _savedInviteActors.addAll(acceptedActors);
+    }
+    await _cleanupCloudInvitations(supa, production.id, staleCloudMembers);
+
+    return _savedInviteActors.length;
+  }
+
+  Future<void> _cleanupCloudInvitations(
+    SupabaseService supa,
+    String productionId,
+    Iterable<CastMemberModel> members,
+  ) async {
+    await Future.wait(
+      members.map((member) async {
+        try {
+          await supa.removeCastMember(
+            castMemberId: member.id,
+            productionId: productionId,
+          );
+        } catch (e, stack) {
+          DebugLogService.instance.logError(
+            LogCategory.network,
+            'Cleaning up stale cloud invitation failed for '
+            '"${member.characterName}"',
+            e,
+            stack,
+          );
+        }
+      }),
+    );
   }
 
   Future<void> _saveAndShowInvites() async {
-    // Dismiss keyboard before showing the invite sheet
     FocusScope.of(context).unfocus();
-
     setState(() => _saving = true);
-    await _saveCastAssignments();
-    setState(() => _saving = false);
 
-    if (!mounted) return;
+    var saved = 0;
+    var failed = false;
+    try {
+      saved = await _saveCastAssignments();
+    } catch (e, stack) {
+      failed = true;
+      DebugLogService.instance.logError(
+        LogCategory.general,
+        'Saving bulk cast assignments failed',
+        e,
+        stack,
+      );
+      if (mounted) {
+        ScaffoldMessenger.of(context).showAutoToast(
+          const SnackBar(
+            content: Text(
+              'Could not finish saving the cast. Check your connection and '
+              'try again.',
+            ),
+            duration: Duration(seconds: 6),
+          ),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _saving = false);
+    }
 
-    final saved = _filledCount;
-    if (saved == 0) {
+    if (!mounted || failed) return;
+    if (saved == 0 &&
+        _failedCloudInvites.isEmpty &&
+        _skippedAssignedCharacters.isEmpty) {
       ScaffoldMessenger.of(context).showAutoToast(
         const SnackBar(
           content: Text('No actors to save (fill in at least one name)'),
@@ -332,46 +522,53 @@ class _BulkCastSetupScreenState extends ConsumerState<BulkCastSetupScreen> {
     }
 
     if (_failedCloudInvites.isNotEmpty) {
-      ScaffoldMessenger.of(context).showAutoToast(SnackBar(
-        content: Text('$saved actor(s) saved, but cloud invitations failed '
-            'for: ${_failedCloudInvites.join(', ')}. Their join links won\'t '
-            'work — re-save when back online.'),
-        duration: const Duration(seconds: 8),
-      ));
+      ScaffoldMessenger.of(context).showAutoToast(
+        SnackBar(
+          content: Text(
+            '$saved actor(s) saved. Cloud invitations were not created for: '
+            '${_failedCloudInvites.join(', ')}. Those assignments remain '
+            'available here so you can retry.',
+          ),
+          duration: const Duration(seconds: 8),
+        ),
+      );
+    } else if (_skippedAssignedCharacters.isNotEmpty) {
+      ScaffoldMessenger.of(context).showAutoToast(
+        SnackBar(
+          content: Text(
+            '$saved actor(s) saved. Already-assigned characters were skipped: '
+            '${_skippedAssignedCharacters.join(', ')}.',
+          ),
+          duration: const Duration(seconds: 6),
+        ),
+      );
     } else {
       ScaffoldMessenger.of(
         context,
       ).showAutoToast(SnackBar(content: Text('$saved actor(s) saved')));
     }
 
-    // Show invite links sheet so director can share individually
-    _showInviteLinksSheet();
+    if (_savedInviteActors.isNotEmpty) _showInviteLinksSheet();
   }
 
   void _showInviteLinksSheet() {
     final production = ref.read(currentProductionProvider);
     final joinCode = production?.joinCode ?? '';
     final title = production?.title ?? 'a production';
-    if (joinCode.isEmpty) {
-      // Every link would be castcircle://join?code= — rejected by the join
-      // screen. Better no sheet than a sheet of dead links.
-      ScaffoldMessenger.of(context).showAutoToast(const SnackBar(
-        content: Text('This production has no join code yet — invite links '
-            'need one. Try again once the production has synced.'),
-        duration: Duration(seconds: 6),
-      ));
+    if (_lastSaveHasCloudBacking && joinCode.isEmpty) {
+      ScaffoldMessenger.of(context).showAutoToast(
+        const SnackBar(
+          content: Text(
+            'This production has no join code yet — invite links need one. '
+            'Try again once the production has synced.',
+          ),
+          duration: Duration(seconds: 6),
+        ),
+      );
       return;
     }
 
-    // Collect actors that were filled in
-    final actors = <MapEntry<String, String>>[];
-    for (final entry in _nameControllers.entries) {
-      final name = entry.value.text.trim();
-      if (name.isNotEmpty) {
-        actors.add(MapEntry(entry.key, name));
-      }
-    }
-
+    final actors = List<MapEntry<String, String>>.of(_savedInviteActors);
     if (actors.isEmpty) return;
 
     showModalBottomSheet(
@@ -421,16 +618,21 @@ class _BulkCastSetupScreenState extends ConsumerState<BulkCastSetupScreen> {
                 itemBuilder: (context, index) {
                   final charName = actors[index].key;
                   final actorName = actors[index].value;
-                  final deepLink = PendingJoin.buildUri(
-                    code: joinCode,
-                    characterName: charName,
-                    actorName: actorName,
-                  );
-                  final inviteText =
-                      'You\'re invited to play $charName in "$title" '
-                      'on CastCircle!\n\n'
-                      'Tap to join: $deepLink\n\n'
-                      'Or open CastCircle and enter code: $joinCode';
+                  final deepLink = _lastSaveHasCloudBacking
+                      ? PendingJoin.buildUri(
+                          code: joinCode,
+                          characterName: charName,
+                          actorName: actorName,
+                        )
+                      : null;
+                  final inviteText = deepLink != null
+                      ? 'You\'re invited to play $charName in "$title" '
+                            'on CastCircle!\n\n'
+                            'Tap to join: $deepLink\n\n'
+                            'Or open CastCircle and enter code: $joinCode'
+                      : 'You\'re invited to play $charName in "$title" '
+                            'on CastCircle! The organizer will send a join code '
+                            'after the production is online.';
 
                   return ListTile(
                     title: Text(actorName),

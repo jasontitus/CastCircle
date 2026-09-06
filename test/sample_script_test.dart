@@ -36,8 +36,11 @@ void main() {
       final acts = script.lines
           .where((l) => l.lineType == LineType.header)
           .toList();
-      expect(acts.length, greaterThanOrEqualTo(3),
-          reason: 'P&P has multiple acts');
+      expect(
+        acts.length,
+        greaterThanOrEqualTo(3),
+        reason: 'P&P has multiple acts',
+      );
     });
 
     test('detects at least some characters from Gutenberg format', () {
@@ -49,8 +52,11 @@ void main() {
 
       // Gutenberg format uses "name on separate line" not "NAME. dialogue",
       // so the parser may only detect a few characters via the detection pass.
-      expect(parser.knownCharacters.length, greaterThanOrEqualTo(1),
-          reason: 'Should detect at least one character from Gutenberg format');
+      expect(
+        parser.knownCharacters.length,
+        greaterThanOrEqualTo(1),
+        reason: 'Should detect at least one character from Gutenberg format',
+      );
     });
 
     test('no OCR garbage characters survive', () {
@@ -64,8 +70,11 @@ void main() {
         final letters = char.name.replaceAll(RegExp(r'[^A-Za-z]'), '');
         final vowels = letters.replaceAll(RegExp(r'[^AEIOUaeiou]'), '');
         if (letters.length >= 4) {
-          expect(vowels.isNotEmpty, true,
-              reason: '${char.name} looks like OCR garbage (no vowels)');
+          expect(
+            vowels.isNotEmpty,
+            true,
+            reason: '${char.name} looks like OCR garbage (no vowels)',
+          );
         }
       }
     });
@@ -80,8 +89,11 @@ void main() {
       final multiLines = script.lines
           .where((l) => l.multiCharacters.isNotEmpty)
           .toList();
-      expect(multiLines, isNotEmpty,
-          reason: 'P&P has "JANE AND ELIZABETH" multi-character line');
+      expect(
+        multiLines,
+        isNotEmpty,
+        reason: 'P&P has "JANE AND ELIZABETH" multi-character line',
+      );
 
       // The individual characters should be in the character list
       final charNames = script.characters.map((c) => c.name).toSet();
@@ -115,16 +127,25 @@ void main() {
       final multiLines = script.lines
           .where((l) => l.multiCharacters.isNotEmpty)
           .toList();
-      expect(multiLines, isNotEmpty,
-          reason: 'Macbeth has "MACBETH AND LENNOX" multi-character line');
+      expect(
+        multiLines,
+        isNotEmpty,
+        reason: 'Macbeth has "MACBETH AND LENNOX" multi-character line',
+      );
 
       // Check that multi-character line has correct individuals
       final macbethLennox = multiLines
-          .where((l) => l.multiCharacters.contains('MACBETH') &&
-              l.multiCharacters.contains('LENNOX'))
+          .where(
+            (l) =>
+                l.multiCharacters.contains('MACBETH') &&
+                l.multiCharacters.contains('LENNOX'),
+          )
           .toList();
-      expect(macbethLennox, isNotEmpty,
-          reason: 'Should split "MACBETH AND LENNOX" into individuals');
+      expect(
+        macbethLennox,
+        isNotEmpty,
+        reason: 'Should split "MACBETH AND LENNOX" into individuals',
+      );
     });
 
     test('multi-character lines are findable via isForCharacter', () {
@@ -139,16 +160,22 @@ void main() {
       final multiInMacbeth = macbethLines
           .where((l) => l.multiCharacters.isNotEmpty)
           .toList();
-      expect(multiInMacbeth, isNotEmpty,
-          reason: 'linesForCharacter("MACBETH") should include multi-char lines');
+      expect(
+        multiInMacbeth,
+        isNotEmpty,
+        reason: 'linesForCharacter("MACBETH") should include multi-char lines',
+      );
 
       // Same line should also appear in LENNOX's lines
       final lennoxLines = script.linesForCharacter('LENNOX');
       final multiInLennox = lennoxLines
           .where((l) => l.multiCharacters.isNotEmpty)
           .toList();
-      expect(multiInLennox, isNotEmpty,
-          reason: 'linesForCharacter("LENNOX") should include multi-char lines');
+      expect(
+        multiInLennox,
+        isNotEmpty,
+        reason: 'linesForCharacter("LENNOX") should include multi-char lines',
+      );
     });
 
     test('ALL is treated as a regular character (not split)', () {
@@ -159,12 +186,13 @@ void main() {
       }
 
       // "ALL" has no separator so it should remain as-is
-      final allLines = script.lines
-          .where((l) => l.character == 'ALL')
-          .toList();
+      final allLines = script.lines.where((l) => l.character == 'ALL').toList();
       if (allLines.isNotEmpty) {
-        expect(allLines.first.multiCharacters, isEmpty,
-            reason: '"ALL" should not be split into individual characters');
+        expect(
+          allLines.first.multiCharacters,
+          isEmpty,
+          reason: '"ALL" should not be split into individual characters',
+        );
       }
     });
   });
@@ -194,8 +222,11 @@ void main() {
       final multiLines = script.lines
           .where((l) => l.multiCharacters.isNotEmpty)
           .toList();
-      expect(multiLines, isNotEmpty,
-          reason: 'Should detect comma-separated multi-character names');
+      expect(
+        multiLines,
+        isNotEmpty,
+        reason: 'Should detect comma-separated multi-character names',
+      );
     });
   });
 
@@ -203,12 +234,13 @@ void main() {
     final dir = Directory('sample-scripts');
     if (!dir.existsSync()) return;
 
-    final txtFiles = dir
-        .listSync()
-        .whereType<File>()
-        .where((f) => f.path.endsWith('.txt'))
-        .toList()
-      ..sort((a, b) => a.path.compareTo(b.path));
+    final txtFiles =
+        dir
+            .listSync()
+            .whereType<File>()
+            .where((f) => f.path.endsWith('.txt'))
+            .toList()
+          ..sort((a, b) => a.path.compareTo(b.path));
 
     for (final file in txtFiles) {
       final name = file.path.split('/').last;
@@ -218,23 +250,35 @@ void main() {
         final script = parser.parse(rawText, title: name);
 
         // Basic sanity: should produce some lines
-        expect(script.lines, isNotEmpty,
-            reason: '$name should produce at least one line');
+        expect(
+          script.lines,
+          isNotEmpty,
+          reason: '$name should produce at least one line',
+        );
 
         // No character with empty name
         for (final char in script.characters) {
-          expect(char.name.trim(), isNotEmpty,
-              reason: '$name has a character with empty name');
+          expect(
+            char.name.trim(),
+            isNotEmpty,
+            reason: '$name has a character with empty name',
+          );
         }
 
         // Multi-character lines should have valid individual names
         for (final line in script.lines) {
           if (line.multiCharacters.isNotEmpty) {
-            expect(line.multiCharacters.length, greaterThanOrEqualTo(2),
-                reason: '$name: multi-character line should have 2+ characters');
+            expect(
+              line.multiCharacters.length,
+              greaterThanOrEqualTo(2),
+              reason: '$name: multi-character line should have 2+ characters',
+            );
             for (final char in line.multiCharacters) {
-              expect(char.trim(), isNotEmpty,
-                  reason: '$name: multi-character has empty individual name');
+              expect(
+                char.trim(),
+                isNotEmpty,
+                reason: '$name: multi-character has empty individual name',
+              );
             }
           }
         }
@@ -248,15 +292,32 @@ void main() {
       final buffer = StringBuffer();
       buffer.writeln('ACT I');
       final chars = [
-        'MR. BENNET', 'MRS. BENNET', 'ELIZABETH', 'JANE', 'LYDIA',
-        'KITTY', 'MARY', 'DARCY', 'BINGLEY', 'COLLINS', 'WICKHAM',
-        'MISS BINGLEY', 'CHARLOTTE', 'MRS. GARDINER', 'MR. GARDINER',
-        'LADY CATHERINE', 'FITZWILLIAM', 'HOUSEKEEPER', 'GEORGIANA',
+        'MR. BENNET',
+        'MRS. BENNET',
+        'ELIZABETH',
+        'JANE',
+        'LYDIA',
+        'KITTY',
+        'MARY',
+        'DARCY',
+        'BINGLEY',
+        'COLLINS',
+        'WICKHAM',
+        'MISS BINGLEY',
+        'CHARLOTTE',
+        'MRS. GARDINER',
+        'MR. GARDINER',
+        'LADY CATHERINE',
+        'FITZWILLIAM',
+        'HOUSEKEEPER',
+        'GEORGIANA',
       ];
       // 80 pages of content
       for (var page = 1; page <= 80; page++) {
         final char = chars[page % chars.length];
-        buffer.writeln('$char. This is dialogue from page $page of the script.');
+        buffer.writeln(
+          '$char. This is dialogue from page $page of the script.',
+        );
         if (page == 20) buffer.writeln('ACT II');
         if (page == 40) buffer.writeln('ACT III');
         if (page == 60) buffer.writeln('ACT IV');
@@ -299,8 +360,16 @@ void main() {
 
       expect(charNames, contains('ELIZABETH'));
       expect(charNames, contains('DARCY'));
-      // Typos should not exist as separate characters
-      // (they may or may not be detected depending on edit distance)
+      expect(charNames, isNot(contains('ELIIZABETH')));
+      expect(charNames, isNot(contains('DRCY')));
+      expect(
+        script.characters.firstWhere((c) => c.name == 'ELIZABETH').lineCount,
+        21,
+      );
+      expect(
+        script.characters.firstWhere((c) => c.name == 'DARCY').lineCount,
+        21,
+      );
     });
 
     test('multi-character lines split correctly', () {
@@ -325,8 +394,11 @@ void main() {
       final multiLines = script.lines
           .where((l) => l.multiCharacters.isNotEmpty)
           .toList();
-      expect(multiLines.length, 3,
-          reason: 'Should detect 3 multi-character lines');
+      expect(
+        multiLines.length,
+        3,
+        reason: 'Should detect 3 multi-character lines',
+      );
 
       // Verify AND separator split
       final andLine = multiLines
@@ -347,8 +419,7 @@ void main() {
           .where((l) => l.character == 'JANE, LYDIA, ELIZABETH')
           .toList();
       expect(threeLine.length, 1);
-      expect(threeLine.first.multiCharacters,
-          ['JANE', 'LYDIA', 'ELIZABETH']);
+      expect(threeLine.first.multiCharacters, ['JANE', 'LYDIA', 'ELIZABETH']);
 
       // isForCharacter should work for all individuals
       expect(andLine.first.isForCharacter('ELIZABETH'), isTrue);
@@ -358,8 +429,11 @@ void main() {
       // linesForCharacter should include multi-character lines
       final elizLines = script.linesForCharacter('ELIZABETH');
       // 10 solo + 3 multi = 13
-      expect(elizLines.length, 13,
-          reason: 'ELIZABETH should have 10 solo + 3 multi-char lines');
+      expect(
+        elizLines.length,
+        13,
+        reason: 'ELIZABETH should have 10 solo + 3 multi-char lines',
+      );
 
       // Character list should have individual characters, not combined names
       final charNames = script.characters.map((c) => c.name).toSet();

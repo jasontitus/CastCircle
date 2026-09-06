@@ -16,29 +16,56 @@ typedef OcrProgress = ({int page, int total});
 class PaddleOcrChannel {
   static const _channel = MethodChannel('com.lineguide/paddle_ocr');
 
-  /// Per-page OCR progress, pushed from native during [ocrPdf] so the import
-  /// screen can show "Reading page X of Y" instead of a frozen spinner. Null
-  /// between runs.
-  static final ValueNotifier<OcrProgress?> progress = ValueNotifier(null);
-
   static bool _handlerInstalled = false;
+  static int _requestSerial = 0;
+  static final Map<String, _PaddleOcrRequest> _requestsById = {};
 
-  /// Install the native→Dart handler that receives `ocrProgress` events. Lazy
-  /// (first OCR call) so we don't claim the channel handler until it's needed.
+  /// Receive bounded, request-scoped page payloads and progress. Native never
+  /// returns the document's pages in the final MethodChannel reply, avoiding a
+  /// single whole-document StandardMessageCodec decode on the UI isolate.
   static void _ensureProgressHandler() {
     if (_handlerInstalled) return;
     _handlerInstalled = true;
     _channel.setMethodCallHandler((call) async {
-      if (call.method == 'ocrProgress' && call.arguments is Map) {
-        final args = Map<String, dynamic>.from(call.arguments as Map);
-        progress.value = (
+      if (call.arguments is! Map) return null;
+      final args = Map<String, dynamic>.from(call.arguments as Map);
+      final requestId = args['requestId'] as String?;
+      final request = requestId == null ? null : _requestsById[requestId];
+      if (request == null) return null;
+
+      if (call.method == 'ocrProgress') {
+        request.progress.value = (
           page: args['page'] as int? ?? 0,
           total: args['pageCount'] as int? ?? 0,
+        );
+      } else if (call.method == 'ocrPage') {
+        final pageIndex = args['pageIndex'] as int?;
+        final linesRaw = args['lines'] as List?;
+        if (pageIndex == null || linesRaw == null) return null;
+        request.pages.add(
+          PaddlePage(
+            page: pageIndex,
+            lines: [
+              for (final line in linesRaw)
+                (() {
+                  final map = Map<String, dynamic>.from(line as Map);
+                  return PaddleTextBlock(
+                    text: map['text'] as String? ?? '',
+                    confidence: (map['confidence'] as num?)?.toDouble() ?? 0.0,
+                    left: (map['left'] as num?)?.toDouble() ?? 0.0,
+                    width: (map['width'] as num?)?.toDouble() ?? 1.0,
+                  );
+                })(),
+            ],
+          ),
         );
       }
       return null;
     });
   }
+
+  static String _nextRequestId() =>
+      'paddle-${DateTime.now().microsecondsSinceEpoch}-${_requestSerial++}';
 
   /// Recognize text in a single image file. Returns null when the native plugin
   /// isn't available on this platform/build (caller should fall back).
@@ -92,52 +119,105 @@ class PaddleOcrChannel {
     }
   }
 
-  /// OCR an entire PDF natively — renders pages, runs PP-OCR (det+cls+rec) per
-  /// page, returns per-page lines with real recognition confidence in one call.
-  static Future<PaddlePdfResult?> ocrPdf(
-    String pdfPath, {
-    double scale = 2.0,
-  }) async {
+  /// Start whole-PDF OCR and return a request-scoped operation. Native receives
+  /// the generated request ID on start, progress, and cancellation, so an old
+  /// import cannot cancel or update a newer one.
+  static PaddleOcrPdfJob startPdf(String pdfPath, {double scale = 2.0}) {
     _ensureProgressHandler();
-    progress.value = (page: 0, total: 0); // "starting" until the first page lands
+    final requestId = _nextRequestId();
+    final request = _PaddleOcrRequest();
+    _requestsById[requestId] = request;
+    final job = PaddleOcrPdfJob._(
+      requestId: requestId,
+      progress: request.progress,
+      cancelRequest: _cancelPdf,
+    );
+    job.result = _runPdf(pdfPath, scale, requestId, request.pages).whenComplete(
+      () {
+        _requestsById.remove(requestId);
+        request.progress.value = null;
+      },
+    );
+    return job;
+  }
+
+  static Future<PaddlePdfResult?> _runPdf(
+    String pdfPath,
+    double scale,
+    String requestId,
+    List<PaddlePage> pages,
+  ) async {
     try {
       final result = await _channel.invokeMethod<Map>('ocrPdf', {
         'path': pdfPath,
         'scale': scale,
+        'requestId': requestId,
       });
       if (result == null) return null;
-
-      final pageCount = result['pageCount'] as int? ?? 0;
-      final failedPages = result['failedPages'] as int? ?? 0;
-      final pagesRaw = result['pages'] as List? ?? [];
-
-      final pages = pagesRaw.map((p) {
-        final map = Map<String, dynamic>.from(p as Map);
-        final pageNum = map['page'] as int? ?? 0;
-        final linesRaw = map['lines'] as List? ?? [];
-        final lines = linesRaw.map((l) {
-          final lm = Map<String, dynamic>.from(l as Map);
-          return PaddleTextBlock(
-            text: lm['text'] as String? ?? '',
-            confidence: (lm['confidence'] as num?)?.toDouble() ?? 0.0,
-            left: (lm['left'] as num?)?.toDouble() ?? 0.0,
-            width: (lm['width'] as num?)?.toDouble() ?? 1.0,
-          );
-        }).toList();
-        return PaddlePage(page: pageNum, lines: lines);
-      }).toList();
-
+      pages.sort((a, b) => a.page.compareTo(b.page));
       return PaddlePdfResult(
         pages: pages,
-        pageCount: pageCount,
-        failedPages: failedPages,
+        pageCount: result['pageCount'] as int? ?? 0,
+        failedPages: result['failedPages'] as int? ?? 0,
       );
     } on MissingPluginException {
       return null;
-    } finally {
-      progress.value = null;
+    } on PlatformException catch (error) {
+      if (error.code.toLowerCase() == 'ocr_cancelled') {
+        throw OcrCancelledException(requestId);
+      }
+      rethrow;
     }
   }
+
+  static Future<bool> _cancelPdf(String requestId) async {
+    try {
+      return await _channel.invokeMethod<bool>('cancelOcrPdf', {
+            'requestId': requestId,
+          }) ??
+          false;
+    } on MissingPluginException {
+      return false;
+    }
+  }
+}
+
+class _PaddleOcrRequest {
+  final ValueNotifier<OcrProgress?> progress = ValueNotifier((
+    page: 0,
+    total: 0,
+  ));
+  final List<PaddlePage> pages = [];
+}
+
+/// A request-scoped whole-PDF Paddle OCR operation.
+class PaddleOcrPdfJob {
+  PaddleOcrPdfJob._({
+    required this.requestId,
+    required this.progress,
+    required Future<bool> Function(String) cancelRequest,
+  }) : _cancelRequest = cancelRequest;
+
+  final String requestId;
+  final ValueNotifier<OcrProgress?> progress;
+  final Future<bool> Function(String) _cancelRequest;
+  late final Future<PaddlePdfResult?> result;
+
+  Future<void> cancel() async {
+    await _cancelRequest(requestId);
+  }
+}
+
+/// Signals deliberate abandonment of a native OCR request. It is distinct
+/// from plugin unavailability so callers never fall through to another OCR
+/// engine after the user has cancelled an import.
+class OcrCancelledException implements Exception {
+  const OcrCancelledException(this.requestId);
+
+  final String requestId;
+
+  @override
+  String toString() => 'OCR request $requestId was cancelled';
 }
 
 class PaddleTextBlock {
@@ -176,7 +256,6 @@ class PaddlePdfResult {
     required this.failedPages,
   });
 }
-
 
 /// One recognized line on a single OCR'd page, rect normalized to page size.
 class OcrPageLine {

@@ -62,7 +62,7 @@ class SineGen {
     return MLX.sin(phase)
   }
 
-  func callAsFunction(_ f0: MLXArray) -> (MLXArray, MLXArray, MLXArray) {
+  func callAsFunction(_ f0: MLXArray) -> MLXArray {
     // Fundamental component
     let range = MLXArray(1 ... harmonicNum + 1).asType(.float32)
     let fn = f0 * range.reshaped([1, 1, range.shape[0]])
@@ -77,7 +77,6 @@ class SineGen {
     let noiseAmp = uv * noiseStd + (1 - uv) * sineAmp / 3
     let noise = noiseAmp * MLXRandom.normal(sineWaves.shape)
 
-    let result = sineWaves * uv + noise
-    return (result, uv, noise)
+    return sineWaves * uv + noise
   }
 }

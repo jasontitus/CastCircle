@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'dart:ffi';
 import 'dart:io';
+import 'dart:isolate';
 
 // crypto ships with the Flutter/Firebase dependency set already; it is used
 // here only for the optional post-download SHA-256 check.
@@ -55,12 +56,7 @@ class AiModel {
 }
 
 /// Download status for a single model.
-enum ModelStatus {
-  notDownloaded,
-  downloading,
-  downloaded,
-  error,
-}
+enum ModelStatus { notDownloaded, downloading, downloaded, error }
 
 /// Progress info for an in-flight download.
 class ModelDownloadState {
@@ -100,8 +96,11 @@ class ModelDownloadService {
   }
   static final instance = ModelDownloadService._();
 
-  static const _channel =
-      MethodChannel('com.lineguide/background_download');
+  static const _channel = MethodChannel('com.lineguide/background_download');
+
+  static const _connectTimeout = Duration(seconds: 30);
+  static const _responseTimeout = Duration(seconds: 60);
+  static const _idleTimeout = Duration(seconds: 60);
 
   /// Registry of available models.
   static const List<AiModel> availableModels = [
@@ -254,27 +253,30 @@ class ModelDownloadService {
           final modelId = args['modelId'] as String;
           final size = args['size'] as int;
           debugPrint(
-              'ModelDownload: $modelId complete (${(size / 1024 / 1024).toStringAsFixed(1)} MB)');
+            'ModelDownload: $modelId complete (${(size / 1024 / 1024).toStringAsFixed(1)} MB)',
+          );
 
           // "The transfer finished" is not "the file is good": verify what
           // landed on disk before calling it downloaded, or a truncated /
           // wrong-revision file reads as installed while the feature it powers
           // silently falls back (TTS → system voices).
-          final model =
-              availableModels.where((m) => m.id == modelId).firstOrNull;
-          final problem =
-              model == null ? null : await _verifyDownload(model);
+          final model = availableModels
+              .where((m) => m.id == modelId)
+              .firstOrNull;
+          final problem = model == null ? null : await _verifyDownload(model);
           if (problem != null) {
             _states[modelId] = ModelDownloadState(
               status: ModelStatus.error,
-              errorMessage: 'Downloaded file failed verification ($problem) '
+              errorMessage:
+                  'Downloaded file failed verification ($problem) '
                   '— it was discarded, please download again',
             );
             _notify();
             _dlog.log(
-                LogCategory.error,
-                'ModelDownload: $modelId FAILED verification — $problem '
-                '(file discarded)');
+              LogCategory.error,
+              'ModelDownload: $modelId FAILED verification — $problem '
+              '(file discarded)',
+            );
             break;
           }
 
@@ -300,7 +302,10 @@ class ModelDownloadService {
           );
           _notify();
           debugPrint('ModelDownload: $modelId failed: $error');
-          _dlog.log(LogCategory.error, 'ModelDownload: $modelId failed: $error');
+          _dlog.log(
+            LogCategory.error,
+            'ModelDownload: $modelId failed: $error',
+          );
           break;
       }
     });
@@ -350,8 +355,10 @@ class ModelDownloadService {
       } else if (file.existsSync()) {
         // Present but unusable — say so loudly and offer the download again
         // (the error tile shows the message and a Download button).
-        _dlog.log(LogCategory.error,
-            'ModelDownload: ${model.id} present but unusable — $problem');
+        _dlog.log(
+          LogCategory.error,
+          'ModelDownload: ${model.id} present but unusable — $problem',
+        );
         _states[model.id] = ModelDownloadState(
           status: ModelStatus.error,
           errorMessage:
@@ -382,12 +389,16 @@ class ModelDownloadService {
         final dir = Directory(p.join(appDir.path, 'models', subdir));
         if (dir.existsSync()) {
           await dir.delete(recursive: true);
-          _dlog.log(LogCategory.general,
-              'ModelDownload: deleted retired model dir $subdir');
+          _dlog.log(
+            LogCategory.general,
+            'ModelDownload: deleted retired model dir $subdir',
+          );
         }
       } catch (e) {
-        _dlog.log(LogCategory.error,
-            'ModelDownload: failed to delete retired model dir $subdir: $e');
+        _dlog.log(
+          LogCategory.error,
+          'ModelDownload: failed to delete retired model dir $subdir: $e',
+        );
       }
     }
   }
@@ -402,9 +413,13 @@ class ModelDownloadService {
     final expected = model.sha256;
     if (problem == null && expected != null) {
       try {
-        // Streamed — these files run to gigabytes.
-        final digest = await crypto.sha256.bind(file.openRead()).first;
-        final actual = digest.toString().toLowerCase();
+        // Streamed in a worker isolate: model files run to gigabytes, and
+        // hashing them on the UI isolate causes a visible post-download stall.
+        final path = file.path;
+        final actual = await Isolate.run(() async {
+          final digest = await crypto.sha256.bind(File(path).openRead()).first;
+          return digest.toString().toLowerCase();
+        });
         if (actual != expected.toLowerCase()) {
           problem = 'sha256 $actual != expected ${expected.toLowerCase()}';
         }
@@ -417,8 +432,10 @@ class ModelDownloadService {
       try {
         await file.delete();
       } catch (e) {
-        _dlog.log(LogCategory.error,
-            'ModelDownload: could not delete the bad ${model.id} file: $e');
+        _dlog.log(
+          LogCategory.error,
+          'ModelDownload: could not delete the bad ${model.id} file: $e',
+        );
       }
     }
     return problem;
@@ -445,17 +462,21 @@ class ModelDownloadService {
     return p.join(appDir.path, 'models', 'live_asr');
   }
 
+  /// Download every Kokoro MLX file that isn't already good.
+  Future<void> downloadKokoro() => _downloadGroup('kokoro_mlx');
+
   /// Download every live-matching ASR file that isn't already good.
-  Future<void> downloadLiveAsr() async {
+  Future<void> downloadLiveAsr() => _downloadGroup('live_asr');
+
+  Future<void> _downloadGroup(String subdir) async {
     // Concurrent within the group: the Dart-fallback path (Android) blocks
-    // per file, so sequentially the small decoder/joiner/tokens files queued
-    // behind the big encoder. Progress is bytes-weighted across per-file
-    // states, so the setup bar stays honest either way.
+    // per file, so sequentially the small decoder/joiner/tokens files would
+    // queue behind the big encoder.
     final needed = <AiModel>[];
-    for (final m in availableModels) {
-      if (m.subdir != 'live_asr') continue;
-      if (fileProblem(m, File(await _filePath(m))) == null) continue;
-      needed.add(m);
+    for (final model in availableModels) {
+      if (model.subdir != subdir) continue;
+      if (fileProblem(model, File(await _filePath(model))) == null) continue;
+      needed.add(model);
     }
     await Future.wait(needed.map(download));
   }
@@ -471,8 +492,10 @@ class ModelDownloadService {
       // A missing file is unremarkable (not downloaded yet); a file that is
       // THERE but wrong is a surprise the user must be able to see in the log.
       if (file.existsSync()) {
-        _dlog.log(LogCategory.error,
-            'ModelDownload: $label not ready — ${model.id}: $problem');
+        _dlog.log(
+          LogCategory.error,
+          'ModelDownload: $label not ready — ${model.id}: $problem',
+        );
       }
       return false;
     }
@@ -530,8 +553,10 @@ class ModelDownloadService {
         // Not a failure — this platform gives us no way to ask (see
         // [_freeDiskSpaceBytes]). Recorded so a later out-of-space download
         // failure isn't a mystery.
-        debugPrint('ModelDownload: free space unknown on this platform — '
-            'starting ${model.id} without a space preflight');
+        debugPrint(
+          'ModelDownload: free space unknown on this platform — '
+          'starting ${model.id} without a space preflight',
+        );
       }
 
       // Start native background download. Android has no native downloader
@@ -544,7 +569,8 @@ class ModelDownloadService {
           'destinationPath': outPath,
         });
         debugPrint(
-            'ModelDownload: started background download for ${model.id}');
+          'ModelDownload: started background download for ${model.id}',
+        );
       } on PlatformException catch (e) {
         if (e.code != 'UNAVAILABLE' || !_dartDownloadable(model)) rethrow;
         await _dartDownload(model, outPath);
@@ -589,25 +615,27 @@ class ModelDownloadService {
     // server is free to ignore that, decode anything that still arrives
     // compressed rather than trusting it.
     client.autoUncompress = false;
+    client.connectionTimeout = _connectTimeout;
     try {
       var uri = Uri.parse(model.downloadUrl);
       HttpClientResponse res;
       var redirectsLeft = 5;
       while (true) {
-        final req = await client.getUrl(uri);
+        final req = await client.getUrl(uri).timeout(_connectTimeout);
         req.followRedirects = false;
         req.headers.set(HttpHeaders.acceptEncodingHeader, 'identity');
-        res = await req.close();
+        res = await req.close().timeout(_responseTimeout);
         if (!res.isRedirect) break;
         final location = res.headers.value('location');
-        await res.drain<void>();
+        await res.drain<void>().timeout(_idleTimeout);
         if (location == null) {
           throw HttpException('Redirect without Location for $uri');
         }
         final target = uri.resolve(location);
         if (target.scheme != 'https') {
           throw HttpException(
-              'Refusing non-HTTPS redirect to ${target.scheme}://${target.host}');
+            'Refusing non-HTTPS redirect to ${target.scheme}://${target.host}',
+          );
         }
         if (--redirectsLeft < 0) {
           throw HttpException('Too many redirects for ${model.downloadUrl}');
@@ -617,8 +645,9 @@ class ModelDownloadService {
       if (res.statusCode != 200) {
         throw HttpException('HTTP ${res.statusCode} for ${model.downloadUrl}');
       }
-      final encoding =
-          res.headers.value(HttpHeaders.contentEncodingHeader)?.toLowerCase();
+      final encoding = res.headers
+          .value(HttpHeaders.contentEncodingHeader)
+          ?.toLowerCase();
       final compressed = encoding != null && encoding.contains('gzip');
       final total = res.contentLength > 0 && !compressed
           ? res.contentLength
@@ -629,7 +658,7 @@ class ModelDownloadService {
       try {
         // Progress counts WIRE bytes (what contentLength describes); the sink
         // gets decoded bytes when the server compressed anyway.
-        Stream<List<int>> body = res.map((chunk) {
+        Stream<List<int>> body = res.timeout(_idleTimeout).map((chunk) {
           received += chunk.length;
           // Throttle UI updates to every ~1 MB.
           if (total > 0 && received - lastNotified > 1024 * 1024) {
@@ -644,9 +673,10 @@ class ModelDownloadService {
         });
         if (compressed) {
           _dlog.log(
-              LogCategory.general,
-              'ModelDownload: ${model.id} arrived Content-Encoding: $encoding '
-              'despite asking for identity — decoding');
+            LogCategory.general,
+            'ModelDownload: ${model.id} arrived Content-Encoding: $encoding '
+            'despite asking for identity — decoding',
+          );
           body = gzip.decoder.bind(body);
         }
         await for (final chunk in body) {
@@ -662,11 +692,14 @@ class ModelDownloadService {
       if (problem != null) {
         _states[model.id] = ModelDownloadState(
           status: ModelStatus.error,
-          errorMessage: 'Downloaded file failed verification ($problem) '
+          errorMessage:
+              'Downloaded file failed verification ($problem) '
               '— it was discarded, please download again',
         );
-        _dlog.log(LogCategory.error,
-            'ModelDownload: ${model.id} FAILED verification — $problem');
+        _dlog.log(
+          LogCategory.error,
+          'ModelDownload: ${model.id} FAILED verification — $problem',
+        );
       } else {
         _states[model.id] = const ModelDownloadState(
           status: ModelStatus.downloaded,
@@ -684,9 +717,11 @@ class ModelDownloadService {
       );
       _notify();
       _dlog.log(
-          LogCategory.error, 'ModelDownload: ${model.id} Dart download failed: $e');
+        LogCategory.error,
+        'ModelDownload: ${model.id} Dart download failed: $e',
+      );
     } finally {
-      client.close();
+      client.close(force: true);
     }
   }
 
@@ -735,8 +770,7 @@ class ModelDownloadService {
   String? _docsPath;
 
   Future<String> _filePath(AiModel model) async {
-    final docs =
-        _docsPath ??= (await getApplicationDocumentsDirectory()).path;
+    final docs = _docsPath ??= (await getApplicationDocumentsDirectory()).path;
     if (model.subdir.isNotEmpty) {
       return p.join(docs, 'models', model.subdir, model.filename);
     }
@@ -755,6 +789,9 @@ class ModelDownloadService {
   Future<void> _cleanupTmpFiles() async {
     for (final model in availableModels) {
       final path = await _filePath(model);
+      // The Dart fallback owns this exact path until its final rename. Native
+      // tasks may use it too, so status refresh must never unlink active work.
+      if (_states[model.id]?.status == ModelStatus.downloading) continue;
       final tmpFile = File('$path.tmp');
       if (tmpFile.existsSync()) {
         try {

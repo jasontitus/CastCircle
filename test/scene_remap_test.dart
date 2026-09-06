@@ -6,29 +6,32 @@ import 'package:castcircle/data/models/script_models.dart';
 /// played dialogue from the wrong part of the play — scene ranges are
 /// positional indices into `lines` and were carried over unchanged.
 void main() {
-  ScriptLine line(String id, String text,
-          {LineType type = LineType.dialogue, String character = 'A'}) =>
-      ScriptLine(
-        id: id,
-        act: 'ACT I',
-        scene: '',
-        lineNumber: 0,
-        orderIndex: 0,
-        character: type == LineType.dialogue ? character : '',
-        text: text,
-        lineType: type,
-      );
+  ScriptLine line(
+    String id,
+    String text, {
+    LineType type = LineType.dialogue,
+    String character = 'A',
+  }) => ScriptLine(
+    id: id,
+    act: 'ACT I',
+    scene: '',
+    lineNumber: 0,
+    orderIndex: 0,
+    character: type == LineType.dialogue ? character : '',
+    text: text,
+    lineType: type,
+  );
 
   ScriptScene scene(String id, String name, int start, int end) => ScriptScene(
-        id: id,
-        act: 'ACT I',
-        sceneName: name,
-        location: '',
-        description: '',
-        startLineIndex: start,
-        endLineIndex: end,
-        characters: const ['A'],
-      );
+    id: id,
+    act: 'ACT I',
+    sceneName: name,
+    location: '',
+    description: '',
+    startLineIndex: start,
+    endLineIndex: end,
+    characters: const ['A'],
+  );
 
   group('ParsedScript.remapScenes', () {
     final oldLines = [
@@ -44,15 +47,18 @@ void main() {
       final newLines = [oldLines[0], oldLines[2], oldLines[3], oldLines[4]];
       final remapped = ParsedScript.remapScenes(scenes, oldLines, newLines);
       final script = ParsedScript(
-          title: 't',
-          lines: newLines,
-          characters: const [],
-          scenes: remapped,
-          rawText: '');
+        title: 't',
+        lines: newLines,
+        characters: const [],
+        scenes: remapped,
+        rawText: '',
+      );
 
-      expect(script.linesInScene(remapped[0]).map((l) => l.id),
-          ['l0', 'l2'],
-          reason: 'scene 1 keeps its surviving lines');
+      expect(
+        script.linesInScene(remapped[0]).map((l) => l.id),
+        ['l0', 'l2'],
+        reason: 'scene 1 keeps its surviving lines',
+      );
       // The whole point: without remapping this returned ['l2','l3'] — the
       // rehearsal would open "Scene 2" and play scene one's last line.
       expect(script.linesInScene(remapped[1]).map((l) => l.id), ['l3', 'l4']);
@@ -72,13 +78,16 @@ void main() {
       expect(remapped.length, 1);
       expect(remapped.single.id, 's2');
       final script = ParsedScript(
-          title: 't',
-          lines: newLines,
-          characters: const [],
-          scenes: remapped,
-          rawText: '');
-      expect(script.linesInScene(remapped.single).map((l) => l.id),
-          ['l3', 'l4']);
+        title: 't',
+        lines: newLines,
+        characters: const [],
+        scenes: remapped,
+        rawText: '',
+      );
+      expect(script.linesInScene(remapped.single).map((l) => l.id), [
+        'l3',
+        'l4',
+      ]);
     });
 
     test('insertion pushes later scenes forward', () {
@@ -93,11 +102,12 @@ void main() {
       ];
       final remapped = ParsedScript.remapScenes(scenes, oldLines, newLines);
       final script = ParsedScript(
-          title: 't',
-          lines: newLines,
-          characters: const [],
-          scenes: remapped,
-          rawText: '');
+        title: 't',
+        lines: newLines,
+        characters: const [],
+        scenes: remapped,
+        rawText: '',
+      );
       expect(script.linesInScene(remapped[1]).map((l) => l.id), ['l3', 'l4']);
     });
 
@@ -121,16 +131,20 @@ void main() {
         line('a4', 'scene two, doomed', character: 'CUT'),
         line('a5', 'scene two last', character: 'KEEP'),
       ];
-      final scenes = [scene('s1', 'Scene 1', 0, 2), scene('s2', 'Scene 2', 3, 5)];
+      final scenes = [
+        scene('s1', 'Scene 1', 0, 2),
+        scene('s2', 'Scene 2', 3, 5),
+      ];
       final kept = all.where((l) => l.character != 'CUT').toList();
 
       final remapped = ParsedScript.remapScenes(scenes, all, kept);
       final script = ParsedScript(
-          title: 't',
-          lines: kept,
-          characters: const [],
-          scenes: remapped,
-          rawText: '');
+        title: 't',
+        lines: kept,
+        characters: const [],
+        scenes: remapped,
+        rawText: '',
+      );
 
       expect(script.linesInScene(remapped[0]).map((l) => l.id), ['a0', 'a2']);
       // Without the remap this returned ['a2'] + nothing / the wrong window.

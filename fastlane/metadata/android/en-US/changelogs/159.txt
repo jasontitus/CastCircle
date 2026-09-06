@@ -1,0 +1,1 @@
+Hardens account isolation, cloud sync, recording reliability, script import, and on-device speech workflows.

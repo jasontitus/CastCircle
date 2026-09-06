@@ -1,36 +1,153 @@
+import 'dart:async';
+import 'dart:convert';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_riverpod/legacy.dart';
 import 'package:go_router/go_router.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import '../../core/responsive.dart';
 import '../../data/models/rehearsal_models.dart';
+import '../../data/services/debug_log_service.dart';
+import '../../providers/production_providers.dart';
 
-/// Provider storing rehearsal session history.
+/// User-scoped, locally persisted rehearsal session history.
 final rehearsalHistoryProvider =
     StateNotifierProvider<RehearsalHistoryNotifier, List<RehearsalSession>>((
       ref,
     ) {
-      return RehearsalHistoryNotifier();
+      final accountNamespace = ref.watch(activeAccountNamespaceProvider);
+      return RehearsalHistoryNotifier(
+        storageKey: 'rehearsal_history:$accountNamespace',
+      );
     });
 
 class RehearsalHistoryNotifier extends StateNotifier<List<RehearsalSession>> {
-  RehearsalHistoryNotifier() : super([]);
+  RehearsalHistoryNotifier({required this.storageKey}) : super([]) {
+    unawaited(_load());
+  }
 
-  /// Keep the most recent sessions only — the list is in-memory for the
-  /// process lifetime and every add copies it, so unbounded growth taxes
-  /// long rehearsal days for history nobody scrolls that far back into.
+  final String storageKey;
   static const _maxSessions = 100;
+  Future<void> _writes = Future.value();
+  bool _disposed = false;
+
+  Future<void> _load() async {
+    final prefs = await SharedPreferences.getInstance();
+    if (_disposed) return;
+    final raw = prefs.getString(storageKey);
+    if (raw == null) return;
+    try {
+      final decoded = jsonDecode(raw) as List<dynamic>;
+      final persisted = decoded
+          .map(
+            (item) => _sessionFromJson(Map<String, dynamic>.from(item as Map)),
+          )
+          .toList();
+      final currentIds = state.map((session) => session.id).toSet();
+      state = [
+        ...state,
+        ...persisted.where((session) => !currentIds.contains(session.id)),
+      ].take(_maxSessions).toList();
+      if (currentIds.isNotEmpty) _persist();
+    } catch (_) {
+      // Ignore malformed legacy data; the next successful write replaces it.
+    }
+  }
 
   void add(RehearsalSession session) {
     state = [
       session,
-      ...state.take(_maxSessions - 1),
-    ]; // newest first
+      ...state.where((existing) => existing.id != session.id),
+    ].take(_maxSessions).toList();
+    _persist();
   }
 
   void clear() {
     state = [];
+    _persist();
+  }
+
+  void _persist() {
+    final snapshot = jsonEncode(state.map(_sessionToJson).toList());
+    _writes = _writes
+        .then((_) async {
+          final prefs = await SharedPreferences.getInstance();
+          final saved = await prefs.setString(storageKey, snapshot);
+          if (!saved) {
+            throw StateError('SharedPreferences rejected $storageKey');
+          }
+        })
+        .catchError((Object error, StackTrace stack) {
+          DebugLogService.instance.logError(
+            LogCategory.rehearsal,
+            'Could not persist rehearsal history',
+            error,
+            stack,
+          );
+          // Handling the error keeps the queue usable for the next write.
+        });
+  }
+
+  @override
+  void dispose() {
+    _disposed = true;
+    super.dispose();
+  }
+
+  static Map<String, dynamic> _sessionToJson(RehearsalSession session) => {
+    'id': session.id,
+    'productionId': session.productionId,
+    'sceneId': session.sceneId,
+    'sceneName': session.sceneName,
+    'character': session.character,
+    'startedAt': session.startedAt.toIso8601String(),
+    'endedAt': session.endedAt.toIso8601String(),
+    'totalLines': session.totalLines,
+    'completedLines': session.completedLines,
+    'averageMatchScore': session.averageMatchScore,
+    'rehearsalMode': session.rehearsalMode,
+    'lineAttempts': session.lineAttempts
+        .map(
+          (attempt) => {
+            'lineId': attempt.lineId,
+            'lineText': attempt.lineText,
+            'attemptCount': attempt.attemptCount,
+            'bestScore': attempt.bestScore,
+            'skipped': attempt.skipped,
+          },
+        )
+        .toList(),
+  };
+
+  static RehearsalSession _sessionFromJson(Map<String, dynamic> json) {
+    final attempts = (json['lineAttempts'] as List<dynamic>? ?? const []).map((
+      item,
+    ) {
+      final attempt = Map<String, dynamic>.from(item as Map);
+      return LineAttempt(
+        lineId: attempt['lineId'] as String,
+        lineText: attempt['lineText'] as String,
+        attemptCount: attempt['attemptCount'] as int,
+        bestScore: (attempt['bestScore'] as num).toDouble(),
+        skipped: attempt['skipped'] as bool,
+      );
+    }).toList();
+    return RehearsalSession(
+      id: json['id'] as String,
+      productionId: json['productionId'] as String,
+      sceneId: json['sceneId'] as String,
+      sceneName: json['sceneName'] as String,
+      character: json['character'] as String,
+      startedAt: DateTime.parse(json['startedAt'] as String),
+      endedAt: DateTime.parse(json['endedAt'] as String),
+      totalLines: json['totalLines'] as int,
+      completedLines: json['completedLines'] as int,
+      averageMatchScore: (json['averageMatchScore'] as num).toDouble(),
+      lineAttempts: attempts,
+      rehearsalMode: json['rehearsalMode'] as String,
+    );
   }
 }
 
@@ -96,10 +213,16 @@ class RehearsalHistoryScreen extends ConsumerWidget {
       Duration.zero,
       (sum, s) => sum + s.duration,
     );
-    final avgScore = sessions.isEmpty
-        ? 0.0
-        : sessions.fold<double>(0.0, (sum, s) => sum + s.averageMatchScore) /
-              sessions.length;
+    final scoredSessions = sessions
+        .where((session) => session.lineAttempts.isNotEmpty)
+        .toList();
+    final avgScore = scoredSessions.isEmpty
+        ? null
+        : scoredSessions.fold<double>(
+                0.0,
+                (sum, session) => sum + session.averageMatchScore,
+              ) /
+              scoredSessions.length;
 
     // Unique scenes practiced
     final uniqueScenes = sessions.map((s) => s.sceneId).toSet().length;
@@ -113,7 +236,11 @@ class RehearsalHistoryScreen extends ConsumerWidget {
           _statColumn(context, '$totalSessions', 'Sessions'),
           _statColumn(context, _formatDuration(totalTime), 'Total Time'),
           _statColumn(context, '$uniqueScenes', 'Scenes'),
-          _statColumn(context, '${(avgScore * 100).toInt()}%', 'Avg Score'),
+          _statColumn(
+            context,
+            avgScore == null ? '—' : '${(avgScore * 100).toInt()}%',
+            'Avg Score',
+          ),
         ],
       ),
     );
@@ -186,7 +313,9 @@ class RehearsalHistoryScreen extends ConsumerWidget {
             ),
             const SizedBox(height: 4),
             Text(
-              'as ${session.character}',
+              session.rehearsalMode == 'readthrough'
+                  ? 'Full cast'
+                  : 'as ${session.character}',
               style: Theme.of(context).textTheme.bodySmall,
             ),
             const SizedBox(height: 8),
@@ -199,12 +328,12 @@ class RehearsalHistoryScreen extends ConsumerWidget {
                   Colors.grey,
                 ),
                 const SizedBox(width: 16),
-                // Score
-                _miniStat(
-                  Icons.star_outline,
-                  '${(session.averageMatchScore * 100).toInt()}%',
-                  scoreColor,
-                ),
+                if (session.lineAttempts.isNotEmpty)
+                  _miniStat(
+                    Icons.star_outline,
+                    '${(session.averageMatchScore * 100).toInt()}%',
+                    scoreColor,
+                  ),
                 const SizedBox(width: 16),
                 // Duration
                 _miniStat(
@@ -272,11 +401,15 @@ class RehearsalHistoryScreen extends ConsumerWidget {
   }
 
   String _formatDate(DateTime dt) {
+    final local = dt.toLocal();
     final now = DateTime.now();
-    final diff = now.difference(dt);
-    if (diff.inDays == 0) return 'Today';
-    if (diff.inDays == 1) return 'Yesterday';
-    if (diff.inDays < 7) return '${diff.inDays} days ago';
-    return '${dt.month}/${dt.day}';
+    final today = DateTime(now.year, now.month, now.day);
+    final date = DateTime(local.year, local.month, local.day);
+    final daysAgo = today.difference(date).inDays;
+    if (daysAgo < 0) return '${local.month}/${local.day}';
+    if (daysAgo == 0) return 'Today';
+    if (daysAgo == 1) return 'Yesterday';
+    if (daysAgo < 7) return '$daysAgo days ago';
+    return '${local.month}/${local.day}';
   }
 }

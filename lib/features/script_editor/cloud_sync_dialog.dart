@@ -21,11 +21,21 @@ class LineDiff {
 /// made the dialog O(all lines differ) on any insertion.
 List<LineDiff> diffScriptLines(List<ScriptLine> local, List<ScriptLine> cloud) {
   final diffs = <LineDiff>[];
-  final localById = {for (final l in local) l.id: l};
+  final localById = {for (final line in local) line.id: line};
+  final cloudIds = {for (final line in cloud) line.id};
+  final localCommonPositionById = <String, int>{};
+  var localCommonPosition = 0;
+  for (final line in local) {
+    if (cloudIds.contains(line.id)) {
+      localCommonPositionById[line.id] = localCommonPosition++;
+    }
+  }
   final matchedLocalIds = <String>{};
+  var cloudCommonPosition = 0;
 
-  // Cloud order drives the display: matched lines compare content by id;
-  // cloud lines with no local counterpart are additions.
+  // Cloud order drives the display. Positions are compared only among ids
+  // present on both sides, so an addition/removal does not falsely mark every
+  // subsequent match as moved.
   for (final cld in cloud) {
     final loc = localById[cld.id];
     if (loc == null) {
@@ -33,21 +43,24 @@ List<LineDiff> diffScriptLines(List<ScriptLine> local, List<ScriptLine> cloud) {
       continue;
     }
     matchedLocalIds.add(loc.id);
-    // multiCharacters and the act/scene tags matter too: a cloud edit that
-    // only changed an ensemble line's speaker list or moved a line to
-    // another scene used to display as "unchanged" and be dropped from the
-    // change list.
-    final same = loc.character == cld.character &&
+    final samePosition =
+        localCommonPositionById[loc.id] == cloudCommonPosition++;
+    final same =
+        samePosition &&
+        loc.character == cld.character &&
         loc.text == cld.text &&
         loc.lineType == cld.lineType &&
         loc.stageDirection == cld.stageDirection &&
         loc.act == cld.act &&
         loc.scene == cld.scene &&
         _sameList(loc.multiCharacters, cld.multiCharacters);
-    diffs.add(LineDiff(
+    diffs.add(
+      LineDiff(
         type: same ? DiffType.unchanged : DiffType.changed,
         local: loc,
-        cloud: cld));
+        cloud: cld,
+      ),
+    );
   }
 
   // Local lines absent from the cloud version are removals.
@@ -108,22 +121,16 @@ Future<bool?> showCloudSyncDialog({
             Container(
               padding: const EdgeInsets.all(12),
               decoration: BoxDecoration(
-                color: Theme.of(context)
-                    .colorScheme
-                    .surfaceContainerHighest,
+                color: Theme.of(context).colorScheme.surfaceContainerHighest,
                 borderRadius: BorderRadius.circular(8),
               ),
               child: Row(
                 mainAxisAlignment: MainAxisAlignment.spaceAround,
                 children: [
-                  _statChip(context, '+$added', 'added',
-                      Colors.green),
-                  _statChip(context, '-$removed', 'removed',
-                      Colors.red),
-                  _statChip(context, '~$changed', 'changed',
-                      Colors.orange),
-                  _statChip(context, '$unchanged', 'same',
-                      Colors.grey),
+                  _statChip(context, '+$added', 'added', Colors.green),
+                  _statChip(context, '-$removed', 'removed', Colors.red),
+                  _statChip(context, '~$changed', 'changed', Colors.orange),
+                  _statChip(context, '$unchanged', 'same', Colors.grey),
                 ],
               ),
             ),
@@ -137,8 +144,10 @@ Future<bool?> showCloudSyncDialog({
             Expanded(
               child: changedDiffs.isEmpty
                   ? const Center(
-                      child: Text('No changes detected',
-                          style: TextStyle(color: Colors.grey)),
+                      child: Text(
+                        'No changes detected',
+                        style: TextStyle(color: Colors.grey),
+                      ),
                     )
                   : ListView.builder(
                       itemCount: changedDiffs.length,
@@ -167,7 +176,11 @@ Future<bool?> showCloudSyncDialog({
 }
 
 Widget _statChip(
-    BuildContext context, String value, String label, Color color) {
+  BuildContext context,
+  String value,
+  String label,
+  Color color,
+) {
   return Column(
     mainAxisSize: MainAxisSize.min,
     children: [
@@ -182,11 +195,8 @@ Widget _statChip(
       Text(
         label,
         style: Theme.of(context).textTheme.bodySmall?.copyWith(
-              color: Theme.of(context)
-                  .colorScheme
-                  .onSurface
-                  .withValues(alpha: 0.6),
-            ),
+          color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.6),
+        ),
       ),
     ],
   );
@@ -228,7 +238,15 @@ Widget _buildDiffTile(BuildContext context, LineDiff diff) {
     child: Row(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Icon(icon, size: 16, color: bgColor == Colors.green.withValues(alpha: 0.1) ? Colors.green : bgColor == Colors.red.withValues(alpha: 0.1) ? Colors.red : Colors.orange),
+        Icon(
+          icon,
+          size: 16,
+          color: bgColor == Colors.green.withValues(alpha: 0.1)
+              ? Colors.green
+              : bgColor == Colors.red.withValues(alpha: 0.1)
+              ? Colors.red
+              : Colors.orange,
+        ),
         const SizedBox(width: 8),
         Container(
           padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
@@ -236,8 +254,10 @@ Widget _buildDiffTile(BuildContext context, LineDiff diff) {
             borderRadius: BorderRadius.circular(3),
             color: Colors.white.withValues(alpha: 0.1),
           ),
-          child: Text(label,
-              style: const TextStyle(fontSize: 10, fontWeight: FontWeight.bold)),
+          child: Text(
+            label,
+            style: const TextStyle(fontSize: 10, fontWeight: FontWeight.bold),
+          ),
         ),
         const SizedBox(width: 8),
         Expanded(

@@ -1,5 +1,5 @@
 // Kokoro ONNX quality/speed comparison for the Android TTS decision:
-// fp32 v1.0 (current 600 MB download) vs int8 v1.0 vs int8 v1.1.
+// fp32 v1.0 versus fp16 v1.0.
 //
 //   flutter test integration_test/tts_kokoro_compare_macos_test.dart -d macos
 //
@@ -20,9 +20,7 @@ import 'package:sherpa_onnx/sherpa_onnx.dart' as sherpa;
 /// Repo root for fixture/model staging paths. Relative default works when
 /// tests run from the checkout root; override with
 /// --dart-define=CASTCIRCLE_REPO=/path for other harnesses.
-const _ccRepo =
-    String.fromEnvironment('CASTCIRCLE_REPO', defaultValue: '.');
-
+const _ccRepo = String.fromEnvironment('CASTCIRCLE_REPO', defaultValue: '.');
 
 const _eval = '$_ccRepo/.asr-eval';
 
@@ -44,6 +42,14 @@ const _lines = [
   'You must allow me to tell you how ardently I admire and love you.',
   'I could easily forgive his pride if he had not mortified mine.',
 ];
+
+// These are release gates rather than benchmark goals: rehearsal TTS must
+// synthesize in real time, ASR must recover most words, and fp16 must remain
+// acoustically equivalent to the fp32 reference.
+const _maxMeanRtf = 1.0;
+const _minMeanAsrMatch = 0.60;
+const _minFp16Correlation = 0.99;
+const _maxFp16LengthDrift = 0.005;
 
 double _matchRate(String expected, String got) {
   List<String> words(String s) => s
@@ -101,8 +107,11 @@ void _writeWav(String path, Float32List samples, int rate) {
   s(36, 'data');
   b.setUint32(40, n * 2, Endian.little);
   for (var i = 0; i < n; i++) {
-    b.setInt16(44 + i * 2, (samples[i] * 32767).round().clamp(-32768, 32767),
-        Endian.little);
+    b.setInt16(
+      44 + i * 2,
+      (samples[i] * 32767).round().clamp(-32768, 32767),
+      Endian.little,
+    );
   }
   File(path).writeAsBytesSync(b.buffer.asUint8List());
 }
@@ -110,67 +119,99 @@ void _writeWav(String path, Float32List samples, int rate) {
 void main() {
   IntegrationTestWidgetsFlutterBinding.ensureInitialized();
 
-  test('kokoro fp32 vs int8 comparison', () async {
+  test('kokoro fp32 vs fp16 comparison', () async {
     sherpa.initBindings();
 
-    final outDir =
-        Directory('${(await getTemporaryDirectory()).path}/kokoro_compare')
-          ..createSync(recursive: true);
+    final outDir = Directory(
+      '${(await getTemporaryDirectory()).path}/kokoro_compare',
+    )..createSync(recursive: true);
     print('OUT: ${outDir.path}');
 
     // ASR judge — the app's own live-matching model.
-    final asr = sherpa.OnlineRecognizer(sherpa.OnlineRecognizerConfig(
-      model: sherpa.OnlineModelConfig(
-        transducer: sherpa.OnlineTransducerModelConfig(
-          encoder: '$_eval/kroko/encoder.onnx',
-          decoder: '$_eval/kroko/decoder.onnx',
-          joiner: '$_eval/kroko/joiner.onnx',
+    final asr = sherpa.OnlineRecognizer(
+      sherpa.OnlineRecognizerConfig(
+        model: sherpa.OnlineModelConfig(
+          transducer: sherpa.OnlineTransducerModelConfig(
+            encoder: '$_eval/kroko/encoder.onnx',
+            decoder: '$_eval/kroko/decoder.onnx',
+            joiner: '$_eval/kroko/joiner.onnx',
+          ),
+          tokens: '$_eval/kroko/tokens.txt',
+          numThreads: 2,
+          debug: false,
         ),
-        tokens: '$_eval/kroko/tokens.txt',
-        numThreads: 2,
-        debug: false,
+        enableEndpoint: false,
       ),
-      enableEndpoint: false,
-    ));
+    );
 
     // fp32 reference audio per voice/line, for output-correlation checks.
     final reference = <String, Float32List>{};
 
     for (final entry in _models.entries) {
       final (dir, modelFile) = entry.value;
-      final tts = sherpa.OfflineTts(sherpa.OfflineTtsConfig(
-        model: sherpa.OfflineTtsModelConfig(
-          kokoro: sherpa.OfflineTtsKokoroModelConfig(
-            model: '$dir/$modelFile',
-            voices: '$dir/voices.bin',
-            tokens: '$dir/tokens.txt',
-            dataDir: '$dir/espeak-ng-data',
-            dictDir: '$dir/dict',
-            lexicon: '$dir/lexicon-us-en.txt,$dir/lexicon-gb-en.txt',
+      final tts = sherpa.OfflineTts(
+        sherpa.OfflineTtsConfig(
+          model: sherpa.OfflineTtsModelConfig(
+            kokoro: sherpa.OfflineTtsKokoroModelConfig(
+              model: '$dir/$modelFile',
+              voices: '$dir/voices.bin',
+              tokens: '$dir/tokens.txt',
+              dataDir: '$dir/espeak-ng-data',
+              dictDir: '$dir/dict',
+              lexicon: '$dir/lexicon-us-en.txt,$dir/lexicon-gb-en.txt',
+            ),
+            numThreads: 2,
+            debug: false,
           ),
-          numThreads: 2,
-          debug: false,
         ),
-      ));
+      );
 
       var rtfSum = 0.0, matchSum = 0.0, count = 0;
       for (final v in _voices.entries) {
         for (var li = 0; li < _lines.length; li++) {
           final sw = Stopwatch()..start();
           final audio = tts.generate(
-              text: _lines[li], sid: v.value, speed: 1.0);
+            text: _lines[li],
+            sid: v.value,
+            speed: 1.0,
+          );
           sw.stop();
+          expect(
+            audio.sampleRate,
+            greaterThan(0),
+            reason: '${entry.key} ${v.key} returned an invalid sample rate',
+          );
+          expect(
+            audio.samples,
+            isNotEmpty,
+            reason: '${entry.key} ${v.key} returned no audio',
+          );
           final dur = audio.samples.length / audio.sampleRate;
-          final rtf = sw.elapsedMilliseconds / 1000 / dur;
+          expect(
+            dur.isFinite && dur > 0,
+            true,
+            reason: '${entry.key} ${v.key} returned invalid duration $dur',
+          );
+          final rtf =
+              sw.elapsedMicroseconds / Duration.microsecondsPerSecond / dur;
+          expect(
+            rtf.isFinite && rtf > 0,
+            true,
+            reason: '${entry.key} ${v.key} returned invalid RTF $rtf',
+          );
 
-          _writeWav('${outDir.path}/${entry.key}_${v.key}_line$li.wav',
-              audio.samples, audio.sampleRate);
+          _writeWav(
+            '${outDir.path}/${entry.key}_${v.key}_line$li.wav',
+            audio.samples,
+            audio.sampleRate,
+          );
 
           // ASR round-trip.
           final stream = asr.createStream();
           stream.acceptWaveform(
-              samples: _to16k(audio.samples, audio.sampleRate),
-              sampleRate: 16000);
+            samples: _to16k(audio.samples, audio.sampleRate),
+            sampleRate: 16000,
+          );
           stream.acceptWaveform(samples: Float32List(12800), sampleRate: 16000);
           while (asr.isReady(stream)) {
             asr.decode(stream);
@@ -201,17 +242,50 @@ void main() {
               sbb += b[i] * b[i];
             }
             final corr = sab / math.sqrt(saa * sbb);
-            corrNote = ' corr=${corr.toStringAsFixed(4)}'
+            corrNote =
+                ' corr=${corr.toStringAsFixed(4)}'
                 ' lenRatio=${lenRatio.toStringAsFixed(3)}';
+            expect(
+              corr.isFinite && corr >= _minFp16Correlation,
+              true,
+              reason:
+                  '${entry.key} ${v.key} line$li correlation $corr '
+                  'fell below $_minFp16Correlation',
+            );
+            expect(
+              (lenRatio - 1).abs(),
+              lessThanOrEqualTo(_maxFp16LengthDrift),
+              reason:
+                  '${entry.key} ${v.key} line$li length ratio $lenRatio '
+                  'drifted more than ${_maxFp16LengthDrift * 100}% from fp32',
+            );
           }
 
-          print('${entry.key} ${v.key} line$li: '
-              'rtf=${rtf.toStringAsFixed(2)} dur=${dur.toStringAsFixed(1)}s '
-              'asrMatch=${(match * 100).round()}%$corrNote');
+          print(
+            '${entry.key} ${v.key} line$li: '
+            'rtf=${rtf.toStringAsFixed(2)} dur=${dur.toStringAsFixed(1)}s '
+            'asrMatch=${(match * 100).round()}%$corrNote',
+          );
         }
       }
-      print('=== ${entry.key}: mean rtf=${(rtfSum / count).toStringAsFixed(2)} '
-          'mean asrMatch=${(matchSum / count * 100).round()}% ===');
+      final meanRtf = rtfSum / count;
+      final meanMatch = matchSum / count;
+      print(
+        '=== ${entry.key}: mean rtf=${meanRtf.toStringAsFixed(2)} '
+        'mean asrMatch=${(meanMatch * 100).round()}% ===',
+      );
+      expect(
+        meanRtf,
+        lessThan(_maxMeanRtf),
+        reason: '${entry.key} must synthesize faster than real time',
+      );
+      expect(
+        meanMatch,
+        greaterThanOrEqualTo(_minMeanAsrMatch),
+        reason:
+            '${entry.key} ASR intelligibility fell below '
+            '${(_minMeanAsrMatch * 100).round()}%',
+      );
       tts.free();
     }
     asr.free();

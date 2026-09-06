@@ -2,7 +2,6 @@
 // is stubbed (isReady => false). Kept for the planned voice-clone feature;
 // delete if that plan is dropped.
 import 'dart:io';
-import 'dart:typed_data';
 
 import 'package:flutter/foundation.dart';
 import 'package:path/path.dart' as p;
@@ -46,13 +45,7 @@ class VoiceProfile {
 }
 
 /// Status of a voice clone generation request.
-enum VoiceCloneStatus {
-  idle,
-  extractingEmbedding,
-  generating,
-  complete,
-  error,
-}
+enum VoiceCloneStatus { idle, extractingEmbedding, generating, complete, error }
 
 /// Service for voice cloning.
 ///
@@ -63,10 +56,8 @@ class VoiceCloneService {
   VoiceCloneService._();
   static final instance = VoiceCloneService._();
 
-  VoiceCloneStatus _status = VoiceCloneStatus.idle;
+  final VoiceCloneStatus _status = VoiceCloneStatus.idle;
   VoiceCloneStatus get status => _status;
-
-  bool _initialized = false;
 
   final Map<String, VoiceProfile> _profiles = {};
 
@@ -142,10 +133,14 @@ class VoiceCloneService {
 
   /// Get the local cache path for a generated line.
   Future<String> _cachePath(
-      String productionId, String character, String lineId) async {
+    String productionId,
+    String character,
+    String lineId,
+  ) async {
     final dir = await getApplicationDocumentsDirectory();
     final cacheDir = Directory(
-        p.join(dir.path, 'voice_cache', productionId, character));
+      p.join(dir.path, 'voice_cache', productionId, character),
+    );
     if (!cacheDir.existsSync()) {
       cacheDir.createSync(recursive: true);
     }

@@ -11,18 +11,22 @@ class FakeUploader implements RecordingUploader {
 
   /// Called at the start of each upload, before it resolves — lets tests
   /// enqueue a replacement take while an upload is in flight.
-  void Function(SyncJob job)? onUploadStarted;
+  Future<void> Function(SyncJob job)? onUploadStarted;
 
   final List<SyncJob> uploads = [];
   final List<String> savedUrls = [];
   final List<SyncJob> savedMetadataJobs = [];
+  final List<String> deletedUrls = [];
+
+  @override
+  String get accountNamespace => 'test-account';
 
   @override
   bool get isReady => ready;
 
   @override
   Future<String> upload(SyncJob job) async {
-    onUploadStarted?.call(job);
+    await onUploadStarted?.call(job);
     // Yield so work scheduled by onUploadStarted (e.g. an enqueue) lands
     // mid-flight like a real slow network upload.
     await Future<void>.delayed(Duration.zero);
@@ -33,14 +37,22 @@ class FakeUploader implements RecordingUploader {
   }
 
   @override
-  Future<void> saveMetadata(SyncJob job, String remoteUrl) async {
+  Future<String?> saveMetadata(SyncJob job, String remoteUrl) async {
     if (failMetadata) throw Exception('metadata failed');
     savedMetadataJobs.add(job);
     savedUrls.add(remoteUrl);
+    return null;
+  }
+
+  @override
+  Future<void> deleteObject(String remoteUrl) async {
+    deletedUrls.add(remoteUrl);
   }
 }
 
 void main() {
+  TestWidgetsFlutterBinding.ensureInitialized();
+
   late Directory tempDir;
   late FakeUploader uploader;
   late SyncQueue queue;
@@ -111,15 +123,18 @@ void main() {
       String? uploadedProduction;
       String? uploadedLine;
       String? uploadedUrl;
-      queue.onUploaded = (prodId, lineId, url) {
+      String? uploadedRecording;
+      queue.onUploaded = (prodId, lineId, recordingId, url) async {
         uploadedProduction = prodId;
         uploadedLine = lineId;
+        uploadedRecording = recordingId;
         uploadedUrl = url;
       };
 
       uploader.ready = false; // hold processing until we trigger it
-      queue.enqueue(
+      await queue.enqueue(
         productionId: 'prod-1',
+        recordingId: 'rec-1',
         characterName: 'HAMLET',
         lineId: 'line-1',
         localPath: path,
@@ -138,6 +153,7 @@ void main() {
       expect(uploader.savedMetadataJobs.single.durationMs, 4200);
       expect(uploadedProduction, 'prod-1');
       expect(uploadedLine, 'line-1');
+      expect(uploadedRecording, 'rec-1');
       expect(uploadedUrl, contains('prod-1/HAMLET/line-1.m4a'));
     });
 
@@ -145,8 +161,9 @@ void main() {
       final path = await makeAudioFile('line-1');
       uploader.ready = false;
 
-      queue.enqueue(
+      await queue.enqueue(
         productionId: 'prod-1',
+        recordingId: 'rec-1',
         characterName: 'HAMLET',
         lineId: 'line-1',
         localPath: path,
@@ -160,8 +177,9 @@ void main() {
 
     test('drops job when local file is missing', () async {
       uploader.ready = false;
-      queue.enqueue(
+      await queue.enqueue(
         productionId: 'prod-1',
+        recordingId: 'rec-1',
         characterName: 'HAMLET',
         lineId: 'line-1',
         localPath: '${tempDir.path}/does-not-exist.m4a',
@@ -181,15 +199,17 @@ void main() {
       final newPath = await makeAudioFile('take-2');
       uploader.ready = false;
 
-      queue.enqueue(
+      await queue.enqueue(
         productionId: 'prod-1',
+        recordingId: 'rec-1',
         characterName: 'HAMLET',
         lineId: 'line-1',
         localPath: oldPath,
         durationMs: 1000,
       );
-      queue.enqueue(
+      await queue.enqueue(
         productionId: 'prod-1',
+        recordingId: 'rec-2',
         characterName: 'HAMLET',
         lineId: 'line-1',
         localPath: newPath,
@@ -201,8 +221,9 @@ void main() {
       expect(queue.pending.single.durationMs, 2000);
 
       // Different lines still queue separately
-      queue.enqueue(
+      await queue.enqueue(
         productionId: 'prod-1',
+        recordingId: 'rec-line-2',
         characterName: 'HAMLET',
         lineId: 'line-2',
         localPath: newPath,
@@ -214,8 +235,9 @@ void main() {
     test('failed uploads move to failed list and can be retried', () async {
       final path = await makeAudioFile('line-1');
       uploader.ready = false;
-      queue.enqueue(
+      await queue.enqueue(
         productionId: 'prod-1',
+        recordingId: 'rec-1',
         characterName: 'HAMLET',
         lineId: 'line-1',
         localPath: path,
@@ -243,8 +265,9 @@ void main() {
     test('metadata failure also counts as a failed attempt', () async {
       final path = await makeAudioFile('line-1');
       uploader.ready = false;
-      queue.enqueue(
+      await queue.enqueue(
         productionId: 'prod-1',
+        recordingId: 'rec-1',
         characterName: 'HAMLET',
         lineId: 'line-1',
         localPath: path,
@@ -265,8 +288,9 @@ void main() {
       queue.onGaveUp = (job, error) => abandoned = job;
 
       uploader.ready = false;
-      queue.enqueue(
+      await queue.enqueue(
         productionId: 'prod-1',
+        recordingId: 'rec-1',
         characterName: 'HAMLET',
         lineId: 'line-1',
         localPath: path,
@@ -287,18 +311,22 @@ void main() {
       expect(abandoned!.retryCount, 5);
     });
 
-    test(
-        're-recording while the old take is uploading keeps the new job '
+    test('re-recording while the old take is uploading keeps the new job '
         'and does not mark it uploaded with the stale URL', () async {
       final oldPath = await makeAudioFile('take-1');
       final newPath = await makeAudioFile('take-2');
 
       final uploadedUrls = <String>[];
-      queue.onUploaded = (prodId, lineId, url) => uploadedUrls.add(url);
+      final uploadedRecordingIds = <String>[];
+      queue.onUploaded = (prodId, lineId, recordingId, url) async {
+        uploadedRecordingIds.add(recordingId);
+        uploadedUrls.add(url);
+      };
 
       uploader.ready = false;
-      queue.enqueue(
+      await queue.enqueue(
         productionId: 'prod-1',
+        recordingId: 'rec-1',
         characterName: 'HAMLET',
         lineId: 'line-1',
         localPath: oldPath,
@@ -307,11 +335,12 @@ void main() {
 
       // While take-1 is in flight, the actor re-records the line.
       var replacedMidFlight = false;
-      uploader.onUploadStarted = (job) {
+      uploader.onUploadStarted = (job) async {
         if (!replacedMidFlight && job.localPath == oldPath) {
           replacedMidFlight = true;
-          queue.enqueue(
+          await queue.enqueue(
             productionId: 'prod-1',
+            recordingId: 'rec-2',
             characterName: 'HAMLET',
             lineId: 'line-1',
             localPath: newPath,
@@ -336,78 +365,85 @@ void main() {
       // job (both takes share the same remote path, but the old in-flight job
       // must not have claimed it).
       expect(uploadedUrls, hasLength(1));
+      expect(uploadedRecordingIds, ['rec-2']);
       expect(uploader.uploads.last.durationMs, 2000);
       expect(uploader.savedMetadataJobs.last.durationMs, 2000);
     });
 
-    test('queued uploads survive an app restart via the persistence file',
-        () async {
-      final persistPath = '${tempDir.path}/sync_queue.json';
-      final path1 = await makeAudioFile('line-1');
-      final path2 = await makeAudioFile('line-2');
-      final goneFilePath = '${tempDir.path}/deleted-later.m4a';
-      await File(goneFilePath).writeAsBytes(List.filled(64, 1));
+    test(
+      'queued uploads survive an app restart via the persistence file',
+      () async {
+        final persistPath = '${tempDir.path}/sync_queue.json';
+        final path1 = await makeAudioFile('line-1');
+        final path2 = await makeAudioFile('line-2');
+        final goneFilePath = '${tempDir.path}/deleted-later.m4a';
+        await File(goneFilePath).writeAsBytes(List.filled(64, 1));
 
-      final q1 = SyncQueue.forTesting(uploader, persistPath: persistPath);
-      uploader.ready = false; // offline — jobs stay queued
-      q1.enqueue(
-        productionId: 'prod-1',
-        characterName: 'HAMLET',
-        lineId: 'line-1',
-        localPath: path1,
-        durationMs: 1000,
-      );
-      q1.enqueue(
-        productionId: 'prod-1',
-        characterName: 'HAMLET',
-        lineId: 'line-2',
-        localPath: path2,
-        durationMs: 2000,
-      );
-      q1.enqueue(
-        productionId: 'prod-1',
-        characterName: 'HAMLET',
-        lineId: 'line-3',
-        localPath: goneFilePath,
-        durationMs: 500,
-      );
-      await q1.flushPersistence();
+        final q1 = SyncQueue.forTesting(uploader, persistPath: persistPath);
+        uploader.ready = false; // offline — jobs stay queued
+        await q1.enqueue(
+          productionId: 'prod-1',
+          recordingId: 'rec-1',
+          characterName: 'HAMLET',
+          lineId: 'line-1',
+          localPath: path1,
+          durationMs: 1000,
+        );
+        await q1.enqueue(
+          productionId: 'prod-1',
+          recordingId: 'rec-2',
+          characterName: 'HAMLET',
+          lineId: 'line-2',
+          localPath: path2,
+          durationMs: 2000,
+        );
+        await q1.enqueue(
+          productionId: 'prod-1',
+          recordingId: 'rec-3',
+          characterName: 'HAMLET',
+          lineId: 'line-3',
+          localPath: goneFilePath,
+          durationMs: 500,
+        );
+        await q1.flushPersistence();
 
-      // "App restart": new queue instance, audio for line-3 gone, and line-2
-      // was re-recorded live before the restore ran.
-      await File(goneFilePath).delete();
-      final uploader2 = FakeUploader()..ready = false;
-      final q2 = SyncQueue.forTesting(uploader2, persistPath: persistPath);
-      final newPath2 = await makeAudioFile('line-2-take2');
-      q2.enqueue(
-        productionId: 'prod-1',
-        characterName: 'HAMLET',
-        lineId: 'line-2',
-        localPath: newPath2,
-        durationMs: 2500,
-      );
-      await q2.flushPersistence();
+        // "App restart": new queue instance, audio for line-3 gone, and line-2
+        // was re-recorded live before the restore ran.
+        await File(goneFilePath).delete();
+        final uploader2 = FakeUploader()..ready = false;
+        final q2 = SyncQueue.forTesting(uploader2, persistPath: persistPath);
+        final newPath2 = await makeAudioFile('line-2-take2');
+        await q2.enqueue(
+          productionId: 'prod-1',
+          recordingId: 'rec-2-take2',
+          characterName: 'HAMLET',
+          lineId: 'line-2',
+          localPath: newPath2,
+          durationMs: 2500,
+        );
+        await q2.flushPersistence();
 
-      expect(q2.pending, hasLength(2)); // line-1 restored, line-2 live take
-      expect(
-        q2.pending.map((j) => j.localPath),
-        containsAll([path1, newPath2]),
-      );
-      expect(q2.pending.map((j) => j.lineId), isNot(contains('line-3')));
+        expect(q2.pending, hasLength(2)); // line-1 restored, line-2 live take
+        expect(
+          q2.pending.map((j) => j.localPath),
+          containsAll([path1, newPath2]),
+        );
+        expect(q2.pending.map((j) => j.lineId), isNot(contains('line-3')));
 
-      uploader2.ready = true;
-      await q2.processQueue();
-      expect(q2.pending, isEmpty);
-      expect(uploader2.uploads, hasLength(2));
-      q2.reset();
-    });
+        uploader2.ready = true;
+        await q2.processQueue();
+        expect(q2.pending, isEmpty);
+        expect(uploader2.uploads, hasLength(2));
+        q2.reset();
+      },
+    );
 
-    test('re-recording a permanently failed line re-queues it fresh',
-        () async {
+    test('re-recording a permanently failed line re-queues it fresh', () async {
       final path = await makeAudioFile('line-1');
       uploader.ready = false;
-      queue.enqueue(
+      await queue.enqueue(
         productionId: 'prod-1',
+        recordingId: 'rec-1',
         characterName: 'HAMLET',
         lineId: 'line-1',
         localPath: path,
@@ -423,8 +459,9 @@ void main() {
       uploader.failUpload = false;
       uploader.ready = false;
       final newPath = await makeAudioFile('take-2');
-      queue.enqueue(
+      await queue.enqueue(
         productionId: 'prod-1',
+        recordingId: 'rec-2',
         characterName: 'HAMLET',
         lineId: 'line-1',
         localPath: newPath,

@@ -3,6 +3,7 @@ import 'dart:isolate';
 import 'dart:math';
 import 'dart:math' as math;
 import 'dart:ui' as ui;
+import 'dart:typed_data';
 
 import 'package:flutter/foundation.dart';
 import 'package:google_mlkit_text_recognition/google_mlkit_text_recognition.dart';
@@ -25,35 +26,77 @@ import 'vision_ocr_channel.dart';
 class ScriptImportService {
   ScriptImportService();
 
-  final ScriptParser _parser = ScriptParser();
-
   /// Pages that could not be OCR'd during the most recent [importFromPdf]
   /// call. The import UI reads this to warn the user — a scan that silently
   /// lost 5 of 60 pages looks perfectly clean in the preview and the actor
   /// only finds out at rehearsal.
   int lastImportFailedPages = 0;
 
+  final ValueNotifier<OcrProgress?> _ocrProgress = ValueNotifier(null);
+  ValueListenable<OcrProgress?> get ocrProgress => _ocrProgress;
+
+  String? _activeOcrRequestId;
+  Future<void> Function()? _cancelActiveOcr;
+
+  /// Cancel the native whole-PDF OCR request currently owned by this service.
+  /// A completed/no-op request is harmless; cancellation never starts a
+  /// fallback engine.
+  Future<void> cancelActiveOcr() async {
+    await _cancelActiveOcr?.call();
+  }
+
+  VoidCallback _trackOcrJob(
+    String requestId,
+    ValueNotifier<OcrProgress?> progress,
+    Future<void> Function() cancel,
+  ) {
+    void forwardProgress() {
+      if (_activeOcrRequestId == requestId) {
+        _ocrProgress.value = progress.value;
+      }
+    }
+
+    _activeOcrRequestId = requestId;
+    _cancelActiveOcr = cancel;
+    progress.addListener(forwardProgress);
+    forwardProgress();
+    return () {
+      progress.removeListener(forwardProgress);
+      if (_activeOcrRequestId == requestId) {
+        _activeOcrRequestId = null;
+        _cancelActiveOcr = null;
+        _ocrProgress.value = null;
+      }
+    };
+  }
+
   /// Import a script from a text file (already OCR'd or plain text).
   Future<ParsedScript> importFromTextFile(String filePath) async {
+    lastImportFailedPages = 0;
     final file = File(filePath);
     final rawText = await file.readAsString();
     final title = _titleFromPath(filePath);
-    return _parser.parse(rawText, title: title);
+    return Isolate.run(() => ScriptParser().parse(rawText, title: title));
   }
 
-  /// Import from raw text string.
-  ParsedScript importFromText(String rawText, {String title = 'Untitled'}) {
-    return _parser.parse(rawText, title: title);
+  /// Import from raw text string without blocking the caller isolate.
+  Future<ParsedScript> importFromText(
+    String rawText, {
+    String title = 'Untitled',
+  }) {
+    lastImportFailedPages = 0;
+    return Isolate.run(() => ScriptParser().parse(rawText, title: title));
   }
 
   /// Import a script from a markdown file.
   /// Strips markdown formatting (bold, italic, headers, etc.) and parses.
   Future<ParsedScript> importFromMarkdownFile(String filePath) async {
+    lastImportFailedPages = 0;
     final file = File(filePath);
     var rawText = await file.readAsString();
     rawText = _stripMarkdown(rawText);
     final title = _titleFromPath(filePath);
-    return _parser.parse(rawText, title: title);
+    return Isolate.run(() => ScriptParser().parse(rawText, title: title));
   }
 
   /// Strip common markdown formatting to get clean script text.
@@ -83,97 +126,88 @@ class ScriptImportService {
   /// 2. If PDFKit returns text, parse it and check quality.
   /// 3. If the result looks bad (few characters, too many acts) or the PDF
   ///    has no embedded text (image-only), fall back to OCR pipeline.
-  Future<ParsedScript> importFromPdf(String pdfPath) async {
+  ///
+  /// Tests/tools that already ran native whole-PDF OCR may supply exactly one
+  /// completed result. The service then reuses those pages and performs the
+  /// normal cleanup, parsing, source mapping, and confidence scoring without
+  /// a second extraction/OCR pass.
+  Future<ParsedScript> importFromPdf(
+    String pdfPath, {
+    PaddlePdfResult? completedPaddleOcr,
+    VisionPdfResult? completedVisionOcr,
+  }) async {
+    if (completedPaddleOcr != null && completedVisionOcr != null) {
+      throw ArgumentError('Provide at most one completed PDF OCR result');
+    }
+    lastImportFailedPages = 0;
     return PerfService.instance.measure(
       'pdf_import',
-      () => _importFromPdfInner(pdfPath),
+      () => _importFromPdfInner(
+        pdfPath,
+        completedPaddleOcr: completedPaddleOcr,
+        completedVisionOcr: completedVisionOcr,
+      ),
     );
   }
 
-  Future<ParsedScript> _importFromPdfInner(String pdfPath) async {
+  Future<ParsedScript> _importFromPdfInner(
+    String pdfPath, {
+    PaddlePdfResult? completedPaddleOcr,
+    VisionPdfResult? completedVisionOcr,
+  }) async {
     final title = _titleFromPath(pdfPath);
-    lastImportFailedPages = 0; // set by the OCR path when pages fail
 
-    // Strategy 1: Try native PDFKit text extraction (text-based PDFs)
-    try {
-      final perPage = await PdfTextChannel.extractTextPerPage(pdfPath);
-      if (perPage != null && perPage.isNotEmpty) {
-        // Build combined text and track which raw line came from which page
-        final buffer = StringBuffer();
-        final linePageMap =
-            <int, int>{}; // raw line index → 1-based page number
-        var rawLineIdx = 0;
-
-        for (var pageIdx = 0; pageIdx < perPage.length; pageIdx++) {
-          final pageText = perPage[pageIdx];
-          final pageLines = pageText.split('\n');
-          for (final line in pageLines) {
-            buffer.writeln(line);
-            linePageMap[rawLineIdx] = pageIdx + 1; // 1-based
-            rawLineIdx++;
-          }
-        }
-
-        final nativeText = buffer.toString();
-        if (nativeText.trim().length > 200) {
-          debugPrint(
-            'PDF import: PDFKit extracted ${nativeText.length} chars from ${perPage.length} pages',
+    final hasCompletedOcr =
+        completedPaddleOcr != null || completedVisionOcr != null;
+    // A supplied native OCR result has already paid the full-document cost;
+    // consume it directly rather than extracting or OCR'ing the PDF again.
+    if (!hasCompletedOcr) {
+      try {
+        final perPage = await PdfTextChannel.extractTextPerPage(pdfPath);
+        if (perPage != null && perPage.isNotEmpty) {
+          final extractedLength = perPage.fold<int>(
+            0,
+            (total, pageText) => total + pageText.length,
           );
-          final cleanedText = _cleanPdfKitText(nativeText);
-          final nativeParser = ScriptParser();
-          final nativeResult = nativeParser.parse(cleanedText, title: title);
+          if (extractedLength > 200) {
+            debugPrint(
+              'PDF import: PDFKit extracted $extractedLength chars from ${perPage.length} pages',
+            );
+            // Hand only the native channel's plain per-page strings to the
+            // worker. It builds the combined text, page map, cleaned text,
+            // parsed model, and source mapping without a UI-isolate copy pass.
+            final nativeResult = await Isolate.run(
+              () => _parsePdfKitPages(perPage, title),
+            );
 
-          if (_isGoodParse(nativeResult)) {
-            // Map source page onto parsed lines. Forward cursor: parsed lines
-            // are in document order, so restarting the raw-line scan from 0
-            // for every line (the old behavior) was O(N·M).
-            final rawLines = nativeText.split('\n');
-            var rawSearchStart = 0;
-            final taggedLines = nativeResult.lines.map((line) {
-              final pageInfo = _findSourcePageFrom(
-                line.text,
-                rawLines,
-                linePageMap,
-                rawSearchStart,
+            if (_isGoodParse(nativeResult)) {
+              debugPrint(
+                'PDF import: Using PDFKit result '
+                '(${nativeResult.characters.length} characters, '
+                '${nativeResult.lines.where((l) => l.lineType == LineType.dialogue).length} lines)',
               );
-              if (pageInfo != null) {
-                rawSearchStart = pageInfo.rawLineIndex + 1;
-              }
-              return line.copyWith(
-                sourcePage: () => pageInfo?.page,
-                sourceLineOnPage: () => pageInfo?.lineOnPage,
-              );
-            }).toList();
+              return await _scoreConfidence(nativeResult);
+            }
 
             debugPrint(
-              'PDF import: Using PDFKit result '
-              '(${nativeResult.characters.length} characters, '
-              '${nativeResult.lines.where((l) => l.lineType == LineType.dialogue).length} lines)',
-            );
-            return await _scoreConfidence(
-              ParsedScript(
-                title: nativeResult.title,
-                lines: taggedLines,
-                characters: nativeResult.characters,
-                scenes: nativeResult.scenes,
-                rawText: nativeResult.rawText,
-              ),
+              'PDF import: PDFKit parse quality low '
+              '(${nativeResult.characters.length} chars, '
+              '${nativeResult.acts.length} acts), trying OCR...',
             );
           }
-
-          debugPrint(
-            'PDF import: PDFKit parse quality low '
-            '(${nativeResult.characters.length} chars, '
-            '${nativeResult.acts.length} acts), trying OCR...',
-          );
         }
+      } catch (e) {
+        debugPrint('PDF import: PDFKit extraction failed ($e), trying OCR...');
       }
-    } catch (e) {
-      debugPrint('PDF import: PDFKit extraction failed ($e), trying OCR...');
     }
 
-    // Strategy 2: OCR pipeline (image-based PDFs like scanned scripts)
-    final ocrResult = await _importFromPdfOcr(pdfPath, title: title);
+    // Strategy 2: OCR pipeline (or mapping of a supplied completed result).
+    final ocrResult = await _importFromPdfOcr(
+      pdfPath,
+      title: title,
+      completedPaddleOcr: completedPaddleOcr,
+      completedVisionOcr: completedVisionOcr,
+    );
     return await _scoreConfidence(ocrResult);
   }
 
@@ -225,7 +259,7 @@ class ScriptImportService {
   ///
   /// PDFKit preserves all text layers including Folger FTLN line numbers,
   /// running headers, and page numbers that confuse the script parser.
-  String _cleanPdfKitText(String text) {
+  static String _cleanPdfKitText(String text) {
     var cleaned = text;
 
     // Remove Folger FTLN line numbers (e.g., "FTLN 0042", "FTLN 0043 30")
@@ -290,8 +324,10 @@ class ScriptImportService {
     final firstCounts = <String, int>{};
     final lastCounts = <String, int>{};
     for (final page in pages) {
-      final texts =
-          page.lines.map((l) => l.text.trim()).where((t) => t.isNotEmpty).toList();
+      final texts = page.lines
+          .map((l) => l.text.trim())
+          .where((t) => t.isNotEmpty)
+          .toList();
       if (texts.isEmpty) continue;
       final fk = _furnitureKey(texts.first);
       final lk = _furnitureKey(texts.last);
@@ -326,8 +362,10 @@ class ScriptImportService {
     if (wide.isEmpty) return null;
     wide.sort();
     final cutoff = wide[(wide.length * 0.15).floor()] - 0.10;
-    final cands =
-        lines.where((l) => l.width < 0.30 && l.left < cutoff).map((l) => l.left).toList();
+    final cands = lines
+        .where((l) => l.width < 0.30 && l.left < cutoff)
+        .map((l) => l.left)
+        .toList();
     if (cands.length < 4) return null; // no consistent margin column
     cands.sort();
     if (cands.last - cands.first > 0.12) return null; // not tightly clustered
@@ -340,6 +378,8 @@ class ScriptImportService {
   Future<ParsedScript> _importFromPdfOcr(
     String pdfPath, {
     required String title,
+    PaddlePdfResult? completedPaddleOcr,
+    VisionPdfResult? completedVisionOcr,
   }) async {
     final buffer = StringBuffer();
     final lineConfidences = <int, double>{};
@@ -351,18 +391,30 @@ class ScriptImportService {
     // platform — one shared native code path (iOS + macOS use the same plugin)
     // so OCR behaviour can't diverge. Only if the native plugin is unavailable
     // or errors do we fall back: macOS → Apple Vision, iOS/Android → ML Kit.
-    PaddlePdfResult? paddleResult;
-    try {
-      paddleResult = await PaddleOcrChannel.ocrPdf(pdfPath);
-    } catch (e) {
-      // Loud, in the FIELD log: which engine actually ran decides OCR
-      // quality (Android has no Paddle plugin yet — every import there is
-      // the ML Kit fallback), and debugPrint never reaches debug reports.
-      DebugLogService.instance.log(
+    PaddlePdfResult? paddleResult = completedPaddleOcr;
+    if (paddleResult == null && completedVisionOcr == null) {
+      final paddleJob = PaddleOcrChannel.startPdf(pdfPath);
+      final finishPaddle = _trackOcrJob(
+        paddleJob.requestId,
+        paddleJob.progress,
+        paddleJob.cancel,
+      );
+      try {
+        paddleResult = await paddleJob.result;
+      } on OcrCancelledException {
+        rethrow;
+      } catch (e) {
+        // Loud, in the FIELD log: which engine actually ran decides OCR
+        // quality and debugPrint never reaches field debug reports.
+        DebugLogService.instance.log(
           LogCategory.general,
           'PDF OCR: PaddleOCR unavailable ($e) — falling back to '
-          '${Platform.isMacOS ? 'Vision' : 'ML Kit'}');
-      paddleResult = null;
+          '${Platform.isMacOS ? 'Vision' : 'ML Kit'}',
+        );
+        paddleResult = null;
+      } finally {
+        finishPaddle();
+      }
     }
 
     if (paddleResult != null) {
@@ -408,13 +460,25 @@ class ScriptImportService {
         'stripped $strippedMargin margin notes + $strippedFurniture running '
         'header/footer lines ${furniture.isEmpty ? '' : furniture.toList()}',
       );
-    } else if (Platform.isMacOS) {
-      // macOS fallback: single native call — PDFKit render + Vision OCR.
-      final pdfResult = await VisionOcrChannel.ocrPdf(pdfPath);
+    } else if (completedVisionOcr != null || Platform.isMacOS) {
+      VisionPdfResult? pdfResult = completedVisionOcr;
       if (pdfResult == null) {
-        throw Exception('PaddleOCR and Vision OCR plugins both unavailable');
+        // macOS fallback: single native call — PDFKit render + Vision OCR.
+        final visionJob = VisionOcrChannel.startPdf(pdfPath);
+        final finishVision = _trackOcrJob(
+          visionJob.requestId,
+          visionJob.progress,
+          visionJob.cancel,
+        );
+        try {
+          pdfResult = await visionJob.result;
+        } finally {
+          finishVision();
+        }
+        if (pdfResult == null) {
+          throw Exception('PaddleOCR and Vision OCR plugins both unavailable');
+        }
       }
-
       failedPages = pdfResult.failedPages;
       for (final page in pdfResult.pages) {
         for (final line in page.lines) {
@@ -467,13 +531,19 @@ class ScriptImportService {
               failedPages++;
               continue;
             }
-            final image = await pdfImage.createImage();
-            pdfImage.dispose();
-
-            final byteData = await image.toByteData(
-              format: ui.ImageByteFormat.png,
-            );
-            image.dispose();
+            late final ByteData? byteData;
+            try {
+              final image = await pdfImage.createImage();
+              try {
+                byteData = await image.toByteData(
+                  format: ui.ImageByteFormat.png,
+                );
+              } finally {
+                image.dispose();
+              }
+            } finally {
+              pdfImage.dispose();
+            }
 
             if (byteData == null) {
               debugPrint(
@@ -486,8 +556,12 @@ class ScriptImportService {
             // Respect the view's offset/length: toByteData may return a
             // view into a larger buffer, and asUint8List() on the bare
             // buffer would append trailing garbage that breaks OCR.
-            await tempFile.writeAsBytes(byteData.buffer
-                .asUint8List(byteData.offsetInBytes, byteData.lengthInBytes));
+            await tempFile.writeAsBytes(
+              byteData.buffer.asUint8List(
+                byteData.offsetInBytes,
+                byteData.lengthInBytes,
+              ),
+            );
 
             final inputImage = InputImage.fromFilePath(tempFile.path);
             final recognized = await textRecognizer.processImage(inputImage);
@@ -528,9 +602,11 @@ class ScriptImportService {
 
     lastImportFailedPages = failedPages;
     if (failedPages > 0) {
-      DebugLogService.instance.logError(LogCategory.error,
-          'PDF OCR: $failedPages page(s) failed — imported script is missing '
-          'their content');
+      DebugLogService.instance.logError(
+        LogCategory.error,
+        'PDF OCR: $failedPages page(s) failed — imported script is missing '
+        'their content',
+      );
     }
 
     final rawText = buffer.toString();
@@ -545,7 +621,111 @@ class ScriptImportService {
     // the UI isolate froze the import spinner right after the native OCR
     // finished. Everything captured/returned is plain data.
     return Isolate.run(
-        () => parseAndMapOcr(rawText, title, lineConfidences, linePageMap));
+      () => parseAndMapOcr(rawText, title, lineConfidences, linePageMap),
+    );
+  }
+
+  static ParsedScript _parsePdfKitPages(List<String> perPage, String title) {
+    final buffer = StringBuffer();
+    final linePageMap = <int, int>{};
+    var rawLineIndex = 0;
+    for (var pageIndex = 0; pageIndex < perPage.length; pageIndex++) {
+      for (final line in perPage[pageIndex].split('\n')) {
+        buffer.writeln(line);
+        linePageMap[rawLineIndex++] = pageIndex + 1;
+      }
+    }
+    final rawText = buffer.toString();
+    return parseAndMapPdfKit(
+      _cleanPdfKitText(rawText),
+      title,
+      rawText,
+      linePageMap,
+    );
+  }
+
+  /// Search two independently bounded windows. Joining the cursor and
+  /// document-position estimate into one range makes the scan grow toward
+  /// O(N²) after a long unmatched run.
+  static ({int index, double score})? _bestFromAnchors(
+    String target,
+    List<OcrMatchCandidate> candidates, {
+    required int cursor,
+    required int estimate,
+  }) {
+    const lookBehind = 40;
+    const lookAhead = 150;
+
+    ({int index, double score})? searchAt(int anchor) {
+      final start = math.max(0, anchor - lookBehind);
+      final end = math.min(candidates.length, anchor + lookAhead);
+      return OcrHighlightMatcher.bestPreparedMatch(
+        target,
+        candidates,
+        start: start,
+        end: end,
+      );
+    }
+
+    final cursorBest = searchAt(cursor);
+    if (estimate == cursor) return cursorBest;
+    final estimateBest = searchAt(estimate);
+    if (cursorBest == null) return estimateBest;
+    if (estimateBest == null || cursorBest.score >= estimateBest.score) {
+      return cursorBest;
+    }
+    return estimateBest;
+  }
+
+  /// Parse PDFKit text and attach one-based source page positions. Uses the
+  /// same dual-anchor matcher as OCR so an unmatched run cannot freeze the
+  /// forward cursor and strand every later line outside its search window.
+  @visibleForTesting
+  static ParsedScript parseAndMapPdfKit(
+    String cleanedText,
+    String title,
+    String rawText,
+    Map<int, int> linePageMap,
+  ) {
+    final script = ScriptParser().parse(cleanedText, title: title);
+    final rawLines = rawText.split('\n');
+    final candidates = OcrHighlightMatcher.prepareCandidates(rawLines);
+    var cursor = 0;
+    final parsedCount = script.lines.length;
+    final rawCount = rawLines.length;
+    var parsedIndex = -1;
+
+    final taggedLines = script.lines.map((line) {
+      parsedIndex++;
+      final estimate = parsedCount == 0
+          ? 0
+          : (parsedIndex * rawCount / parsedCount).round();
+      final best = _bestFromAnchors(
+        line.text,
+        candidates,
+        cursor: cursor,
+        estimate: estimate,
+      );
+      final rawIndex = best?.index;
+      if (rawIndex == null) return line;
+
+      cursor = rawIndex + 1;
+      final page = linePageMap[rawIndex];
+      if (page == null) return line;
+      return line.copyWith(
+        sourcePage: () => page,
+        sourceLineOnPage: () => _lineOnPage(linePageMap, rawIndex),
+      );
+    }).toList();
+    _inheritMissingPages(taggedLines);
+
+    return ParsedScript(
+      title: script.title,
+      lines: taggedLines,
+      characters: script.characters,
+      scenes: script.scenes,
+      rawText: script.rawText,
+    );
   }
 
   /// Parse OCR'd [rawText] and map per-raw-line OCR confidence + source page
@@ -573,6 +753,9 @@ class ScriptImportService {
     // vanished on the very lines that needed it (field, iPhone 2026-08-13).
     final rawLinesOriginal = rawText.split('\n');
     final rawLines = rawLinesOriginal.map(_normForMatch).toList();
+    final matchCandidates = OcrHighlightMatcher.prepareCandidates(
+      rawLinesOriginal,
+    );
 
     bool matches(String raw, String search) {
       if (raw.isEmpty || search.isEmpty) return false;
@@ -598,15 +781,12 @@ class ScriptImportService {
     // page across the whole script (field: every "View page" opened the
     // same overview page). A miss inside the window leaves the cursor
     // where it was — one bad line can't derail the rest.
-    const searchWindow = 150; // ~3-4 pages of raw lines
-
     var cursor = 0;
+
     // Parsed lines and raw lines both run in document order, so line i of N
-    // sits near raw line i/N × M. The window is anchored to BOTH the last
-    // match and this estimate: anchoring to the cursor alone (build 138)
-    // meant a run of unmatchable lines stalled it, after which the window
-    // could no longer reach the correct raw line and everything downstream
-    // failed too — measured, only 134 of 1187 lines mapped.
+    // sits near raw line i/N × M. Independently bounded cursor and estimate
+    // windows preserve locality while letting the estimate recover a stalled
+    // cursor without scanning the entire gap between them.
     final parsedCount = script.lines.length;
     final rawCount = rawLinesOriginal.length;
     var parsedIdx = -1;
@@ -622,22 +802,14 @@ class ScriptImportService {
       // flagged lines). Scoring comes from OcrHighlightMatcher, the same
       // code the viewer uses, so a mapped page is a page the viewer can
       // find the line on BY CONSTRUCTION.
-      final estimate =
-          parsedCount == 0 ? 0 : (parsedIdx * rawCount / parsedCount).round();
-      // Window spans BOTH anchors, with slack behind the earlier one. The
-      // cursor alone was a hard floor: one false strong match jumped it
-      // ahead and every later line was unfindable (the document-order
-      // estimate can't overshoot that way, so it pulls the window back).
-      final lowAnchor = math.min(cursor, estimate);
-      final highAnchor = math.max(cursor, estimate);
-      final rawStart = math.max(0, lowAnchor - 40);
-      final windowEnd = highAnchor + searchWindow;
-      final limit = windowEnd < rawLines.length ? windowEnd : rawLines.length;
-      final best = OcrHighlightMatcher.bestMatch(
+      final estimate = parsedCount == 0
+          ? 0
+          : (parsedIdx * rawCount / parsedCount).round();
+      final best = _bestFromAnchors(
         line.text,
-        rawLinesOriginal,
-        start: rawStart,
-        end: limit,
+        matchCandidates,
+        cursor: cursor,
+        estimate: estimate,
       );
       final matchStart = best?.index;
       if (matchStart == null) return line;
@@ -661,8 +833,9 @@ class ScriptImportService {
         ocrConfidence: avgConf != null ? () => avgConf : null,
         sourcePage: page != null ? () => page : null,
         // Real position within the page (1-based), not the old constant 0.
-        sourceLineOnPage:
-            page != null ? () => _lineOnPage(linePageMap, matchStart!) : null,
+        sourceLineOnPage: page != null
+            ? () => _lineOnPage(linePageMap, matchStart)
+            : null,
       );
     }).toList();
 
@@ -734,27 +907,6 @@ class ScriptImportService {
     }
   }
 
-  ({int page, int lineOnPage, int rawLineIndex})? _findSourcePageFrom(
-    String parsedText,
-    List<String> rawLines,
-    Map<int, int> linePageMap,
-    int startIndex,
-  ) {
-    final searchText = parsedText.trim().toLowerCase();
-    if (searchText.isEmpty) return null;
-
-    for (var i = startIndex; i < rawLines.length; i++) {
-      final rawTrimmed = rawLines[i].trim().toLowerCase();
-      if (rawTrimmed.isEmpty) continue;
-      final page = linePageMap[i];
-      if (page == null) continue;
-      if (rawTrimmed.contains(searchText) || searchText.contains(rawTrimmed)) {
-        return (page: page, lineOnPage: 0, rawLineIndex: i);
-      }
-    }
-    return null;
-  }
-
   /// Estimate OCR confidence for a line based on text heuristics.
   /// Returns 0.0 (garbage) to 1.0 (clean).
   // Compiled once — _estimateLineConfidence runs per OCR line on the ML Kit
@@ -774,10 +926,7 @@ class ScriptImportService {
     var score = 1.0;
 
     // 1. Ratio of alphanumeric + common punctuation vs junk characters
-    final cleanChars = trimmed.replaceAll(
-      _validCharRe,
-      '',
-    );
+    final cleanChars = trimmed.replaceAll(_validCharRe, '');
     final junkRatio = cleanChars.length / trimmed.length;
     if (junkRatio > 0.3)
       score -= 0.4;
@@ -820,8 +969,7 @@ class ScriptImportService {
     if (_quadRepeatRe.hasMatch(trimmed)) {
       score -= 0.3;
     } else if (_tripleRepeatRe.hasMatch(trimmed.toLowerCase())) {
-      final triples =
-          _tripleRepeatRe.allMatches(trimmed.toLowerCase()).length;
+      final triples = _tripleRepeatRe.allMatches(trimmed.toLowerCase()).length;
       if (triples > 1) score -= 0.15;
     }
 

@@ -148,7 +148,7 @@ class Generator {
     var f0New = F0Curve[.newAxis, 0..., 0...].transposed(0, 2, 1)
     f0New = f0Upsample(f0New)
 
-    var (harSource, _, _) = mSource(f0New)
+    var harSource = mSource(f0New)
 
     harSource = MLX.squeezed(harSource.transposed(0, 2, 1), axis: 1)
     let (harSpec, harPhase) = stft.transform(inputData: harSource)

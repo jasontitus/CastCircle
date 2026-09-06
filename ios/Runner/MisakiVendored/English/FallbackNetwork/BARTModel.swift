@@ -64,7 +64,6 @@ nonisolated final class BARTModel: Module {
     // Language model head
     self.lmHead = Linear(weight: weights["model.shared.weight"]!, bias: nil)
     
-    // This is not used
     self.logitBias = weights["final_logits_bias"]!
 
     self.positionIds =

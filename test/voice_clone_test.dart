@@ -73,13 +73,16 @@ void main() {
 
   group('VoiceCloneStatus', () {
     test('has all expected states', () {
-      expect(VoiceCloneStatus.values, containsAll([
-        VoiceCloneStatus.idle,
-        VoiceCloneStatus.extractingEmbedding,
-        VoiceCloneStatus.generating,
-        VoiceCloneStatus.complete,
-        VoiceCloneStatus.error,
-      ]));
+      expect(
+        VoiceCloneStatus.values,
+        containsAll([
+          VoiceCloneStatus.idle,
+          VoiceCloneStatus.extractingEmbedding,
+          VoiceCloneStatus.generating,
+          VoiceCloneStatus.complete,
+          VoiceCloneStatus.error,
+        ]),
+      );
     });
   });
 }

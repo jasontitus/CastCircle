@@ -1,9 +1,15 @@
+import 'dart:async';
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/responsive.dart';
+import '../../core/toast.dart';
+import '../../data/services/debug_log_service.dart';
 import '../../data/services/model_download_service.dart';
 import '../../data/services/model_manager.dart';
+import '../../data/services/tts_service.dart';
 
 class ModelDownloadScreen extends ConsumerStatefulWidget {
   const ModelDownloadScreen({super.key});
@@ -23,64 +29,151 @@ class _ModelDownloadScreenState extends ConsumerState<ModelDownloadScreen> {
   // Per-model progress for parallel downloads
   final Map<String, double> _modelProgress = {};
 
-  bool _kokoroReady = false;
+  bool _allReady = false;
+  bool get _usesIosMlx => Platform.isIOS;
+  bool get _supportsModelDownloads => Platform.isIOS || Platform.isAndroid;
+
+  Iterable<AiModel> get _trackedServiceModels {
+    final subdir = _usesIosMlx
+        ? 'kokoro_mlx'
+        : Platform.isAndroid
+        ? 'live_asr'
+        : null;
+    if (subdir == null) return const Iterable<AiModel>.empty();
+    return ModelDownloadService.availableModels.where(
+      (model) => model.subdir == subdir,
+    );
+  }
+
+  String? get _trackedServiceError {
+    final errors = <String>[];
+    for (final model in _trackedServiceModels) {
+      final state = _downloadService.getState(model.id);
+      if (state.status == ModelStatus.error) {
+        errors.add('${model.name}: ${state.errorMessage ?? 'Unknown error'}');
+      }
+    }
+    return errors.isEmpty ? null : errors.join('; ');
+  }
 
   @override
   void initState() {
     super.initState();
-    _downloadService.addListener(_onDownloadUpdate);
+    if (_supportsModelDownloads) {
+      _downloadService.addListener(_onDownloadUpdate);
+    }
     _checkStatus();
   }
 
   @override
   void dispose() {
-    _downloadService.removeListener(_onDownloadUpdate);
+    if (_supportsModelDownloads) {
+      _downloadService.removeListener(_onDownloadUpdate);
+    }
     super.dispose();
   }
 
   void _onDownloadUpdate() {
     if (!mounted) return;
-    setState(() {});
+    final states = {
+      for (final model in _trackedServiceModels)
+        model: _downloadService.getState(model.id),
+    };
+    final downloading = states.values.any(
+      (state) => state.status == ModelStatus.downloading,
+    );
+    final error = _trackedServiceError;
+
+    setState(() {
+      for (final entry in states.entries) {
+        final state = entry.value;
+        if (state.status == ModelStatus.downloading ||
+            state.status == ModelStatus.downloaded) {
+          _modelProgress[entry.key.name] = state.progress;
+        }
+      }
+      if (_usesIosMlx) _downloading = downloading;
+      if (error != null) _error = error;
+    });
+    if (_usesIosMlx && !downloading) unawaited(_checkStatus());
   }
 
   Future<void> _checkStatus() async {
-    final kokoro = await _manager.isKokoroReady();
-    if (mounted) {
-      setState(() {
-        _kokoroReady = kokoro;
-      });
+    if (!_supportsModelDownloads) {
+      if (mounted) {
+        setState(() {
+          _allReady = true;
+          _error = null;
+        });
+      }
+      return;
+    }
+
+    try {
+      final ready = await _manager.isAllReady();
+      final serviceError = _trackedServiceError;
+      if (mounted) {
+        setState(() {
+          _allReady = ready;
+          _error = serviceError;
+        });
+      }
+    } catch (error, stack) {
+      DebugLogService.instance.logError(
+        LogCategory.ai,
+        'Could not check model status',
+        error,
+        stack,
+      );
+      if (mounted) {
+        setState(() => _error = 'Could not check model status: $error');
+      }
     }
   }
 
   Future<void> _downloadAll() async {
+    if (!_supportsModelDownloads) return;
     setState(() {
       _downloading = true;
       _error = null;
+      _modelProgress.clear();
     });
 
     try {
-      await _manager.downloadAll(
-        onProgress: (model, file, progress) {
-          if (mounted) {
-            setState(() {
-              _modelProgress[model] = progress;
-            });
-          }
-        },
+      if (_usesIosMlx) {
+        await _downloadService.downloadKokoro();
+        final error = _trackedServiceError;
+        if (error != null) throw StateError(error);
+      } else {
+        await _manager.downloadAll(
+          onProgress: (model, file, progress) {
+            if (mounted) {
+              setState(() {
+                _modelProgress[model] = progress;
+              });
+            }
+          },
+        );
+        final error = _trackedServiceError;
+        if (error != null) throw StateError(error);
+        await _checkStatus();
+      }
+    } catch (error, stack) {
+      DebugLogService.instance.logError(
+        LogCategory.ai,
+        'Model download failed',
+        error,
+        stack,
       );
-
-      // Don't reload models here — loading large ONNX files into memory
-      // right after downloading can exceed iOS memory limits and crash.
-      // Models will be loaded on next app launch.
-      await _checkStatus();
-    } catch (e) {
       if (mounted) {
         setState(() {
-          _error = e.toString();
+          _error = error.toString();
         });
       }
     } finally {
-      if (mounted) {
+      if (mounted &&
+          (!_usesIosMlx ||
+              !_downloadServiceStatesContain(ModelStatus.downloading))) {
         setState(() {
           _downloading = false;
         });
@@ -88,11 +181,67 @@ class _ModelDownloadScreenState extends ConsumerState<ModelDownloadScreen> {
     }
   }
 
+  bool _downloadServiceStatesContain(ModelStatus status) {
+    return _trackedServiceModels
+        .map((model) => _downloadService.getState(model.id).status)
+        .contains(status);
+  }
+
+  String get _kokoroDownloadSize {
+    final bytes = ModelDownloadService.availableModels
+        .where((model) => model.subdir == 'kokoro_mlx')
+        .fold<int>(0, (total, model) => total + model.sizeBytes);
+    final roundedToTenMb = (bytes / 10000000).round() * 10;
+    return '~$roundedToTenMb MB';
+  }
+
+  String get _totalDownloadSize {
+    if (_usesIosMlx) return _kokoroDownloadSize;
+    if (!Platform.isAndroid) return 'No download';
+    final asrBytes = ModelDownloadService.availableModels
+        .where((model) => model.subdir == 'live_asr')
+        .fold<int>(0, (total, model) => total + model.sizeBytes);
+    // The Android Kokoro pack is the same approximately 180 MB shown on its
+    // dedicated model-management tile.
+    final roundedToTenMb = ((180000000 + asrBytes) / 10000000).round() * 10;
+    return '~$roundedToTenMb MB';
+  }
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final allReady = _kokoroReady;
-
+    if (!_supportsModelDownloads) {
+      return Scaffold(
+        appBar: AppBar(title: const Text('AI Models')),
+        body: ContentConstraint(
+          maxWidth: 700,
+          child: ListView(
+            padding: const EdgeInsets.all(16),
+            children: [
+              Text('System text-to-speech', style: theme.textTheme.bodyLarge),
+              const SizedBox(height: 8),
+              Text(
+                'This platform uses its built-in system voices. '
+                'No on-device AI model download is available or required.',
+                style: theme.textTheme.bodySmall?.copyWith(
+                  color: theme.colorScheme.onSurface.withValues(alpha: 0.6),
+                ),
+              ),
+              const SizedBox(height: 24),
+              _modelCard(
+                context,
+                title: 'System voices',
+                subtitle: 'Provided by the operating system',
+                size: 'No download',
+                ready: true,
+                icon: Icons.record_voice_over,
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+    final allReady = _allReady;
     return Scaffold(
       appBar: AppBar(title: const Text('AI Models')),
       body: ContentConstraint(
@@ -115,10 +264,14 @@ class _ModelDownloadScreenState extends ConsumerState<ModelDownloadScreen> {
             const SizedBox(height: 24),
             _modelCard(
               context,
-              title: 'Kokoro TTS',
-              subtitle: 'Neural text-to-speech (54 voices)',
-              size: '~341 MB',
-              ready: _kokoroReady,
+              title: Platform.isAndroid
+                  ? 'Kokoro TTS + Live Matching'
+                  : 'Kokoro TTS',
+              subtitle: Platform.isAndroid
+                  ? 'Neural speech and live line recognition'
+                  : 'Neural text-to-speech (28 voices)',
+              size: _totalDownloadSize,
+              ready: _allReady,
               icon: Icons.record_voice_over,
             ),
             const SizedBox(height: 24),
@@ -174,7 +327,7 @@ class _ModelDownloadScreenState extends ConsumerState<ModelDownloadScreen> {
                   child: Column(
                     children: [
                       Text(
-                        'Download failed',
+                        'Model operation failed',
                         style: theme.textTheme.titleSmall,
                       ),
                       const SizedBox(height: 4),
@@ -199,8 +352,7 @@ class _ModelDownloadScreenState extends ConsumerState<ModelDownloadScreen> {
               ),
               const SizedBox(height: 8),
               Text(
-                'Total download: ~341 MB. Wi-Fi recommended.',
-                textAlign: TextAlign.center,
+                'Total download: $_totalDownloadSize. Wi-Fi recommended.',
                 style: theme.textTheme.bodySmall?.copyWith(
                   color: theme.colorScheme.onSurface.withValues(alpha: 0.5),
                 ),
@@ -249,9 +401,35 @@ class _ModelDownloadScreenState extends ConsumerState<ModelDownloadScreen> {
                       ],
                     ),
                   );
-                  if (confirm == true) {
-                    await _manager.clearCache();
+                  if (confirm != true) return;
+                  try {
+                    await TtsService.instance.unloadKokoro();
+                    if (_usesIosMlx) {
+                      await _downloadService.deleteKokoro();
+                    } else {
+                      await _manager.clearCache();
+                    }
                     await _checkStatus();
+                  } catch (error, stack) {
+                    DebugLogService.instance.logError(
+                      LogCategory.ai,
+                      'Could not clear downloaded models',
+                      error,
+                      stack,
+                    );
+                    if (mounted) {
+                      setState(() {
+                        _error = 'Could not clear downloaded models: $error';
+                      });
+                      ScaffoldMessenger.of(context).showAutoToast(
+                        SnackBar(
+                          content: Text(
+                            'Could not clear downloaded models: $error',
+                          ),
+                          backgroundColor: Colors.red,
+                        ),
+                      );
+                    }
                   }
                 },
                 child: const Text('Clear Downloaded Models'),

@@ -139,8 +139,26 @@ final class Lexicon {
   }
   
   func transcribe(_ token: MToken, ctx: TokenContext) -> (String?, Int?) {
-    var word = token.text
-    if let alias = token.`_`.alias { word = alias }
+    transcribe(
+      token.`_`.alias ?? token.text,
+      tag: token.tag,
+      featureStress: token.`_`.stress,
+      currency: token.`_`.currency,
+      isHead: token.`_`.is_head,
+      numFlags: token.`_`.num_flags,
+      ctx: ctx)
+  }
+
+  func transcribe(
+    _ input: String,
+    tag: NLTag?,
+    featureStress: Double?,
+    currency: String?,
+    isHead: Bool,
+    numFlags: String,
+    ctx: TokenContext) -> (String?, Int?)
+  {
+    var word = input
     word = word.replacingOccurrences(of: String(UnicodeScalar(8216)!), with: "'")
                .replacingOccurrences(of: String(UnicodeScalar(8217)!), with: "'")
     word = word.precomposedStringWithCompatibilityMapping
@@ -148,12 +166,12 @@ final class Lexicon {
     word = String(word.map { unicodeNumericIfNeeded($0) } )
     
     let stress: Double? = (word == word.lowercased() ? nil : (word == word.uppercased() ? capStresses.1 : capStresses.0))
-    let res = getWord(word, tag: token.tag, stress: stress, ctx: ctx)
+    let res = getWord(word, tag: tag, stress: stress, ctx: ctx)
     if let phoneme = res.phoneme {
-      return (Lexicon.applyStress(appendCurrency(phoneme, currency: token.`_`.currency), stress: token.`_`.stress), res.rating)
-    } else if isNumber(word: word, is_head: token.`_`.is_head) {
-      let num = getNumber(word, currency: token.`_`.currency, is_head: token.`_`.is_head, num_flags: token.`_`.num_flags)
-      return (Lexicon.applyStress(num.0, stress: token.`_`.stress), num.1)
+      return (Lexicon.applyStress(appendCurrency(phoneme, currency: currency), stress: featureStress), res.rating)
+    } else if isNumber(word: word, is_head: isHead) {
+      let num = getNumber(word, currency: currency, is_head: isHead, num_flags: numFlags)
+      return (Lexicon.applyStress(num.0, stress: featureStress), num.1)
     } else if !word.unicodeScalars.allSatisfy({ Lexicon.lexiconOrdinals.contains(Int($0.value)) }) {
       return (nil, nil)
     }
@@ -311,7 +329,7 @@ final class Lexicon {
   
   /// Spells out acronyms, abbreviations and proper nouns letter-by-letter
   private func getNNP(_ word: String) -> (phoneme: String?, rating: Int?) {
-    let pieces: [String?] = word.compactMap { ch in
+    let pieces: [String?] = word.map { ch in
       if ch.isLetter {
         let s = String(ch).uppercased()
         if let v = golds[s] as? String { return v }

@@ -17,7 +17,7 @@ struct EnglishNum2Word {
     (1000, "thousand"), (100, "hundred"),
     (90, "ninety"), (80, "eighty"), (70, "seventy"),
     (60, "sixty"), (50, "fifty"), (40, "forty"),
-    (30, "thirty")
+    (30, "thirty"), (20, "twenty")
   ]
   
   private let lowNumWords = [
@@ -35,26 +35,24 @@ struct EnglishNum2Word {
     "ten": "tenth", "eleven": "eleventh", "twelve": "twelfth"
   ]
   
-  private var cards: [Int: String] = [:]
-  // cards sorted largest-first, computed once (toCardinal recurses; sorting
-  // inside it re-sorted the table on every recursion level).
-  private var cardsDescending: [(Int, String)] = []
+  // Cards sorted largest-first, computed once (toCardinal recurses; sorting
+  // inside it would re-sort the table on every recursion level).
+  private let cardsDescending: [(UInt, String)]
 
   init() {
     // Initialize high number words
-    var cards: [Int: String] = [:]
+    var cards: [UInt: String] = [:]
     let highWords = ["m", "b", "tr", "quadr", "quint", "sext", "sept", "oct", "non", "dec"]
     for (index, word) in highWords.enumerated() {
       let power = 6 + (index * 3)
       let val = pow(10.0, Double(power))
-      if val <= Double(Int.max) {
-        let intVal: Int = Int(val)
+      if val <= Double(UInt.max) {
+        let intVal = UInt(val)
         cards[intVal] = word + "illion"
       } else {
         // Currently really, really large numbers are not handled
       }      
     }
-    self.cards = cards
     self.cardsDescending = cards.sorted { $0.key > $1.key }.map { ($0.key, $0.value) }
   }
   
@@ -109,11 +107,14 @@ struct EnglishNum2Word {
   
   private func toCardinal(_ number: Int) -> String {
     if number < 0 {
-      return negWord + toCardinal(abs(number))
+      return negWord + toCardinal(number.magnitude)
     }
-    
+    return toCardinal(UInt(number))
+  }
+
+  private func toCardinal(_ number: UInt) -> String {
     if number < 21 {
-      return lowNumWords[20 - number]
+      return lowNumWords[20 - Int(number)]
     }
     
     // Handle numbers from 21-99
@@ -121,10 +122,10 @@ struct EnglishNum2Word {
       let tens = (number / 10) * 10
       let ones = number % 10
       if ones == 0 {
-        return midNumWords.first { $0.0 == tens }?.1 ?? ""
+        return midNumWords.first { UInt($0.0) == tens }?.1 ?? ""
       } else {
-        let tensWord = midNumWords.first { $0.0 == tens }?.1 ?? ""
-        let onesWord = lowNumWords[20 - ones]
+        let tensWord = midNumWords.first { UInt($0.0) == tens }?.1 ?? ""
+        let onesWord = lowNumWords[20 - Int(ones)]
         return "\(tensWord)-\(onesWord)"
       }
     }
@@ -140,22 +141,9 @@ struct EnglishNum2Word {
         return "\(hundredsWord) and \(toCardinal(remainder))"
       }
     }
-    
-    // Handle thousands and higher (midNumWords is declared largest-first)
-    for (value, word) in midNumWords {
-      if number >= value {
-        let quotient = number / value
-        let remainder = number % value
-        let quotientWord = toCardinal(quotient)
-        if remainder == 0 {
-          return "\(quotientWord) \(word)"
-        } else {
-          return "\(quotientWord) \(word), \(toCardinal(remainder))"
-        }
-      }
-    }
-    
-    // Handle very large numbers using cards
+
+    // High cards must precede thousand: every million-scale value also
+    // satisfies the thousand branch.
     for (value, word) in cardsDescending {
       if number >= value {
         let quotient = number / value
@@ -169,16 +157,30 @@ struct EnglishNum2Word {
       }
     }
     
+    // Handle thousands after the larger cards.
+    for (value, word) in midNumWords {
+      let unsignedValue = UInt(value)
+      if number >= unsignedValue {
+        let quotient = number / unsignedValue
+        let remainder = number % unsignedValue
+        let quotientWord = toCardinal(quotient)
+        if remainder == 0 {
+          return "\(quotientWord) \(word)"
+        } else {
+          return "\(quotientWord) \(word), \(toCardinal(remainder))"
+        }
+      }
+    }
+
     return ""
   }
   
   private func toYear(_ yearDecimal: Decimal, suffix: String? = nil, longVal: Bool = true) -> String {
     let year = NSDecimalNumber(decimal: yearDecimal).intValue
-    var val = year
+    let val = year.magnitude
     var finalSuffix = suffix
     
-    if val < 0 {
-      val = abs(val)
+    if year < 0 {
       finalSuffix = finalSuffix ?? "BC"
     }
     
@@ -217,12 +219,15 @@ struct EnglishNum2Word {
       return toCardinal(integerPart)
     }
     
-    let integerWords = toCardinal(integerPart)
-    
-    // Remove "0."
-    let fractionalString = "\(fractionalPart)".dropFirst(2)
-    let fractionalWords = fractionalString.map { toCardinal(Int(String($0)) ?? 0) }.joined(separator: " ")
-    
+    var integerWords = toCardinal(integerPart)
+    if integerPart == 0, number < 0 {
+      integerWords = negWord + integerWords
+    }
+
+    let fractionalMagnitude = fractionalPart < 0 ? -fractionalPart : fractionalPart
+    let fractionalDescription = "\(fractionalMagnitude)"
+    let fractionalDigits = fractionalDescription.drop(while: { $0 != "." }).dropFirst()
+    let fractionalWords = fractionalDigits.map { toCardinal(Int(String($0)) ?? 0) }.joined(separator: " ")
     return "\(integerWords) \(pointWord) \(fractionalWords)"
   }
   

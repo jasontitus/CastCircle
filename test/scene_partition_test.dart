@@ -20,15 +20,28 @@ void main() {
     // 1. Ranges are ordered, non-overlapping and in-bounds.
     var prevEnd = -1;
     for (final s in scenes) {
-      expect(s.startLineIndex, greaterThanOrEqualTo(0),
-          reason: '$label: ${s.sceneName} start out of bounds');
-      expect(s.endLineIndex, lessThan(script.lines.length),
-          reason: '$label: ${s.sceneName} end past the last line');
-      expect(s.startLineIndex, lessThanOrEqualTo(s.endLineIndex),
-          reason: '$label: ${s.sceneName} inverted range');
-      expect(s.startLineIndex, greaterThan(prevEnd),
-          reason: '$label: ${s.sceneName} overlaps the previous scene — '
-              'rehearsal would replay/skip lines');
+      expect(
+        s.startLineIndex,
+        greaterThanOrEqualTo(0),
+        reason: '$label: ${s.sceneName} start out of bounds',
+      );
+      expect(
+        s.endLineIndex,
+        lessThan(script.lines.length),
+        reason: '$label: ${s.sceneName} end past the last line',
+      );
+      expect(
+        s.startLineIndex,
+        lessThanOrEqualTo(s.endLineIndex),
+        reason: '$label: ${s.sceneName} inverted range',
+      );
+      expect(
+        s.startLineIndex,
+        greaterThan(prevEnd),
+        reason:
+            '$label: ${s.sceneName} overlaps the previous scene — '
+            'rehearsal would replay/skip lines',
+      );
       prevEnd = s.endLineIndex;
     }
 
@@ -36,11 +49,17 @@ void main() {
     //    indices, in script order (no dialogue silently reordered).
     for (final s in scenes) {
       final slice = script.linesInScene(s);
-      expect(slice.length, s.endLineIndex - s.startLineIndex + 1,
-          reason: '$label: ${s.sceneName} slice length mismatch');
+      expect(
+        slice.length,
+        s.endLineIndex - s.startLineIndex + 1,
+        reason: '$label: ${s.sceneName} slice length mismatch',
+      );
       for (var i = 0; i < slice.length; i++) {
-        expect(identical(slice[i], script.lines[s.startLineIndex + i]), true,
-            reason: '$label: ${s.sceneName} slice is not the script order');
+        expect(
+          identical(slice[i], script.lines[s.startLineIndex + i]),
+          true,
+          reason: '$label: ${s.sceneName} slice is not the script order',
+        );
       }
     }
 
@@ -51,9 +70,13 @@ void main() {
       for (final l in script.linesInScene(s)) {
         if (l.lineType != LineType.dialogue) continue;
         if (l.act.isEmpty || s.act.isEmpty) continue;
-        expect(l.act, s.act,
-            reason: '$label: "${l.text.substring(0, l.text.length.clamp(0, 30))}" '
-                '(act ${l.act}) sits inside ${s.sceneName} (act ${s.act})');
+        expect(
+          l.act,
+          s.act,
+          reason:
+              '$label: "${l.text.substring(0, l.text.length.clamp(0, 30))}" '
+              '(act ${l.act}) sits inside ${s.sceneName} (act ${s.act})',
+        );
       }
     }
   }
@@ -83,8 +106,10 @@ void main() {
         .toList();
     expect(texts, isNotEmpty);
     for (final f in texts) {
-      final script =
-          ScriptParser().parse(f.readAsStringSync(), title: 'corpus');
+      final script = ScriptParser().parse(
+        f.readAsStringSync(),
+        title: 'corpus',
+      );
       checkPartition(script, f.uri.pathSegments.last);
     }
   });
@@ -110,15 +135,23 @@ BINGLEY. Come, Darcy, I hate to see you standing about by yourself.
 DARCY. You know how I detest it unless I am particularly acquainted with my partner.
 ''';
     final script = ScriptParser().parse(text, title: 'seam');
-    final ball = script.scenes.firstWhere((s) => s.location == 'Ball',
-        orElse: () => throw StateError('no Ball scene: '
-            '\${script.scenes.map((s) => s.sceneName).toList()}'));
+    final ball = script.scenes.firstWhere(
+      (s) => s.location == 'Ball',
+      orElse: () => throw StateError(
+        'no Ball scene: '
+        '${script.scenes.map((s) => s.sceneName).toList()}',
+      ),
+    );
     final firstDialogue = script
         .linesInScene(ball)
         .firstWhere((l) => l.lineType == LineType.dialogue);
-    expect(firstDialogue.character, 'BINGLEY',
-        reason: 'the Ball scene must start at the arrival direction, not at '
-            'the announcement — got "\${firstDialogue.text}"');
+    expect(
+      firstDialogue.character,
+      'BINGLEY',
+      reason:
+          'the Ball scene must start at the arrival direction, not at '
+          'the announcement — got "${firstDialogue.text}"',
+    );
     checkPartition(script, 'seam');
   });
 }

@@ -22,13 +22,9 @@ class LiveAsrService {
 
   final _dlog = DebugLogService.instance;
 
-  Isolate? _isolate;
-  SendPort? _toIsolate;
-  StreamSubscription? _fromIsolateSub;
+  _LiveAsrSession? _session;
   Future<bool>? _starting;
-  // Incremented by stop(); a start that began before the stop must not
-  // resurrect state afterwards (a stop mid-load used to leave ensureStarted
-  // returning a doomed future for 30 s).
+  Future<void>? _stopping;
   var _epoch = 0;
 
   /// Cumulative transcript of the current utterance, called on every change.
@@ -36,116 +32,241 @@ class LiveAsrService {
 
   /// Current utterance id. Partials are tagged with the utterance they came
   /// from and stale ones are dropped: the isolate may still be decoding line
-  /// N's flush when line N+1 starts, and without the tag line N's words were
-  /// delivered — and scored — against line N+1 (seen in the field).
+  /// N's flush when line N+1 starts.
   var _uid = 0;
 
-  bool get isRunning => _toIsolate != null;
+  bool get isRunning => _session?.ready ?? false;
+
+  SendPort? get _readyPort {
+    final session = _session;
+    return session?.ready == true ? session?.sendPort : null;
+  }
 
   /// Spawn the recognizer isolate if the model files are present. Safe to call
   /// repeatedly; concurrent calls share one startup. Returns false (loudly,
   /// via debug log) when the model isn't downloaded or failed to load.
   Future<bool> ensureStarted() {
-    if (_toIsolate != null) return Future.value(true);
+    if (isRunning) return Future.value(true);
+    final stopping = _stopping;
+    if (stopping != null) {
+      return stopping.then((_) => ensureStarted());
+    }
     if (_starting != null) return _starting!;
-    late final Future<bool> f;
-    f = _start().whenComplete(() {
-      // Only clear our own registration — stop() may have already replaced
-      // it with a fresh start that must not be wiped by this doomed one.
-      if (identical(_starting, f)) _starting = null;
+    late final Future<bool> future;
+    future = _start().whenComplete(() {
+      if (identical(_starting, future)) _starting = null;
     });
-    return _starting = f;
+    return _starting = future;
   }
 
   Future<bool> _start() async {
     final epoch = _epoch;
     final dir = await ModelDownloadService.instance.getLiveAsrModelDir();
+    if (epoch != _epoch) return false;
     if (dir == null) {
-      _dlog.log(LogCategory.stt,
-          'LiveASR: model not downloaded — live matching unavailable');
+      _dlog.log(
+        LogCategory.stt,
+        'LiveASR: model not downloaded — live matching unavailable',
+      );
       return false;
     }
 
-    final fromIsolate = ReceivePort();
-    final ready = Completer<bool>();
-    late final Isolate spawned;
-    try {
-      spawned = await Isolate.spawn(_isolateMain, _IsolateArgs(
-        sendPort: fromIsolate.sendPort,
-        encoder: '$dir/encoder.onnx',
-        decoder: '$dir/decoder.onnx',
-        joiner: '$dir/joiner.onnx',
-        tokens: '$dir/tokens.txt',
-      ));
-    } catch (e) {
-      _dlog.logError(LogCategory.stt, 'LiveASR: isolate spawn failed', e);
-      fromIsolate.close();
-      return false;
-    }
-    if (epoch != _epoch) {
-      // stop() ran while we were loading — this instance is orphaned.
-      spawned.kill(priority: Isolate.immediate);
-      fromIsolate.close();
-      return false;
-    }
-    _isolate = spawned;
+    final session = _LiveAsrSession();
+    _session = session;
 
-    _fromIsolateSub = fromIsolate.listen((msg) {
-      if (epoch != _epoch) return; // stopped since — ignore everything
-      if (msg is SendPort) {
-        _toIsolate = msg;
-      } else if (msg is Map) {
-        if (msg['ready'] == true && !ready.isCompleted) {
-          ready.complete(true);
-        } else if (msg.containsKey('error')) {
-          _dlog.logError(LogCategory.stt, 'LiveASR: ${msg['error']}');
-          if (!ready.isCompleted) ready.complete(false);
-        } else if (msg.containsKey('partial')) {
-          if (msg['uid'] == _uid) {
-            onPartial?.call(msg['partial'] as String);
-          }
+    session.fromSubscription = session.fromPort.listen((message) {
+      if (message is SendPort) {
+        if (!session.controlPort.isCompleted) {
+          session.controlPort.complete(message);
         }
+        if (identical(_session, session) && epoch == _epoch) {
+          session.sendPort = message;
+        }
+        return;
+      }
+      if (message is! Map) return;
+      if (message['disposed'] == true) {
+        if (!session.disposed.isCompleted) session.disposed.complete();
+        return;
+      }
+      if (!identical(_session, session) || epoch != _epoch) return;
+      if (message['ready'] == true) {
+        session.ready = true;
+        if (!session.readySignal.isCompleted) {
+          session.readySignal.complete(true);
+        }
+      } else if (message.containsKey('error')) {
+        _dlog.logError(LogCategory.stt, 'LiveASR: ${message['error']}');
+        if (!session.readySignal.isCompleted) {
+          session.readySignal.complete(false);
+        }
+      } else if (message.containsKey('partial') && message['uid'] == _uid) {
+        onPartial?.call(message['partial'] as String);
       }
     });
+    session.errorSubscription = session.errorPort.listen((error) {
+      if (!identical(_session, session) || epoch != _epoch) return;
+      _dlog.logError(LogCategory.stt, 'LiveASR: isolate error', error);
+      if (!session.readySignal.isCompleted) {
+        session.readySignal.complete(false);
+      }
+    });
+    session.exitSubscription = session.exitPort.listen((_) {
+      if (!identical(_session, session) || epoch != _epoch) return;
+      final wasReady = session.ready;
+      session.ready = false;
+      _session = null;
+      _epoch++;
+      if (!session.readySignal.isCompleted) {
+        session.readySignal.complete(false);
+      }
+      _dlog.logError(
+        LogCategory.stt,
+        wasReady
+            ? 'LiveASR: recognizer isolate exited unexpectedly'
+            : 'LiveASR: recognizer isolate exited during startup',
+      );
+      unawaited(session.close());
+    });
 
-    final ok = await ready.future
-        .timeout(const Duration(seconds: 30), onTimeout: () => false);
-    if (epoch != _epoch) return false; // stopped while loading
+    late final Isolate spawned;
+    try {
+      spawned = await Isolate.spawn(
+        _isolateMain,
+        _IsolateArgs(
+          sendPort: session.fromPort.sendPort,
+          encoder: '$dir/encoder.onnx',
+          decoder: '$dir/decoder.onnx',
+          joiner: '$dir/joiner.onnx',
+          tokens: '$dir/tokens.txt',
+        ),
+        onExit: session.exitPort.sendPort,
+        onError: session.errorPort.sendPort,
+        errorsAreFatal: true,
+      );
+      session.isolate = spawned;
+    } catch (e) {
+      _dlog.logError(LogCategory.stt, 'LiveASR: isolate spawn failed', e);
+      if (identical(_session, session)) _session = null;
+      if (!session.readySignal.isCompleted) {
+        session.readySignal.complete(false);
+      }
+      await session.close();
+      return false;
+    }
+    if (epoch != _epoch || !identical(_session, session)) {
+      spawned.kill(priority: Isolate.immediate);
+      await session.close();
+      return false;
+    }
+
+    final ok = await session.readySignal.future.timeout(
+      const Duration(seconds: 30),
+      onTimeout: () => false,
+    );
+    if (epoch != _epoch || !identical(_session, session)) return false;
     if (!ok) {
       _dlog.logError(
-          LogCategory.stt, 'LiveASR: recognizer failed to initialize');
+        LogCategory.stt,
+        'LiveASR: recognizer failed to initialize',
+      );
       await stop();
-    } else {
-      _dlog.log(LogCategory.stt, 'LiveASR: recognizer ready');
+      return false;
     }
-    return ok;
+    _dlog.log(LogCategory.stt, 'LiveASR: recognizer ready');
+    return true;
   }
 
   /// Begin a fresh utterance (typically one script line): clears the
   /// transcript so [onPartial] restarts from empty, and invalidates any
   /// partials still in flight from the previous utterance.
-  void startUtterance() =>
-      _toIsolate?.send({'cmd': 'start', 'uid': ++_uid});
+  void startUtterance() => _readyPort?.send({'cmd': 'start', 'uid': ++_uid});
 
   /// Feed a chunk of 16 kHz mono 16-bit LE PCM.
-  void feedPcm(Uint8List pcm) => _toIsolate?.send(pcm);
+  void feedPcm(Uint8List pcm) => _readyPort?.send(pcm);
 
   /// End the utterance: flushes the decoder with trailing silence so the
   /// final words are emitted through [onPartial].
-  void endUtterance() => _toIsolate?.send(const {'cmd': 'end'});
+  void endUtterance() => _readyPort?.send(const {'cmd': 'end'});
 
-  /// Tear down the isolate. [ensureStarted] restarts it fresh — including
-  /// while a previous start is still in flight (the epoch guard orphans it).
-  Future<void> stop() async {
+  /// Tear down the isolate after it explicitly frees its native handles.
+  /// A force-kill is only the timeout fallback.
+  Future<void> stop() {
+    if (_stopping != null) return _stopping!;
+    late final Future<void> future;
+    future = _stop().whenComplete(() {
+      if (identical(_stopping, future)) _stopping = null;
+    });
+    return _stopping = future;
+  }
+
+  Future<void> _stop() async {
     _epoch++;
     _starting = null;
-    _toIsolate?.send(const {'cmd': 'dispose'});
-    _toIsolate = null;
-    await _fromIsolateSub?.cancel();
-    _fromIsolateSub = null;
-    // Give the isolate a moment to free native memory, then make sure.
-    _isolate?.kill(priority: Isolate.beforeNextEvent);
-    _isolate = null;
+    final session = _session;
+    _session = null;
+    if (session == null) return;
+    session.ready = false;
+    if (!session.readySignal.isCompleted) {
+      session.readySignal.complete(false);
+    }
+
+    SendPort? control = session.sendPort;
+    if (control == null) {
+      try {
+        control = await session.controlPort.future.timeout(
+          const Duration(milliseconds: 500),
+        );
+      } on TimeoutException {
+        // The isolate never exposed its command port; force-kill below.
+      }
+    }
+
+    var disposed = false;
+    if (control != null) {
+      control.send(const {'cmd': 'dispose'});
+      try {
+        await session.disposed.future.timeout(const Duration(seconds: 2));
+        disposed = true;
+      } on TimeoutException {
+        _dlog.logError(
+          LogCategory.stt,
+          'LiveASR: native disposal acknowledgement timed out',
+        );
+      }
+    }
+    session.isolate?.kill(
+      priority: disposed ? Isolate.beforeNextEvent : Isolate.immediate,
+    );
+    await session.close();
+  }
+}
+
+class _LiveAsrSession {
+  final fromPort = ReceivePort();
+  final exitPort = ReceivePort();
+  final errorPort = ReceivePort();
+  final readySignal = Completer<bool>();
+  final controlPort = Completer<SendPort>();
+  final disposed = Completer<void>();
+
+  Isolate? isolate;
+  SendPort? sendPort;
+  StreamSubscription<dynamic>? fromSubscription;
+  StreamSubscription<dynamic>? exitSubscription;
+  StreamSubscription<dynamic>? errorSubscription;
+  bool ready = false;
+  bool _closed = false;
+
+  Future<void> close() async {
+    if (_closed) return;
+    _closed = true;
+    await fromSubscription?.cancel();
+    await exitSubscription?.cancel();
+    await errorSubscription?.cancel();
+    fromPort.close();
+    exitPort.close();
+    errorPort.close();
   }
 }
 
@@ -171,21 +292,23 @@ Future<void> _isolateMain(_IsolateArgs args) async {
   sherpa.OnlineRecognizer recognizer;
   try {
     sherpa.initBindings();
-    recognizer = sherpa.OnlineRecognizer(sherpa.OnlineRecognizerConfig(
-      model: sherpa.OnlineModelConfig(
-        transducer: sherpa.OnlineTransducerModelConfig(
-          encoder: args.encoder,
-          decoder: args.decoder,
-          joiner: args.joiner,
+    recognizer = sherpa.OnlineRecognizer(
+      sherpa.OnlineRecognizerConfig(
+        model: sherpa.OnlineModelConfig(
+          transducer: sherpa.OnlineTransducerModelConfig(
+            encoder: args.encoder,
+            decoder: args.decoder,
+            joiner: args.joiner,
+          ),
+          tokens: args.tokens,
+          numThreads: 2,
+          debug: false,
         ),
-        tokens: args.tokens,
-        numThreads: 2,
-        debug: false,
+        // The rehearsal screen owns endpointing (its silence timers), so the
+        // recognizer just transcribes.
+        enableEndpoint: false,
       ),
-      // The rehearsal screen owns endpointing (its silence timers), so the
-      // recognizer just transcribes.
-      enableEndpoint: false,
-    ));
+    );
   } catch (e) {
     args.sendPort.send({'error': 'recognizer init failed: $e'});
     return;
@@ -230,14 +353,14 @@ Future<void> _isolateMain(_IsolateArgs args) async {
           // ~0.8 s of silence gives the zipformer the right-context it needs
           // to emit the last words (measured in the macOS eval — shorter
           // padding truncates line tails).
-          stream.acceptWaveform(
-              samples: Float32List(12800), sampleRate: 16000);
+          stream.acceptWaveform(samples: Float32List(12800), sampleRate: 16000);
           decodeAndReport();
           break;
         case 'dispose':
           stream.free();
           recognizer.free();
           commands.close();
+          args.sendPort.send(const {'disposed': true});
           return;
       }
     }

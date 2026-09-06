@@ -47,14 +47,19 @@ void main() {
 
     test('ignores stage directions', () {
       final lines = [
-        _line('1', 'Romeo', 'But soft, what light through yonder window breaks?',
-            lineType: LineType.dialogue),
+        _line(
+          '1',
+          'Romeo',
+          'But soft, what light through yonder window breaks?',
+          lineType: LineType.dialogue,
+        ),
         _lineDirection('2', 'Romeo enters from stage left'),
       ];
 
       service.buildFromScript('test-prod', lines);
-      final hints =
-          service.getScriptHints('test-prod').map((h) => h.toLowerCase());
+      final hints = service
+          .getScriptHints('test-prod')
+          .map((h) => h.toLowerCase());
       // Stage-direction-only words must not leak into the vocabulary.
       expect(hints, isNot(contains('stage')));
       expect(hints, isNot(contains('enters')));
@@ -77,9 +82,7 @@ void main() {
     });
 
     test('returns original when no correction needed', () {
-      final lines = [
-        _line('1', 'Bob', 'Hello there.'),
-      ];
+      final lines = [_line('1', 'Bob', 'Hello there.')];
       service.buildFromScript('test-prod', lines);
 
       final corrected = service.correct(
@@ -195,10 +198,7 @@ void main() {
   group('editDistance', () {
     // Testing via the public interface indirectly
     test('close words get corrected', () {
-      final lines = [
-        _line('1', 'A', 'forsooth'),
-        _line('2', 'A', 'forsooth'),
-      ];
+      final lines = [_line('1', 'A', 'forsooth'), _line('2', 'A', 'forsooth')];
       service.buildFromScript('test-prod', lines);
 
       // "forsoth" is 1 edit away from "forsooth"
@@ -210,10 +210,7 @@ void main() {
     });
 
     test('distant words are not corrected', () {
-      final lines = [
-        _line('1', 'A', 'forsooth'),
-        _line('2', 'A', 'forsooth'),
-      ];
+      final lines = [_line('1', 'A', 'forsooth'), _line('2', 'A', 'forsooth')];
       service.buildFromScript('test-prod', lines);
 
       // "hello" is far from "forsooth" — no correction
@@ -227,9 +224,7 @@ void main() {
 
   group('clearProduction', () {
     test('clears vocabulary and corrections', () {
-      final lines = [
-        _line('1', 'Macbeth', 'Double double toil and trouble'),
-      ];
+      final lines = [_line('1', 'Macbeth', 'Double double toil and trouble')];
       service.buildFromScript('test-prod', lines);
       service.learnFromAttempt(
         productionId: 'test-prod',
@@ -245,8 +240,12 @@ void main() {
   });
 }
 
-ScriptLine _line(String id, String character, String text,
-    {LineType lineType = LineType.dialogue}) {
+ScriptLine _line(
+  String id,
+  String character,
+  String text, {
+  LineType lineType = LineType.dialogue,
+}) {
   return ScriptLine(
     id: id,
     act: '1',

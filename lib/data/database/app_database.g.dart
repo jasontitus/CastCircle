@@ -18,6 +18,18 @@ class $ProductionsTable extends Productions
     type: DriftSqlType.string,
     requiredDuringInsert: true,
   );
+  static const VerificationMeta _accountNamespaceMeta = const VerificationMeta(
+    'accountNamespace',
+  );
+  @override
+  late final GeneratedColumn<String> accountNamespace = GeneratedColumn<String>(
+    'account_namespace',
+    aliasedName,
+    false,
+    type: DriftSqlType.string,
+    requiredDuringInsert: false,
+    defaultValue: const Constant('__guest__'),
+  );
   static const VerificationMeta _titleMeta = const VerificationMeta('title');
   @override
   late final GeneratedColumn<String> title = GeneratedColumn<String>(
@@ -95,6 +107,7 @@ class $ProductionsTable extends Productions
   @override
   List<GeneratedColumn> get $columns => [
     id,
+    accountNamespace,
     title,
     organizerId,
     status,
@@ -119,6 +132,15 @@ class $ProductionsTable extends Productions
       context.handle(_idMeta, id.isAcceptableOrUnknown(data['id']!, _idMeta));
     } else if (isInserting) {
       context.missing(_idMeta);
+    }
+    if (data.containsKey('account_namespace')) {
+      context.handle(
+        _accountNamespaceMeta,
+        accountNamespace.isAcceptableOrUnknown(
+          data['account_namespace']!,
+          _accountNamespaceMeta,
+        ),
+      );
     }
     if (data.containsKey('title')) {
       context.handle(
@@ -180,6 +202,10 @@ class $ProductionsTable extends Productions
         DriftSqlType.string,
         data['${effectivePrefix}id'],
       )!,
+      accountNamespace: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}account_namespace'],
+      )!,
       title: attachedDatabase.typeMapping.read(
         DriftSqlType.string,
         data['${effectivePrefix}title'],
@@ -219,6 +245,7 @@ class $ProductionsTable extends Productions
 
 class Production extends DataClass implements Insertable<Production> {
   final String id;
+  final String accountNamespace;
   final String title;
   final String? organizerId;
   final String status;
@@ -228,6 +255,7 @@ class Production extends DataClass implements Insertable<Production> {
   final DateTime createdAt;
   const Production({
     required this.id,
+    required this.accountNamespace,
     required this.title,
     this.organizerId,
     required this.status,
@@ -240,6 +268,7 @@ class Production extends DataClass implements Insertable<Production> {
   Map<String, Expression> toColumns(bool nullToAbsent) {
     final map = <String, Expression>{};
     map['id'] = Variable<String>(id);
+    map['account_namespace'] = Variable<String>(accountNamespace);
     map['title'] = Variable<String>(title);
     if (!nullToAbsent || organizerId != null) {
       map['organizer_id'] = Variable<String>(organizerId);
@@ -259,6 +288,7 @@ class Production extends DataClass implements Insertable<Production> {
   ProductionsCompanion toCompanion(bool nullToAbsent) {
     return ProductionsCompanion(
       id: Value(id),
+      accountNamespace: Value(accountNamespace),
       title: Value(title),
       organizerId: organizerId == null && nullToAbsent
           ? const Value.absent()
@@ -282,6 +312,7 @@ class Production extends DataClass implements Insertable<Production> {
     serializer ??= driftRuntimeOptions.defaultSerializer;
     return Production(
       id: serializer.fromJson<String>(json['id']),
+      accountNamespace: serializer.fromJson<String>(json['accountNamespace']),
       title: serializer.fromJson<String>(json['title']),
       organizerId: serializer.fromJson<String?>(json['organizerId']),
       status: serializer.fromJson<String>(json['status']),
@@ -296,6 +327,7 @@ class Production extends DataClass implements Insertable<Production> {
     serializer ??= driftRuntimeOptions.defaultSerializer;
     return <String, dynamic>{
       'id': serializer.toJson<String>(id),
+      'accountNamespace': serializer.toJson<String>(accountNamespace),
       'title': serializer.toJson<String>(title),
       'organizerId': serializer.toJson<String?>(organizerId),
       'status': serializer.toJson<String>(status),
@@ -308,6 +340,7 @@ class Production extends DataClass implements Insertable<Production> {
 
   Production copyWith({
     String? id,
+    String? accountNamespace,
     String? title,
     Value<String?> organizerId = const Value.absent(),
     String? status,
@@ -317,6 +350,7 @@ class Production extends DataClass implements Insertable<Production> {
     DateTime? createdAt,
   }) => Production(
     id: id ?? this.id,
+    accountNamespace: accountNamespace ?? this.accountNamespace,
     title: title ?? this.title,
     organizerId: organizerId.present ? organizerId.value : this.organizerId,
     status: status ?? this.status,
@@ -328,6 +362,9 @@ class Production extends DataClass implements Insertable<Production> {
   Production copyWithCompanion(ProductionsCompanion data) {
     return Production(
       id: data.id.present ? data.id.value : this.id,
+      accountNamespace: data.accountNamespace.present
+          ? data.accountNamespace.value
+          : this.accountNamespace,
       title: data.title.present ? data.title.value : this.title,
       organizerId: data.organizerId.present
           ? data.organizerId.value
@@ -346,6 +383,7 @@ class Production extends DataClass implements Insertable<Production> {
   String toString() {
     return (StringBuffer('Production(')
           ..write('id: $id, ')
+          ..write('accountNamespace: $accountNamespace, ')
           ..write('title: $title, ')
           ..write('organizerId: $organizerId, ')
           ..write('status: $status, ')
@@ -360,6 +398,7 @@ class Production extends DataClass implements Insertable<Production> {
   @override
   int get hashCode => Object.hash(
     id,
+    accountNamespace,
     title,
     organizerId,
     status,
@@ -373,6 +412,7 @@ class Production extends DataClass implements Insertable<Production> {
       identical(this, other) ||
       (other is Production &&
           other.id == this.id &&
+          other.accountNamespace == this.accountNamespace &&
           other.title == this.title &&
           other.organizerId == this.organizerId &&
           other.status == this.status &&
@@ -384,6 +424,7 @@ class Production extends DataClass implements Insertable<Production> {
 
 class ProductionsCompanion extends UpdateCompanion<Production> {
   final Value<String> id;
+  final Value<String> accountNamespace;
   final Value<String> title;
   final Value<String?> organizerId;
   final Value<String> status;
@@ -394,6 +435,7 @@ class ProductionsCompanion extends UpdateCompanion<Production> {
   final Value<int> rowid;
   const ProductionsCompanion({
     this.id = const Value.absent(),
+    this.accountNamespace = const Value.absent(),
     this.title = const Value.absent(),
     this.organizerId = const Value.absent(),
     this.status = const Value.absent(),
@@ -405,6 +447,7 @@ class ProductionsCompanion extends UpdateCompanion<Production> {
   });
   ProductionsCompanion.insert({
     required String id,
+    this.accountNamespace = const Value.absent(),
     required String title,
     this.organizerId = const Value.absent(),
     this.status = const Value.absent(),
@@ -417,6 +460,7 @@ class ProductionsCompanion extends UpdateCompanion<Production> {
        title = Value(title);
   static Insertable<Production> custom({
     Expression<String>? id,
+    Expression<String>? accountNamespace,
     Expression<String>? title,
     Expression<String>? organizerId,
     Expression<String>? status,
@@ -428,6 +472,7 @@ class ProductionsCompanion extends UpdateCompanion<Production> {
   }) {
     return RawValuesInsertable({
       if (id != null) 'id': id,
+      if (accountNamespace != null) 'account_namespace': accountNamespace,
       if (title != null) 'title': title,
       if (organizerId != null) 'organizer_id': organizerId,
       if (status != null) 'status': status,
@@ -441,6 +486,7 @@ class ProductionsCompanion extends UpdateCompanion<Production> {
 
   ProductionsCompanion copyWith({
     Value<String>? id,
+    Value<String>? accountNamespace,
     Value<String>? title,
     Value<String?>? organizerId,
     Value<String>? status,
@@ -452,6 +498,7 @@ class ProductionsCompanion extends UpdateCompanion<Production> {
   }) {
     return ProductionsCompanion(
       id: id ?? this.id,
+      accountNamespace: accountNamespace ?? this.accountNamespace,
       title: title ?? this.title,
       organizerId: organizerId ?? this.organizerId,
       status: status ?? this.status,
@@ -468,6 +515,9 @@ class ProductionsCompanion extends UpdateCompanion<Production> {
     final map = <String, Expression>{};
     if (id.present) {
       map['id'] = Variable<String>(id.value);
+    }
+    if (accountNamespace.present) {
+      map['account_namespace'] = Variable<String>(accountNamespace.value);
     }
     if (title.present) {
       map['title'] = Variable<String>(title.value);
@@ -500,6 +550,7 @@ class ProductionsCompanion extends UpdateCompanion<Production> {
   String toString() {
     return (StringBuffer('ProductionsCompanion(')
           ..write('id: $id, ')
+          ..write('accountNamespace: $accountNamespace, ')
           ..write('title: $title, ')
           ..write('organizerId: $organizerId, ')
           ..write('status: $status, ')
@@ -539,7 +590,7 @@ class $ScriptLinesTable extends ScriptLines
     type: DriftSqlType.string,
     requiredDuringInsert: true,
     defaultConstraints: GeneratedColumn.constraintIsAlways(
-      'REFERENCES productions (id)',
+      'REFERENCES productions (id) ON DELETE RESTRICT',
     ),
   );
   static const VerificationMeta _actMeta = const VerificationMeta('act');
@@ -1365,7 +1416,7 @@ class $ScenesTable extends Scenes with TableInfo<$ScenesTable, Scene> {
     type: DriftSqlType.string,
     requiredDuringInsert: true,
     defaultConstraints: GeneratedColumn.constraintIsAlways(
-      'REFERENCES productions (id)',
+      'REFERENCES productions (id) ON DELETE RESTRICT',
     ),
   );
   static const VerificationMeta _sceneNameMeta = const VerificationMeta(
@@ -1986,7 +2037,7 @@ class $RecordingsTable extends Recordings
     type: DriftSqlType.string,
     requiredDuringInsert: true,
     defaultConstraints: GeneratedColumn.constraintIsAlways(
-      'REFERENCES productions (id)',
+      'REFERENCES productions (id) ON DELETE RESTRICT',
     ),
   );
   static const VerificationMeta _scriptLineIdMeta = const VerificationMeta(
@@ -2000,7 +2051,7 @@ class $RecordingsTable extends Recordings
     type: DriftSqlType.string,
     requiredDuringInsert: true,
     defaultConstraints: GeneratedColumn.constraintIsAlways(
-      'REFERENCES script_lines (id)',
+      'REFERENCES script_lines (id) ON DELETE RESTRICT',
     ),
   );
   static const VerificationMeta _characterMeta = const VerificationMeta(
@@ -2517,7 +2568,7 @@ class $CastMembersTable extends CastMembers
     type: DriftSqlType.string,
     requiredDuringInsert: true,
     defaultConstraints: GeneratedColumn.constraintIsAlways(
-      'REFERENCES productions (id)',
+      'REFERENCES productions (id) ON DELETE RESTRICT',
     ),
   );
   static const VerificationMeta _userIdMeta = const VerificationMeta('userId');
@@ -2551,6 +2602,17 @@ class $CastMembersTable extends CastMembers
     type: DriftSqlType.string,
     requiredDuringInsert: false,
     defaultValue: const Constant(''),
+  );
+  static const VerificationMeta _contactInfoMeta = const VerificationMeta(
+    'contactInfo',
+  );
+  @override
+  late final GeneratedColumn<String> contactInfo = GeneratedColumn<String>(
+    'contact_info',
+    aliasedName,
+    true,
+    type: DriftSqlType.string,
+    requiredDuringInsert: false,
   );
   static const VerificationMeta _roleMeta = const VerificationMeta('role');
   @override
@@ -2591,6 +2653,7 @@ class $CastMembersTable extends CastMembers
     userId,
     characterName,
     displayName,
+    contactInfo,
     role,
     invitedAt,
     joinedAt,
@@ -2649,6 +2712,15 @@ class $CastMembersTable extends CastMembers
         ),
       );
     }
+    if (data.containsKey('contact_info')) {
+      context.handle(
+        _contactInfoMeta,
+        contactInfo.isAcceptableOrUnknown(
+          data['contact_info']!,
+          _contactInfoMeta,
+        ),
+      );
+    }
     if (data.containsKey('role')) {
       context.handle(
         _roleMeta,
@@ -2698,6 +2770,10 @@ class $CastMembersTable extends CastMembers
         DriftSqlType.string,
         data['${effectivePrefix}display_name'],
       )!,
+      contactInfo: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}contact_info'],
+      ),
       role: attachedDatabase.typeMapping.read(
         DriftSqlType.string,
         data['${effectivePrefix}role'],
@@ -2725,6 +2801,7 @@ class CastMember extends DataClass implements Insertable<CastMember> {
   final String? userId;
   final String characterName;
   final String displayName;
+  final String? contactInfo;
   final String role;
   final DateTime invitedAt;
   final DateTime? joinedAt;
@@ -2734,6 +2811,7 @@ class CastMember extends DataClass implements Insertable<CastMember> {
     this.userId,
     required this.characterName,
     required this.displayName,
+    this.contactInfo,
     required this.role,
     required this.invitedAt,
     this.joinedAt,
@@ -2748,6 +2826,9 @@ class CastMember extends DataClass implements Insertable<CastMember> {
     }
     map['character_name'] = Variable<String>(characterName);
     map['display_name'] = Variable<String>(displayName);
+    if (!nullToAbsent || contactInfo != null) {
+      map['contact_info'] = Variable<String>(contactInfo);
+    }
     map['role'] = Variable<String>(role);
     map['invited_at'] = Variable<DateTime>(invitedAt);
     if (!nullToAbsent || joinedAt != null) {
@@ -2765,6 +2846,9 @@ class CastMember extends DataClass implements Insertable<CastMember> {
           : Value(userId),
       characterName: Value(characterName),
       displayName: Value(displayName),
+      contactInfo: contactInfo == null && nullToAbsent
+          ? const Value.absent()
+          : Value(contactInfo),
       role: Value(role),
       invitedAt: Value(invitedAt),
       joinedAt: joinedAt == null && nullToAbsent
@@ -2784,6 +2868,7 @@ class CastMember extends DataClass implements Insertable<CastMember> {
       userId: serializer.fromJson<String?>(json['userId']),
       characterName: serializer.fromJson<String>(json['characterName']),
       displayName: serializer.fromJson<String>(json['displayName']),
+      contactInfo: serializer.fromJson<String?>(json['contactInfo']),
       role: serializer.fromJson<String>(json['role']),
       invitedAt: serializer.fromJson<DateTime>(json['invitedAt']),
       joinedAt: serializer.fromJson<DateTime?>(json['joinedAt']),
@@ -2798,6 +2883,7 @@ class CastMember extends DataClass implements Insertable<CastMember> {
       'userId': serializer.toJson<String?>(userId),
       'characterName': serializer.toJson<String>(characterName),
       'displayName': serializer.toJson<String>(displayName),
+      'contactInfo': serializer.toJson<String?>(contactInfo),
       'role': serializer.toJson<String>(role),
       'invitedAt': serializer.toJson<DateTime>(invitedAt),
       'joinedAt': serializer.toJson<DateTime?>(joinedAt),
@@ -2810,6 +2896,7 @@ class CastMember extends DataClass implements Insertable<CastMember> {
     Value<String?> userId = const Value.absent(),
     String? characterName,
     String? displayName,
+    Value<String?> contactInfo = const Value.absent(),
     String? role,
     DateTime? invitedAt,
     Value<DateTime?> joinedAt = const Value.absent(),
@@ -2819,6 +2906,7 @@ class CastMember extends DataClass implements Insertable<CastMember> {
     userId: userId.present ? userId.value : this.userId,
     characterName: characterName ?? this.characterName,
     displayName: displayName ?? this.displayName,
+    contactInfo: contactInfo.present ? contactInfo.value : this.contactInfo,
     role: role ?? this.role,
     invitedAt: invitedAt ?? this.invitedAt,
     joinedAt: joinedAt.present ? joinedAt.value : this.joinedAt,
@@ -2836,6 +2924,9 @@ class CastMember extends DataClass implements Insertable<CastMember> {
       displayName: data.displayName.present
           ? data.displayName.value
           : this.displayName,
+      contactInfo: data.contactInfo.present
+          ? data.contactInfo.value
+          : this.contactInfo,
       role: data.role.present ? data.role.value : this.role,
       invitedAt: data.invitedAt.present ? data.invitedAt.value : this.invitedAt,
       joinedAt: data.joinedAt.present ? data.joinedAt.value : this.joinedAt,
@@ -2850,6 +2941,7 @@ class CastMember extends DataClass implements Insertable<CastMember> {
           ..write('userId: $userId, ')
           ..write('characterName: $characterName, ')
           ..write('displayName: $displayName, ')
+          ..write('contactInfo: $contactInfo, ')
           ..write('role: $role, ')
           ..write('invitedAt: $invitedAt, ')
           ..write('joinedAt: $joinedAt')
@@ -2864,6 +2956,7 @@ class CastMember extends DataClass implements Insertable<CastMember> {
     userId,
     characterName,
     displayName,
+    contactInfo,
     role,
     invitedAt,
     joinedAt,
@@ -2877,6 +2970,7 @@ class CastMember extends DataClass implements Insertable<CastMember> {
           other.userId == this.userId &&
           other.characterName == this.characterName &&
           other.displayName == this.displayName &&
+          other.contactInfo == this.contactInfo &&
           other.role == this.role &&
           other.invitedAt == this.invitedAt &&
           other.joinedAt == this.joinedAt);
@@ -2888,6 +2982,7 @@ class CastMembersCompanion extends UpdateCompanion<CastMember> {
   final Value<String?> userId;
   final Value<String> characterName;
   final Value<String> displayName;
+  final Value<String?> contactInfo;
   final Value<String> role;
   final Value<DateTime> invitedAt;
   final Value<DateTime?> joinedAt;
@@ -2898,6 +2993,7 @@ class CastMembersCompanion extends UpdateCompanion<CastMember> {
     this.userId = const Value.absent(),
     this.characterName = const Value.absent(),
     this.displayName = const Value.absent(),
+    this.contactInfo = const Value.absent(),
     this.role = const Value.absent(),
     this.invitedAt = const Value.absent(),
     this.joinedAt = const Value.absent(),
@@ -2909,6 +3005,7 @@ class CastMembersCompanion extends UpdateCompanion<CastMember> {
     this.userId = const Value.absent(),
     required String characterName,
     this.displayName = const Value.absent(),
+    this.contactInfo = const Value.absent(),
     required String role,
     this.invitedAt = const Value.absent(),
     this.joinedAt = const Value.absent(),
@@ -2923,6 +3020,7 @@ class CastMembersCompanion extends UpdateCompanion<CastMember> {
     Expression<String>? userId,
     Expression<String>? characterName,
     Expression<String>? displayName,
+    Expression<String>? contactInfo,
     Expression<String>? role,
     Expression<DateTime>? invitedAt,
     Expression<DateTime>? joinedAt,
@@ -2934,6 +3032,7 @@ class CastMembersCompanion extends UpdateCompanion<CastMember> {
       if (userId != null) 'user_id': userId,
       if (characterName != null) 'character_name': characterName,
       if (displayName != null) 'display_name': displayName,
+      if (contactInfo != null) 'contact_info': contactInfo,
       if (role != null) 'role': role,
       if (invitedAt != null) 'invited_at': invitedAt,
       if (joinedAt != null) 'joined_at': joinedAt,
@@ -2947,6 +3046,7 @@ class CastMembersCompanion extends UpdateCompanion<CastMember> {
     Value<String?>? userId,
     Value<String>? characterName,
     Value<String>? displayName,
+    Value<String?>? contactInfo,
     Value<String>? role,
     Value<DateTime>? invitedAt,
     Value<DateTime?>? joinedAt,
@@ -2958,6 +3058,7 @@ class CastMembersCompanion extends UpdateCompanion<CastMember> {
       userId: userId ?? this.userId,
       characterName: characterName ?? this.characterName,
       displayName: displayName ?? this.displayName,
+      contactInfo: contactInfo ?? this.contactInfo,
       role: role ?? this.role,
       invitedAt: invitedAt ?? this.invitedAt,
       joinedAt: joinedAt ?? this.joinedAt,
@@ -2983,6 +3084,9 @@ class CastMembersCompanion extends UpdateCompanion<CastMember> {
     if (displayName.present) {
       map['display_name'] = Variable<String>(displayName.value);
     }
+    if (contactInfo.present) {
+      map['contact_info'] = Variable<String>(contactInfo.value);
+    }
     if (role.present) {
       map['role'] = Variable<String>(role.value);
     }
@@ -3006,6 +3110,7 @@ class CastMembersCompanion extends UpdateCompanion<CastMember> {
           ..write('userId: $userId, ')
           ..write('characterName: $characterName, ')
           ..write('displayName: $displayName, ')
+          ..write('contactInfo: $contactInfo, ')
           ..write('role: $role, ')
           ..write('invitedAt: $invitedAt, ')
           ..write('joinedAt: $joinedAt, ')
@@ -3023,6 +3128,10 @@ abstract class _$AppDatabase extends GeneratedDatabase {
   late final $ScenesTable scenes = $ScenesTable(this);
   late final $RecordingsTable recordings = $RecordingsTable(this);
   late final $CastMembersTable castMembers = $CastMembersTable(this);
+  late final Index idxProductionsAccountCreated = Index(
+    'idx_productions_account_created',
+    'CREATE INDEX idx_productions_account_created ON productions (account_namespace, created_at)',
+  );
   late final Index idxScriptLinesProductionOrder = Index(
     'idx_script_lines_production_order',
     'CREATE INDEX idx_script_lines_production_order ON script_lines (production_id, order_index)',
@@ -3049,6 +3158,7 @@ abstract class _$AppDatabase extends GeneratedDatabase {
     scenes,
     recordings,
     castMembers,
+    idxProductionsAccountCreated,
     idxScriptLinesProductionOrder,
     idxScenesProduction,
     idxRecordingsProductionLine,
@@ -3059,6 +3169,7 @@ abstract class _$AppDatabase extends GeneratedDatabase {
 typedef $$ProductionsTableCreateCompanionBuilder =
     ProductionsCompanion Function({
       required String id,
+      Value<String> accountNamespace,
       required String title,
       Value<String?> organizerId,
       Value<String> status,
@@ -3071,6 +3182,7 @@ typedef $$ProductionsTableCreateCompanionBuilder =
 typedef $$ProductionsTableUpdateCompanionBuilder =
     ProductionsCompanion Function({
       Value<String> id,
+      Value<String> accountNamespace,
       Value<String> title,
       Value<String?> organizerId,
       Value<String> status,
@@ -3170,6 +3282,11 @@ class $$ProductionsTableFilterComposer
   });
   ColumnFilters<String> get id => $composableBuilder(
     column: $table.id,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get accountNamespace => $composableBuilder(
+    column: $table.accountNamespace,
     builder: (column) => ColumnFilters(column),
   );
 
@@ -3323,6 +3440,11 @@ class $$ProductionsTableOrderingComposer
     builder: (column) => ColumnOrderings(column),
   );
 
+  ColumnOrderings<String> get accountNamespace => $composableBuilder(
+    column: $table.accountNamespace,
+    builder: (column) => ColumnOrderings(column),
+  );
+
   ColumnOrderings<String> get title => $composableBuilder(
     column: $table.title,
     builder: (column) => ColumnOrderings(column),
@@ -3370,6 +3492,11 @@ class $$ProductionsTableAnnotationComposer
   });
   GeneratedColumn<String> get id =>
       $composableBuilder(column: $table.id, builder: (column) => column);
+
+  GeneratedColumn<String> get accountNamespace => $composableBuilder(
+    column: $table.accountNamespace,
+    builder: (column) => column,
+  );
 
   GeneratedColumn<String> get title =>
       $composableBuilder(column: $table.title, builder: (column) => column);
@@ -3531,6 +3658,7 @@ class $$ProductionsTableTableManager
           updateCompanionCallback:
               ({
                 Value<String> id = const Value.absent(),
+                Value<String> accountNamespace = const Value.absent(),
                 Value<String> title = const Value.absent(),
                 Value<String?> organizerId = const Value.absent(),
                 Value<String> status = const Value.absent(),
@@ -3541,6 +3669,7 @@ class $$ProductionsTableTableManager
                 Value<int> rowid = const Value.absent(),
               }) => ProductionsCompanion(
                 id: id,
+                accountNamespace: accountNamespace,
                 title: title,
                 organizerId: organizerId,
                 status: status,
@@ -3553,6 +3682,7 @@ class $$ProductionsTableTableManager
           createCompanionCallback:
               ({
                 required String id,
+                Value<String> accountNamespace = const Value.absent(),
                 required String title,
                 Value<String?> organizerId = const Value.absent(),
                 Value<String> status = const Value.absent(),
@@ -3563,6 +3693,7 @@ class $$ProductionsTableTableManager
                 Value<int> rowid = const Value.absent(),
               }) => ProductionsCompanion.insert(
                 id: id,
+                accountNamespace: accountNamespace,
                 title: title,
                 organizerId: organizerId,
                 status: status,
@@ -5198,6 +5329,7 @@ typedef $$CastMembersTableCreateCompanionBuilder =
       Value<String?> userId,
       required String characterName,
       Value<String> displayName,
+      Value<String?> contactInfo,
       required String role,
       Value<DateTime> invitedAt,
       Value<DateTime?> joinedAt,
@@ -5210,6 +5342,7 @@ typedef $$CastMembersTableUpdateCompanionBuilder =
       Value<String?> userId,
       Value<String> characterName,
       Value<String> displayName,
+      Value<String?> contactInfo,
       Value<String> role,
       Value<DateTime> invitedAt,
       Value<DateTime?> joinedAt,
@@ -5265,6 +5398,10 @@ class $$CastMembersTableFilterComposer
 
   ColumnFilters<String> get displayName => $composableBuilder(
     column: $table.displayName,
+    builder: (column) => ColumnFilters(column),
+  );
+  ColumnFilters<String> get contactInfo => $composableBuilder(
+    column: $table.contactInfo,
     builder: (column) => ColumnFilters(column),
   );
 
@@ -5335,6 +5472,10 @@ class $$CastMembersTableOrderingComposer
     column: $table.displayName,
     builder: (column) => ColumnOrderings(column),
   );
+  ColumnOrderings<String> get contactInfo => $composableBuilder(
+    column: $table.contactInfo,
+    builder: (column) => ColumnOrderings(column),
+  );
 
   ColumnOrderings<String> get role => $composableBuilder(
     column: $table.role,
@@ -5397,6 +5538,10 @@ class $$CastMembersTableAnnotationComposer
 
   GeneratedColumn<String> get displayName => $composableBuilder(
     column: $table.displayName,
+    builder: (column) => column,
+  );
+  GeneratedColumn<String> get contactInfo => $composableBuilder(
+    column: $table.contactInfo,
     builder: (column) => column,
   );
 
@@ -5466,6 +5611,7 @@ class $$CastMembersTableTableManager
                 Value<String?> userId = const Value.absent(),
                 Value<String> characterName = const Value.absent(),
                 Value<String> displayName = const Value.absent(),
+                Value<String?> contactInfo = const Value.absent(),
                 Value<String> role = const Value.absent(),
                 Value<DateTime> invitedAt = const Value.absent(),
                 Value<DateTime?> joinedAt = const Value.absent(),
@@ -5476,6 +5622,7 @@ class $$CastMembersTableTableManager
                 userId: userId,
                 characterName: characterName,
                 displayName: displayName,
+                contactInfo: contactInfo,
                 role: role,
                 invitedAt: invitedAt,
                 joinedAt: joinedAt,
@@ -5488,6 +5635,7 @@ class $$CastMembersTableTableManager
                 Value<String?> userId = const Value.absent(),
                 required String characterName,
                 Value<String> displayName = const Value.absent(),
+                Value<String?> contactInfo = const Value.absent(),
                 required String role,
                 Value<DateTime> invitedAt = const Value.absent(),
                 Value<DateTime?> joinedAt = const Value.absent(),
@@ -5498,6 +5646,7 @@ class $$CastMembersTableTableManager
                 userId: userId,
                 characterName: characterName,
                 displayName: displayName,
+                contactInfo: contactInfo,
                 role: role,
                 invitedAt: invitedAt,
                 joinedAt: joinedAt,

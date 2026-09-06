@@ -24,12 +24,18 @@ void main() {
       final charNames = script.characters.map((c) => c.name).toSet();
 
       expect(charNames, contains('BINGLEY'));
-      expect(charNames, isNot(contains('BNGLEY')),
-          reason: 'BNGLEY should be merged into BINGLEY');
+      expect(
+        charNames,
+        isNot(contains('BNGLEY')),
+        reason: 'BNGLEY should be merged into BINGLEY',
+      );
 
       final bingley = script.characters.firstWhere((c) => c.name == 'BINGLEY');
-      expect(bingley.lineCount, 11,
-          reason: 'BINGLEY should have 10 + 1 merged line');
+      expect(
+        bingley.lineCount,
+        11,
+        reason: 'BINGLEY should have 10 + 1 merged line',
+      );
     });
 
     test('fuzzy match merges FHTZWILLIAM into FITZWILLIAM', () {
@@ -98,24 +104,30 @@ DARCY. Another Darcy line.
       expect(charNames, isNot(contains('LYDIA. ..')));
     });
 
-    test('title variant: MR. DARCY merges into DARCY when DARCY is more common', () {
-      final buffer = StringBuffer();
-      buffer.writeln('ACT I');
-      for (var i = 0; i < 10; i++) {
-        buffer.writeln('DARCY. Darcy line $i.');
-      }
-      buffer.writeln('MR. DARCY. A formal reference to Darcy.');
+    test(
+      'title variant: MR. DARCY merges into DARCY when DARCY is more common',
+      () {
+        final buffer = StringBuffer();
+        buffer.writeln('ACT I');
+        for (var i = 0; i < 10; i++) {
+          buffer.writeln('DARCY. Darcy line $i.');
+        }
+        buffer.writeln('MR. DARCY. A formal reference to Darcy.');
 
-      final script = parser.parse(buffer.toString());
-      final charNames = script.characters.map((c) => c.name).toSet();
+        final script = parser.parse(buffer.toString());
+        final charNames = script.characters.map((c) => c.name).toSet();
 
-      expect(charNames, contains('DARCY'));
-      expect(charNames, isNot(contains('MR. DARCY')),
-          reason: 'MR. DARCY should merge into DARCY');
+        expect(charNames, contains('DARCY'));
+        expect(
+          charNames,
+          isNot(contains('MR. DARCY')),
+          reason: 'MR. DARCY should merge into DARCY',
+        );
 
-      final darcy = script.characters.firstWhere((c) => c.name == 'DARCY');
-      expect(darcy.lineCount, 11);
-    });
+        final darcy = script.characters.firstWhere((c) => c.name == 'DARCY');
+        expect(darcy.lineCount, 11);
+      },
+    );
 
     test('title variant does NOT merge when titled form is more common', () {
       final buffer = StringBuffer();
@@ -176,9 +188,7 @@ ACT I
 ELIZABETH. She is a well-known woman.
 ''';
       final script = parser.parse(rawText);
-      final line = script.lines.firstWhere(
-        (l) => l.character == 'ELIZABETH',
-      );
+      final line = script.lines.firstWhere((l) => l.character == 'ELIZABETH');
 
       // "well-known" should NOT be dehyphenated (uppercase after hyphen, or same line)
       expect(line.text, contains('well-known'));
@@ -194,9 +204,7 @@ gerous fit of ill-
 ness it would be terrible.
 ''';
       final script = parser.parse(rawText);
-      final line = script.lines.firstWhere(
-        (l) => l.character == 'MR. BENNET',
-      );
+      final line = script.lines.firstWhere((l) => l.character == 'MR. BENNET');
 
       expect(line.text, contains('daughter'));
       expect(line.text, contains('dangerous'));
@@ -212,9 +220,7 @@ ACT I
 MR. BENNET. Am I mistaken that there was but one name on the invitation? [I.4 -HIL A leter for Miss Jane
 ''';
       final script = parser.parse(rawText);
-      final line = script.lines.firstWhere(
-        (l) => l.character == 'MR. BENNET',
-      );
+      final line = script.lines.firstWhere((l) => l.character == 'MR. BENNET');
 
       expect(line.text, contains('invitation'));
       expect(line.text, isNot(contains('[I.4')));
@@ -232,7 +238,9 @@ ELIZABETH. Before.
 DARCY. After.
 ''';
       final script = parser.parse(rawText);
-      final lines = script.lines.where((l) => l.lineType == LineType.dialogue).toList();
+      final lines = script.lines
+          .where((l) => l.lineType == LineType.dialogue)
+          .toList();
       expect(lines.length, 2);
     });
 
@@ -245,7 +253,9 @@ Some Title Here 42
 DARCY. After.
 ''';
       final script = parser.parse(rawText);
-      final lines = script.lines.where((l) => l.lineType == LineType.dialogue).toList();
+      final lines = script.lines
+          .where((l) => l.lineType == LineType.dialogue)
+          .toList();
       expect(lines.length, 2);
     });
   });

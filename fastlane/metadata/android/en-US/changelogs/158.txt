@@ -1,0 +1,1 @@
+Stage Partners PDF imports now remove repeated yourstagepartners.com page footers so they no longer appear in dialogue.
