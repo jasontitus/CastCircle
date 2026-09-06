@@ -713,16 +713,28 @@ class ScriptParser {
       if (_isStageDirectionOrHeader(name)) continue;
 
       // The bare all-caps shape is ambiguous (directives and shouted text
-      // have it too). Only accept it when the next nonempty line has the
-      // dialogue shape this format promises.
+      // have it too). Only accept it when the next nonempty line looks like
+      // this format's dialogue — a sentence/quotation, or an all-caps shout.
+      // Skip blank lines and a parenthetical stage direction that can sit
+      // between the name and its line ("MACBETH\n(Aside.)\nTo be.").
       var nextIndex = i + 1;
       while (nextIndex < sourceLines.length &&
           sourceLines[nextIndex].trim().isEmpty) {
         nextIndex++;
       }
       if (nextIndex >= sourceLines.length) continue;
-      final next = sourceLines[nextIndex].trimLeft();
-      if (!dialogueStart.hasMatch(next)) continue;
+      var next = sourceLines[nextIndex].trimLeft();
+      if (next.startsWith('(') || next.startsWith('[')) {
+        nextIndex++;
+        while (nextIndex < sourceLines.length &&
+            sourceLines[nextIndex].trim().isEmpty) {
+          nextIndex++;
+        }
+        if (nextIndex >= sourceLines.length) continue;
+        next = sourceLines[nextIndex].trimLeft();
+      }
+      final isShout = _isAllCapsLine(next);
+      if (!dialogueStart.hasMatch(next) && !isShout) continue;
       _addCharacterCandidate(name);
     }
 
@@ -734,6 +746,26 @@ class ScriptParser {
     for (final match in sameLine.allMatches(rawText)) {
       _addCharacterCandidate(match.group(1)!);
     }
+  }
+
+  /// ALL-CAPS words that begin a front-matter/running header, never a
+  /// character name. Used to reject phantom characters from header/notice
+  /// lines ("COPYRIGHT NOTICE:", "STAGE DIRECTIONS:", "CAST:", ...).
+  static const Set<String> _nonCharacterHeaderWords = {
+    'COPYRIGHT', 'NOTICE', 'NOTICES', 'STAGE', 'DIRECTIONS', 'CAST',
+    'CHARACTERS', 'CREDITS', 'ATTRIBUTION', 'PROHIBITION', 'PERFORMANCE',
+    'RECORDING', 'REPRODUCTION', 'BROADCAST', 'UNAUTHORIZED', 'REQUIRED',
+    'ALTERATIONS', 'CONTENTS', 'PREFACE', 'SYNOPSIS', 'INTRODUCTION',
+    'PROLOGUE', 'EPILOGUE', 'INTERLUDE', 'SCENES', 'CREDIT', 'MUSICAL',
+    'RECITATIVE', 'BALLAD', 'TABLE', 'AUTHOR', 'PUBLISHER', 'FTLN',
+  };
+
+  /// True when [line] (ignoring punctuation/whitespace/numbers) is all
+  /// uppercase — a shouted dialogue line ("NO!", "IT IS TIME.").
+  static bool _isAllCapsLine(String line) {
+    final letters = line.replaceAll(RegExp(r'[^A-Za-z]'), '');
+    if (letters.length < 2) return false;
+    return letters == letters.toUpperCase();
   }
 
   /// Check if an ALL-CAPS name is actually a stage direction or header.
@@ -808,6 +840,12 @@ class ScriptParser {
       return;
     }
     if (_titlePrefixes.contains(name)) return;
+    // Reject front-matter / running headers that the colon-cue and name-cue
+    // detectors would otherwise mistake for characters ("COPYRIGHT NOTICE:",
+    // "STAGE DIRECTIONS:", "CAST:", "SCENES", ...). The first word is enough:
+    // every such header starts with a clearly-non-character word.
+    final firstWord = name.split(RegExp(r'\s+')).first;
+    if (_nonCharacterHeaderWords.contains(firstWord)) return;
 
     // Reject fragments: very short ALL-CAPS strings that aren't real names
     // (e.g. "EA", "INE" from broken markdown parsing)
@@ -873,12 +911,15 @@ class ScriptParser {
 
     String headerLine(RegExpMatch match) {
       final end = text.indexOf('\n', match.start);
+      // Normalize punctuation (commas, colons, em-dashes, periods) so a TOC
+      // entry "Act I, Scene 1" matches the body header "Act I Scene 1", and
+      // "Act I Scene 1—Earth and Thereabouts" matches across the em-dash.
       return text
           .substring(match.start, end < 0 ? text.length : end)
-          .trim()
           .toLowerCase()
+          .replaceAll(RegExp(r'[^a-z0-9 ]+'), ' ')
           .replaceAll(RegExp(r'\s+'), ' ')
-          .replaceAll(RegExp(r'[.\s]+$'), '');
+          .trim();
     }
 
     if (matches.length >= 2) {

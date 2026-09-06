@@ -423,14 +423,12 @@ class PaddleOcrPlugin: NSObject {
           self.emitOcrPage(requestId, pageIndex: i + 1, lines: pageLines)
         }
         self.emitOcrProgress(requestId, page: i + 1, pageCount: pageCount)
-        if let inferenceFailure {
-          self.finishOcrRequest(
-            requestId,
-            result: result,
-            error: FlutterError(code: "OCR_FAILED",
-                                message: "PaddleOCR inference failed on page \(i + 1)",
-                                details: String(describing: inferenceFailure)))
-          return
+        if inferenceFailure != nil {
+          // Skip the bad page and keep going, like Android. A single page whose
+          // detector/recognizer returns an unexpected shape must not abort the
+          // whole PDF job — the remaining pages still OCR, and the caller
+          // imports what it got (failedPages > 0 is reported as partial).
+          failed += 1
         }
       }
       let total = Date().timeIntervalSince(jobStart)
