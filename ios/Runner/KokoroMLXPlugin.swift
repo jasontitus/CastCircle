@@ -21,10 +21,8 @@ class KokoroMLXPlugin: NSObject {
     private func handle(_ call: FlutterMethodCall, result: @escaping FlutterResult) {
         switch call.method {
         case "isAvailable":
-            Task {
-                let loaded = await kokoroService.isModelLoaded()
-                DispatchQueue.main.async { result(loaded) }
-            }
+            // isModelLoaded is a plain Bool property on the merged service.
+            result(kokoroService.isModelLoaded)
 
         case "loadModel":
             Task {
