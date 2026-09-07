@@ -891,10 +891,7 @@ class _CharacterManagerScreenState
           for (final member in assigned) member.id,
         };
         for (final id in remoteIds) {
-          await supa.removeCastMember(
-            castMemberId: id,
-            productionId: production.id,
-          );
+          await supa.removeCastMember(id);
         }
       }
       await voiceConfig.removeCharacterSettings(production.id, charName);

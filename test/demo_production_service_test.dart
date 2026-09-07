@@ -5,6 +5,7 @@ import 'package:castcircle/data/services/voice_config_service.dart';
 import 'package:castcircle/main.dart' show databaseProvider;
 import 'package:castcircle/providers/production_providers.dart';
 import 'package:drift/native.dart';
+import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -36,7 +37,12 @@ void main() {
     late WidgetRef captured;
     await tester.pumpWidget(
       ProviderScope(
-        overrides: [databaseProvider.overrideWithValue(db)],
+        overrides: [
+          databaseProvider.overrideWithValue(db),
+          connectivityChangesProvider.overrideWithValue(
+            const Stream<List<ConnectivityResult>>.empty(),
+          ),
+        ],
         child: Consumer(
           builder: (context, ref, _) {
             captured = ref;
@@ -129,5 +135,16 @@ void main() {
     expect(DemoProductionService.isDemo(demo), isTrue);
     expect(DemoProductionService.isDemo(real), isFalse);
     expect(DemoProductionService.isDemo(null), isFalse);
+  });
+
+  test('local demo never starts cloud recording sync', () {
+    expect(
+      shouldSyncRecordingsForProduction(DemoProductionService.productionId),
+      isFalse,
+    );
+    expect(
+      shouldSyncRecordingsForProduction('aaa1acd0-8658-405c-834f-e80ddefb13d9'),
+      isTrue,
+    );
   });
 }

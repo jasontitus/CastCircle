@@ -1,0 +1,30 @@
+{
+  "pages": [
+    {
+      "plain_text": "Folger Shakespeare front matter",
+      "lines": [
+        {"x": 120, "y": 10, "text": "Front matter must not become dialogue."}
+      ]
+    },
+    {
+      "plain_text": "ACT 1\nEnter Macbeth\nFTLN 1",
+      "lines": [
+        {"x": 250, "y": 10, "text": "ACT 1"},
+        {"x": 120, "y": 20, "text": "Isolated text after a header is an orphan."},
+        {"x": 88, "y": 30, "text": "MACBETH"},
+        {"x": 120, "y": 30, "text": "A dagger—there’s the cue."},
+        {"x": 120, "y": 40, "text": "This normal continuation remains."}
+      ]
+    },
+    {
+      "plain_text": "Macbeth continuation",
+      "lines": [
+        {"x": 120, "y": 10, "text": "This new-page continuation remains."},
+        {"x": 250, "y": 20, "text": "Scene 2"},
+        {"x": 120, "y": 30, "text": "Unattributed isolated text is skipped."},
+        {"x": 150, "y": 40, "text": "Enter Banquo."},
+        {"x": 300, "y": 40, "text": "An explicit stage-adjacent continuation remains."}
+      ]
+    }
+  ]
+}

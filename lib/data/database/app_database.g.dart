@@ -590,7 +590,7 @@ class $ScriptLinesTable extends ScriptLines
     type: DriftSqlType.string,
     requiredDuringInsert: true,
     defaultConstraints: GeneratedColumn.constraintIsAlways(
-      'REFERENCES productions (id) ON DELETE RESTRICT',
+      'REFERENCES productions (id)',
     ),
   );
   static const VerificationMeta _actMeta = const VerificationMeta('act');
@@ -1416,7 +1416,7 @@ class $ScenesTable extends Scenes with TableInfo<$ScenesTable, Scene> {
     type: DriftSqlType.string,
     requiredDuringInsert: true,
     defaultConstraints: GeneratedColumn.constraintIsAlways(
-      'REFERENCES productions (id) ON DELETE RESTRICT',
+      'REFERENCES productions (id)',
     ),
   );
   static const VerificationMeta _sceneNameMeta = const VerificationMeta(
@@ -2037,7 +2037,7 @@ class $RecordingsTable extends Recordings
     type: DriftSqlType.string,
     requiredDuringInsert: true,
     defaultConstraints: GeneratedColumn.constraintIsAlways(
-      'REFERENCES productions (id) ON DELETE RESTRICT',
+      'REFERENCES productions (id)',
     ),
   );
   static const VerificationMeta _scriptLineIdMeta = const VerificationMeta(
@@ -2051,7 +2051,7 @@ class $RecordingsTable extends Recordings
     type: DriftSqlType.string,
     requiredDuringInsert: true,
     defaultConstraints: GeneratedColumn.constraintIsAlways(
-      'REFERENCES script_lines (id) ON DELETE RESTRICT',
+      'REFERENCES script_lines (id)',
     ),
   );
   static const VerificationMeta _characterMeta = const VerificationMeta(
@@ -2568,7 +2568,7 @@ class $CastMembersTable extends CastMembers
     type: DriftSqlType.string,
     requiredDuringInsert: true,
     defaultConstraints: GeneratedColumn.constraintIsAlways(
-      'REFERENCES productions (id) ON DELETE RESTRICT',
+      'REFERENCES productions (id)',
     ),
   );
   static const VerificationMeta _userIdMeta = const VerificationMeta('userId');
@@ -2602,17 +2602,6 @@ class $CastMembersTable extends CastMembers
     type: DriftSqlType.string,
     requiredDuringInsert: false,
     defaultValue: const Constant(''),
-  );
-  static const VerificationMeta _contactInfoMeta = const VerificationMeta(
-    'contactInfo',
-  );
-  @override
-  late final GeneratedColumn<String> contactInfo = GeneratedColumn<String>(
-    'contact_info',
-    aliasedName,
-    true,
-    type: DriftSqlType.string,
-    requiredDuringInsert: false,
   );
   static const VerificationMeta _roleMeta = const VerificationMeta('role');
   @override
@@ -2653,7 +2642,6 @@ class $CastMembersTable extends CastMembers
     userId,
     characterName,
     displayName,
-    contactInfo,
     role,
     invitedAt,
     joinedAt,
@@ -2712,15 +2700,6 @@ class $CastMembersTable extends CastMembers
         ),
       );
     }
-    if (data.containsKey('contact_info')) {
-      context.handle(
-        _contactInfoMeta,
-        contactInfo.isAcceptableOrUnknown(
-          data['contact_info']!,
-          _contactInfoMeta,
-        ),
-      );
-    }
     if (data.containsKey('role')) {
       context.handle(
         _roleMeta,
@@ -2770,10 +2749,6 @@ class $CastMembersTable extends CastMembers
         DriftSqlType.string,
         data['${effectivePrefix}display_name'],
       )!,
-      contactInfo: attachedDatabase.typeMapping.read(
-        DriftSqlType.string,
-        data['${effectivePrefix}contact_info'],
-      ),
       role: attachedDatabase.typeMapping.read(
         DriftSqlType.string,
         data['${effectivePrefix}role'],
@@ -2801,7 +2776,6 @@ class CastMember extends DataClass implements Insertable<CastMember> {
   final String? userId;
   final String characterName;
   final String displayName;
-  final String? contactInfo;
   final String role;
   final DateTime invitedAt;
   final DateTime? joinedAt;
@@ -2811,7 +2785,6 @@ class CastMember extends DataClass implements Insertable<CastMember> {
     this.userId,
     required this.characterName,
     required this.displayName,
-    this.contactInfo,
     required this.role,
     required this.invitedAt,
     this.joinedAt,
@@ -2826,9 +2799,6 @@ class CastMember extends DataClass implements Insertable<CastMember> {
     }
     map['character_name'] = Variable<String>(characterName);
     map['display_name'] = Variable<String>(displayName);
-    if (!nullToAbsent || contactInfo != null) {
-      map['contact_info'] = Variable<String>(contactInfo);
-    }
     map['role'] = Variable<String>(role);
     map['invited_at'] = Variable<DateTime>(invitedAt);
     if (!nullToAbsent || joinedAt != null) {
@@ -2846,9 +2816,6 @@ class CastMember extends DataClass implements Insertable<CastMember> {
           : Value(userId),
       characterName: Value(characterName),
       displayName: Value(displayName),
-      contactInfo: contactInfo == null && nullToAbsent
-          ? const Value.absent()
-          : Value(contactInfo),
       role: Value(role),
       invitedAt: Value(invitedAt),
       joinedAt: joinedAt == null && nullToAbsent
@@ -2868,7 +2835,6 @@ class CastMember extends DataClass implements Insertable<CastMember> {
       userId: serializer.fromJson<String?>(json['userId']),
       characterName: serializer.fromJson<String>(json['characterName']),
       displayName: serializer.fromJson<String>(json['displayName']),
-      contactInfo: serializer.fromJson<String?>(json['contactInfo']),
       role: serializer.fromJson<String>(json['role']),
       invitedAt: serializer.fromJson<DateTime>(json['invitedAt']),
       joinedAt: serializer.fromJson<DateTime?>(json['joinedAt']),
@@ -2883,7 +2849,6 @@ class CastMember extends DataClass implements Insertable<CastMember> {
       'userId': serializer.toJson<String?>(userId),
       'characterName': serializer.toJson<String>(characterName),
       'displayName': serializer.toJson<String>(displayName),
-      'contactInfo': serializer.toJson<String?>(contactInfo),
       'role': serializer.toJson<String>(role),
       'invitedAt': serializer.toJson<DateTime>(invitedAt),
       'joinedAt': serializer.toJson<DateTime?>(joinedAt),
@@ -2896,7 +2861,6 @@ class CastMember extends DataClass implements Insertable<CastMember> {
     Value<String?> userId = const Value.absent(),
     String? characterName,
     String? displayName,
-    Value<String?> contactInfo = const Value.absent(),
     String? role,
     DateTime? invitedAt,
     Value<DateTime?> joinedAt = const Value.absent(),
@@ -2906,7 +2870,6 @@ class CastMember extends DataClass implements Insertable<CastMember> {
     userId: userId.present ? userId.value : this.userId,
     characterName: characterName ?? this.characterName,
     displayName: displayName ?? this.displayName,
-    contactInfo: contactInfo.present ? contactInfo.value : this.contactInfo,
     role: role ?? this.role,
     invitedAt: invitedAt ?? this.invitedAt,
     joinedAt: joinedAt.present ? joinedAt.value : this.joinedAt,
@@ -2924,9 +2887,6 @@ class CastMember extends DataClass implements Insertable<CastMember> {
       displayName: data.displayName.present
           ? data.displayName.value
           : this.displayName,
-      contactInfo: data.contactInfo.present
-          ? data.contactInfo.value
-          : this.contactInfo,
       role: data.role.present ? data.role.value : this.role,
       invitedAt: data.invitedAt.present ? data.invitedAt.value : this.invitedAt,
       joinedAt: data.joinedAt.present ? data.joinedAt.value : this.joinedAt,
@@ -2941,7 +2901,6 @@ class CastMember extends DataClass implements Insertable<CastMember> {
           ..write('userId: $userId, ')
           ..write('characterName: $characterName, ')
           ..write('displayName: $displayName, ')
-          ..write('contactInfo: $contactInfo, ')
           ..write('role: $role, ')
           ..write('invitedAt: $invitedAt, ')
           ..write('joinedAt: $joinedAt')
@@ -2956,7 +2915,6 @@ class CastMember extends DataClass implements Insertable<CastMember> {
     userId,
     characterName,
     displayName,
-    contactInfo,
     role,
     invitedAt,
     joinedAt,
@@ -2970,7 +2928,6 @@ class CastMember extends DataClass implements Insertable<CastMember> {
           other.userId == this.userId &&
           other.characterName == this.characterName &&
           other.displayName == this.displayName &&
-          other.contactInfo == this.contactInfo &&
           other.role == this.role &&
           other.invitedAt == this.invitedAt &&
           other.joinedAt == this.joinedAt);
@@ -2982,7 +2939,6 @@ class CastMembersCompanion extends UpdateCompanion<CastMember> {
   final Value<String?> userId;
   final Value<String> characterName;
   final Value<String> displayName;
-  final Value<String?> contactInfo;
   final Value<String> role;
   final Value<DateTime> invitedAt;
   final Value<DateTime?> joinedAt;
@@ -2993,7 +2949,6 @@ class CastMembersCompanion extends UpdateCompanion<CastMember> {
     this.userId = const Value.absent(),
     this.characterName = const Value.absent(),
     this.displayName = const Value.absent(),
-    this.contactInfo = const Value.absent(),
     this.role = const Value.absent(),
     this.invitedAt = const Value.absent(),
     this.joinedAt = const Value.absent(),
@@ -3005,7 +2960,6 @@ class CastMembersCompanion extends UpdateCompanion<CastMember> {
     this.userId = const Value.absent(),
     required String characterName,
     this.displayName = const Value.absent(),
-    this.contactInfo = const Value.absent(),
     required String role,
     this.invitedAt = const Value.absent(),
     this.joinedAt = const Value.absent(),
@@ -3020,7 +2974,6 @@ class CastMembersCompanion extends UpdateCompanion<CastMember> {
     Expression<String>? userId,
     Expression<String>? characterName,
     Expression<String>? displayName,
-    Expression<String>? contactInfo,
     Expression<String>? role,
     Expression<DateTime>? invitedAt,
     Expression<DateTime>? joinedAt,
@@ -3032,7 +2985,6 @@ class CastMembersCompanion extends UpdateCompanion<CastMember> {
       if (userId != null) 'user_id': userId,
       if (characterName != null) 'character_name': characterName,
       if (displayName != null) 'display_name': displayName,
-      if (contactInfo != null) 'contact_info': contactInfo,
       if (role != null) 'role': role,
       if (invitedAt != null) 'invited_at': invitedAt,
       if (joinedAt != null) 'joined_at': joinedAt,
@@ -3046,7 +2998,6 @@ class CastMembersCompanion extends UpdateCompanion<CastMember> {
     Value<String?>? userId,
     Value<String>? characterName,
     Value<String>? displayName,
-    Value<String?>? contactInfo,
     Value<String>? role,
     Value<DateTime>? invitedAt,
     Value<DateTime?>? joinedAt,
@@ -3058,7 +3009,6 @@ class CastMembersCompanion extends UpdateCompanion<CastMember> {
       userId: userId ?? this.userId,
       characterName: characterName ?? this.characterName,
       displayName: displayName ?? this.displayName,
-      contactInfo: contactInfo ?? this.contactInfo,
       role: role ?? this.role,
       invitedAt: invitedAt ?? this.invitedAt,
       joinedAt: joinedAt ?? this.joinedAt,
@@ -3084,9 +3034,6 @@ class CastMembersCompanion extends UpdateCompanion<CastMember> {
     if (displayName.present) {
       map['display_name'] = Variable<String>(displayName.value);
     }
-    if (contactInfo.present) {
-      map['contact_info'] = Variable<String>(contactInfo.value);
-    }
     if (role.present) {
       map['role'] = Variable<String>(role.value);
     }
@@ -3110,7 +3057,6 @@ class CastMembersCompanion extends UpdateCompanion<CastMember> {
           ..write('userId: $userId, ')
           ..write('characterName: $characterName, ')
           ..write('displayName: $displayName, ')
-          ..write('contactInfo: $contactInfo, ')
           ..write('role: $role, ')
           ..write('invitedAt: $invitedAt, ')
           ..write('joinedAt: $joinedAt, ')
@@ -3130,7 +3076,7 @@ abstract class _$AppDatabase extends GeneratedDatabase {
   late final $CastMembersTable castMembers = $CastMembersTable(this);
   late final Index idxProductionsAccountCreated = Index(
     'idx_productions_account_created',
-    'CREATE INDEX idx_productions_account_created ON productions (account_namespace, created_at)',
+    'CREATE INDEX idx_productions_account_created ON script_lines ()',
   );
   late final Index idxScriptLinesProductionOrder = Index(
     'idx_script_lines_production_order',
@@ -5329,7 +5275,6 @@ typedef $$CastMembersTableCreateCompanionBuilder =
       Value<String?> userId,
       required String characterName,
       Value<String> displayName,
-      Value<String?> contactInfo,
       required String role,
       Value<DateTime> invitedAt,
       Value<DateTime?> joinedAt,
@@ -5342,7 +5287,6 @@ typedef $$CastMembersTableUpdateCompanionBuilder =
       Value<String?> userId,
       Value<String> characterName,
       Value<String> displayName,
-      Value<String?> contactInfo,
       Value<String> role,
       Value<DateTime> invitedAt,
       Value<DateTime?> joinedAt,
@@ -5398,10 +5342,6 @@ class $$CastMembersTableFilterComposer
 
   ColumnFilters<String> get displayName => $composableBuilder(
     column: $table.displayName,
-    builder: (column) => ColumnFilters(column),
-  );
-  ColumnFilters<String> get contactInfo => $composableBuilder(
-    column: $table.contactInfo,
     builder: (column) => ColumnFilters(column),
   );
 
@@ -5472,10 +5412,6 @@ class $$CastMembersTableOrderingComposer
     column: $table.displayName,
     builder: (column) => ColumnOrderings(column),
   );
-  ColumnOrderings<String> get contactInfo => $composableBuilder(
-    column: $table.contactInfo,
-    builder: (column) => ColumnOrderings(column),
-  );
 
   ColumnOrderings<String> get role => $composableBuilder(
     column: $table.role,
@@ -5538,10 +5474,6 @@ class $$CastMembersTableAnnotationComposer
 
   GeneratedColumn<String> get displayName => $composableBuilder(
     column: $table.displayName,
-    builder: (column) => column,
-  );
-  GeneratedColumn<String> get contactInfo => $composableBuilder(
-    column: $table.contactInfo,
     builder: (column) => column,
   );
 
@@ -5611,7 +5543,6 @@ class $$CastMembersTableTableManager
                 Value<String?> userId = const Value.absent(),
                 Value<String> characterName = const Value.absent(),
                 Value<String> displayName = const Value.absent(),
-                Value<String?> contactInfo = const Value.absent(),
                 Value<String> role = const Value.absent(),
                 Value<DateTime> invitedAt = const Value.absent(),
                 Value<DateTime?> joinedAt = const Value.absent(),
@@ -5622,7 +5553,6 @@ class $$CastMembersTableTableManager
                 userId: userId,
                 characterName: characterName,
                 displayName: displayName,
-                contactInfo: contactInfo,
                 role: role,
                 invitedAt: invitedAt,
                 joinedAt: joinedAt,
@@ -5635,7 +5565,6 @@ class $$CastMembersTableTableManager
                 Value<String?> userId = const Value.absent(),
                 required String characterName,
                 Value<String> displayName = const Value.absent(),
-                Value<String?> contactInfo = const Value.absent(),
                 required String role,
                 Value<DateTime> invitedAt = const Value.absent(),
                 Value<DateTime?> joinedAt = const Value.absent(),
@@ -5646,7 +5575,6 @@ class $$CastMembersTableTableManager
                 userId: userId,
                 characterName: characterName,
                 displayName: displayName,
-                contactInfo: contactInfo,
                 role: role,
                 invitedAt: invitedAt,
                 joinedAt: joinedAt,

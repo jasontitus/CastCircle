@@ -1,0 +1,22 @@
+# Sweep coverage — per-file evidence (CastCircle)
+
+- ios/Runner/AppDelegate.swift — evidenced
+- ios/Runner/AppleSttPlugin.swift — evidenced
+- ios/Runner/AudioAnalysisPlugin.swift — evidenced
+- ios/Runner/BackgroundDownloadPlugin.swift — evidenced
+- ios/Runner/ContactPickerPlugin.swift — evidenced
+- ios/Runner/KokoroMLXPlugin.swift — evidenced
+- ios/Runner/KokoroMLXService.swift — evidenced
+- ios/Runner/KokoroVendored/Albert/AlbertEmbeddings.swift — evidenced
+- ios/Runner/KokoroVendored/Albert/AlbertEncoder.swift — evidenced
+- ios/Runner/KokoroVendored/Albert/AlbertLayer.swift — evidenced
+- ios/Runner/KokoroVendored/Albert/AlbertLayerGroup.swift — evidenced
+- ios/Runner/KokoroVendored/Albert/AlbertModelArgs.swift — evidenced
+- ios/Runner/KokoroVendored/Albert/AlbertSelfAttention.swift — evidenced
+- ios/Runner/KokoroVendored/Albert/CustomAlbert.swift — evidenced
+- ios/Runner/KokoroVendored/BuildingBlocks/AdaIN1d.swift — evidenced
+- ios/Runner/KokoroVendored/BuildingBlocks/AdainResBlk1d.swift — evidenced
+- ios/Runner/KokoroVendored/BuildingBlocks/AdaINResBlock1.swift — evidenced
+- ios/Runner/KokoroVendored/BuildingBlocks/AdaLayerNorm.swift — evidenced
+- ios/Runner/KokoroVendored/BuildingBlocks/Conv1dInference.swift — evidenced
+- ios/Runner/KokoroVendored/BuildingBlocks/ConvWeighted.swift — evidenced

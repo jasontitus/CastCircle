@@ -1,6 +1,7 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:flutter/services.dart';
 import 'package:castcircle/data/services/tts_service.dart';
+import 'package:castcircle/data/services/kokoro_onnx_service.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
@@ -49,6 +50,30 @@ void main() {
         ]),
       );
       expect(TtsEngine.values.length, 3);
+    });
+
+    test('registered voice IDs map exactly and unknown IDs are rejected', () {
+      for (final entry in KokoroOnnxService.voiceIds.entries) {
+        expect(KokoroOnnxService.speakerIdForVoice(entry.key), entry.value);
+        expect(
+          TtsService.instance.assignVoice(
+            'known-${entry.key}',
+            entry.value,
+            voiceId: entry.key,
+          ),
+          isTrue,
+        );
+      }
+
+      expect(KokoroOnnxService.speakerIdForVoice('unknown_voice'), isNull);
+      expect(
+        TtsService.instance.assignVoice(
+          'bad-override',
+          0,
+          voiceId: 'unknown_voice',
+        ),
+        isFalse,
+      );
     });
   });
 

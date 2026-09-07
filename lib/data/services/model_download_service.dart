@@ -1,11 +1,7 @@
 import 'dart:convert';
 import 'dart:ffi';
 import 'dart:io';
-import 'dart:isolate';
 
-// crypto ships with the Flutter/Firebase dependency set already; it is used
-// here only for the optional post-download SHA-256 check.
-// ignore: depend_on_referenced_packages
 import 'package:crypto/crypto.dart' as crypto;
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
@@ -91,16 +87,28 @@ class ModelDownloadState {
 /// Kokoro MLX model files are downloaded to Documents/models/kokoro_mlx/
 /// to match the path expected by KokoroMLXService.swift.
 class ModelDownloadService {
-  ModelDownloadService._() {
+  ModelDownloadService._()
+    : _models = availableModels,
+      _httpClientFactory = HttpClient.new,
+      _forceDartDownloads = false {
     _setupNativeCallbacks();
   }
+
+  /// A real service instance whose public [download] path can be driven by a
+  /// local server without platform channels.
+  @visibleForTesting
+  ModelDownloadService.forTesting({
+    required String documentsDirectory,
+    required List<AiModel> models,
+    HttpClient Function()? httpClientFactory,
+  }) : _models = models,
+       _docsPath = documentsDirectory,
+       _httpClientFactory = httpClientFactory ?? HttpClient.new,
+       _forceDartDownloads = true;
+
   static final instance = ModelDownloadService._();
 
   static const _channel = MethodChannel('com.lineguide/background_download');
-
-  static const _connectTimeout = Duration(seconds: 30);
-  static const _responseTimeout = Duration(seconds: 60);
-  static const _idleTimeout = Duration(seconds: 60);
 
   /// Registry of available models.
   static const List<AiModel> availableModels = [
@@ -212,8 +220,12 @@ class ModelDownloadService {
     ),
   ];
 
+  final List<AiModel> _models;
+  final HttpClient Function() _httpClientFactory;
+  final bool _forceDartDownloads;
   final Map<String, ModelDownloadState> _states = {};
   final List<VoidCallback> _listeners = [];
+  final Set<String> _activeTempPaths = {};
   final _dlog = DebugLogService.instance;
 
   /// Current state for a model.
@@ -256,26 +268,48 @@ class ModelDownloadService {
             'ModelDownload: $modelId complete (${(size / 1024 / 1024).toStringAsFixed(1)} MB)',
           );
 
-          // "The transfer finished" is not "the file is good": verify what
-          // landed on disk before calling it downloaded, or a truncated /
-          // wrong-revision file reads as installed while the feature it powers
-          // silently falls back (TTS → system voices).
-          final model = availableModels
-              .where((m) => m.id == modelId)
-              .firstOrNull;
-          final problem = model == null ? null : await _verifyDownload(model);
+          final model = _models.where((m) => m.id == modelId).firstOrNull;
+          if (model == null) {
+            _states[modelId] = const ModelDownloadState(
+              status: ModelStatus.error,
+              errorMessage: 'Downloaded file has no registered model',
+            );
+            _notify();
+            break;
+          }
+          final outPath = await _filePath(model);
+          final stagedFile = File('$outPath.download');
+          _activeTempPaths.remove(stagedFile.path);
+          final problem = await _verifyFile(model, stagedFile);
           if (problem != null) {
+            await _discardStagedFile(model, stagedFile, problem);
             _states[modelId] = ModelDownloadState(
               status: ModelStatus.error,
               errorMessage:
                   'Downloaded file failed verification ($problem) '
-                  '— it was discarded, please download again',
+                  '— the installed model was kept, please download again',
             );
             _notify();
             _dlog.log(
               LogCategory.error,
-              'ModelDownload: $modelId FAILED verification — $problem '
-              '(file discarded)',
+              'ModelDownload: $modelId FAILED staged verification — '
+              '$problem (installed file kept)',
+            );
+            break;
+          }
+          try {
+            await _adoptStagedFile(stagedFile, File(outPath));
+          } catch (e) {
+            _states[modelId] = ModelDownloadState(
+              status: ModelStatus.error,
+              errorMessage:
+                  'Verified download could not be installed; the previous '
+                  'model was kept ($e)',
+            );
+            _notify();
+            _dlog.log(
+              LogCategory.error,
+              'ModelDownload: $modelId verified stage adoption failed: $e',
             );
             break;
           }
@@ -285,8 +319,6 @@ class ModelDownloadService {
             progress: 1.0,
           );
           _notify();
-
-          // Auto-load Kokoro TTS engine once both model files are downloaded
           if (modelId == 'kokoro_model' || modelId == 'kokoro_voices') {
             _tryLoadKokoroIfReady();
           }
@@ -296,6 +328,24 @@ class ModelDownloadService {
           final args = call.arguments as Map;
           final modelId = args['modelId'] as String;
           final error = args['error'] as String;
+          final model = _models
+              .where((candidate) => candidate.id == modelId)
+              .firstOrNull;
+          if (model != null) {
+            final staged = File('${await _filePath(model)}.download');
+            _activeTempPaths.remove(staged.path);
+            if (await staged.exists()) {
+              try {
+                await staged.delete();
+              } catch (cleanupError) {
+                _dlog.log(
+                  LogCategory.error,
+                  'ModelDownload: could not clean failed native stage for '
+                  '$modelId: $cleanupError',
+                );
+              }
+            }
+          }
           _states[modelId] = ModelDownloadState(
             status: ModelStatus.error,
             errorMessage: error,
@@ -341,7 +391,7 @@ class ModelDownloadService {
 
   /// Check which models are already downloaded on disk.
   Future<void> refreshDownloadedStatus() async {
-    for (final model in availableModels) {
+    for (final model in _models) {
       // Never stomp an in-flight download's progress state.
       if (_states[model.id]?.status == ModelStatus.downloading) continue;
 
@@ -373,7 +423,7 @@ class ModelDownloadService {
         }
       }
     }
-    // Clean up any leftover .tmp files from failed downloads
+    // Only remove old orphan Dart artifacts; active transfer leases are kept.
     await _cleanupTmpFiles();
     await _cleanupRetiredModels();
     _notify();
@@ -385,8 +435,9 @@ class ModelDownloadService {
   Future<void> _cleanupRetiredModels() async {
     for (final subdir in const ['parakeet_stt']) {
       try {
-        final appDir = await getApplicationDocumentsDirectory();
-        final dir = Directory(p.join(appDir.path, 'models', subdir));
+        final docs = _docsPath ??=
+            (await getApplicationDocumentsDirectory()).path;
+        final dir = Directory(p.join(docs, 'models', subdir));
         if (dir.existsSync()) {
           await dir.delete(recursive: true);
           _dlog.log(
@@ -403,23 +454,14 @@ class ModelDownloadService {
     }
   }
 
-  /// Post-download integrity check. Size first (cheap), then SHA-256 when the
-  /// descriptor pins one. A file that fails is DELETED — leaving it behind is
-  /// what produced the "installed but broken, only Delete offered" dead end.
-  Future<String?> _verifyDownload(AiModel model) async {
-    final file = File(await _filePath(model));
+  /// Verify [file] without mutating either it or the installed model.
+  Future<String?> _verifyFile(AiModel model, File file) async {
     var problem = fileProblem(model, file);
-
     final expected = model.sha256;
     if (problem == null && expected != null) {
       try {
-        // Streamed in a worker isolate: model files run to gigabytes, and
-        // hashing them on the UI isolate causes a visible post-download stall.
-        final path = file.path;
-        final actual = await Isolate.run(() async {
-          final digest = await crypto.sha256.bind(File(path).openRead()).first;
-          return digest.toString().toLowerCase();
-        });
+        final digest = await crypto.sha256.bind(file.openRead()).first;
+        final actual = digest.toString().toLowerCase();
         if (actual != expected.toLowerCase()) {
           problem = 'sha256 $actual != expected ${expected.toLowerCase()}';
         }
@@ -427,19 +469,33 @@ class ModelDownloadService {
         problem = 'sha256 could not be computed: $e';
       }
     }
-
-    if (problem != null && file.existsSync()) {
-      try {
-        await file.delete();
-      } catch (e) {
-        _dlog.log(
-          LogCategory.error,
-          'ModelDownload: could not delete the bad ${model.id} file: $e',
-        );
-      }
-    }
     return problem;
   }
+
+  Future<void> _discardStagedFile(
+    AiModel model,
+    File staged,
+    String problem,
+  ) async {
+    if (!await staged.exists()) return;
+    try {
+      await staged.delete();
+    } catch (e) {
+      _dlog.log(
+        LogCategory.error,
+        'ModelDownload: could not discard bad ${model.id} stage ($problem): $e',
+      );
+    }
+  }
+
+  /// One same-volume rename publishes verified bytes. The previous file is
+  /// untouched until that atomic filesystem operation succeeds.
+  Future<void> _adoptStagedFile(File staged, File active) async {
+    await staged.rename(active.path);
+  }
+
+  Future<String?> _installedProblem(AiModel model) async =>
+      _verifyFile(model, File(await _filePath(model)));
 
   /// Auto-load Kokoro TTS after both model files finish downloading.
   Future<void> _tryLoadKokoroIfReady() async {
@@ -462,21 +518,28 @@ class ModelDownloadService {
     return p.join(appDir.path, 'models', 'live_asr');
   }
 
-  /// Download every Kokoro MLX file that isn't already good.
-  Future<void> downloadKokoro() => _downloadGroup('kokoro_mlx');
-
   /// Download every live-matching ASR file that isn't already good.
-  Future<void> downloadLiveAsr() => _downloadGroup('live_asr');
-
-  Future<void> _downloadGroup(String subdir) async {
+  Future<void> downloadLiveAsr() async {
     // Concurrent within the group: the Dart-fallback path (Android) blocks
-    // per file, so sequentially the small decoder/joiner/tokens files would
-    // queue behind the big encoder.
+    // per file, so sequentially the small decoder/joiner/tokens files queued
+    // behind the big encoder. Progress is bytes-weighted across per-file
+    // states, so the setup bar stays honest either way.
     final needed = <AiModel>[];
-    for (final model in availableModels) {
-      if (model.subdir != subdir) continue;
-      if (fileProblem(model, File(await _filePath(model))) == null) continue;
-      needed.add(model);
+    for (final m in _models) {
+      if (m.subdir != 'live_asr') continue;
+      if (await _installedProblem(m) == null) continue;
+      needed.add(m);
+    }
+    await Future.wait(needed.map(download));
+  }
+
+  /// Download every Kokoro MLX file that isn't already good.
+  Future<void> downloadKokoro() async {
+    final needed = <AiModel>[];
+    for (final m in _models) {
+      if (m.subdir != 'kokoro_mlx') continue;
+      if (await _installedProblem(m) == null) continue;
+      needed.add(m);
     }
     await Future.wait(needed.map(download));
   }
@@ -484,7 +547,7 @@ class ModelDownloadService {
   /// Shared readiness check over every model in [subdir] — same [fileProblem]
   /// the Settings tiles use, so the two can never disagree.
   Future<bool> _groupReady(String subdir, String label) async {
-    for (final model in availableModels) {
+    for (final model in _models) {
       if (model.subdir != subdir) continue;
       final file = File(await _filePath(model));
       final problem = fileProblem(model, file);
@@ -504,6 +567,18 @@ class ModelDownloadService {
 
   /// Download a model file using native iOS background URLSession.
   Future<void> download(AiModel model) async {
+    if (_states[model.id]?.status == ModelStatus.downloading) return;
+    // Automatic/bulk callers may ask for an entire group after one component
+    // goes missing. Never refresh a component whose installed bytes already
+    // pass the full pinned verification.
+    if (await _installedProblem(model) == null) {
+      _states[model.id] = const ModelDownloadState(
+        status: ModelStatus.downloaded,
+        progress: 1.0,
+      );
+      _notify();
+      return;
+    }
     if (model.downloadUrl.isEmpty) {
       _states[model.id] = const ModelDownloadState(
         status: ModelStatus.error,
@@ -513,7 +588,8 @@ class ModelDownloadService {
       return;
     }
 
-    // Reset state and clean up any leftover .tmp file
+    // Claim the model before touching its temporary artifact so a concurrent
+    // status refresh cannot mistake the active transfer for an orphan.
     _states[model.id] = const ModelDownloadState(
       status: ModelStatus.downloading,
       progress: 0.0,
@@ -523,9 +599,8 @@ class ModelDownloadService {
     try {
       final outPath = await _filePath(model);
 
-      // Clean up .tmp file from previous failed download
       final tmpFile = File('$outPath.tmp');
-      if (tmpFile.existsSync()) {
+      if (tmpFile.existsSync() && !_activeTempPaths.contains(tmpFile.path)) {
         await tmpFile.delete();
       }
 
@@ -559,26 +634,37 @@ class ModelDownloadService {
         );
       }
 
-      // Start native background download. Android has no native downloader
-      // (the channel is a stub that errors) — fall back to a Dart-side
-      // streamed download there; verification is identical either way.
-      try {
-        await _channel.invokeMethod('startDownload', {
-          'modelId': model.id,
-          'url': model.downloadUrl,
-          'destinationPath': outPath,
-        });
-        debugPrint(
-          'ModelDownload: started background download for ${model.id}',
-        );
-      } on PlatformException catch (e) {
-        if (e.code != 'UNAVAILABLE' || !_dartDownloadable(model)) rethrow;
+      if (_forceDartDownloads) {
         await _dartDownload(model, outPath);
-      } on MissingPluginException {
-        if (!_dartDownloadable(model)) rethrow;
-        await _dartDownload(model, outPath);
+      } else {
+        final stagedPath = '$outPath.download';
+        final stagedFile = File(stagedPath);
+        if (await stagedFile.exists()) await stagedFile.delete();
+        _activeTempPaths.add(stagedPath);
+        try {
+          await _channel.invokeMethod('startDownload', {
+            'modelId': model.id,
+            'url': model.downloadUrl,
+            'destinationPath': stagedPath,
+          });
+          debugPrint(
+            'ModelDownload: started background download for ${model.id}',
+          );
+        } on PlatformException catch (e) {
+          _activeTempPaths.remove(stagedPath);
+          if (e.code != 'UNAVAILABLE' || !_dartDownloadable(model)) rethrow;
+          await _dartDownload(model, outPath);
+        } on MissingPluginException {
+          _activeTempPaths.remove(stagedPath);
+          if (!_dartDownloadable(model)) rethrow;
+          await _dartDownload(model, outPath);
+        }
       }
     } catch (e) {
+      final outPath = await _filePath(model);
+      _activeTempPaths
+        ..remove('$outPath.tmp')
+        ..remove('$outPath.download');
       _states[model.id] = ModelDownloadState(
         status: ModelStatus.error,
         errorMessage: e.toString(),
@@ -602,7 +688,8 @@ class ModelDownloadService {
   Future<void> _dartDownload(AiModel model, String outPath) async {
     debugPrint('ModelDownload: Dart fallback download for ${model.id}');
     final tmpFile = File('$outPath.tmp');
-    final client = HttpClient();
+    final client = _httpClientFactory();
+    _activeTempPaths.add(tmpFile.path);
     // Follow redirects by hand so each hop can be scheme-checked — the
     // default client would silently follow an https→http downgrade and put
     // the model bytes on the wire in the clear (ModelManager._downloadFile
@@ -615,19 +702,18 @@ class ModelDownloadService {
     // server is free to ignore that, decode anything that still arrives
     // compressed rather than trusting it.
     client.autoUncompress = false;
-    client.connectionTimeout = _connectTimeout;
     try {
       var uri = Uri.parse(model.downloadUrl);
       HttpClientResponse res;
       var redirectsLeft = 5;
       while (true) {
-        final req = await client.getUrl(uri).timeout(_connectTimeout);
+        final req = await client.getUrl(uri);
         req.followRedirects = false;
         req.headers.set(HttpHeaders.acceptEncodingHeader, 'identity');
-        res = await req.close().timeout(_responseTimeout);
+        res = await req.close();
         if (!res.isRedirect) break;
         final location = res.headers.value('location');
-        await res.drain<void>().timeout(_idleTimeout);
+        await res.drain<void>();
         if (location == null) {
           throw HttpException('Redirect without Location for $uri');
         }
@@ -658,7 +744,7 @@ class ModelDownloadService {
       try {
         // Progress counts WIRE bytes (what contentLength describes); the sink
         // gets decoded bytes when the server compressed anyway.
-        Stream<List<int>> body = res.timeout(_idleTimeout).map((chunk) {
+        Stream<List<int>> body = res.map((chunk) {
           received += chunk.length;
           // Throttle UI updates to every ~1 MB.
           if (total > 0 && received - lastNotified > 1024 * 1024) {
@@ -686,21 +772,21 @@ class ModelDownloadService {
       } finally {
         await sink.close();
       }
-      await tmpFile.rename(outPath);
-
-      final problem = await _verifyDownload(model);
+      final problem = await _verifyFile(model, tmpFile);
       if (problem != null) {
+        await _discardStagedFile(model, tmpFile, problem);
         _states[model.id] = ModelDownloadState(
           status: ModelStatus.error,
           errorMessage:
               'Downloaded file failed verification ($problem) '
-              '— it was discarded, please download again',
+              '— the installed model was kept, please download again',
         );
         _dlog.log(
           LogCategory.error,
-          'ModelDownload: ${model.id} FAILED verification — $problem',
+          'ModelDownload: ${model.id} FAILED staged verification — $problem',
         );
       } else {
+        await _adoptStagedFile(tmpFile, File(outPath));
         _states[model.id] = const ModelDownloadState(
           status: ModelStatus.downloaded,
           progress: 1.0,
@@ -708,9 +794,16 @@ class ModelDownloadService {
       }
       _notify();
     } catch (e) {
-      try {
-        if (tmpFile.existsSync()) await tmpFile.delete();
-      } catch (_) {}
+      if (tmpFile.existsSync()) {
+        try {
+          await tmpFile.delete();
+        } catch (cleanupError) {
+          _dlog.log(
+            LogCategory.error,
+            'ModelDownload: could not clean ${model.id} temp file: $cleanupError',
+          );
+        }
+      }
       _states[model.id] = ModelDownloadState(
         status: ModelStatus.error,
         errorMessage: e.toString(),
@@ -721,22 +814,30 @@ class ModelDownloadService {
         'ModelDownload: ${model.id} Dart download failed: $e',
       );
     } finally {
-      client.close(force: true);
+      _activeTempPaths.remove(tmpFile.path);
+      client.close();
     }
   }
 
   /// Download all available models.
   Future<void> downloadAll() async {
-    for (final m in availableModels) {
-      if (m.downloadUrl.isNotEmpty) {
-        await download(m);
+    for (final model in _models) {
+      if (model.downloadUrl.isEmpty) continue;
+      if (await _installedProblem(model) == null) {
+        _states[model.id] = const ModelDownloadState(
+          status: ModelStatus.downloaded,
+          progress: 1.0,
+        );
+        _notify();
+        continue;
       }
+      await download(model);
     }
   }
 
   /// Delete a downloaded model file.
   Future<void> delete(String modelId) async {
-    final model = availableModels.where((m) => m.id == modelId).firstOrNull;
+    final model = _models.where((m) => m.id == modelId).firstOrNull;
     if (model != null) {
       final path = await _filePath(model);
       final file = File(path);
@@ -755,7 +856,7 @@ class ModelDownloadService {
     if (dir.existsSync()) {
       await dir.delete(recursive: true);
     }
-    for (final model in availableModels) {
+    for (final model in _models) {
       if (model.subdir == 'kokoro_mlx') {
         _states[model.id] = const ModelDownloadState();
       }
@@ -778,28 +879,34 @@ class ModelDownloadService {
   }
 
   Future<Directory> _kokoroDir() async {
-    final appDir = await getApplicationDocumentsDirectory();
-    return Directory(p.join(appDir.path, 'models', 'kokoro_mlx'));
+    final docs = _docsPath ??= (await getApplicationDocumentsDirectory()).path;
+    return Directory(p.join(docs, 'models', 'kokoro_mlx'));
   }
 
   static String _mb(int bytes) =>
       '${(bytes / 1024 / 1024).toStringAsFixed(0)} MB';
 
-  /// Remove leftover .tmp files from failed downloads.
+  /// Remove only old orphan `.tmp` files. A lease and the downloading state
+  /// independently protect live Android transfers from a status refresh.
   Future<void> _cleanupTmpFiles() async {
-    for (final model in availableModels) {
+    final staleBefore = DateTime.now().subtract(const Duration(hours: 24));
+    for (final model in _models) {
       final path = await _filePath(model);
-      // The Dart fallback owns this exact path until its final rename. Native
-      // tasks may use it too, so status refresh must never unlink active work.
-      if (_states[model.id]?.status == ModelStatus.downloading) continue;
       final tmpFile = File('$path.tmp');
-      if (tmpFile.existsSync()) {
-        try {
-          await tmpFile.delete();
-          debugPrint('ModelDownload: cleaned up ${model.id}.tmp');
-        } catch (e) {
-          debugPrint('ModelDownload: failed to clean ${model.id}.tmp: $e');
-        }
+      if (!tmpFile.existsSync()) continue;
+      if (_activeTempPaths.contains(tmpFile.path) ||
+          _states[model.id]?.status == ModelStatus.downloading) {
+        continue;
+      }
+      try {
+        if (tmpFile.lastModifiedSync().isAfter(staleBefore)) continue;
+        await tmpFile.delete();
+        debugPrint('ModelDownload: cleaned up orphan ${model.id}.tmp');
+      } catch (e) {
+        _dlog.log(
+          LogCategory.error,
+          'ModelDownload: failed to clean orphan ${model.id}.tmp: $e',
+        );
       }
     }
   }

@@ -6,17 +6,8 @@ import 'dart:typed_data';
 import 'package:flutter/foundation.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
-import '../models/cast_member_model.dart';
 import 'debug_log_service.dart';
-
-enum CastMemberRemovalResult { removed, alreadyAbsent }
-
-class CastPrimaryAlreadyAssignedException implements Exception {
-  const CastPrimaryAlreadyAssignedException();
-
-  @override
-  String toString() => 'The character already has a primary actor invitation.';
-}
+import '../models/cast_member_model.dart';
 
 /// Lightweight Supabase service for production management, auth, and recording sync.
 ///
@@ -26,24 +17,31 @@ class CastPrimaryAlreadyAssignedException implements Exception {
 /// - Clients download all production data locally and rarely query the server
 /// - Audio recordings are compressed (AAC/m4a, ~50KB per line)
 class SupabaseService {
-  SupabaseService._();
+  SupabaseService._() : _injectedClient = null;
+
+  /// Creates a service backed by an isolated client for deterministic contract
+  /// tests. Production code uses [instance].
+  @visibleForTesting
+  SupabaseService.forTesting(SupabaseClient client)
+    : _injectedClient = client,
+      _initialized = true;
+
   static final instance = SupabaseService._();
 
-  SupabaseClient get _client => Supabase.instance.client;
+  final SupabaseClient? _injectedClient;
+  SupabaseClient get _client => _injectedClient ?? Supabase.instance.client;
 
   /// Public access for debug log upload and other direct operations.
   SupabaseClient get client => _client;
   DebugLogService get _dlog => DebugLogService.instance;
   bool _initialized = false;
   bool get isInitialized => _initialized;
-  final Completer<bool> _initializationResult = Completer<bool>();
-  Future<void>? _initialization;
 
-  /// Resolves when the current initialization attempt finishes.
-  ///
-  /// A late success after the startup timeout resolves to `true`, allowing the
-  /// app to restore a persisted session without polling. Fast failures resolve
-  /// to `false`.
+  /// Completes when Supabase.initialize REALLY finishes (including the late
+  /// completion after the 5s startup timeout), and completes false on a real
+  /// init failure. app.dart awaits this before wiring the auth listener, so a
+  /// restored session is never sampled before the client exists.
+  final Completer<bool> _initializationResult = Completer<bool>();
   Future<bool> get initializationResult => _initializationResult.future;
 
   /// Initialize Supabase. Call once at app startup.
@@ -54,31 +52,20 @@ class SupabaseService {
     required String publishableKey,
   }) async {
     if (_initialized) return;
-
-    // Keep one underlying initialization attempt even after the startup wait
-    // times out. Supabase initialization is not safe to start twice.
-    final initFuture = _initialization ??= () async {
-      try {
-        await Supabase.initialize(url: url, publishableKey: publishableKey);
-        _initialized = true;
-        if (!_initializationResult.isCompleted) {
-          _initializationResult.complete(true);
-        }
-      } catch (_) {
-        if (!_initializationResult.isCompleted) {
-          _initializationResult.complete(false);
-        }
-        rethrow;
-      }
-    }();
-
+    // Timeout prevents startup hanging on expired tokens or an unreachable
+    // server. The timeout does NOT cancel initialization — it keeps running.
+    final initFuture = Supabase.initialize(
+      url: url,
+      publishableKey: publishableKey,
+    );
     try {
-      await initFuture.timeout(const Duration(seconds: 5));
+      _initialized = true;
+      _completeInitialization(true);
     } on TimeoutException {
       // Do NOT mark initialized here: until Supabase.initialize actually
-      // completes, Supabase.instance.client throws. The app watches
-      // [initializationResult] so a restored session is picked up even when
-      // initialization completes after this soft startup timeout.
+      // completes, Supabase.instance.client throws — the old code set the
+      // flag anyway, so innocuous isSignedIn checks blew up on slow-network
+      // cold starts. Flip the flag when init really finishes.
       _dlog.log(
         LogCategory.network,
         'Supabase init slow (>5s) — starting offline; cloud features '
@@ -86,7 +73,9 @@ class SupabaseService {
       );
       unawaited(
         initFuture
-            .then<void>((_) {
+            .then((_) {
+              _initialized = true;
+              _completeInitialization(true);
               _dlog.log(
                 LogCategory.network,
                 'Supabase init completed late — cloud features enabled',
@@ -101,16 +90,21 @@ class SupabaseService {
             }),
       );
     } catch (e) {
-      // A fast failure (malformed URL/key, DNS refusal) degrades to offline.
       _dlog.logError(
         LogCategory.network,
         'Supabase init failed — starting offline',
         e,
       );
+      _completeInitialization(false);
     }
   }
 
+  void _completeInitialization(bool ok) {
+    if (!_initializationResult.isCompleted) _initializationResult.complete(ok);
+  }
+
   // ── Auth ──────────────────────────────────────────────
+
 
   User? get currentUser => _initialized ? _client.auth.currentUser : null;
   bool get isSignedIn => _initialized && _client.auth.currentUser != null;
@@ -157,133 +151,53 @@ class SupabaseService {
     return rows;
   }
 
+  /// Atomically create the production and organizer membership. Retrying with
+  /// the same explicit id/join code returns the confirmed existing row.
   Future<Map<String, dynamic>> createProduction({
     required String title,
     String? id,
     String? joinCode,
   }) async {
-    final userId = currentUser!.id;
-    final insertData = <String, dynamic>{
-      'title': title,
-      'organizer_id': userId,
-      'status': 'draft',
-      'join_code': joinCode ?? generateJoinCode(),
-    };
-    // Use the caller's id when provided so the cloud row matches the local
-    // (optimistically-created) production instead of a server-generated id.
-    if (id != null) insertData['id'] = id;
-    final row = await _client
-        .from('productions')
-        .insert(insertData)
-        .select()
-        .single();
-
-    // Auto-add organizer as cast member
-    await _client.from('cast_members').insert({
-      'production_id': row['id'],
-      'user_id': userId,
-      'role': 'organizer',
-    });
-
-    return row;
+    final result = await _client.rpc(
+      'create_production',
+      params: {
+        'p_id': id,
+        'p_title': title,
+        'p_join_code': joinCode ?? generateJoinCode(),
+      },
+    );
+    if (result is! Map) {
+      throw StateError(
+        'The production creation service returned an invalid response.',
+      );
+    }
+    return Map<String, dynamic>.from(result);
   }
 
-  /// Durably delete a production and every recording object beneath its
-  /// storage prefix.
-  ///
-  /// `begin_production_deletion` first moves the production into immutable
-  /// deleting state so no new recording metadata can be published. Storage is
-  /// then removed recursively before `finalize_production_deletion` cascades
-  /// metadata. A retry resumes the durable server-side deletion job.
-  ///
-  /// Returns `true` when this call finalizes deletion and `false` when a prior
-  /// call already finalized it. Authorization and transport failures throw.
+  /// Atomically queue every referenced recording object before deleting the
+  /// production and its relational children. Interrupted Storage cleanup stays
+  /// durable and is retried when this method is called again.
   Future<bool> deleteProductionEverywhere(String productionId) async {
-    final beginResult = await _client.rpc(
-      'begin_production_deletion',
-      params: {'prod_id': productionId},
+    final userId = currentUser?.id;
+    if (userId == null) throw StateError('Not signed in');
+    final result = await _client.rpc(
+      'delete_production',
+      params: {'p_production_id': productionId},
     );
-    if (beginResult is! Map) {
+    if (result is! Map || result['deleted'] is! bool) {
       throw StateError(
-        'begin_production_deletion returned an invalid response',
+        'The production deletion service returned an invalid response.',
       );
     }
-    final begin = Map<String, dynamic>.from(beginResult);
-    final beginStatus = begin['status'];
-    if (beginStatus == 'already_finalized') return false;
-    if (beginStatus != 'started' && beginStatus != 'resumed') {
-      throw StateError('begin_production_deletion returned an invalid status');
-    }
-
-    final storagePrefix = begin['storage_prefix'];
-    if (storagePrefix != '$productionId/') {
-      throw StateError(
-        'begin_production_deletion returned an invalid storage prefix',
-      );
-    }
-
-    // Finalization checks storage independently. Repeat cleanup if it observes
-    // an object that arrived just before publication was blocked.
-    for (var attempt = 0; attempt < 3; attempt++) {
-      await _deleteRecordingStorageTree(
-        storagePrefix.substring(0, storagePrefix.length - 1),
-      );
-      final finalizeResult = await _client.rpc(
-        'finalize_production_deletion',
-        params: {'prod_id': productionId},
-      );
-      if (finalizeResult is! Map) {
-        throw StateError(
-          'finalize_production_deletion returned an invalid response',
-        );
-      }
-      final status = finalizeResult['status'];
-      if (status == 'finalized') {
-        _dlog.log(
-          LogCategory.network,
-          'Deleted production $productionId and its recording storage',
-        );
-        return true;
-      }
-      if (status == 'already_finalized') return false;
-      if (status != 'storage_not_empty') {
-        throw StateError(
-          'finalize_production_deletion returned an invalid status',
-        );
-      }
-    }
-    throw StateError(
-      'Recording storage remained non-empty after deletion retries.',
+    final deleted = result['deleted'] as bool;
+    await flushRecordingCleanup(productionId: productionId, userId: userId);
+    _dlog.log(
+      LogCategory.network,
+      deleted
+          ? 'Production and recording objects deleted from cloud'
+          : 'No cloud production or pending recording cleanup found',
     );
-  }
-
-  Future<void> _deleteRecordingStorageTree(String directory) async {
-    final bucket = _client.storage.from('recordings');
-    while (true) {
-      final entries = await bucket.list(
-        path: directory,
-        searchOptions: const SearchOptions(limit: 100, offset: 0),
-      );
-      if (entries.isEmpty) return;
-
-      final files = <String>[];
-      for (final entry in entries) {
-        final childPath = '$directory/${entry.name}';
-        if (entry.id == null) {
-          await _deleteRecordingStorageTree(childPath);
-        } else {
-          files.add(childPath);
-        }
-      }
-      if (files.isNotEmpty) {
-        final removed = await bucket.remove(files);
-        if (removed.isEmpty) {
-          throw StateError(
-            'Recording storage deletion made no progress under $directory.',
-          );
-        }
-      }
-    }
+    return deleted;
   }
 
   /// Leave a production: remove the signed-in user's own cast_members rows.
@@ -325,10 +239,14 @@ class SupabaseService {
     required String productionId,
     required String presetId,
   }) async {
-    await _client
+    final updated = await _client
         .from('productions')
         .update({'voice_preset': presetId})
-        .eq('id', productionId);
+        .eq('id', productionId)
+        .select('id');
+    if (updated.length != 1) {
+      throw StateError('Cloud voice preset update was not acknowledged.');
+    }
   }
 
   /// Save the production locale (dialect) to Supabase.
@@ -336,63 +254,40 @@ class SupabaseService {
     required String productionId,
     required String locale,
   }) async {
-    await _client
+    final updated = await _client
         .from('productions')
         .update({'locale': locale})
-        .eq('id', productionId);
+        .eq('id', productionId)
+        .select('id');
+    if (updated.length != 1) {
+      throw StateError('Cloud locale update was not acknowledged.');
+    }
   }
 
   // ── Cast ──────────────────────────────────────────────
 
+  /// Fetch the reduced pre-membership roster contract. Authorization and join
+  /// code validation live exclusively in the RPC; a direct-table fallback
+  /// would both weaken that boundary and return other users' UUIDs.
   Future<List<Map<String, dynamic>>> fetchCastMembers(
     String productionId, {
     String? joinCode,
   }) async {
-    // Pre-join callers are authorized by the code; members are authorized by
-    // their authenticated membership. The RPC deliberately omits user_id and
-    // exposes only a claimed flag to unauthenticated/non-member callers.
     final rpcResult = await _client.rpc(
       'fetch_cast_for_join',
       params: {'prod_id': productionId, 'code': joinCode ?? ''},
     );
     if (rpcResult is! List) {
-      throw StateError('fetch_cast_for_join returned an invalid response');
+      throw StateError('The cast roster service returned an invalid response.');
     }
     return rpcResult
-        .map((row) => Map<String, dynamic>.from(row as Map))
+        .map((entry) => Map<String, dynamic>.from(entry as Map))
         .toList();
   }
 
-  Future<void> addCastMember({
-    required String productionId,
-    required String userId,
-    required String role,
-    String? characterName,
-  }) async {
-    final result = await _createCastMember(
-      productionId: productionId,
-      characterName: characterName ?? '',
-      displayName: '',
-      role: role,
-      userId: userId,
-    );
-    switch (result['status']) {
-      case 'created':
-      case 'already_member':
-        return;
-      case 'already_assigned':
-        throw const CastPrimaryAlreadyAssignedException();
-      default:
-        throw StateError('create_cast_member returned an invalid status');
-    }
-  }
-
-  /// Create a cast invitation (no user_id yet — they claim it when they join).
-  ///
-  /// Pass [id] to reuse the caller's locally-generated id so the cloud
-  /// invitation and the director's local cast_member row share one id — without
-  /// it the cloud row gets a server-generated id and the two diverge (which can
-  /// surface as a duplicate member if cast is ever synced cloud→local).
+  /// Create an unclaimed cast invitation through the organizer-only RPC.
+  /// Supplying [id] makes durable outbox retries idempotent; the server returns
+  /// the existing row only when every invitation field matches.
   Future<Map<String, dynamic>> createCastInvitation({
     required String productionId,
     required String characterName,
@@ -401,148 +296,72 @@ class SupabaseService {
     required String role,
     String? id,
   }) async {
-    final result = await _createCastMember(
-      productionId: productionId,
-      characterName: characterName,
-      displayName: displayName,
-      role: role,
-      contactInfo: contactInfo,
-      memberId: id,
-    );
-    switch (result['status']) {
-      case 'created':
-        final member = result['member'];
-        if (member is! Map) {
-          throw StateError('create_cast_member returned no created member');
-        }
-        return Map<String, dynamic>.from(member);
-      case 'already_exists':
-        final existing = result['member'];
-        if (id == null || existing is! Map) {
-          throw StateError('create_cast_member returned an invalid retry');
-        }
-        return Map<String, dynamic>.from(existing);
-      case 'already_assigned':
-        throw const CastPrimaryAlreadyAssignedException();
-      case 'already_member':
-        throw StateError('The assigned user is already a production member.');
-      default:
-        throw StateError('create_cast_member returned an invalid status');
-    }
-  }
-
-  Future<Map<String, dynamic>> _createCastMember({
-    required String productionId,
-    required String characterName,
-    required String displayName,
-    required String role,
-    String? contactInfo,
-    String? userId,
-    String? memberId,
-    DateTime? invitedAt,
-    DateTime? joinedAt,
-  }) async {
     final result = await _client.rpc(
-      'create_cast_member',
+      'create_cast_invitation',
       params: {
-        'prod_id': productionId,
-        'char_name': characterName,
-        'new_display_name': displayName,
-        'member_role': role,
-        'contact_info': contactInfo,
-        'assigned_user_id': userId,
-        'member_id': memberId,
-        'invited_at_value': invitedAt?.toUtc().toIso8601String(),
-        'joined_at_value': joinedAt?.toUtc().toIso8601String(),
+        'p_id': id,
+        'p_production_id': productionId,
+        'p_character_name': characterName,
+        'p_display_name': displayName,
+        'p_contact_info': contactInfo,
+        'p_role': role,
       },
     );
     if (result is! Map) {
-      throw StateError('create_cast_member returned an invalid response');
+      throw StateError(
+        'The invitation creation service returned an invalid response.',
+      );
     }
     return Map<String, dynamic>.from(result);
   }
 
-  /// Recreate an exact cast row as compensation after a later operation fails.
+  /// Remove a cast member FOR EVERYONE (organizer-side unassign).
   ///
-  /// Creation remains organizer-authorized and RPC-only. An idempotent retry
-  /// succeeds only when the row with the original id still matches the
-  /// snapshot; a conflicting assignment is never mistaken for restoration.
+  /// Dropping only the local Drift row leaves the cloud invitation alive: the
+  /// next cast sync re-saves it locally and the actor's join link keeps
+  /// working. Throws if nothing was deleted (RLS lets only the organizer
+  /// remove somebody else's row) so the caller can keep the local row rather
+  /// than have it boomerang back on the next sync.
+  Future<void> removeCastMember(String castMemberId) async {
+    final deleted = await _client
+        .from('cast_members')
+        .delete()
+        .eq('id', castMemberId)
+        .select('id');
+    if (deleted.isEmpty) {
+      throw StateError(
+        'Cloud delete removed nothing — only the organizer can remove a '
+        'cast member (or the row was already gone).',
+      );
+    }
+    _dlog.log(LogCategory.network, 'Cast member removed from the cloud');
+  }
+
+  /// Recreate a cast row as compensation after a later operation fails.
+  ///
+  /// The live backend has no organizer-side INSERT policy and no
+  /// create_cast_member RPC — the only organizer-scoped write path is the
+  /// SECURITY DEFINER create_cast_invitation RPC, which inserts an
+  /// invitation (user_id null) and preserves the given id. So a restored
+  /// row comes back as an invitation: unassigned members are fully
+  /// restored; previously-assigned ones must re-claim their link, which the
+  /// caller surfaces as best-effort compensation rather than an error.
   Future<void> restoreCastMember(CastMemberModel member) async {
-    final result = await _createCastMember(
+    await createCastInvitation(
       productionId: member.productionId,
       characterName: member.characterName,
       displayName: member.displayName,
-      role: member.role.toSupabaseString(),
       contactInfo: member.contactInfo,
-      userId: member.userId,
-      memberId: member.id,
-      invitedAt: member.invitedAt,
-      joinedAt: member.joinedAt,
+      role: member.role.toSupabaseString(),
+      id: member.id,
     );
-    switch (result['status']) {
-      case 'created':
-        return;
-      case 'already_assigned':
-      case 'already_member':
-      case 'already_exists':
-        final existing = result['member'];
-        if (existing is Map &&
-            _matchesCastSnapshot(Map<String, dynamic>.from(existing), member)) {
-          return;
-        }
-        throw StateError(
-          'Cast compensation conflicted with a different cloud assignment.',
-        );
-      default:
-        throw StateError('create_cast_member returned an invalid status');
+    if (member.userId != null) {
+      _dlog.log(
+        LogCategory.network,
+        'Restored cast row ${member.id} as an unclaimed invitation — '
+        'the actor must re-claim it from their link',
+      );
     }
-  }
-
-  static bool _matchesCastSnapshot(
-    Map<String, dynamic> row,
-    CastMemberModel member,
-  ) {
-    return row['id'] == member.id &&
-        row['production_id'] == member.productionId &&
-        row['user_id'] == member.userId &&
-        row['character_name'] == member.characterName &&
-        row['display_name'] == member.displayName &&
-        row['contact_info'] == member.contactInfo &&
-        row['role'] == member.role.toSupabaseString() &&
-        _sameTimestamp(row['invited_at'], member.invitedAt) &&
-        _sameTimestamp(row['joined_at'], member.joinedAt);
-  }
-
-  static bool _sameTimestamp(Object? value, DateTime? expected) {
-    if (expected == null) return value == null;
-    if (value is! String) return false;
-    return DateTime.tryParse(value)?.toUtc() == expected.toUtc();
-  }
-
-  /// Remove a cast member for everyone (organizer-side unassign).
-  ///
-  /// An already-absent cloud row is a successful idempotent outcome, distinct
-  /// from authorization and transport failures, which the RPC raises.
-  Future<CastMemberRemovalResult> removeCastMember({
-    required String castMemberId,
-    required String productionId,
-  }) async {
-    final result = await _client.rpc(
-      'remove_cast_member',
-      params: {'member_id': castMemberId, 'prod_id': productionId},
-    );
-    final outcome = switch (result) {
-      'removed' => CastMemberRemovalResult.removed,
-      'already_absent' => CastMemberRemovalResult.alreadyAbsent,
-      _ => throw StateError('remove_cast_member returned an invalid response'),
-    };
-    _dlog.log(
-      LogCategory.network,
-      outcome == CastMemberRemovalResult.removed
-          ? 'Removed cast member $castMemberId from the cloud'
-          : 'Cast member $castMemberId was already absent from the cloud',
-    );
-    return outcome;
   }
 
   /// Point a cast member at a renamed character.
@@ -560,133 +379,88 @@ class SupabaseService {
         .eq('id', castMemberId)
         .select('id');
     if (updated.isEmpty) {
-      throw StateError(
-        'Cloud rename updated no rows for cast member $castMemberId.',
-      );
+      throw StateError('Cloud cast member rename updated no rows.');
     }
-    _dlog.log(
-      LogCategory.network,
-      'Renamed cast member $castMemberId → "$characterName"',
-    );
+    _dlog.log(LogCategory.network, 'Cast member character rename synchronized');
   }
 
-  /// Claim an existing invitation for the authenticated user.
+  /// Claim an existing invitation through the code-validating RPC.
   Future<void> claimInvitation({
     required String castMemberId,
-    required String userId,
     required String joinCode,
-    required String displayName,
   }) async {
-    try {
-      final result = await _client.rpc(
-        'claim_cast_invitation',
-        params: {
-          'member_id': castMemberId,
-          'code': joinCode,
-          'new_display_name': displayName,
-        },
-      );
-      if (result is! Map) {
-        throw StateError('claim_cast_invitation returned an invalid response');
-      }
-      final claimed = Map<String, dynamic>.from(result);
-      if (claimed['user_id'] != userId) {
-        throw StateError('This role could not be claimed by the current user.');
-      }
-      _dlog.log(
-        LogCategory.network,
-        'Join: claimed invitation $castMemberId via RPC',
-      );
-    } catch (e) {
-      _dlog.logError(
-        LogCategory.network,
-        'Join: claim failed for invitation $castMemberId',
-        e,
-      );
-      rethrow;
+    final result = await _client.rpc(
+      'claim_cast_invitation',
+      params: {'member_id': castMemberId, 'code': joinCode},
+    );
+    switch (result) {
+      case 'claimed':
+        _dlog.log(
+          LogCategory.network,
+          'Join: invitation claimed through the authorized RPC',
+        );
+        return;
+      case 'invalid_code':
+        throw StateError('The join code is invalid.');
+      case 'already_claimed':
+        throw StateError(
+          'This role has already been claimed by another cast member.',
+        );
+      default:
+        throw StateError(
+          'The invitation service returned an invalid response.',
+        );
     }
   }
 
-  /// Self-join a production (create or return the authenticated user's row).
+  /// Self-join through the code-validating RPC. Direct cast_members inserts are
+  /// intentionally denied by RLS.
   Future<Map<String, dynamic>> selfJoinProduction({
     required String productionId,
-    required String userId,
     required String characterName,
     required String displayName,
     required String joinCode,
   }) async {
-    try {
-      // The RPC verifies the join code, derives user_id from auth.uid(), forces
-      // role='actor', and returns the existing row on an idempotent retry.
-      final result = await _client.rpc(
-        'join_production',
-        params: {
-          'prod_id': productionId,
-          'code': joinCode,
-          'char_name': characterName,
-          'display_name': displayName,
-        },
-      );
-      if (result is! Map) {
-        throw StateError('join_production returned an invalid response');
-      }
-      final joined = Map<String, dynamic>.from(result);
-      if (joined['user_id'] != userId) {
-        throw StateError('join_production returned a row for another user');
-      }
-      _dlog.log(
-        LogCategory.network,
-        'Join: self-joined "$characterName" via RPC',
-      );
-      return joined;
-    } catch (e) {
-      _dlog.logError(
-        LogCategory.network,
-        'Join: self-join failed for "$characterName"',
-        e,
-      );
-      rethrow;
+    final result = await _client.rpc(
+      'join_production',
+      params: {
+        'prod_id': productionId,
+        'code': joinCode,
+        'char_name': characterName,
+        'display_name': displayName,
+      },
+    );
+    if (result is! Map) {
+      throw StateError('The join service returned an invalid response.');
     }
+    _dlog.log(
+      LogCategory.network,
+      'Join: membership created through authorized RPC',
+    );
+    return Map<String, dynamic>.from(result);
   }
 
-  /// Look up a production by its join code.
-  ///
-  /// The security-definer RPC returns only the public pre-join fields. Fetch
-  /// the full production with [fetchProduction] after membership is created.
+  /// Look up the explicit join-screen production contract through the
+  /// code-validating RPC. Join codes and production titles are never written to
+  /// persistent logs.
   Future<Map<String, dynamic>?> lookupByJoinCode(String code) async {
-    final dlog = DebugLogService.instance;
-    dlog.log(
+    _dlog.log(
       LogCategory.network,
       'Join lookup started: initialized=$_initialized, signedIn=$isSignedIn',
     );
-
-    try {
-      final rpcResult = await _client.rpc(
-        'lookup_production_by_join_code',
-        params: {'lookup_code': code.toUpperCase()},
-      );
-      if (rpcResult == null) return null;
-      if (rpcResult is! Map) {
-        throw StateError(
-          'lookup_production_by_join_code returned an invalid response',
-        );
-      }
-      final production = Map<String, dynamic>.from(rpcResult);
-      dlog.log(
-        LogCategory.network,
-        'Join lookup succeeded for production ${production['id']}',
-      );
-      return production;
-    } catch (e) {
-      dlog.logError(LogCategory.network, 'Join lookup failed', e);
-      rethrow;
+    final rpcResult = await _client.rpc(
+      'lookup_production_by_join_code',
+      params: {'lookup_code': code.toUpperCase()},
+    );
+    if (rpcResult == null) {
+      _dlog.log(LogCategory.network, 'Join lookup returned no match');
+      return null;
     }
-  }
-
-  /// Fetch a full production row after the current user has joined it.
-  Future<Map<String, dynamic>> fetchProduction(String productionId) async {
-    if (currentUser == null) throw StateError('Not signed in');
-    return _client.from('productions').select().eq('id', productionId).single();
+    if (rpcResult is! Map) {
+      throw StateError('The join lookup service returned an invalid response.');
+    }
+    _dlog.log(LogCategory.network, 'Join lookup succeeded');
+    return Map<String, dynamic>.from(rpcResult);
   }
 
   /// Fetch recording progress per character for a production.
@@ -736,12 +510,9 @@ class SupabaseService {
     required String lineId,
     required File audioFile,
   }) async {
-    // A UNIQUE key per upload. The recordings bucket has no UPDATE/DELETE storage
-    // policy, so re-uploading to the same key is RLS-blocked (overwrite fails) —
-    // which silently breaks re-records. A fresh key each time is always an
-    // INSERT (allowed); download resolves the exact object from the stored URL,
-    // so the key shape doesn't matter to playback. (Old per-take objects orphan
-    // harmlessly — the recordings row keeps only the latest URL.)
+    // Every take gets a fresh INSERT-only object key. Once the metadata switch
+    // commits, [saveRecordingMetadata] deletes the superseded object through
+    // the owner-only/organizer DELETE policy. No storage UPDATE is needed.
     _requireUuid(productionId, 'productionId');
     _requireUuid(lineId, 'lineId');
     final safeChar = characterName.replaceAll('/', '-');
@@ -751,7 +522,7 @@ class SupabaseService {
     final sizeKb = (audioFile.lengthSync() / 1024).toStringAsFixed(0);
     _dlog.log(
       LogCategory.network,
-      'Storage upload → recordings/$path (${sizeKb}KB)',
+      'Recording storage upload started (${sizeKb}KB)',
     );
     try {
       await _client.storage
@@ -762,11 +533,7 @@ class SupabaseService {
             fileOptions: const FileOptions(contentType: 'audio/mp4'),
           );
     } catch (e) {
-      _dlog.logError(
-        LogCategory.network,
-        'Storage upload FAILED → recordings/$path',
-        e,
-      );
+      _dlog.logError(LogCategory.network, 'Recording storage upload failed', e);
       rethrow;
     }
     return _client.storage.from('recordings').getPublicUrl(path);
@@ -813,32 +580,18 @@ class SupabaseService {
           .download(objectPath);
       _dlog.log(
         LogCategory.network,
-        'Storage download ← recordings/$objectPath (${(bytes.length / 1024).toStringAsFixed(0)}KB)',
+        'Recording storage download succeeded '
+        '(${(bytes.length / 1024).toStringAsFixed(0)}KB)',
       );
       return bytes;
     } catch (e) {
       _dlog.logError(
         LogCategory.network,
-        'Storage download FAILED ← recordings/$objectPath',
+        'Recording storage download failed',
         e,
       );
       rethrow;
     }
-  }
-
-  /// Delete the storage object identified by a recording's persisted URL.
-  ///
-  /// Call only after metadata deletion/replacement commits and the URL is
-  /// durably queued, so a storage or process failure remains retryable.
-  Future<void> deleteRecordingByUrl(String audioUrl) async {
-    final objectPath = _objectPathFromUrl(audioUrl);
-    if (objectPath == null) {
-      throw ArgumentError(
-        'Could not parse a recordings object path from audioUrl',
-      );
-    }
-    await _client.storage.from('recordings').remove([objectPath]);
-    _dlog.log(LogCategory.network, 'Storage delete → recordings/$objectPath');
   }
 
   /// Extract the storage object key (everything after the `recordings/` bucket
@@ -853,111 +606,194 @@ class SupabaseService {
     return Uri.decodeFull(path);
   }
 
-  /// List available recordings for a production.
+  /// List available recordings after retrying any durable object cleanup left
+  /// by an interrupted replacement or explicit delete.
   Future<List<Map<String, dynamic>>> fetchRecordings(
     String productionId,
   ) async {
-    // Supabase projects commonly cap a response at 1,000 rows. Page with a
-    // deterministic order so mature ensemble productions cannot silently lose
-    // later rows at the server cap.
-    const pageSize = 500;
-    final all = <Map<String, dynamic>>[];
-    for (var offset = 0; ; offset += pageSize) {
-      final page = await _client
-          .from('recordings')
-          .select('line_id, user_id, audio_url, duration_ms, recorded_at')
-          .eq('production_id', productionId)
-          .order('line_id')
-          .order('user_id')
-          .range(offset, offset + pageSize - 1);
-      all.addAll(page);
-      if (page.length < pageSize) return all;
+    final userId = currentUser?.id;
+    if (userId != null) {
+      await _flushRecordingCleanupDeferred(
+        productionId: productionId,
+        userId: userId,
+      );
     }
+    return _client
+        .from('recordings')
+        .select('line_id, user_id, audio_url, duration_ms, recorded_at')
+        .eq('production_id', productionId);
   }
 
-  /// Atomically save recording metadata and return the superseded audio URL.
-  ///
-  /// The RPC derives user identity from the authenticated session and locks
-  /// this production/line/user tuple, so concurrent devices cannot race the
-  /// previous-URL handoff. Callers durably enqueue deletion only after this
-  /// commit succeeds.
-  Future<String?> saveRecordingMetadata({
+  /// Atomically switch recording metadata and enqueue the superseded object,
+  /// then drain the durable cleanup queue. A failed Storage request leaves its
+  /// queue row intact, so retrying this method cannot lose the old object path.
+  Future<void> saveRecordingMetadata({
     required String productionId,
     required String lineId,
+    required String userId,
     required String audioUrl,
     required int durationMs,
     DateTime? recordedAt,
   }) async {
-    try {
-      final result = await _client.rpc(
-        'save_recording_metadata',
-        params: {
-          'prod_id': productionId,
-          'line_id': lineId,
-          'audio_url': audioUrl,
-          'duration_ms': durationMs,
-          'recorded_at': (recordedAt ?? DateTime.now())
-              .toUtc()
-              .toIso8601String(),
-        },
+    final objectName = _objectPathFromUrl(audioUrl);
+    if (objectName == null) {
+      throw ArgumentError('audioUrl does not identify a recordings object');
+    }
+    final previous = await _client
+        .from('recordings')
+        .select('audio_url')
+        .eq('production_id', productionId)
+        .eq('line_id', lineId)
+        .eq('user_id', userId)
+        .maybeSingle();
+    final previousAudioUrl = previous?['audio_url'] as String?;
+    final previousObjectName = previousAudioUrl == null
+        ? null
+        : _objectPathFromUrl(previousAudioUrl);
+    final result = await _client.rpc(
+      'save_recording_metadata',
+      params: {
+        'p_production_id': productionId,
+        'p_line_id': lineId,
+        'p_user_id': userId,
+        'p_audio_url': audioUrl,
+        'p_object_name': objectName,
+        'p_previous_audio_url': previousAudioUrl,
+        'p_previous_object_name': previousObjectName,
+        'p_duration_ms': durationMs,
+        'p_recorded_at': (recordedAt ?? DateTime.now())
+            .toUtc()
+            .toIso8601String(),
+      },
+    );
+    if (result is! Map || result['saved'] != true) {
+      throw StateError('The recording service returned an invalid response.');
+    }
+    await _flushRecordingCleanupDeferred(
+      productionId: productionId,
+      userId: userId,
+    );
+    _dlog.log(LogCategory.network, 'Recording metadata saved');
+  }
+
+  /// Durably queue an uploaded object that was superseded before its metadata
+  /// could be committed. Returning means the database outbox owns cleanup;
+  /// Storage deletion itself may finish during a later sync.
+  Future<void> discardRecordingUpload({
+    required String productionId,
+    required String lineId,
+    required String userId,
+    required String audioUrl,
+  }) async {
+    final objectName = _objectPathFromUrl(audioUrl);
+    if (objectName == null) {
+      throw ArgumentError('audioUrl does not identify a recordings object');
+    }
+    final queued = await _client.rpc(
+      'queue_recording_cleanup',
+      params: {
+        'p_production_id': productionId,
+        'p_line_id': lineId,
+        'p_user_id': userId,
+        'p_object_name': objectName,
+      },
+    );
+    if (queued != true) {
+      throw StateError('The recording cleanup request was rejected.');
+    }
+    await _flushRecordingCleanupDeferred(
+      productionId: productionId,
+      userId: userId,
+    );
+  }
+
+  /// Atomically delete recording metadata and enqueue its object for durable
+  /// cleanup. Returns false only when neither a row nor retryable cleanup work
+  /// exists for this recording.
+  Future<bool> deleteRecording({
+    required String productionId,
+    required String lineId,
+    required String userId,
+    String? audioUrl,
+  }) async {
+    final objectName = audioUrl == null ? null : _objectPathFromUrl(audioUrl);
+    if (audioUrl != null && objectName == null) {
+      throw ArgumentError('audioUrl does not identify a recordings object');
+    }
+    final result = await _client.rpc(
+      'delete_recording_metadata',
+      params: {
+        'p_production_id': productionId,
+        'p_line_id': lineId,
+        'p_user_id': userId,
+        'p_audio_url': audioUrl,
+        'p_object_name': objectName,
+      },
+    );
+    if (result is! Map || result['deleted'] is! bool) {
+      throw StateError(
+        'The recording deletion service returned an invalid response.',
       );
-      if (result is! Map || result['recording'] is! Map) {
-        throw StateError(
-          'save_recording_metadata returned an invalid response',
-        );
-      }
-      final previousUrl = result['previous_audio_url'];
-      if (previousUrl != null && previousUrl is! String) {
-        throw StateError(
-          'save_recording_metadata returned an invalid previous audio URL',
-        );
-      }
-      _dlog.log(LogCategory.network, 'Recording metadata saved: line=$lineId');
-      return previousUrl == audioUrl ? null : previousUrl as String?;
-    } catch (e) {
-      _dlog.logError(
+    }
+    final deleted = result['deleted'] as bool;
+    await flushRecordingCleanup(productionId: productionId, userId: userId);
+    if (deleted) {
+      _dlog.log(
         LogCategory.network,
-        'Recording metadata save FAILED: line=$lineId '
-        '(castmates will not see this recording)',
-        e,
+        'Recording metadata and storage object deleted',
       );
-      rethrow;
+    }
+    return deleted;
+  }
+
+  /// Claim and drain cleanup work. Claiming first lets the database serialize
+  /// object adoption against deletion and guarantees the canonical storage name
+  /// was server-verified before the Storage API sees it.
+  Future<void> flushRecordingCleanup({
+    required String productionId,
+    required String userId,
+  }) async {
+    final cleanup = await _client.rpc(
+      'claim_recording_cleanup',
+      params: {'p_production_id': productionId, 'p_requested_by': userId},
+    );
+    if (cleanup is! List) {
+      throw StateError(
+        'The recording service returned an invalid cleanup response.',
+      );
+    }
+    for (final rawEntry in cleanup) {
+      if (rawEntry is! Map ||
+          rawEntry['id'] is! String ||
+          rawEntry['object_name'] is! String) {
+        throw StateError('The recording cleanup queue contains invalid data.');
+      }
+      await _client.storage.from('recordings').remove([
+        rawEntry['object_name'] as String,
+      ]);
+      final acknowledged = await _client.rpc(
+        'complete_recording_cleanup',
+        params: {'p_cleanup_id': rawEntry['id']},
+      );
+      if (acknowledged != true) {
+        throw StateError('Recording cleanup could not be acknowledged.');
+      }
     }
   }
 
-  /// Delete the authenticated user's recording metadata and return its object
-  /// URL for durable, deferred storage cleanup.
-  ///
-  /// Returns null when the row is already absent. Authentication and transport
-  /// failures throw; storage is intentionally untouched by this transaction.
-  Future<String?> deleteRecordingMetadata({
+  Future<void> _flushRecordingCleanupDeferred({
     required String productionId,
-    required String lineId,
+    required String userId,
   }) async {
-    final result = await _client.rpc(
-      'delete_recording_metadata',
-      params: {'prod_id': productionId, 'line_id': lineId},
-    );
-    if (result is! Map) {
-      throw StateError(
-        'delete_recording_metadata returned an invalid response',
+    try {
+      await flushRecordingCleanup(productionId: productionId, userId: userId);
+    } catch (_) {
+      // The database outbox remains authoritative and will be claimed again on
+      // the next sync. Do not block current metadata reads or a committed take.
+      _dlog.log(
+        LogCategory.network,
+        'Recording object cleanup deferred for a later sync',
       );
-    }
-    switch (result['status']) {
-      case 'deleted':
-        final audioUrl = result['audio_url'];
-        if (audioUrl is! String || audioUrl.isEmpty) {
-          throw StateError(
-            'delete_recording_metadata returned no deleted audio URL',
-          );
-        }
-        return audioUrl;
-      case 'already_absent':
-        return null;
-      default:
-        throw StateError(
-          'delete_recording_metadata returned an invalid status',
-        );
     }
   }
 
@@ -986,55 +822,29 @@ class SupabaseService {
         .order('sort_order', ascending: true);
   }
 
-  /// Replace the cloud scene metadata for a production. Scene rows are tiny
-  /// (tens per play), so a single delete + insert is fine.
-  Future<void> saveScriptScenes({
-    required String productionId,
-    required List<Map<String, dynamic>> scenes,
-  }) async {
-    await _client
-        .from('script_scenes')
-        .delete()
-        .eq('production_id', productionId);
-    if (scenes.isNotEmpty) {
-      await _client.from('script_scenes').insert(scenes);
-    }
-  }
-
-  /// Save script lines to the cloud (replaces all existing lines).
-  Future<void> saveScriptLines({
+  /// Atomically replace lines and scene metadata through one transactional RPC.
+  /// The server validates the complete payload before touching the known-good
+  /// revision and returns the committed counts for contract verification.
+  Future<String> saveScript({
     required String productionId,
     required List<Map<String, dynamic>> lines,
+    required List<Map<String, dynamic>> scenes,
   }) async {
-    // Delete existing
-    await _client
-        .from('script_lines')
-        .delete()
-        .eq('production_id', productionId);
-
-    // Insert in batches, a few in flight at a time. Serial 100-row batches
-    // made a 4000-line play ~40 sequential round-trips (several seconds on
-    // cellular); bounded concurrency keeps payloads modest without turning
-    // a flaky connection into 40 parallel failures. Row order doesn't
-    // matter — every row carries order_index.
-    const batchSize = 200;
-    const maxInFlight = 4;
-    final batches = <List<Map<String, dynamic>>>[
-      for (var i = 0; i < lines.length; i += batchSize)
-        lines.sublist(
-          i,
-          i + batchSize > lines.length ? lines.length : i + batchSize,
-        ),
-    ];
-    for (var i = 0; i < batches.length; i += maxInFlight) {
-      final window = batches.sublist(
-        i,
-        i + maxInFlight > batches.length ? batches.length : i + maxInFlight,
-      );
-      await Future.wait(
-        window.map((b) => _client.from('script_lines').insert(b)),
-      );
+    final result = await _client.rpc(
+      'replace_script',
+      params: {
+        'p_production_id': productionId,
+        'p_lines': lines,
+        'p_scenes': scenes,
+      },
+    );
+    if (result is! Map ||
+        result['revision'] is! String ||
+        result['line_count'] != lines.length ||
+        result['scene_count'] != scenes.length) {
+      throw StateError('The script service returned an invalid commit result.');
     }
+    return result['revision'] as String;
   }
 
   // ── Realtime ──────────────────────────────────────────

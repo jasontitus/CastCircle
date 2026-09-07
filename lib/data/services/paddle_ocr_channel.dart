@@ -20,6 +20,10 @@ class PaddleOcrChannel {
   static int _requestSerial = 0;
   static final Map<String, _PaddleOcrRequest> _requestsById = {};
 
+  /// Aggregate per-page progress of the most recent OCR run, for UI that
+  /// outlives any single request object (the import screen's loading state).
+  static final ValueNotifier<OcrProgress?> progress = ValueNotifier(null);
+
   /// Receive bounded, request-scoped page payloads and progress. Native never
   /// returns the document's pages in the final MethodChannel reply, avoiding a
   /// single whole-document StandardMessageCodec decode on the UI isolate.
@@ -38,6 +42,7 @@ class PaddleOcrChannel {
           page: args['page'] as int? ?? 0,
           total: args['pageCount'] as int? ?? 0,
         );
+        progress.value = request.progress.value;
       } else if (call.method == 'ocrPage') {
         final pageIndex = args['pageIndex'] as int?;
         final linesRaw = args['lines'] as List?;

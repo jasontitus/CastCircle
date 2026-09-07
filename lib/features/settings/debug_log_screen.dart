@@ -1,7 +1,7 @@
 import 'dart:async';
 
 import 'package:firebase_crashlytics/firebase_crashlytics.dart';
-import 'package:flutter/foundation.dart';
+import '../../main.dart' show firebaseAvailable;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:share_plus/share_plus.dart';
@@ -9,7 +9,6 @@ import 'package:share_plus/share_plus.dart';
 import '../../data/services/debug_log_service.dart';
 import '../../data/services/supabase_service.dart';
 import '../../core/toast.dart';
-import '../../main.dart' show firebaseAvailable;
 
 class DebugLogScreen extends StatefulWidget {
   const DebugLogScreen({super.key});
@@ -23,28 +22,23 @@ class _DebugLogScreenState extends State<DebugLogScreen> {
   LogCategory? _filter;
   Timer? _refreshTimer;
   final _scrollController = ScrollController();
-  LogEntry? _lastEntry;
+  int _lastEntryCount = -1;
 
   @override
   void initState() {
     super.initState();
-    _lastEntry = _log.entries.lastOrNull;
     // Refresh every 2 seconds to pick up new entries — but only rebuild
     // when something actually arrived.
     _refreshTimer = Timer.periodic(const Duration(seconds: 2), (_) {
       if (!mounted) return;
-      final latest = _log.entries.lastOrNull;
-      if (!identical(latest, _lastEntry)) {
-        _lastEntry = latest;
+      final count = _log.entryCount;
+      if (count != _lastEntryCount) {
+        _lastEntryCount = count;
         setState(() {});
       }
     });
-    unawaited(_loadInitialMemory());
-  }
-
-  Future<void> _loadInitialMemory() async {
-    await _log.getMemoryUsage();
-    if (mounted) setState(() {});
+    // Log a memory snapshot when opening the screen
+    _log.getMemoryUsage();
   }
 
   @override
@@ -68,35 +62,20 @@ class _DebugLogScreenState extends State<DebugLogScreen> {
             icon: const Icon(Icons.cloud_upload),
             tooltip: 'Send to developer',
             onPressed: () async {
-              final export = _currentLogExport();
-              final supa = SupabaseService.instance;
-              if (supa.currentUser == null) {
-                ScaffoldMessenger.of(context).showAutoToast(
-                  const SnackBar(
-                    content: Text('Sign in before sending a debug report'),
-                  ),
-                );
-                return;
-              }
+              final entries = _log.entriesForCategory(_filter);
+              final text = entries.map((e) => e.toLine()).join('\n');
+              final label = _filter != null ? _filter!.tag : 'full';
               try {
-                if (!supa.isInitialized) {
+                final supa = SupabaseService.instance;
+                if (!supa.isInitialized)
                   throw Exception('Supabase not initialized');
-                }
-                final user = supa.currentUser;
-                if (user == null) {
-                  ScaffoldMessenger.of(context).showAutoToast(
-                    const SnackBar(
-                      content: Text('Your session expired. Sign in again.'),
-                    ),
-                  );
-                  return;
-                }
+                final email = supa.currentUser?.email ?? 'unknown';
                 await supa.client.from('debug_reports').insert({
-                  'user_id': user.id,
-                  'user_email': user.email ?? 'unknown',
-                  'label': export.tag,
-                  'content': export.text,
-                  'entry_count': export.entries.length,
+                  'user_id': supa.currentUser?.id,
+                  'user_email': email,
+                  'label': label,
+                  'content': text,
+                  'entry_count': entries.length,
                 });
                 // Do NOT clear the log here — uploading and wiping in one tap
                 // is surprising and destroys the local copy the user may still
@@ -106,8 +85,7 @@ class _DebugLogScreenState extends State<DebugLogScreen> {
                   ScaffoldMessenger.of(context).showAutoToast(
                     SnackBar(
                       content: Text(
-                        'Sent ${export.tag} log '
-                        '(${export.entries.length} entries)',
+                        'Sent $label log (${entries.length} entries)',
                       ),
                     ),
                   );
@@ -125,22 +103,27 @@ class _DebugLogScreenState extends State<DebugLogScreen> {
             icon: const Icon(Icons.share),
             tooltip: 'Share log',
             onPressed: () {
-              final export = _currentLogExport();
-              Share.share(export.text, subject: 'CastCircle ${export.label}');
+              final entries = _log.entriesForCategory(_filter);
+              final text = entries.map((e) => e.toLine()).join('\n');
+              final label = _filter != null
+                  ? '${_filter!.tag} log'
+                  : 'full log';
+              Share.share(text, subject: 'CastCircle $label');
             },
           ),
           IconButton(
             icon: const Icon(Icons.copy),
             tooltip: 'Copy log',
             onPressed: () {
-              final export = _currentLogExport();
-              Clipboard.setData(ClipboardData(text: export.text));
+              final entries = _log.entriesForCategory(_filter);
+              final text = entries.map((e) => e.toLine()).join('\n');
+              Clipboard.setData(ClipboardData(text: text));
+              final label = _filter != null
+                  ? '${_filter!.tag} log'
+                  : 'full log';
               ScaffoldMessenger.of(context).showAutoToast(
                 SnackBar(
-                  content: Text(
-                    'Copied ${export.label} '
-                    '(${export.entries.length} entries)',
-                  ),
+                  content: Text('Copied $label (${entries.length} entries)'),
                 ),
               );
             },
@@ -150,94 +133,88 @@ class _DebugLogScreenState extends State<DebugLogScreen> {
             tooltip: 'Clear log',
             onPressed: () async {
               await _log.clear();
-              if (mounted) {
-                _lastEntry = null;
-                setState(() {});
-              }
+              if (!mounted) return;
+              setState(() {});
             },
           ),
-          if (kDebugMode)
-            PopupMenuButton<String>(
-              onSelected: (action) async {
-                if (action == 'test_nonfatal' && firebaseAvailable) {
-                  _log.log(
-                    LogCategory.firebase,
-                    'Sending non-fatal error to Crashlytics...',
+          PopupMenuButton<String>(
+            onSelected: (action) async {
+              if (action == 'test_nonfatal' && firebaseAvailable) {
+                _log.log(
+                  LogCategory.firebase,
+                  'Sending non-fatal error to Crashlytics...',
+                );
+                try {
+                  await FirebaseCrashlytics.instance.recordError(
+                    Exception('Crashlytics test non-fatal'),
+                    StackTrace.current,
+                    reason: 'test from debug screen',
                   );
-                  try {
-                    await FirebaseCrashlytics.instance.recordError(
-                      Exception('Crashlytics test non-fatal'),
-                      StackTrace.current,
-                      reason: 'test from debug screen',
-                    );
-                    _log.log(LogCategory.firebase, 'Non-fatal error sent OK');
-                  } catch (e) {
-                    _log.log(
-                      LogCategory.firebase,
-                      'Non-fatal error FAILED: $e',
-                    );
-                  }
-                  if (mounted) setState(() {});
+                  _log.log(LogCategory.firebase, 'Non-fatal error sent OK');
+                } catch (e) {
+                  _log.log(LogCategory.firebase, 'Non-fatal error FAILED: $e');
                 }
-                if (action == 'test_log' && firebaseAvailable) {
-                  _log.log(
-                    LogCategory.firebase,
-                    'Sending custom log to Crashlytics...',
+                if (mounted) setState(() {});
+              }
+              if (action == 'test_log' && firebaseAvailable) {
+                _log.log(
+                  LogCategory.firebase,
+                  'Sending custom log to Crashlytics...',
+                );
+                FirebaseCrashlytics.instance.log(
+                  'Test log from debug screen at ${DateTime.now()}',
+                );
+                _log.log(LogCategory.firebase, 'Custom log sent');
+                try {
+                  await FirebaseCrashlytics.instance.setCustomKey(
+                    'test_key',
+                    'test_value_${DateTime.now().millisecondsSinceEpoch}',
                   );
-                  FirebaseCrashlytics.instance.log(
-                    'Test log from debug screen at ${DateTime.now()}',
-                  );
-                  _log.log(LogCategory.firebase, 'Custom log sent');
-                  try {
-                    await FirebaseCrashlytics.instance.setCustomKey(
-                      'test_key',
-                      'test_value_${DateTime.now().millisecondsSinceEpoch}',
-                    );
-                    _log.log(LogCategory.firebase, 'Custom key set OK');
-                  } catch (e) {
-                    _log.log(LogCategory.firebase, 'Custom key FAILED: $e');
-                  }
-                  if (mounted) setState(() {});
+                  _log.log(LogCategory.firebase, 'Custom key set OK');
+                } catch (e) {
+                  _log.log(LogCategory.firebase, 'Custom key FAILED: $e');
                 }
-                if (action == 'test_fatal' && firebaseAvailable) {
-                  _log.log(
-                    LogCategory.firebase,
-                    'Throwing fatal Dart exception...',
-                  );
-                  if (mounted) setState(() {});
-                  // Small delay so log entry is visible before crash.
-                  await Future.delayed(const Duration(milliseconds: 200));
-                  throw Exception('Crashlytics test fatal error');
-                }
-                if (action == 'test_native_crash' && firebaseAvailable) {
-                  _log.log(
-                    LogCategory.firebase,
-                    'Triggering native crash (SIGABRT)...',
-                  );
-                  if (mounted) setState(() {});
-                  await Future.delayed(const Duration(milliseconds: 200));
-                  FirebaseCrashlytics.instance.crash();
-                }
-              },
-              itemBuilder: (_) => [
-                const PopupMenuItem(
-                  value: 'test_nonfatal',
-                  child: Text('Send Non-Fatal Error'),
-                ),
-                const PopupMenuItem(
-                  value: 'test_log',
-                  child: Text('Send Custom Log + Key'),
-                ),
-                const PopupMenuItem(
-                  value: 'test_fatal',
-                  child: Text('Test Fatal Exception'),
-                ),
-                const PopupMenuItem(
-                  value: 'test_native_crash',
-                  child: Text('Test Native Crash (SIGABRT)'),
-                ),
-              ],
-            ),
+                if (mounted) setState(() {});
+              }
+              if (action == 'test_fatal' && firebaseAvailable) {
+                _log.log(
+                  LogCategory.firebase,
+                  'Throwing fatal Dart exception...',
+                );
+                if (mounted) setState(() {});
+                // Small delay so log entry is visible before crash
+                await Future.delayed(const Duration(milliseconds: 200));
+                throw Exception('Crashlytics test fatal error');
+              }
+              if (action == 'test_native_crash' && firebaseAvailable) {
+                _log.log(
+                  LogCategory.firebase,
+                  'Triggering native crash (SIGABRT)...',
+                );
+                if (mounted) setState(() {});
+                await Future.delayed(const Duration(milliseconds: 200));
+                FirebaseCrashlytics.instance.crash();
+              }
+            },
+            itemBuilder: (_) => [
+              const PopupMenuItem(
+                value: 'test_nonfatal',
+                child: Text('Send Non-Fatal Error'),
+              ),
+              const PopupMenuItem(
+                value: 'test_log',
+                child: Text('Send Custom Log + Key'),
+              ),
+              const PopupMenuItem(
+                value: 'test_fatal',
+                child: Text('Test Fatal Exception'),
+              ),
+              const PopupMenuItem(
+                value: 'test_native_crash',
+                child: Text('Test Native Crash (SIGABRT)'),
+              ),
+            ],
+          ),
         ],
       ),
       body: Column(
@@ -274,28 +251,15 @@ class _DebugLogScreenState extends State<DebugLogScreen> {
       floatingActionButton: FloatingActionButton.small(
         onPressed: () async {
           final mem = await _log.getMemoryUsage();
-          final message = mem.isEmpty
-              ? 'Memory usage unavailable on this platform (manual check)'
-              : '${mem['physicalFootprintMB']}MB used, '
-                    '${mem['availableMemoryMB']}MB available (manual check)';
-          _log.log(LogCategory.memory, message);
+          _log.log(
+            LogCategory.memory,
+            '${mem['physicalFootprintMB']}MB used, ${mem['availableMemoryMB']}MB available (manual check)',
+          );
           if (mounted) setState(() {});
         },
         tooltip: 'Check memory now',
         child: const Icon(Icons.memory),
       ),
-    );
-  }
-
-  ({List<LogEntry> entries, String text, String tag, String label})
-  _currentLogExport() {
-    final entries = _log.entriesForCategory(_filter);
-    final tag = _filter?.tag ?? 'full';
-    return (
-      entries: entries,
-      text: entries.map((entry) => entry.toLine()).join('\n'),
-      tag: tag,
-      label: '$tag log',
     );
   }
 

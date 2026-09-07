@@ -62,7 +62,6 @@ void main() async {
   // Everything below is best-effort background startup. Slow cloud, telemetry,
   // logging, or ML setup must never hold the first frame.
   FrameStatsService.instance.install();
-  SttAdaptationService.instance.initializeLifecycle();
   SyncQueue.instance.start();
   unawaited(_initializeDebugLogging());
   unawaited(_initializeFirebase());

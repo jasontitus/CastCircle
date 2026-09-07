@@ -41,9 +41,14 @@ bool shouldReuseLoadedScript({
       currentScript.lines.isNotEmpty;
 }
 
+bool productionInvitesAvailable(String? cloudCreationStatus) =>
+    cloudCreationStatus == null;
+
 class HomeScreen extends ConsumerStatefulWidget {
   const HomeScreen({super.key, this.createProduction});
 
+  /// Test hook: called instead of local persistence so dialog-navigation
+  /// tests can force a specific persistence outcome.
   @visibleForTesting
   final Future<void> Function(Production production)? createProduction;
 
@@ -54,7 +59,6 @@ class HomeScreen extends ConsumerStatefulWidget {
 class _HomeScreenState extends ConsumerState<HomeScreen> {
   bool _submittingProduction = false;
   bool _loadingDemo = false;
-  int _productionActivationGeneration = 0;
 
   @override
   void initState() {
@@ -78,6 +82,10 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   @override
   Widget build(BuildContext context) {
     final productions = ref.watch(productionsProvider);
+    final cloudCreationStatuses = {
+      for (final entry in ref.watch(productionCloudCreationProvider).entries)
+        entry.key: entry.value.status,
+    };
 
     return Scaffold(
       appBar: AppBar(
@@ -95,7 +103,12 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
       ),
       body: productions.isEmpty
           ? _buildEmptyState(context)
-          : _buildProductionList(context, ref, productions),
+          : _buildProductionList(
+              context,
+              ref,
+              productions,
+              cloudCreationStatuses,
+            ),
       floatingActionButton: Column(
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.end,
@@ -217,6 +230,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     BuildContext context,
     WidgetRef ref,
     List<Production> productions,
+    Map<String, String> cloudCreationStatuses,
   ) {
     // On tablets, use a 2-column grid
     if (Responsive.isWide(context)) {
@@ -235,6 +249,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
           return _ProductionCard(
             production: production,
             savedCharacterName: savedChar.value,
+            cloudCreationStatus: cloudCreationStatuses[production.id],
+            onRetryCloudCreate: () => _retryCloudCreation(production.id),
             onRehearse: () => _openProduction(context, ref, production),
             onSetUp: () => _openProductionForSetup(context, ref, production),
             onMenuAction: (action) =>
@@ -264,6 +280,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
         return _ProductionCard(
           production: production,
           savedCharacterName: savedChar.value,
+          cloudCreationStatus: cloudCreationStatuses[production.id],
+          onRetryCloudCreate: () => _retryCloudCreation(production.id),
           onRehearse: () => _openProduction(context, ref, production),
           onSetUp: () => _openProductionForSetup(context, ref, production),
           onMenuAction: (action) =>
@@ -283,59 +301,27 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     );
   }
 
-  int _activateProduction(
-    WidgetRef ref,
-    Production production, {
-    required bool resetRehearsalSelection,
-  }) {
-    final generation = ++_productionActivationGeneration;
-    final previousProduction = ref.read(currentProductionProvider);
-    final switchingProduction = previousProduction?.id != production.id;
-    if (switchingProduction) {
-      ref.read(understudyRecordingsProvider.notifier).clear();
-    }
-
-    if (resetRehearsalSelection) {
-      ref.read(rehearsalCharacterProvider.notifier).state = null;
-      ref.read(selectedSceneProvider.notifier).state = null;
-    }
-    ref.read(currentProductionProvider.notifier).state = production;
-    if (switchingProduction) {
-      // Publish the new scope before clearing/loading its script so mounted hub
-      // listeners never attribute the next script event to the old production.
-      ref.read(currentScriptProvider.notifier).state = null;
-    }
-    ref.read(recordingsProvider.notifier).loadForProduction(production.id);
-    ref.read(castMembersProvider.notifier).loadForProduction(production.id);
-    return generation;
-  }
-
-  bool _isActiveProduction(
-    WidgetRef ref,
-    Production production,
-    int generation,
-  ) {
-    return mounted &&
-        generation == _productionActivationGeneration &&
-        ref.read(currentProductionProvider)?.id == production.id;
-  }
-
   Future<void> _openProduction(
     BuildContext context,
     WidgetRef ref,
     Production production,
   ) async {
-    final generation = _activateProduction(
-      ref,
-      production,
-      resetRehearsalSelection: true,
-    );
+    final previousProduction = ref.read(currentProductionProvider);
+    if (previousProduction?.id != production.id) {
+      ref.read(currentScriptProvider.notifier).state = null;
+      ref.read(understudyRecordingsProvider.notifier).clear();
+    }
+
+    ref.read(currentProductionProvider.notifier).state = production;
+    ref.read(rehearsalCharacterProvider.notifier).state = null;
+    ref.read(selectedSceneProvider.notifier).state = null;
+    ref.read(recordingsProvider.notifier).loadForProduction(production.id);
+    ref.read(castMembersProvider.notifier).loadForProduction(production.id);
 
     // Recording sync (upload local + download others' + realtime) is started by
     // the production hub's init, so it covers opening AND joining a production.
 
     final savedScript = await loadPersistedScript(ref, production.id);
-    if (!_isActiveProduction(ref, production, generation)) return;
 
     if (savedScript != null) {
       final script = ParsedScript(
@@ -354,9 +340,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
       // may have edited the script since this castmate joined. Pull the latest
       // shared version in the background and adopt it if it changed (stable line
       // IDs keep recordings matched). Never blocks the open.
-      unawaited(
-        _refreshScriptFromCloud(ref, production, messenger, generation),
-      );
+      unawaited(_refreshScriptFromCloud(ref, production, messenger));
       return;
     }
 
@@ -364,10 +348,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     // then check the cloud in the background — a slow Supabase round-trip must
     // not block opening the production. If a cloud script exists (e.g. imported
     // on another device), load it and let the user reopen to rehearse.
-    if (!context.mounted) return;
     final messenger = ScaffoldMessenger.of(context);
     if (context.mounted) context.push('/import');
-    unawaited(_reconcileCloudScript(ref, production, messenger, generation));
+    unawaited(_reconcileCloudScript(ref, production, messenger));
   }
 
   /// Background: pull a script from the cloud (if any) and persist it locally.
@@ -376,18 +359,15 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     WidgetRef ref,
     Production production,
     ScaffoldMessengerState messenger,
-    int generation,
   ) async {
     try {
       final cloudLines = await fetchCloudScriptLines(production.id);
-      if (!_isActiveProduction(ref, production, generation)) return;
       if (cloudLines == null || cloudLines.isEmpty) return;
       final script = await buildParsedScriptWithCloudScenes(
         production.title,
         cloudLines,
         production.id,
       );
-      if (!_isActiveProduction(ref, production, generation)) return;
 
       // Persist under the production we FETCHED for, never "whatever is
       // current now": the user can open another production while this is in
@@ -395,8 +375,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
       // — this used to overwrite B's script with A's (and push it to B's cloud
       // on the next save).
       await persistScriptLocally(ref, production.id, script);
-      if (!_isActiveProduction(ref, production, generation)) return;
 
+      // Only swap the on-screen script if we're still on this production.
+      if (ref.read(currentProductionProvider)?.id != production.id) return;
       ref.read(currentScriptProvider.notifier).state = script;
       messenger.showAutoToast(
         SnackBar(
@@ -426,14 +407,12 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     WidgetRef ref,
     Production production,
     ScaffoldMessengerState messenger,
-    int generation,
   ) async {
     try {
       final myUserId = SupabaseService.instance.currentUser?.id;
       if (myUserId != null && production.organizerId == myUserId) return;
 
       final cloudLines = await fetchCloudScriptLines(production.id);
-      if (!_isActiveProduction(ref, production, generation)) return;
       if (cloudLines == null || cloudLines.isEmpty) return;
 
       final local = ref.read(currentScriptProvider);
@@ -461,12 +440,12 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
         cloudLines,
         production.id,
       );
-      if (!_isActiveProduction(ref, production, generation)) return;
       await persistScriptLocally(ref, production.id, updated);
-      if (!_isActiveProduction(ref, production, generation)) return;
 
-      // Swap only after the activation-generation check above.
-      ref.read(currentScriptProvider.notifier).state = updated;
+      // Only swap the in-memory script if we're still on this production.
+      if (ref.read(currentProductionProvider)?.id == production.id) {
+        ref.read(currentScriptProvider.notifier).state = updated;
+      }
       DebugLogService.instance.log(
         LogCategory.general,
         'Script re-synced from cloud: ${cloudLines.length} lines '
@@ -507,7 +486,17 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     WidgetRef ref,
     Production production,
   ) async {
-    _activateProduction(ref, production, resetRehearsalSelection: true);
+    final previousProduction = ref.read(currentProductionProvider);
+    if (previousProduction?.id != production.id) {
+      ref.read(currentScriptProvider.notifier).state = null;
+      ref.read(understudyRecordingsProvider.notifier).clear();
+    }
+
+    ref.read(currentProductionProvider.notifier).state = production;
+    ref.read(rehearsalCharacterProvider.notifier).state = null;
+    ref.read(selectedSceneProvider.notifier).state = null;
+    ref.read(recordingsProvider.notifier).loadForProduction(production.id);
+    ref.read(castMembersProvider.notifier).loadForProduction(production.id);
 
     if (context.mounted) context.push('/import');
   }
@@ -518,14 +507,30 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     Production production,
     String action,
   ) {
-    final generation = _activateProduction(
-      ref,
-      production,
-      resetRehearsalSelection: false,
-    );
+    if (action == 'cast' &&
+        ref.read(productionCloudCreationProvider).containsKey(production.id)) {
+      ScaffoldMessenger.of(context).showAutoToast(
+        const SnackBar(
+          content: Text(
+            'Invites stay unavailable until this production is created online.',
+          ),
+        ),
+      );
+      return;
+    }
+    final previousProduction = ref.read(currentProductionProvider);
+    if (previousProduction?.id != production.id) {
+      ref.read(currentScriptProvider.notifier).state = null;
+      ref.read(understudyRecordingsProvider.notifier).clear();
+    }
+
+    // Set as current production first
+    ref.read(currentProductionProvider.notifier).state = production;
+    ref.read(recordingsProvider.notifier).loadForProduction(production.id);
+    ref.read(castMembersProvider.notifier).loadForProduction(production.id);
 
     // Load script in background for routes that need it
-    _ensureScriptLoaded(ref, production, generation);
+    _ensureScriptLoaded(ref, production);
 
     switch (action) {
       case 'editor':
@@ -557,11 +562,25 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     }
   }
 
-  Future<void> _ensureScriptLoaded(
-    WidgetRef ref,
-    Production production,
-    int generation,
-  ) async {
+  Future<void> _retryCloudCreation(String productionId) async {
+    final synced = await ref
+        .read(productionCloudCreationProvider.notifier)
+        .retry(productionId);
+    if (!mounted) return;
+    if (!synced) {
+      ScaffoldMessenger.of(context).showAutoToast(
+        const SnackBar(
+          content: Text(
+            'Still unable to create this production online. Check your '
+            'connection and retry.',
+          ),
+          duration: Duration(seconds: 6),
+        ),
+      );
+    }
+  }
+
+  Future<void> _ensureScriptLoaded(WidgetRef ref, Production production) async {
     final currentProduction = ref.read(currentProductionProvider);
     final current = ref.read(currentScriptProvider);
     if (shouldReuseLoadedScript(
@@ -573,7 +592,6 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     }
 
     final saved = await loadPersistedScript(ref, production.id);
-    if (!_isActiveProduction(ref, production, generation)) return;
     if (saved != null) {
       ref.read(currentScriptProvider.notifier).state = ParsedScript(
         title: production.title,
@@ -602,7 +620,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
       // pretending it worked.
       DebugLogService.instance.log(
         LogCategory.network,
-        'Delete refused for "${production.title}" — cloud unavailable '
+        'Production delete/leave refused — cloud unavailable '
         '(initialized=${supa.isInitialized} signedIn=${supa.isSignedIn})',
       );
       if (context.mounted) {
@@ -622,18 +640,21 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
       return;
     }
     if (supa.isInitialized && supa.isSignedIn) {
+      final productionsNotifier = ref.read(productionsProvider.notifier);
+      await productionsNotifier.prepareForDeletion(production.id);
       try {
         if (mine) {
           await supa.deleteProductionEverywhere(production.id);
         } else {
           await supa.leaveProduction(production.id);
         }
-      } catch (e) {
+      } catch (error, stack) {
+        await productionsNotifier.cancelPreparedDeletion(production.id);
         DebugLogService.instance.logError(
           LogCategory.network,
-          '${mine ? 'Cloud delete' : 'Leave'} failed for '
-          '"${production.title}"',
-          e,
+          'Production delete/leave failed',
+          error,
+          stack,
         );
         if (context.mounted) {
           ScaffoldMessenger.of(context).showAutoToast(
@@ -652,6 +673,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
         }
         return; // keep local state consistent with the cloud
       }
+      await productionsNotifier.cloudDeletionCommitted(production.id);
     }
 
     // Stop realtime for this production BEFORE clearing its cache, or an
@@ -659,13 +681,29 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     if (ref.read(currentProductionProvider)?.id == production.id) {
       RecordingSyncService.instance.unsubscribe();
     }
-    await RecordingSyncService.instance.clearCache(production.id);
-
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.remove('script_backup_${production.id}');
-    await prefs.remove('rehearsal_character_${production.id}');
-
     await ref.read(productionsProvider.notifier).remove(production.id);
+    try {
+      await RecordingSyncService.instance.clearCache(production.id);
+    } catch (error, stack) {
+      DebugLogService.instance.logError(
+        LogCategory.error,
+        'Deleted production recording cache cleanup failed',
+        error,
+        stack,
+      );
+    }
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.remove('script_backup_${production.id}');
+      await prefs.remove('rehearsal_character_${production.id}');
+    } catch (error, stack) {
+      DebugLogService.instance.logError(
+        LogCategory.error,
+        'Deleted production preferences cleanup failed',
+        error,
+        stack,
+      );
+    }
 
     final currentProduction = ref.read(currentProductionProvider);
     if (currentProduction?.id == production.id) {
@@ -732,12 +770,12 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     if (_submittingProduction) {
       dlog.log(
         LogCategory.general,
-        '_submitProduction: BLOCKED by _submittingProduction guard',
+        '_submitProduction: blocked by submit guard',
       );
       return;
     }
     _submittingProduction = true;
-    dlog.log(LogCategory.general, '_submitProduction: starting for "$title"');
+    dlog.log(LogCategory.general, '_submitProduction: starting');
 
     // Capture the router NOW, while the dialog's context is still valid. We
     // pop the dialog below (invalidating its context), so navigating later with
@@ -762,32 +800,39 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
       joinCode: joinCode,
     );
 
-    // Optimistic: persist locally and navigate immediately so the new
-    // production appears instantly. The cloud insert runs in the background
-    // using the same id + join code, so local and cloud stay consistent.
+    // Persist the local row and, when signed in, its cloud-create outbox
+    // atomically before navigating. The outbox owns retries across restarts
+    // and preserves this exact id/join code until Supabase confirms both.
     dlog.log(
       LogCategory.general,
-      '_submitProduction: adding production id=$productionId (optimistic)',
+      '_submitProduction: persisting production id=$productionId',
     );
     try {
       final createProduction = widget.createProduction;
       if (createProduction != null) {
         await createProduction(production);
       } else {
-        await ref.read(productionsProvider.notifier).add(production);
+        final notifier = ref.read(productionsProvider.notifier);
+        if (supa.isSignedIn) {
+          await notifier.addPendingCloudCreation(production);
+        } else {
+          await notifier.add(production);
+        }
       }
-    } catch (e, stack) {
+      ref.read(currentProductionProvider.notifier).state = production;
+      AnalyticsService.instance.logProductionCreated();
+    } catch (error, stack) {
       dlog.logError(
         LogCategory.error,
         '_submitProduction: local persistence failed for "$title"',
-        e,
+        error,
         stack,
       );
       rootScaffoldMessengerKey.currentState?.showAutoToast(
         const SnackBar(
           content: Text(
-            "Couldn't save the production on this device. "
-            'Check available storage and try again.',
+            'The production could not be saved. Your previous productions '
+            'were not changed.',
           ),
           duration: Duration(seconds: 6),
         ),
@@ -796,48 +841,11 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     } finally {
       _submittingProduction = false;
     }
-    ref.read(currentProductionProvider.notifier).state = production;
-    AnalyticsService.instance.logProductionCreated();
-
-    if (supa.isSignedIn) {
-      // Fire-and-forget so the UI isn't blocked — but a failure means the
-      // join code resolves to NOTHING for every invited castmate and no
-      // retry exists, so it must be loud, not just a log line.
-      unawaited(
-        supa
-            .createProduction(
-              title: title,
-              id: productionId,
-              joinCode: joinCode,
-            )
-            .catchError((Object e) {
-              dlog.logError(
-                LogCategory.error,
-                '_submitProduction: background cloud create failed — invites for '
-                '"$title" will not work until this heals',
-                e,
-              );
-              rootScaffoldMessengerKey.currentState?.showAutoToast(
-                SnackBar(
-                  content: Text(
-                    '"$title" was saved on this device but couldn\'t be '
-                    'created in the cloud — invites won\'t work yet. Check your '
-                    'connection.',
-                  ),
-                  duration: const Duration(seconds: 8),
-                ),
-              );
-              return <String, dynamic>{};
-            }),
-      );
-    }
 
     dlog.log(
       LogCategory.general,
-      '_submitProduction: done, navigating to /import',
+      '_submitProduction: saved, navigating to import',
     );
-    // Use the router captured before the dialog was popped — the dialog's
-    // context is dead by now, so context.push here would throw.
     router.push('/import');
   }
 
@@ -920,6 +928,8 @@ bool isOwnProduction(Production production) {
 class _ProductionCard extends StatelessWidget {
   final Production production;
   final String? savedCharacterName;
+  final String? cloudCreationStatus;
+  final VoidCallback onRetryCloudCreate;
   final VoidCallback onRehearse;
   final VoidCallback onSetUp;
   final void Function(String action) onMenuAction;
@@ -928,6 +938,8 @@ class _ProductionCard extends StatelessWidget {
   const _ProductionCard({
     required this.production,
     this.savedCharacterName,
+    this.cloudCreationStatus,
+    required this.onRetryCloudCreate,
     required this.onRehearse,
     required this.onSetUp,
     required this.onMenuAction,
@@ -937,6 +949,7 @@ class _ProductionCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final invitesAvailable = productionInvitesAvailable(cloudCreationStatus);
     final hasCharacter =
         savedCharacterName != null && savedCharacterName!.isNotEmpty;
     final mine = isOwnProduction(production);
@@ -1011,6 +1024,43 @@ class _ProductionCard extends StatelessWidget {
                         ),
                       ],
                     ),
+                    if (cloudCreationStatus != null) ...[
+                      const SizedBox(height: 6),
+                      Row(
+                        children: [
+                          if (cloudCreationStatus == 'pending')
+                            const SizedBox(
+                              width: 12,
+                              height: 12,
+                              child: CircularProgressIndicator(strokeWidth: 2),
+                            )
+                          else
+                            Icon(
+                              Icons.cloud_off,
+                              size: 14,
+                              color: theme.colorScheme.error,
+                            ),
+                          const SizedBox(width: 6),
+                          Expanded(
+                            child: Text(
+                              cloudCreationStatus == 'pending'
+                                  ? 'Creating online… Invites unavailable'
+                                  : 'Online creation failed — invites unavailable',
+                              style: theme.textTheme.labelSmall?.copyWith(
+                                color: cloudCreationStatus == 'pending'
+                                    ? theme.colorScheme.primary
+                                    : theme.colorScheme.error,
+                              ),
+                            ),
+                          ),
+                          if (cloudCreationStatus == 'failed')
+                            TextButton(
+                              onPressed: onRetryCloudCreate,
+                              child: const Text('Retry'),
+                            ),
+                        ],
+                      ),
+                    ],
                   ],
                 ),
               ),
@@ -1045,11 +1095,16 @@ class _ProductionCard extends StatelessWidget {
                       contentPadding: EdgeInsets.zero,
                     ),
                   ),
-                  const PopupMenuItem(
+                  PopupMenuItem(
                     value: 'cast',
+                    enabled: invitesAvailable,
                     child: ListTile(
-                      leading: Icon(Icons.people_outline),
-                      title: Text('Cast'),
+                      leading: const Icon(Icons.people_outline),
+                      title: Text(
+                        invitesAvailable
+                            ? 'Cast'
+                            : 'Cast — invites unavailable',
+                      ),
                       dense: true,
                       contentPadding: EdgeInsets.zero,
                     ),

@@ -7,7 +7,6 @@ import 'dart:typed_data';
 
 import 'package:crypto/crypto.dart' as crypto;
 import 'package:ffi/ffi.dart' as pkg_ffi;
-import 'package:flutter/foundation.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:sherpa_onnx/sherpa_onnx.dart' as sherpa;
 
@@ -40,17 +39,17 @@ class KokoroOnnxService {
   SendPort? _toIsolate;
   StreamSubscription? _sub;
   Future<bool>? _starting;
-  Completer<void>? _disposeAck;
-  Future<void>? _stopping;
-  final _generationStarted = StreamController<void>.broadcast(sync: true);
-
-  @visibleForTesting
-  Future<void> get nextGenerationStarted => _generationStarted.stream.first;
 
   final _queue = <_Req>[];
   _Req? _inFlight;
   var _nextSeq = 0;
-  bool _acceptingRequests = false;
+
+  /// Signals the queue that a generation actually started on the native
+  /// side. macOS service tests await this to know a queued request is no
+  /// longer merely pending.
+  final _generationStarted = StreamController<void>.broadcast(sync: true);
+  Future<void> get nextGenerationStarted =>
+      _generationStarted.stream.first;
 
   /// Native flag shared with the isolate's generate callback: any request
   /// whose seq is below this value aborts. Process-wide memory — the only
@@ -93,6 +92,9 @@ class KokoroOnnxService {
     'bm_lewis': 27,
   };
 
+  /// Resolve a persisted/product voice ID without silently changing speakers.
+  static int? speakerIdForVoice(String voice) => voiceIds[voice];
+
   // Incremented by stop(); a start that began before the stop must not
   // resurrect state afterwards.
   var _epoch = 0;
@@ -100,35 +102,15 @@ class KokoroOnnxService {
   /// Spawn the synthesis isolate if the model is downloaded. Safe to call
   /// repeatedly; concurrent calls share one startup.
   Future<bool> ensureStarted() {
-    final stopping = _stopping;
-    if (stopping != null) {
-      return stopping.then((_) => ensureStarted());
-    }
     if (_toIsolate != null) return Future.value(true);
     if (_starting != null) return _starting!;
-    _acceptingRequests = true;
     late final Future<bool> f;
-    f = _startSafely().whenComplete(() {
+    f = _start().whenComplete(() {
       // Only clear our own registration — stop() may have already replaced
       // it with a fresh start that must not be wiped by this doomed one.
-      if (identical(_starting, f)) {
-        _starting = null;
-        if (_toIsolate == null) {
-          _acceptingRequests = false;
-          _failPendingRequests();
-        }
-      }
+      if (identical(_starting, f)) _starting = null;
     });
     return _starting = f;
-  }
-
-  Future<bool> _startSafely() async {
-    try {
-      return await _start();
-    } catch (e) {
-      _dlog.logError(LogCategory.tts, 'KokoroOnnx: startup failed', e);
-      return false;
-    }
   }
 
   Future<bool> _start() async {
@@ -172,15 +154,7 @@ class KokoroOnnxService {
 
     _sub = fromIsolate.listen(
       (msg) {
-        if (msg is Map && msg['disposed'] == true) {
-          final ack = _disposeAck;
-          if (ack != null && !ack.isCompleted) ack.complete();
-          return;
-        }
-        if (epoch != _epoch) {
-          _deleteRawOutput(msg);
-          return;
-        }
+        if (epoch != _epoch) return; // stopped since — ignore everything
         if (msg is SendPort) {
           _toIsolate = msg;
         } else if (msg is Map) {
@@ -188,30 +162,21 @@ class KokoroOnnxService {
             ready.complete(true);
           } else if (msg.containsKey('initError')) {
             _dlog.logError(LogCategory.tts, 'KokoroOnnx: ${msg['initError']}');
-            _toIsolate = null;
             if (!ready.isCompleted) ready.complete(false);
-          } else if (msg['started'] == true) {
-            _generationStarted.add(null);
           } else if (msg.containsKey('seq')) {
             final req = _inFlight;
-            if (req == null || req.seq != msg['seq']) {
-              _deleteRawOutput(msg);
-              return;
-            }
             _inFlight = null;
-            if (msg.containsKey('error')) {
-              _dlog.logError(
-                LogCategory.tts,
-                'KokoroOnnx synth failed: ${msg['error']}',
-              );
-              if (!req.completer.isCompleted) req.completer.complete(null);
-            } else if (msg['aborted'] == true) {
-              if (!req.completer.isCompleted) req.completer.complete(null);
-            } else {
-              if (!req.completer.isCompleted) {
-                req.completer.complete(msg['path'] as String?);
+            if (req != null && req.seq == msg['seq']) {
+              if (msg.containsKey('error')) {
+                _dlog.logError(
+                  LogCategory.tts,
+                  'KokoroOnnx synth failed: ${msg['error']}',
+                );
+                req.completer.complete(null);
+              } else if (msg['aborted'] == true) {
+                req.completer.complete(null);
               } else {
-                _deleteRawOutput(msg);
+                req.completer.complete(msg['path'] as String?);
               }
             }
             _pump();
@@ -227,9 +192,16 @@ class KokoroOnnxService {
           LogCategory.tts,
           'KokoroOnnx: synthesis isolate died — failing pending requests',
         );
+        final inFlight = _inFlight;
+        _inFlight = null;
+        if (inFlight != null && !inFlight.completer.isCompleted) {
+          inFlight.completer.complete(null);
+        }
+        for (final req in _queue) {
+          if (!req.completer.isCompleted) req.completer.complete(null);
+        }
+        _queue.clear();
         _toIsolate = null;
-        _acceptingRequests = false;
-        _failPendingRequests();
         if (!ready.isCompleted) ready.complete(false);
       },
     );
@@ -264,6 +236,11 @@ class KokoroOnnxService {
     double speed = 1.0,
     bool urgent = false,
   }) async {
+    final sid = speakerIdForVoice(voice);
+    if (sid == null) {
+      _dlog.logError(LogCategory.tts, 'KokoroOnnx: unknown voice ID "$voice"');
+      return null;
+    }
     // Fix the heteronyms espeak-ng reads wrong ("Long live the King" as
     // /laɪv/) BEFORE the cache key is computed, so the key follows what will
     // actually be spoken: applying it later would keep serving the
@@ -285,11 +262,13 @@ class KokoroOnnxService {
       return cachePath;
     }
 
-    if (_toIsolate == null && !_acceptingRequests) return null;
+    if (_toIsolate == null && _starting == null) {
+      return null;
+    }
     final req = _Req(
       seq: _nextSeq++,
       text: text,
-      sid: voiceIds[voice] ?? voiceIds['af_heart']!,
+      sid: sid,
       speed: speed,
       urgent: urgent,
     );
@@ -318,7 +297,6 @@ class KokoroOnnxService {
     // Adopt the fresh WAV into the cache (same filesystem — cheap rename).
     try {
       File(path).renameSync(cachePath);
-      _recordCacheWrite();
       return cachePath;
     } catch (_) {
       return path;
@@ -329,7 +307,6 @@ class KokoroOnnxService {
 
   static String? _cacheDirPath;
   static bool _pruneScheduled = false;
-  static int _cacheWritesSincePrune = 0;
 
   Future<String?> _cachePathFor(String text, String voice, double speed) async {
     try {
@@ -341,11 +318,7 @@ class KokoroOnnxService {
         _schedulePrune(dir);
       }
       final key = crypto.sha1
-          .convert(
-            utf8.encode(
-              '${ModelManager.kokoroCacheIdentity}|$text|$voice|$speed',
-            ),
-          )
+          .convert(utf8.encode('$text|$voice|$speed'))
           .toString();
       return '$dir/$key.wav';
     } catch (_) {
@@ -353,72 +326,52 @@ class KokoroOnnxService {
     }
   }
 
-  /// LRU-prune the cache to ~150 MB at startup and after every 32 inserts.
-  /// WAVs are ~48 KB/s of audio, so this keeps roughly an hour of recently
-  /// used lines without walking thousands of files on every synthesis.
-  bool _schedulePrune(String dir) {
-    if (_pruneScheduled) return false;
+  /// LRU-prune the cache to ~150 MB, once per app run. WAVs are ~48 KB/s of
+  /// audio, so this keeps roughly an hour of recently used lines.
+  void _schedulePrune(String dir) {
+    if (_pruneScheduled) return;
     _pruneScheduled = true;
     // Isolate.run: the walk stats every cached WAV (thousands of files at
     // steady state) — a Future(...) closure still runs it on the UI isolate.
     // NB: the closure runs in a fresh isolate — no singletons (DebugLog) in
     // there; the summary comes back as the return value and is logged here.
-    unawaited(
-      Isolate.run<int>(() {
-            try {
-              const maxBytes = 150 * 1024 * 1024;
-              const lowWater = 100 * 1024 * 1024;
-              final entries = <(File, DateTime, int)>[];
-              var total = 0;
-              for (final e in Directory(dir).listSync()) {
-                if (e is! File) continue;
-                final stat = e.statSync();
-                entries.add((e, stat.modified, stat.size));
-                total += stat.size;
-              }
-              if (total <= maxBytes) return 0;
-              entries.sort((a, b) => a.$2.compareTo(b.$2)); // oldest first
-              var removed = 0;
-              for (final (file, _, size) in entries) {
-                if (total <= lowWater) break;
-                try {
-                  file.deleteSync();
-                  total -= size;
-                  removed++;
-                } catch (_) {}
-              }
-              return removed;
-            } catch (_) {
-              return 0;
+    Isolate.run<int>(() {
+          try {
+            const maxBytes = 150 * 1024 * 1024;
+            const lowWater = 100 * 1024 * 1024;
+            final entries = <(File, DateTime, int)>[];
+            var total = 0;
+            for (final e in Directory(dir).listSync()) {
+              if (e is! File) continue;
+              final stat = e.statSync();
+              entries.add((e, stat.modified, stat.size));
+              total += stat.size;
             }
-          })
-          .then<void>((removed) {
-            if (removed > 0) {
-              DebugLogService.instance.log(
-                LogCategory.tts,
-                'KokoroOnnx: pruned $removed cached WAVs (cache was over 150MB)',
-              );
+            if (total <= maxBytes) return 0;
+            entries.sort((a, b) => a.$2.compareTo(b.$2)); // oldest first
+            var removed = 0;
+            for (final (file, _, size) in entries) {
+              if (total <= lowWater) break;
+              try {
+                file.deleteSync();
+                total -= size;
+                removed++;
+              } catch (_) {}
             }
-          })
-          .catchError((_) {})
-          .whenComplete(() {
-            _pruneScheduled = false;
-            if (_cacheWritesSincePrune >= 32) {
-              _cacheWritesSincePrune = 0;
-              _schedulePrune(dir);
-            }
-          }),
-    );
-    return true;
-  }
-
-  void _recordCacheWrite() {
-    _cacheWritesSincePrune++;
-    if (_cacheWritesSincePrune < 32) return;
-    final dir = _cacheDirPath;
-    if (dir != null && _schedulePrune(dir)) {
-      _cacheWritesSincePrune = 0;
-    }
+            return removed;
+          } catch (_) {
+            return 0;
+          }
+        })
+        .then((removed) {
+          if (removed > 0) {
+            DebugLogService.instance.log(
+              LogCategory.tts,
+              'KokoroOnnx: pruned $removed cached WAVs (cache was over 150MB)',
+            );
+          }
+        })
+        .catchError((_) {});
   }
 
   /// Send the next queued request if the isolate is idle.
@@ -427,6 +380,7 @@ class KokoroOnnxService {
     if (port == null || _inFlight != null || _queue.isEmpty) return;
     final req = _queue.removeAt(0);
     _inFlight = req;
+    _generationStarted.add(null);
     port.send({
       'seq': req.seq,
       'text': req.text,
@@ -435,77 +389,22 @@ class KokoroOnnxService {
     });
   }
 
-  void _failPendingRequests() {
-    final inFlight = _inFlight;
+  /// Tear down the isolate and fail any in-flight requests.
+  Future<void> stop() async {
+    _epoch++;
+    _starting = null;
+    _toIsolate?.send(const {'cmd': 'dispose'});
+    _toIsolate = null;
+    await _sub?.cancel();
+    _sub = null;
+    _isolate?.kill(priority: Isolate.beforeNextEvent);
+    _isolate = null;
+    _inFlight?.completer.complete(null);
     _inFlight = null;
-    if (inFlight != null && !inFlight.completer.isCompleted) {
-      inFlight.completer.complete(null);
-    }
-    for (final req in _queue) {
-      if (!req.completer.isCompleted) req.completer.complete(null);
+    for (final q in _queue) {
+      q.completer.complete(null);
     }
     _queue.clear();
-  }
-
-  void _deleteRawOutput(Object? message) {
-    if (message is! Map || message['path'] is! String) return;
-    unawaited(_deleteFileIfPresent(message['path'] as String));
-  }
-
-  static Future<void> _deleteFileIfPresent(String path) async {
-    try {
-      final file = File(path);
-      if (await file.exists()) await file.delete();
-    } catch (_) {}
-  }
-
-  /// Tear down the isolate and fail any in-flight requests.
-  Future<void> stop() {
-    final stopping = _stopping;
-    if (stopping != null) return stopping;
-    late final Future<void> operation;
-    operation = _stop().whenComplete(() {
-      if (identical(_stopping, operation)) _stopping = null;
-    });
-    return _stopping = operation;
-  }
-
-  Future<void> _stop() async {
-    // The native callback can observe this while generateWithCallback blocks
-    // the isolate event loop, so all work issued before this stop aborts.
-    _cancelBelow.value = _nextSeq;
-    _epoch++;
-    _acceptingRequests = false;
-    _starting = null;
-
-    final port = _toIsolate;
-    final isolate = _isolate;
-    final sub = _sub;
-    _toIsolate = null;
-    _isolate = null;
-    _sub = null;
-    _failPendingRequests();
-
-    if (port == null) {
-      await sub?.cancel();
-      isolate?.kill(priority: Isolate.immediate);
-      return;
-    }
-
-    final ack = Completer<void>();
-    _disposeAck = ack;
-    port.send(const {'cmd': 'dispose'});
-    var disposed = false;
-    try {
-      await ack.future.timeout(const Duration(seconds: 5));
-      disposed = true;
-    } on TimeoutException {
-      _dlog.logError(LogCategory.tts, 'KokoroOnnx: isolate disposal timed out');
-    } finally {
-      if (identical(_disposeAck, ack)) _disposeAck = null;
-    }
-    await sub?.cancel();
-    if (!disposed) isolate?.kill(priority: Isolate.immediate);
     // _cancelBelow is intentionally never freed: the singleton lives for the
     // process, and a freed pointer with a live isolate would be a use-after-free.
   }
@@ -585,7 +484,6 @@ Future<void> _isolateMain(_IsolateArgs args) async {
     if (msg is! Map) continue;
     if (msg['cmd'] == 'dispose') {
       tts.free();
-      args.sendPort.send(const {'disposed': true});
       commands.close();
       return;
     }
@@ -600,7 +498,6 @@ Future<void> _isolateMain(_IsolateArgs args) async {
       // cancel can land after the last poll — the audio is then complete
       // and worth keeping even though the request is stale.
       var abortedMidGeneration = false;
-      args.sendPort.send({'started': true, 'seq': seq});
       final audio = tts.generateWithCallback(
         text: msg['text'] as String,
         sid: msg['sid'] as int,

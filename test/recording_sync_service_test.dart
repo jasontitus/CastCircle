@@ -19,7 +19,7 @@ class FakeCloud implements RecordingCloud {
   final Map<String, List<int>> storage = {};
 
   int downloadCount = 0;
-  int uploadSequence = 0;
+  int uploadCount = 0;
 
   @override
   bool get isReady => ready;
@@ -44,60 +44,47 @@ class FakeCloud implements RecordingCloud {
     required String lineId,
     required File audioFile,
   }) async {
-    final path = '$productionId/$characterName/$lineId-${++uploadSequence}.m4a';
+    uploadCount++;
+    final path = '$productionId/$characterName/$lineId.m4a';
     storage[path] = await audioFile.readAsBytes();
     return 'https://fake.supabase.co/storage/v1/object/public/recordings/'
         '${Uri.encodeFull(path)}';
   }
 
   @override
-  Future<String?> saveRecordingMetadata({
+  Future<void> saveRecordingMetadata({
     required String productionId,
     required String lineId,
+    required String userId,
     required String audioUrl,
     required int durationMs,
     DateTime? recordedAt,
   }) async {
-    final activeUserId = userId;
-    if (activeUserId == null) throw StateError('No active fake user');
-    final previousIndex = rows.indexWhere(
+    // Emulate upsert on UNIQUE (production_id, line_id, user_id)
+    rows.removeWhere(
       (r) =>
           r['production_id'] == productionId &&
           r['line_id'] == lineId &&
-          r['user_id'] == activeUserId,
+          r['user_id'] == userId,
     );
-    final previousUrl = previousIndex < 0
-        ? null
-        : rows[previousIndex]['audio_url'] as String?;
-    if (previousIndex >= 0) rows.removeAt(previousIndex);
     rows.add({
       'production_id': productionId,
       'line_id': lineId,
-      'user_id': activeUserId,
+      'user_id': userId,
       'audio_url': audioUrl,
       'duration_ms': durationMs,
       'recorded_at': (recordedAt ?? DateTime.now()).toUtc().toIso8601String(),
     });
-    return previousUrl;
-  }
-
-  String pathForUrl(String audioUrl) {
-    const marker = '/recordings/';
-    final index = audioUrl.indexOf(marker);
-    return index >= 0
-        ? Uri.decodeFull(audioUrl.substring(index + marker.length))
-        : audioUrl;
-  }
-
-  @override
-  Future<void> deleteRecordingByUrl(String audioUrl) async {
-    storage.remove(pathForUrl(audioUrl));
   }
 
   @override
   Future<Uint8List> downloadRecordingByUrl(String audioUrl) async {
     downloadCount++;
-    final path = pathForUrl(audioUrl);
+    const marker = '/recordings/';
+    final i = audioUrl.indexOf(marker);
+    final path = i >= 0
+        ? Uri.decodeFull(audioUrl.substring(i + marker.length))
+        : audioUrl;
     final bytes = storage[path];
     if (bytes == null) {
       throw Exception('Object not found: $path');
@@ -107,17 +94,13 @@ class FakeCloud implements RecordingCloud {
 }
 
 void main() {
-  TestWidgetsFlutterBinding.ensureInitialized();
-
   const productionId = 'prod-1';
   late Directory tempDir;
   late FakeCloud cloud;
-  late Map<RecordingSyncService, int> runTokens;
 
   setUp(() async {
     tempDir = await Directory.systemTemp.createTemp('recording_sync_test');
     cloud = FakeCloud();
-    runTokens = {};
   });
 
   tearDown(() async {
@@ -141,11 +124,6 @@ void main() {
       ..createSync(recursive: true);
     return RecordingSyncService.forTesting(cloud, cacheDirectory: dir.path);
   }
-
-  int runTokenFor(RecordingSyncService service) => runTokens.putIfAbsent(
-    service,
-    () => service.activateProduction(productionId),
-  );
 
   /// Write a local recording file and return its model.
   Future<Recording> makeLocalRecording(
@@ -182,17 +160,13 @@ void main() {
         );
 
         final uploadedUrls = <String, String>{};
+        service.onLocalUploaded = (lineId, url) async {
+          uploadedUrls[lineId] = url;
+        };
 
         await service.syncForProduction(
           productionId: productionId,
-          runToken: runTokenFor(service),
           localRecordings: {'line-1': recording},
-          onLocalUploaded:
-              (uploadedProductionId, lineId, recordingId, url) async {
-                expect(uploadedProductionId, productionId);
-                expect(recordingId, recording.id);
-                uploadedUrls[lineId] = url;
-              },
         );
 
         expect(cloud.rows, hasLength(1));
@@ -204,35 +178,26 @@ void main() {
           DateTime.parse(row['recorded_at'] as String).toLocal(),
           recording.recordedAt,
         );
-        final remoteUrl = row['audio_url'] as String;
-        expect(uploadedUrls['line-1'], remoteUrl);
-        expect(cloud.storage[cloud.pathForUrl(remoteUrl)], isNotNull);
+        expect(cloud.storage.keys.single, '$productionId/HAMLET/line-1.m4a');
+        expect(uploadedUrls['line-1'], contains('HAMLET/line-1.m4a'));
       },
     );
 
-    test(
-      'uploads when a remoteUrl hint has no authoritative cloud row',
-      () async {
-        final service = deviceFor('actorA');
-        cloud.userId = 'user-a';
-        final recording = await makeLocalRecording(
-          'actorA',
-          'line-1',
-          'HAMLET',
-        );
+    test('skips recordings that already have a remoteUrl', () async {
+      final service = deviceFor('actorA');
+      cloud.userId = 'user-a';
+      final recording = await makeLocalRecording('actorA', 'line-1', 'HAMLET');
 
-        await service.syncForProduction(
-          productionId: productionId,
-          runToken: runTokenFor(service),
-          localRecordings: {
-            'line-1': recording.copyWith(remoteUrl: 'https://already.up/x.m4a'),
-          },
-        );
+      await service.syncForProduction(
+        productionId: productionId,
+        localRecordings: {
+          'line-1': recording.copyWith(remoteUrl: 'https://already.up/x.m4a'),
+        },
+      );
 
-        expect(cloud.rows, hasLength(1));
-        expect(cloud.storage, hasLength(1));
-      },
-    );
+      expect(cloud.rows, isEmpty);
+      expect(cloud.storage, isEmpty);
+    });
 
     test('skips upload when cloud copy is same age or newer', () async {
       final service = deviceFor('actorA');
@@ -248,6 +213,7 @@ void main() {
       await cloud.saveRecordingMetadata(
         productionId: productionId,
         lineId: 'line-1',
+        userId: 'user-a',
         audioUrl: 'https://fake/recordings/$productionId/HAMLET/line-1.m4a',
         durationMs: 2000,
         recordedAt: DateTime(2026, 5, 2, 10),
@@ -255,12 +221,45 @@ void main() {
 
       await service.syncForProduction(
         productionId: productionId,
-        runToken: runTokenFor(service),
         localRecordings: {'line-1': recording},
       );
 
       expect(cloud.storage, isEmpty); // nothing uploaded
     });
+
+    test(
+      'retries a failed local URL stamp without re-uploading audio',
+      () async {
+        final service = deviceFor('actorA');
+        cloud.userId = 'user-a';
+        final recording = await makeLocalRecording(
+          'actorA',
+          'line-stamp',
+          'HAMLET',
+        );
+        var failStamp = true;
+        var stampCalls = 0;
+        service.onLocalUploaded = (lineId, url) async {
+          stampCalls++;
+          if (failStamp) throw StateError('zero affected rows');
+        };
+
+        await service.syncForProduction(
+          productionId: productionId,
+          localRecordings: {'line-stamp': recording},
+        );
+        expect(cloud.uploadCount, 1);
+        expect(stampCalls, 1);
+
+        failStamp = false;
+        await service.syncForProduction(
+          productionId: productionId,
+          localRecordings: {'line-stamp': recording},
+        );
+        expect(cloud.uploadCount, 1);
+        expect(stampCalls, 2);
+      },
+    );
 
     test(
       're-uploads when the local take is newer (re-record recovery)',
@@ -272,6 +271,7 @@ void main() {
         await cloud.saveRecordingMetadata(
           productionId: productionId,
           lineId: 'line-1',
+          userId: 'user-a',
           audioUrl:
               'https://fake.supabase.co/storage/v1/object/public/'
               'recordings/$productionId/HAMLET/line-1.m4a',
@@ -290,16 +290,16 @@ void main() {
 
         await service.syncForProduction(
           productionId: productionId,
-          runToken: runTokenFor(service),
           localRecordings: {'line-1': newTake},
         );
 
-        // Upsert replaced the row, not duplicated it, and cleanup retained the
-        // newly uploaded unique object rather than deleting it as superseded.
+        expect(
+          cloud.storage['$productionId/HAMLET/line-1.m4a'],
+          List.filled(64, 9),
+        );
+        // Upsert replaced the row, not duplicated it
         final lineRows = cloud.rows.where((r) => r['line_id'] == 'line-1');
         expect(lineRows, hasLength(1));
-        final remoteUrl = lineRows.single['audio_url'] as String;
-        expect(cloud.storage[cloud.pathForUrl(remoteUrl)], List.filled(64, 9));
         expect(
           DateTime.parse(lineRows.single['recorded_at'] as String).toLocal(),
           DateTime(2026, 5, 3, 10),
@@ -321,7 +321,6 @@ void main() {
       );
       await deviceA.syncForProduction(
         productionId: productionId,
-        runToken: runTokenFor(deviceA),
         localRecordings: {'line-1': aTake},
       );
 
@@ -329,23 +328,19 @@ void main() {
       final deviceB = deviceFor('actorB');
       cloud.userId = 'user-b';
       final readyLines = <String>[];
+      deviceB.onRecordingReady = (lineId, path) => readyLines.add(lineId);
 
       final downloaded = await deviceB.syncForProduction(
         productionId: productionId,
-        runToken: runTokenFor(deviceB),
         localRecordings: {},
         myUserId: 'user-b',
-        onRecordingReady: (readyProductionId, lineId, path) {
-          expect(readyProductionId, productionId);
-          readyLines.add(lineId);
-        },
       );
 
       expect(downloaded, 1);
       expect(readyLines, ['line-1']);
 
       // B can now resolve A's recording for playback, keyed by line id
-      final cached = await deviceB.getCachedRecordings(productionId);
+      final cached = deviceB.getCachedRecordings(productionId);
       expect(cached, contains('line-1'));
       expect(cached['line-1']!.character, 'HAMLET');
       expect(File(cached['line-1']!.localPath).readAsBytesSync(), [1, 2, 3, 4]);
@@ -364,14 +359,12 @@ void main() {
       );
       await deviceA.syncForProduction(
         productionId: productionId,
-        runToken: runTokenFor(deviceA),
         localRecordings: {'line-1': aTake},
       );
       final deviceB = deviceFor('actorB');
       cloud.userId = 'user-b';
       await deviceB.syncForProduction(
         productionId: productionId,
-        runToken: runTokenFor(deviceB),
         localRecordings: {},
         myUserId: 'user-b',
       );
@@ -385,7 +378,7 @@ void main() {
       );
       cloud.ready = false;
       await deviceBRestarted.hydrateCache();
-      final cached = await deviceBRestarted.getCachedRecordings(productionId);
+      final cached = deviceBRestarted.getCachedRecordings(productionId);
       expect(
         cached,
         contains('line-1'),
@@ -397,7 +390,6 @@ void main() {
       cloud.ready = true;
       final downloaded = await deviceBRestarted.syncForProduction(
         productionId: productionId,
-        runToken: runTokenFor(deviceBRestarted),
         localRecordings: {},
         myUserId: 'user-b',
       );
@@ -412,26 +404,21 @@ void main() {
       final aTake = await makeLocalRecording('actorA', 'line-1', 'HAMLET');
       await deviceA.syncForProduction(
         productionId: productionId,
-        runToken: runTokenFor(deviceA),
         localRecordings: {'line-1': aTake},
       );
       final deviceB = deviceFor('actorB');
       cloud.userId = 'user-b';
       await deviceB.syncForProduction(
         productionId: productionId,
-        runToken: runTokenFor(deviceB),
         localRecordings: {},
         myUserId: 'user-b',
       );
-      expect(
-        await deviceB.getCachedRecordings(productionId),
-        contains('line-1'),
-      );
+      expect(deviceB.getCachedRecordings(productionId), contains('line-1'));
 
       // A brand-new production on the same device must see NONE of them —
       // this leak made a fresh production flag every cached recording as
       // "orphaned" (the "11 shared recordings don't match" banner).
-      expect(await deviceB.getCachedRecordings('prod-brand-new'), isEmpty);
+      expect(deviceB.getCachedRecordings('prod-brand-new'), isEmpty);
 
       // Same across a restart (manifest round-trip preserves the scoping).
       await deviceB.flushManifest();
@@ -440,11 +427,8 @@ void main() {
         cacheDirectory: '${tempDir.path}/actorB/recording_cache',
       );
       await restarted.hydrateCache();
-      expect(
-        await restarted.getCachedRecordings(productionId),
-        contains('line-1'),
-      );
-      expect(await restarted.getCachedRecordings('prod-brand-new'), isEmpty);
+      expect(restarted.getCachedRecordings(productionId), contains('line-1'));
+      expect(restarted.getCachedRecordings('prod-brand-new'), isEmpty);
     });
 
     test('does not re-download an up-to-date cached recording', () async {
@@ -453,7 +437,6 @@ void main() {
       final aTake = await makeLocalRecording('actorA', 'line-1', 'HAMLET');
       await deviceA.syncForProduction(
         productionId: productionId,
-        runToken: runTokenFor(deviceA),
         localRecordings: {'line-1': aTake},
       );
 
@@ -461,14 +444,12 @@ void main() {
       cloud.userId = 'user-b';
       await deviceB.syncForProduction(
         productionId: productionId,
-        runToken: runTokenFor(deviceB),
         localRecordings: {},
       );
       final downloadsAfterFirst = cloud.downloadCount;
 
       final downloaded = await deviceB.syncForProduction(
         productionId: productionId,
-        runToken: runTokenFor(deviceB),
         localRecordings: {},
       );
 
@@ -490,7 +471,6 @@ void main() {
         );
         await deviceA.syncForProduction(
           productionId: productionId,
-          runToken: runTokenFor(deviceA),
           localRecordings: {'line-1': firstTake},
         );
 
@@ -498,13 +478,9 @@ void main() {
         cloud.userId = 'user-b';
         await deviceB.syncForProduction(
           productionId: productionId,
-          runToken: runTokenFor(deviceB),
           localRecordings: {},
         );
-        expect(
-          (await deviceB.getCachedRecordings(productionId))['line-1'],
-          isNotNull,
-        );
+        expect(deviceB.getCachedRecordings(productionId)['line-1'], isNotNull);
 
         // Actor A re-records the line
         cloud.userId = 'user-a';
@@ -517,7 +493,6 @@ void main() {
         );
         await deviceA.syncForProduction(
           productionId: productionId,
-          runToken: runTokenFor(deviceA),
           localRecordings: {'line-1': secondTake},
         );
 
@@ -525,16 +500,13 @@ void main() {
         cloud.userId = 'user-b';
         final downloaded = await deviceB.syncForProduction(
           productionId: productionId,
-          runToken: runTokenFor(deviceB),
           localRecordings: {},
         );
 
         expect(downloaded, 1);
         expect(
           File(
-            (await deviceB.getCachedRecordings(
-              productionId,
-            ))['line-1']!.localPath,
+            deviceB.getCachedRecordings(productionId)['line-1']!.localPath,
           ).readAsBytesSync(),
           [2, 2, 2],
         );
@@ -547,7 +519,6 @@ void main() {
       final aTake = await makeLocalRecording('actorA', 'line-1', 'HAMLET');
       await deviceA.syncForProduction(
         productionId: productionId,
-        runToken: runTokenFor(deviceA),
         localRecordings: {'line-1': aTake},
       );
 
@@ -555,29 +526,24 @@ void main() {
       cloud.userId = 'user-b';
       await deviceB.syncForProduction(
         productionId: productionId,
-        runToken: runTokenFor(deviceB),
         localRecordings: {},
       );
 
       // Simulate the OS (or user) clearing the cache file
-      final cachedPath = deviceB.getCachedPath(productionId, 'line-1')!;
+      final cachedPath = deviceB.getCachedPath('line-1')!;
       File(cachedPath).deleteSync();
       expect(
-        await deviceB.getCachedRecordings(productionId),
+        deviceB.getCachedRecordings(productionId),
         isNot(contains('line-1')),
       );
 
       final downloaded = await deviceB.syncForProduction(
         productionId: productionId,
-        runToken: runTokenFor(deviceB),
         localRecordings: {},
       );
 
       expect(downloaded, 1);
-      expect(
-        await deviceB.getCachedRecordings(productionId),
-        contains('line-1'),
-      );
+      expect(deviceB.getCachedRecordings(productionId), contains('line-1'));
     });
 
     test(
@@ -589,7 +555,6 @@ void main() {
         final aTake = await makeLocalRecording('actorA', 'line-1', 'HAMLET');
         await deviceA.syncForProduction(
           productionId: productionId,
-          runToken: runTokenFor(deviceA),
           localRecordings: {'line-1': aTake},
         );
 
@@ -605,7 +570,6 @@ void main() {
 
         final downloaded = await deviceB.syncForProduction(
           productionId: productionId,
-          runToken: runTokenFor(deviceB),
           localRecordings: {
             'line-1': myTake.copyWith(remoteUrl: 'https://up/x.m4a'),
           },
@@ -629,7 +593,6 @@ void main() {
       );
       await deviceA.syncForProduction(
         productionId: productionId,
-        runToken: runTokenFor(deviceA),
         localRecordings: {'line-9': aTake},
       );
       final row = cloud.rows.single;
@@ -638,22 +601,16 @@ void main() {
       final deviceB = deviceFor('actorB');
       cloud.userId = 'user-b';
       final readyLines = <String>[];
+      deviceB.onRecordingReady = (lineId, path) => readyLines.add(lineId);
 
       await deviceB.handleRealtimeRecording(
         Map<String, dynamic>.from(row),
         productionId: productionId,
-        runToken: runTokenFor(deviceB),
         myUserId: 'user-b',
-        onRecordingReady: (readyProductionId, lineId, path) {
-          expect(readyProductionId, productionId);
-          readyLines.add(lineId);
-        },
       );
 
       expect(readyLines, ['line-9']);
-      final cached = (await deviceB.getCachedRecordings(
-        productionId,
-      ))['line-9'];
+      final cached = deviceB.getCachedRecordings(productionId)['line-9'];
       expect(cached, isNotNull);
       expect(cached!.character, 'OPHELIA');
       expect(File(cached.localPath).readAsBytesSync(), [9, 9]);
@@ -673,12 +630,11 @@ void main() {
           'duration_ms': 1000,
         },
         productionId: productionId,
-        runToken: runTokenFor(deviceA),
         myUserId: 'user-a',
       );
 
       expect(cloud.downloadCount, 0);
-      expect(await deviceA.getCachedRecordings(productionId), isEmpty);
+      expect(deviceA.getCachedRecordings(productionId), isEmpty);
     });
   });
 
@@ -746,7 +702,6 @@ void main() {
       };
       await deviceA.syncForProduction(
         productionId: productionId,
-        runToken: runTokenFor(deviceA),
         localRecordings: lines,
       );
       expect(cloud.rows, hasLength(3));
@@ -756,16 +711,13 @@ void main() {
       cloud.userId = 'user-b';
       final downloaded = await deviceB.syncForProduction(
         productionId: productionId,
-        runToken: runTokenFor(deviceB),
         localRecordings: {},
       );
       expect(downloaded, 3);
 
       // The understudy/castmate map used by the rehearsal playback chain
       // resolves every one of Actor A's lines to a playable local file.
-      final castmateRecordings = await deviceB.getCachedRecordings(
-        productionId,
-      );
+      final castmateRecordings = deviceB.getCachedRecordings(productionId);
       for (final lineId in lines.keys) {
         final rec = castmateRecordings[lineId];
         expect(rec, isNotNull, reason: 'missing recording for $lineId');
@@ -787,21 +739,17 @@ void main() {
       );
       await deviceA.syncForProduction(
         productionId: productionId,
-        runToken: runTokenFor(deviceA),
         localRecordings: {'line-2': retake},
       );
 
       cloud.userId = 'user-b';
       await deviceB.syncForProduction(
         productionId: productionId,
-        runToken: runTokenFor(deviceB),
         localRecordings: {},
       );
       expect(
         File(
-          (await deviceB.getCachedRecordings(
-            productionId,
-          ))['line-2']!.localPath,
+          deviceB.getCachedRecordings(productionId)['line-2']!.localPath,
         ).readAsBytesSync(),
         [99],
       );

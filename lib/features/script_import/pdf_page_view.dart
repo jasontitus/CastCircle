@@ -51,27 +51,22 @@ class _PdfPageViewState extends State<PdfPageView> {
   /// disk before rendering.
   PdfDocument? _doc;
   String? _docPath;
-  Future<PdfDocument?>? _openingDocument;
-  String? _openingPath;
-  int _documentGeneration = 0;
 
   /// Decoded pages, keyed by page number, small LRU. A page flip back to a
   /// recently-viewed page (the OCR review flow bounces between pages
   /// constantly in the two-pane layout) reuses the decode instead of paying
   /// a multi-hundred-ms render + a fresh multi-MB RGBA allocation.
   final _pageCache = <int, ui.Image>{};
-  static const _maxCachedPages = 2;
+  static const _maxCachedPages = 4;
 
   /// Highlight state: rects (normalized page coords) for the current page,
   /// null while the page-OCR lookup runs, empty when nothing matched.
   List<Rect>? _highlightRects;
   bool _locating = false;
 
-  /// Per-page OCR cache. This view can now remain mounted while the selected
-  /// line changes, so keep a bounded LRU rather than retaining every visited
-  /// page for the lifetime of the screen.
+  /// Per-page OCR cache so flipping back doesn't re-OCR (small: the sheet
+  /// lives per line).
   final _pageOcrCache = <int, List<OcrPageLine>>{};
-  static const _maxCachedOcrPages = 8;
 
   /// Last layout size, for the auto-scroll transform.
   Size _lastViewSize = Size.zero;
@@ -81,10 +76,6 @@ class _PdfPageViewState extends State<PdfPageView> {
   /// slow earlier one would otherwise land last, show the wrong page and leak
   /// the newer (tens of MB) image.
   int _renderGeneration = 0;
-
-  /// Bumped for each highlight request so a slower lookup for a previously
-  /// selected line cannot overwrite the current line's result.
-  int _highlightGeneration = 0;
 
   @override
   void initState() {
@@ -96,19 +87,13 @@ class _PdfPageViewState extends State<PdfPageView> {
   @override
   void didUpdateWidget(covariant PdfPageView oldWidget) {
     super.didUpdateWidget(oldWidget);
-    final documentChanged = oldWidget.pdfPath != widget.pdfPath;
-    final pageChanged = oldWidget.pageNumber != widget.pageNumber;
-    if (documentChanged) {
-      _pageOcrCache.clear();
-    }
-    if (documentChanged || pageChanged) {
-      _highlightGeneration++;
+    // In the tablet two-pane layout this widget is kept alive and re-targeted as
+    // the user selects different lines. Re-render only when the page (or file)
+    // actually changes.
+    if (oldWidget.pdfPath != widget.pdfPath ||
+        oldWidget.pageNumber != widget.pageNumber) {
       _currentPage = widget.pageNumber;
       _renderPage();
-    } else if (oldWidget.lineOnPage != widget.lineOnPage ||
-        oldWidget.highlightText != widget.highlightText) {
-      _txController.value = Matrix4.identity();
-      _locateHighlight(_currentPage);
     }
   }
 
@@ -121,8 +106,6 @@ class _PdfPageViewState extends State<PdfPageView> {
     // is replaced in the same frame a render/page-OCR is still running.
     // Handing the teardown to the next frame lets that work land first;
     // the objects are unreachable either way.
-    _documentGeneration++;
-    _highlightGeneration++;
     final images = _pageCache.values.toList();
     _pageCache.clear();
     _pageImage = null;
@@ -164,76 +147,9 @@ class _PdfPageViewState extends State<PdfPageView> {
     }
   }
 
-  List<OcrPageLine>? _cachedOcrPage(int page) {
-    final cached = _pageOcrCache.remove(page);
-    if (cached != null) _pageOcrCache[page] = cached;
-    return cached;
-  }
-
-  void _cacheOcrPage(int page, List<OcrPageLine> lines) {
-    _pageOcrCache.remove(page);
-    _pageOcrCache[page] = lines;
-    while (_pageOcrCache.length > _maxCachedOcrPages) {
-      _pageOcrCache.remove(_pageOcrCache.keys.first);
-    }
-  }
-
-  Future<PdfDocument?> _documentFor(String path) {
-    final current = _doc;
-    final opening = _openingDocument;
-    if (current != null && _docPath == path) {
-      if (opening != null && _openingPath != path) {
-        _documentGeneration++;
-        _openingDocument = null;
-        _openingPath = null;
-      }
-      return Future.value(current);
-    }
-    if (opening != null && _openingPath == path) return opening;
-
-    final generation = ++_documentGeneration;
-    final future = _openAndInstallDocument(path, generation);
-    _openingPath = path;
-    _openingDocument = future;
-    return future;
-  }
-
-  Future<PdfDocument?> _openAndInstallDocument(
-    String path,
-    int generation,
-  ) async {
-    PdfDocument opened;
-    try {
-      opened = await PdfDocument.openFile(path);
-    } catch (_) {
-      if (generation == _documentGeneration) {
-        _openingDocument = null;
-        _openingPath = null;
-      }
-      rethrow;
-    }
-
-    if (!mounted || generation != _documentGeneration) {
-      await opened.dispose();
-      return null;
-    }
-
-    final previous = _doc;
-    _doc = opened;
-    _docPath = path;
-    _openingDocument = null;
-    _openingPath = null;
-    _evictAllCached();
-    await previous?.dispose();
-    return opened;
-  }
-
   Future<void> _renderPage() async {
     final generation = ++_renderGeneration;
     final page = _currentPage;
-    if (_docPath != null && _docPath != widget.pdfPath) {
-      _evictAllCached();
-    }
 
     // Cache hit: instant flip, no I/O, no decode.
     final cached = _pageCache.remove(page);
@@ -262,8 +178,15 @@ class _PdfPageViewState extends State<PdfPageView> {
         return dir.path;
       };
 
-      final doc = await _documentFor(widget.pdfPath);
-      if (doc == null || _isStale(generation)) return;
+      // Reuse the open document; a new file (or a closed handle) reopens.
+      if (_doc == null || _docPath != widget.pdfPath) {
+        await _doc?.dispose();
+        _evictAllCached();
+        _doc = await PdfDocument.openFile(widget.pdfPath);
+        _docPath = widget.pdfPath;
+      }
+      final doc = _doc!;
+      if (_isStale(generation)) return;
       _totalPages = doc.pages.length;
       final pageIdx = page - 1;
       if (pageIdx < 0 || pageIdx >= doc.pages.length) {
@@ -276,16 +199,14 @@ class _PdfPageViewState extends State<PdfPageView> {
       }
 
       final pdfPage = doc.pages[pageIdx];
-      // Render near the display resolution with modest zoom headroom. Keeping
-      // two 3× pages alive could consume tens of megabytes per mounted viewer,
-      // and the OCR sheet can coexist briefly with the underlying pane.
+      // Render sized to the display, not a fixed 3×: viewport width ×
+      // devicePixelRatio × 2 (zoom headroom for reading small print), capped
+      // at 3× intrinsic. A letter-size scan at fixed 3× was a ~17 MB RGBA
+      // buffer + decode per flip regardless of the screen showing it.
       final media = MediaQuery.maybeOf(context);
       final viewW = media == null ? 800.0 : media.size.width;
       final dpr = media?.devicePixelRatio ?? 2.0;
-      final targetW = (viewW * dpr * 1.5).clamp(
-        pdfPage.width,
-        pdfPage.width * 2,
-      );
+      final targetW = (viewW * dpr * 2).clamp(pdfPage.width, pdfPage.width * 3);
       final scale = targetW / pdfPage.width;
       final pdfImage = await pdfPage.render(
         fullWidth: pdfPage.width * scale,
@@ -328,24 +249,10 @@ class _PdfPageViewState extends State<PdfPageView> {
   /// clears the highlight rather than matching the text against the wrong
   /// page.
   Future<void> _locateHighlight(int page) async {
-    final generation = ++_highlightGeneration;
     final target = widget.highlightText;
-    if (target == null || target.trim().isEmpty) {
-      if (mounted) {
-        setState(() {
-          _locating = false;
-          _highlightRects = const [];
-        });
-      }
-      return;
-    }
+    if (target == null || target.trim().isEmpty) return;
     if (page != widget.pageNumber) {
-      if (mounted) {
-        setState(() {
-          _locating = false;
-          _highlightRects = const [];
-        });
-      }
+      if (mounted) setState(() => _highlightRects = const []);
       return;
     }
     setState(() {
@@ -354,10 +261,12 @@ class _PdfPageViewState extends State<PdfPageView> {
     });
     try {
       final lines =
-          _cachedOcrPage(page) ??
+          _pageOcrCache[page] ??
           await PaddleOcrChannel.ocrPage(widget.pdfPath, page);
-      if (!mounted || generation != _highlightGeneration) return;
+      if (!mounted) return;
       if (_currentPage != page) {
+        // Paged away mid-lookup. Clearing _locating matters: leaving it
+        // true pinned "Locating line…" on screen forever.
         setState(() {
           _locating = false;
           _highlightRects = const [];
@@ -373,13 +282,16 @@ class _PdfPageViewState extends State<PdfPageView> {
         });
         return;
       }
-      _cacheOcrPage(page, lines);
+      _pageOcrCache[page] = lines;
       final rects = OcrHighlightMatcher.locate(target, lines);
+      // Persist only structural diagnostics. The target is private/licensed
+      // script dialogue and must never enter the support log.
       DebugLogService.instance.log(
         LogCategory.general,
-        'Highlight p$page: '
-        '${rects.isEmpty ? 'NOT FOUND' : '${rects.length} rect(s)'} '
-        'among ${lines.length} OCR line(s)',
+        'Page highlight p$page: '
+        '${rects.isEmpty ? 'not_found' : 'found'} '
+        'rectCount=${rects.length} ocrLineCount=${lines.length} '
+        'targetLength=${target.length}',
       );
       setState(() {
         _locating = false;
@@ -392,7 +304,7 @@ class _PdfPageViewState extends State<PdfPageView> {
         'Page highlight lookup failed',
         e,
       );
-      if (mounted && generation == _highlightGeneration) {
+      if (mounted) {
         setState(() {
           _locating = false;
           _highlightRects = const [];

@@ -21,15 +21,23 @@ class WelcomeScreen extends ConsumerStatefulWidget {
   ///
   /// Awaited by the caller so the model-download offer queues up behind it
   /// rather than landing on top of it.
-  static Future<void> maybeOffer(BuildContext context) async {
-    final prefs = await SharedPreferences.getInstance();
+  static Future<void> maybeOffer(
+    BuildContext context, {
+    @visibleForTesting Future<SharedPreferences>? preferences,
+  }) async {
+    final prefs = await (preferences ?? SharedPreferences.getInstance());
+    if (!context.mounted) return;
     // The screenshot/integration runs drive a seeded app; a walkthrough over
     // the top of it would be captured instead of the screen under test.
     if (prefs.getBool('screenshot_mode') == true) return;
     if (prefs.getBool('welcome_seen') == true) return;
-    await prefs.setBool('welcome_seen', true);
-    if (!context.mounted) return;
+
+    // push() completes only after the walkthrough closes. Do not consume this
+    // one-time offer when the initiating route was disposed before navigation
+    // could start, or when navigation itself fails.
     await context.push('/welcome');
+    if (!context.mounted) return;
+    await prefs.setBool('welcome_seen', true);
   }
 
   @override

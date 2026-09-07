@@ -41,7 +41,6 @@ class AndroidSttPlugin : FlutterPlugin, MethodChannel.MethodCallHandler, Activit
     private var speechRecognizer: SpeechRecognizer? = null
     private var isListening = false
     private var locale: String = "en-US"
-    private var recognizerGeneration = 0
 
     // Rehearsal-mode audio capture. Android can't run SpeechRecognizer and a
     // recorder on the mic at the same time, so the app owns the mic itself:
@@ -52,11 +51,7 @@ class AndroidSttPlugin : FlutterPlugin, MethodChannel.MethodCallHandler, Activit
     private var captureThread: Thread? = null
     @Volatile private var capturing = false
     private var recordingPath: String? = null
-    @Volatile private var recordingSessionId: Int? = null
     private var recordingStartMs: Long = 0
-    @Volatile private var captureFailure: String? = null
-    @Volatile private var finalizingRecording = false
-    @Volatile private var pendingRecorderDiscard = false
     private val mainHandler = Handler(Looper.getMainLooper())
 
     companion object {
@@ -68,6 +63,8 @@ class AndroidSttPlugin : FlutterPlugin, MethodChannel.MethodCallHandler, Activit
         private const val SAMPLE_RATE = 16000
         private const val CHUNK_SAMPLES = 1600 // 100 ms
         private const val AAC_BITRATE = 48000  // speech at 16 kHz mono
+        private const val MAX_CONSECUTIVE_ZERO_READS = 5
+        private const val ZERO_READ_BACKOFF_MS = 10L
     }
 
     override fun onAttachedToEngine(binding: FlutterPlugin.FlutterPluginBinding) {
@@ -135,18 +132,8 @@ class AndroidSttPlugin : FlutterPlugin, MethodChannel.MethodCallHandler, Activit
             result.success(false)
             return
         }
-        val onDevice = call.argument<Boolean>("onDevice") ?: false
-        if (onDevice) {
-            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S ||
-                !SpeechRecognizer.isOnDeviceRecognitionAvailable(ctx)) {
-                result.error(
-                    "ON_DEVICE_UNAVAILABLE",
-                    "On-device speech recognition is not available",
-                    null,
-                )
-                return
-            }
-        } else if (!SpeechRecognizer.isRecognitionAvailable(ctx)) {
+
+        if (!SpeechRecognizer.isRecognitionAvailable(ctx)) {
             result.success(false)
             return
         }
@@ -168,68 +155,37 @@ class AndroidSttPlugin : FlutterPlugin, MethodChannel.MethodCallHandler, Activit
         // Stop any existing session
         destroyRecognizer()
 
-        val sessionId = call.argument<Int>("sessionId") ?: run {
-            result.error("INVALID_ARGS", "Missing sessionId", null)
-            return
-        }
-        val callbackGeneration = recognizerGeneration
-        speechRecognizer = try {
-            if (onDevice) {
-                SpeechRecognizer.createOnDeviceSpeechRecognizer(ctx)
-            } else {
-                SpeechRecognizer.createSpeechRecognizer(ctx)
-            }
-        } catch (e: Exception) {
-            result.error(
-                "RECOGNIZER_CREATE_FAILED",
-                e.message ?: "Could not create speech recognizer",
-                null,
-            )
-            return
-        }
+        speechRecognizer = SpeechRecognizer.createSpeechRecognizer(ctx)
         speechRecognizer?.setRecognitionListener(object : RecognitionListener {
             override fun onReadyForSpeech(params: Bundle?) {}
             override fun onBeginningOfSpeech() {}
 
             override fun onRmsChanged(rmsdB: Float) {
-                if (!isListening || recognizerGeneration != callbackGeneration) return
                 // Map Android's relative dB scale (~-2..10) onto the same
                 // 0..1 pseudo-linear scale iOS reports (speech ≈ 0.05-0.3,
                 // silence ≈ 0) so Dart-side endpointing thresholds match.
                 val level = ((rmsdB - 2f) / 8f).coerceIn(0f, 1f) * 0.3f
-                channel.invokeMethod(
-                    "onLevel",
-                    mapOf("level" to level.toDouble(), "sessionId" to sessionId),
-                )
+                channel.invokeMethod("onLevel", level.toDouble())
             }
 
             override fun onBufferReceived(buffer: ByteArray?) {}
             override fun onEndOfSpeech() {}
 
             override fun onPartialResults(partialResults: Bundle?) {
-                if (!isListening || recognizerGeneration != callbackGeneration) return
                 val matches = partialResults?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
                 val text = matches?.firstOrNull() ?: return
-                channel.invokeMethod(
-                    "onResult",
-                    mapOf("text" to text, "isFinal" to false, "sessionId" to sessionId),
-                )
+                channel.invokeMethod("onResult", mapOf("text" to text, "isFinal" to false))
             }
 
             override fun onResults(results: Bundle?) {
-                if (!isListening || recognizerGeneration != callbackGeneration) return
                 val matches = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
                 val text = matches?.firstOrNull() ?: ""
                 isListening = false
-                channel.invokeMethod(
-                    "onResult",
-                    mapOf("text" to text, "isFinal" to true, "sessionId" to sessionId),
-                )
-                channel.invokeMethod("onDone", mapOf("sessionId" to sessionId))
+                channel.invokeMethod("onResult", mapOf("text" to text, "isFinal" to true))
+                channel.invokeMethod("onDone", null)
             }
 
             override fun onError(error: Int) {
-                if (!isListening || recognizerGeneration != callbackGeneration) return
                 isListening = false
                 val message = when (error) {
                     SpeechRecognizer.ERROR_AUDIO -> "Audio recording error"
@@ -246,15 +202,12 @@ class AndroidSttPlugin : FlutterPlugin, MethodChannel.MethodCallHandler, Activit
                 // NO_MATCH and SPEECH_TIMEOUT are normal end-of-speech events
                 if (error == SpeechRecognizer.ERROR_NO_MATCH ||
                     error == SpeechRecognizer.ERROR_SPEECH_TIMEOUT) {
-                    channel.invokeMethod("onDone", mapOf("sessionId" to sessionId))
+                    channel.invokeMethod("onDone", null)
                 } else {
-                    channel.invokeMethod(
-                        "onError",
-                        mapOf("error" to message, "sessionId" to sessionId),
-                    )
+                    channel.invokeMethod("onError", message)
                     // Match iOS: always end the session so the Dart side can
                     // restart continuous listening instead of hanging.
-                    channel.invokeMethod("onDone", mapOf("sessionId" to sessionId))
+                    channel.invokeMethod("onDone", null)
                 }
             }
 
@@ -266,8 +219,11 @@ class AndroidSttPlugin : FlutterPlugin, MethodChannel.MethodCallHandler, Activit
             putExtra(RecognizerIntent.EXTRA_LANGUAGE, locale)
             putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
             putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
-            // `onDevice` selects the recognizer instance above. Do not use
-            // EXTRA_PREFER_OFFLINE: it is advisory and may still use network.
+            // Prefer on-device recognition when available
+            val onDevice = call.argument<Boolean>("onDevice") ?: false
+            if (onDevice) {
+                putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, true)
+            }
         }
 
         speechRecognizer?.startListening(intent)
@@ -306,10 +262,6 @@ class AndroidSttPlugin : FlutterPlugin, MethodChannel.MethodCallHandler, Activit
             result.error("NO_PATH", "Missing recording path", null)
             return
         }
-        val sessionId = call.argument<Int>("sessionId") ?: run {
-            result.error("INVALID_ARGS", "Missing sessionId", null)
-            return
-        }
 
         if (ContextCompat.checkSelfPermission(ctx, Manifest.permission.RECORD_AUDIO)
             != PackageManager.PERMISSION_GRANTED) {
@@ -325,113 +277,73 @@ class AndroidSttPlugin : FlutterPlugin, MethodChannel.MethodCallHandler, Activit
 
         // A platform-recognizer session would fight over the mic — end it.
         destroyRecognizer()
-        if (finalizingRecording || !releaseRecorder()) {
-            result.error(
-                "RECORD_BUSY",
-                "The previous recording is still releasing the microphone",
-                null,
-            )
-            return
-        }
-        var record: AudioRecord? = null
-        var encoder: MediaCodec? = null
-        var encoderStarted = false
-        var muxer: MediaMuxer? = null
+        releaseRecorder()
+
         try {
             val minBuf = AudioRecord.getMinBufferSize(
                 SAMPLE_RATE, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT)
             if (minBuf <= 0) throw IllegalStateException("16 kHz mono not supported ($minBuf)")
-            val createdRecord = AudioRecord(
+            val record = AudioRecord(
                 MediaRecorder.AudioSource.VOICE_RECOGNITION,
                 SAMPLE_RATE,
                 AudioFormat.CHANNEL_IN_MONO,
                 AudioFormat.ENCODING_PCM_16BIT,
                 maxOf(minBuf * 2, CHUNK_SAMPLES * 2 * 4))
-            record = createdRecord
-            if (createdRecord.state != AudioRecord.STATE_INITIALIZED) {
+            if (record.state != AudioRecord.STATE_INITIALIZED) {
+                record.release()
                 throw IllegalStateException("AudioRecord failed to initialize")
             }
 
-            val createdEncoder = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_AUDIO_AAC)
-            encoder = createdEncoder
+            val encoder = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_AUDIO_AAC)
             val format = MediaFormat.createAudioFormat(
                 MediaFormat.MIMETYPE_AUDIO_AAC, SAMPLE_RATE, 1).apply {
-                setInteger(
-                    MediaFormat.KEY_AAC_PROFILE,
-                    MediaCodecInfo.CodecProfileLevel.AACObjectLC,
-                )
+                setInteger(MediaFormat.KEY_AAC_PROFILE,
+                    MediaCodecInfo.CodecProfileLevel.AACObjectLC)
                 setInteger(MediaFormat.KEY_BIT_RATE, AAC_BITRATE)
                 setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, CHUNK_SAMPLES * 2)
             }
-            createdEncoder.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
-            val createdMuxer = MediaMuxer(path, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
-            muxer = createdMuxer
+            encoder.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
+            val muxer = MediaMuxer(path, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
 
-            createdEncoder.start()
-            encoderStarted = true
-            createdRecord.startRecording()
-            if (createdRecord.recordingState != AudioRecord.RECORDSTATE_RECORDING) {
+            encoder.start()
+            record.startRecording()
+            if (record.recordingState != AudioRecord.RECORDSTATE_RECORDING) {
+                record.release()
+                try { encoder.stop(); encoder.release() } catch (_: Exception) {}
+                try { muxer.release() } catch (_: Exception) {}
                 throw IllegalStateException("Mic busy — recording did not start")
             }
 
-            audioRecord = createdRecord
+            audioRecord = record
             recordingPath = path
-            recordingSessionId = sessionId
             recordingStartMs = System.currentTimeMillis()
-            captureFailure = null
-            finalizingRecording = false
             capturing = true
-            val thread = Thread(
-                { captureLoop(createdRecord, createdEncoder, createdMuxer, sessionId) },
-                "RehearsalCapture",
-            )
-            captureThread = thread
-            thread.start()
-
-            // Ownership transferred to captureLoop.
-            record = null
-            encoder = null
-            muxer = null
+            captureThread = Thread({ captureLoop(record, encoder, muxer) },
+                "RehearsalCapture").also { it.start() }
             result.success(true)
         } catch (e: Exception) {
-            capturing = false
-            captureThread = null
-            audioRecord = null
-            recordingPath = null
-            recordingSessionId = null
-            try { record?.stop() } catch (_: Exception) {}
-            try { record?.release() } catch (_: Exception) {}
-            if (encoderStarted) {
-                try { encoder?.stop() } catch (_: Exception) {}
-            }
-            try { encoder?.release() } catch (_: Exception) {}
-            try { muxer?.release() } catch (_: Exception) {}
+            releaseRecorder()
             // Fail loudly — surface the real reason to Dart, don't swallow it.
             result.error("RECORD_FAILED", "Could not start recording: ${e.message}", null)
         }
     }
 
     /** Runs on [captureThread]: mic → AAC muxer + PCM/level events to Dart. */
-    private fun captureLoop(
-        record: AudioRecord,
-        encoder: MediaCodec,
-        muxer: MediaMuxer,
-        sessionId: Int,
-    ) {
+    private fun captureLoop(record: AudioRecord, encoder: MediaCodec, muxer: MediaMuxer) {
         val pcm = ShortArray(CHUNK_SAMPLES)
         val bufInfo = MediaCodec.BufferInfo()
         var muxerTrack = -1
         var muxerStarted = false
         var samplesFed = 0L
+        var consecutiveZeroReads = 0
 
-        fun drainEncoder(endOfStream: Boolean): Boolean {
+        fun drainEncoder(endOfStream: Boolean) {
             // While flushing, keep waiting (bounded) until the EOS buffer
             // arrives — bailing on the first TRY_AGAIN would drop the tail of
             // the recording.
             val deadline = System.currentTimeMillis() + 1000
             while (true) {
-                val outIndex =
-                    encoder.dequeueOutputBuffer(bufInfo, if (endOfStream) 10_000 else 0)
+                val outIndex = encoder.dequeueOutputBuffer(bufInfo, if (endOfStream) 10_000 else 0)
                 when {
                     outIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> {
                         muxerTrack = muxer.addTrack(encoder.outputFormat)
@@ -439,22 +351,17 @@ class AndroidSttPlugin : FlutterPlugin, MethodChannel.MethodCallHandler, Activit
                         muxerStarted = true
                     }
                     outIndex >= 0 -> {
-                        val out = encoder.getOutputBuffer(outIndex)
-                            ?: throw IllegalStateException("AAC output buffer unavailable")
+                        val out = encoder.getOutputBuffer(outIndex) ?: return
                         if (bufInfo.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG == 0 &&
                             bufInfo.size > 0 && muxerStarted) {
                             muxer.writeSampleData(muxerTrack, out, bufInfo)
                         }
                         encoder.releaseOutputBuffer(outIndex, false)
-                        if (bufInfo.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0) {
-                            return true
-                        }
+                        if (bufInfo.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0) return
                     }
                     // TRY_AGAIN (or legacy BUFFERS_CHANGED): done for now unless
                     // we're flushing and still inside the deadline.
-                    else -> if (!endOfStream || System.currentTimeMillis() > deadline) {
-                        return !endOfStream
-                    }
+                    else -> if (!endOfStream || System.currentTimeMillis() > deadline) return
                 }
             }
         }
@@ -462,13 +369,31 @@ class AndroidSttPlugin : FlutterPlugin, MethodChannel.MethodCallHandler, Activit
         try {
             while (capturing) {
                 val n = record.read(pcm, 0, CHUNK_SAMPLES)
+                // stop/detach may unblock read with an error code. That is an
+                // intentional shutdown, not a capture failure.
+                if (!capturing) break
                 if (n < 0) {
-                    throw IllegalStateException("AudioRecord.read failed with code $n")
+                    val reason = when (n) {
+                        AudioRecord.ERROR_INVALID_OPERATION -> "invalid operation"
+                        AudioRecord.ERROR_BAD_VALUE -> "bad value"
+                        AudioRecord.ERROR_DEAD_OBJECT -> "audio device unavailable"
+                        AudioRecord.ERROR -> "unspecified audio error"
+                        else -> "error $n"
+                    }
+                    throw IllegalStateException("AudioRecord.read failed: $reason")
                 }
                 if (n == 0) {
-                    Thread.sleep(5)
+                    consecutiveZeroReads++
+                    if (consecutiveZeroReads >= MAX_CONSECUTIVE_ZERO_READS) {
+                        throw IllegalStateException(
+                            "AudioRecord.read returned no audio " +
+                                "$consecutiveZeroReads consecutive times",
+                        )
+                    }
+                    Thread.sleep(ZERO_READ_BACKOFF_MS)
                     continue
                 }
+                consecutiveZeroReads = 0
 
                 // Peak level for the mic indicator / silence endpointing.
                 var peak = 0
@@ -486,12 +411,9 @@ class AndroidSttPlugin : FlutterPlugin, MethodChannel.MethodCallHandler, Activit
                     bytes[i * 2 + 1] = ((v shr 8) and 0xff).toByte()
                 }
                 mainHandler.post {
-                    // Old buffers must not enter a later recording session.
-                    if (capturing && recordingSessionId == sessionId) {
-                        channel.invokeMethod(
-                            "onLevel",
-                            mapOf("level" to level, "sessionId" to sessionId),
-                        )
+                    // Guarded: events after stopRecording would hit a dead channel.
+                    if (capturing) {
+                        channel.invokeMethod("onLevel", level)
                         channel.invokeMethod("onPcm", bytes)
                     }
                 }
@@ -509,60 +431,38 @@ class AndroidSttPlugin : FlutterPlugin, MethodChannel.MethodCallHandler, Activit
                 drainEncoder(false)
             }
 
-            // Flush: retry briefly until the codec accepts the end marker.
-            val eosDeadline = System.currentTimeMillis() + 500
-            var eosQueued = false
-            while (!eosQueued && System.currentTimeMillis() <= eosDeadline) {
-                val inIndex = encoder.dequeueInputBuffer(10_000)
-                if (inIndex >= 0) {
-                    encoder.queueInputBuffer(
-                        inIndex,
-                        0,
-                        0,
-                        samplesFed * 1_000_000L / SAMPLE_RATE,
-                        MediaCodec.BUFFER_FLAG_END_OF_STREAM,
-                    )
-                    eosQueued = true
+            // Flush: signal end-of-stream and drain what's left.
+            val inIndex = encoder.dequeueInputBuffer(10_000)
+            if (inIndex >= 0) {
+                encoder.queueInputBuffer(inIndex, 0, 0,
+                    samplesFed * 1_000_000L / SAMPLE_RATE,
+                    MediaCodec.BUFFER_FLAG_END_OF_STREAM)
+            }
+            drainEncoder(true)
+        } catch (t: Throwable) {
+            val shouldReport = capturing
+            capturing = false
+            if (shouldReport) {
+                mainHandler.post {
+                    channel.invokeMethod("onError", "Capture failed: ${t.message}")
                 }
             }
-            if (!eosQueued) throw IllegalStateException("AAC encoder did not accept end-of-stream")
-            if (!drainEncoder(true)) {
-                throw IllegalStateException("AAC encoder did not finish end-of-stream")
-            }
-        } catch (e: Exception) {
-            reportCaptureFailure("Capture failed: ${e.message ?: e.javaClass.simpleName}")
         } finally {
             try { record.stop() } catch (_: Exception) {}
             try { record.release() } catch (_: Exception) {}
             try { encoder.stop() } catch (_: Exception) {}
             try { encoder.release() } catch (_: Exception) {}
-            if (muxerStarted) {
-                try {
-                    muxer.stop()
-                } catch (e: Exception) {
-                    reportCaptureFailure(
-                        "Recording finalization failed: ${e.message ?: e.javaClass.simpleName}",
-                    )
-                }
-            }
+            try { if (muxerStarted) muxer.stop() } catch (_: Exception) {}
             try { muxer.release() } catch (_: Exception) {}
         }
     }
 
-    private fun reportCaptureFailure(message: String) {
-        if (captureFailure == null) captureFailure = message
-        mainHandler.post {
-            if (context != null) channel.invokeMethod("onError", message)
-        }
-    }
-
     private fun stopRecording(result: MethodChannel.Result) {
-        if (finalizingRecording) {
-            result.error("STOP_IN_PROGRESS", "Recording finalization is already in progress", null)
-            return
-        }
         val path = recordingPath
         val thread = captureThread
+        recordingPath = null
+        captureThread = null
+        audioRecord = null
         if (path == null || thread == null) {
             capturing = false
             result.success(null)
@@ -570,40 +470,15 @@ class AndroidSttPlugin : FlutterPlugin, MethodChannel.MethodCallHandler, Activit
         }
         val durationMs = (System.currentTimeMillis() - recordingStartMs).toInt()
         capturing = false
-        finalizingRecording = true
-        // Finalizing the muxer can block; join away from the platform thread.
+        // Finalizing the muxer takes a few ms; do the join off the main thread
+        // so a stall in the codec can't ANR the app.
         Thread({
             try {
                 thread.join(3000)
-            } catch (e: InterruptedException) {
-                Thread.currentThread().interrupt()
-            }
-            val stillFinalizing = thread.isAlive
-            val failure = captureFailure
+            } catch (_: InterruptedException) {}
             mainHandler.post {
-                finalizingRecording = false
-                val file = java.io.File(path)
-                if (stillFinalizing) {
-                    // The timed-out stop can never expose this path later.
-                    pendingRecorderDiscard = true
-                    result.error(
-                        "FINALIZE_TIMEOUT",
-                        "Recording finalization did not complete in time",
-                        null,
-                    )
-                    discardRecorderWhenReleased(thread, path)
-                    return@post
-                }
-
-                val discard = pendingRecorderDiscard
-                clearRecorderState(thread)
-                if (discard) {
-                    file.delete()
-                    result.success(null)
-                } else if (failure != null) {
-                    file.delete()
-                    result.error("CAPTURE_FAILED", failure, null)
-                } else if (file.exists() && file.length() > 0) {
+                val f = java.io.File(path)
+                if (f.exists() && f.length() > 0) {
                     result.success(mapOf("path" to path, "durationMs" to durationMs))
                 } else {
                     // Too short to produce frames — a discarded capture, not a crash.
@@ -613,89 +488,35 @@ class AndroidSttPlugin : FlutterPlugin, MethodChannel.MethodCallHandler, Activit
         }, "RehearsalCaptureStop").start()
     }
 
-    /**
-     * Stops and joins the current recorder before a new owner opens the mic.
-     * Returns false without clearing the handle if native finalization stalls.
-     */
-    private fun releaseRecorder(): Boolean {
+    private fun releaseRecorder() {
         capturing = false
-        val thread = captureThread
-        val discardedPath = recordingPath
-        if (thread != null && thread !== Thread.currentThread()) {
-            try {
-                thread.join(3000)
-            } catch (e: InterruptedException) {
-                Thread.currentThread().interrupt()
-                return false
-            }
-        }
-        if (thread?.isAlive == true) return false
-        clearRecorderState(thread)
-        discardedPath?.let { java.io.File(it).delete() }
-        return true
-    }
-
-    /**
-     * Release without blocking the platform main thread. The capture-thread
-     * handle remains published until its AudioRecord and muxer are closed, so
-     * a subsequent start can still perform a safe mic handoff.
-     */
-    private fun releaseRecorderAsync() {
-        capturing = false
-        // Teardown owns discard even if stop is currently joining. The stop
-        // callback will observe this before it can expose the path.
-        if (finalizingRecording) {
-            pendingRecorderDiscard = true
-            return
-        }
-        // A timeout already scheduled the definitive join/clear/delete.
-        if (pendingRecorderDiscard) return
-        pendingRecorderDiscard = true
-        val thread = captureThread
-        val discardedPath = recordingPath
-        recordingPath = null
-        if (thread == null) {
-            clearRecorderState(null)
-            discardedPath?.let { java.io.File(it).delete() }
-            return
-        }
-        discardRecorderWhenReleased(thread, discardedPath)
-    }
-
-    private fun discardRecorderWhenReleased(thread: Thread, path: String?) {
-        Thread({
-            var interrupted = false
-            while (thread.isAlive) {
-                try {
-                    thread.join()
-                } catch (_: InterruptedException) {
-                    interrupted = true
-                }
-            }
-            if (interrupted) Thread.currentThread().interrupt()
-            mainHandler.post {
-                // A synchronous handoff may already have cleared this old
-                // owner and started a new recorder, possibly at the same path.
-                if (captureThread === thread) {
-                    clearRecorderState(thread)
-                    path?.let { java.io.File(it).delete() }
-                }
-            }
-        }, "RehearsalCaptureRelease").start()
-    }
-
-    private fun clearRecorderState(thread: Thread?) {
-        if (captureThread !== thread) return
+        try { captureThread?.join(1500) } catch (_: InterruptedException) {}
         captureThread = null
         audioRecord = null
         recordingPath = null
-        captureFailure = null
-        recordingSessionId = null
-        pendingRecorderDiscard = false
+    }
+
+    /**
+     * Release without blocking the platform main thread: the capture loop
+     * can be parked in dequeueInputBuffer / drainEncoder, and joining it
+     * from stopListening/onDetachedFromEngine froze the UI for up to 1.5 s.
+     * Only safe where no NEW AudioRecord is created right after —
+     * startRecording keeps the synchronous join for the mic handoff.
+     */
+    private fun releaseRecorderAsync() {
+        capturing = false
+        val thread = captureThread
+        captureThread = null
+        audioRecord = null
+        recordingPath = null
+        if (thread != null) {
+            Thread({
+                try { thread.join(3000) } catch (_: InterruptedException) {}
+            }, "RehearsalCaptureRelease").start()
+        }
     }
 
     private fun destroyRecognizer() {
-        recognizerGeneration++
         try {
             speechRecognizer?.cancel()
             speechRecognizer?.destroy()

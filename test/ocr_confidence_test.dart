@@ -90,6 +90,88 @@ void main() {
   });
 
   group('3-way classification (validated thresholds)', () {
+    test('threshold boundaries and precedence are exact', () {
+      const epsilon = 0.000001;
+      final cases =
+          <
+            ({
+              String name,
+              double dictionary,
+              double recognition,
+              OcrReviewStatus expected,
+            })
+          >[
+            (
+              name: 'dictionary junk below + recognition below => junk',
+              dictionary: OcrConfidenceService.dictJunkThreshold - epsilon,
+              recognition: OcrConfidenceService.recConfJunkThreshold - epsilon,
+              expected: OcrReviewStatus.likelyNotScript,
+            ),
+            (
+              name: 'dictionary junk equal takes review precedence',
+              dictionary: OcrConfidenceService.dictJunkThreshold,
+              recognition: OcrConfidenceService.recConfJunkThreshold - epsilon,
+              expected: OcrReviewStatus.review,
+            ),
+            (
+              name: 'dictionary junk above remains review',
+              dictionary: OcrConfidenceService.dictJunkThreshold + epsilon,
+              recognition: OcrConfidenceService.recConfJunkThreshold - epsilon,
+              expected: OcrReviewStatus.review,
+            ),
+            (
+              name: 'recognition below + dictionary below => junk',
+              dictionary: OcrConfidenceService.dictJunkThreshold - epsilon,
+              recognition: OcrConfidenceService.recConfJunkThreshold - epsilon,
+              expected: OcrReviewStatus.likelyNotScript,
+            ),
+            (
+              name: 'recognition equal takes review precedence',
+              dictionary: OcrConfidenceService.dictJunkThreshold - epsilon,
+              recognition: OcrConfidenceService.recConfJunkThreshold,
+              expected: OcrReviewStatus.review,
+            ),
+            (
+              name: 'recognition above remains review',
+              dictionary: OcrConfidenceService.dictJunkThreshold - epsilon,
+              recognition: OcrConfidenceService.recConfJunkThreshold + epsilon,
+              expected: OcrReviewStatus.review,
+            ),
+            (
+              name: 'dictionary review below => review',
+              dictionary: OcrConfidenceService.dictReviewThreshold - epsilon,
+              recognition: 1,
+              expected: OcrReviewStatus.review,
+            ),
+            (
+              name: 'dictionary review equal => ok',
+              dictionary: OcrConfidenceService.dictReviewThreshold,
+              recognition: 1,
+              expected: OcrReviewStatus.ok,
+            ),
+            (
+              name: 'dictionary review above => ok',
+              dictionary: OcrConfidenceService.dictReviewThreshold + epsilon,
+              recognition: 1,
+              expected: OcrReviewStatus.ok,
+            ),
+            (
+              name: 'low recognition alone cannot override clean dictionary',
+              dictionary: OcrConfidenceService.dictReviewThreshold,
+              recognition: OcrConfidenceService.recConfJunkThreshold - epsilon,
+              expected: OcrReviewStatus.ok,
+            ),
+          ];
+
+      for (final entry in cases) {
+        expect(
+          OcrConfidenceService.classify(entry.dictionary, entry.recognition),
+          entry.expected,
+          reason: entry.name,
+        );
+      }
+    });
+
     test('clean line with high rec-confidence -> ok', () {
       final scored = service.scoreScript([
         line('I have no objection to the proposal', ocrConfidence: 0.99),

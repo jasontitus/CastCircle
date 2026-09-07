@@ -2,10 +2,28 @@ import Flutter
 import UIKit
 import ContactsUI
 
+final class ContactPickerResultGate {
+    private var pending: FlutterResult?
+
+    var isActive: Bool { pending != nil }
+
+    func begin(_ result: @escaping FlutterResult) -> Bool {
+        guard pending == nil else { return false }
+        pending = result
+        return true
+    }
+
+    func resolve(_ value: Any?) {
+        guard let result = pending else { return }
+        pending = nil
+        result(value)
+    }
+}
+
 /// Native contact picker using CNContactPickerViewController.
 /// Opens the system contact picker and returns name + phone/email.
 class ContactPickerPlugin: NSObject, FlutterPlugin, CNContactPickerDelegate {
-    private var pendingResult: FlutterResult?
+    private let resultGate = ContactPickerResultGate()
 
     init(messenger: FlutterBinaryMessenger) {
         super.init()
@@ -21,6 +39,21 @@ class ContactPickerPlugin: NSObject, FlutterPlugin, CNContactPickerDelegate {
     }
 
     func handle(_ call: FlutterMethodCall, result: @escaping FlutterResult) {
+        guard Thread.isMainThread else {
+            DispatchQueue.main.async { [weak self] in
+                guard let self = self else {
+                    result(FlutterError(
+                        code: "PLUGIN_UNAVAILABLE",
+                        message: "Contact picker was released",
+                        details: nil
+                    ))
+                    return
+                }
+                self.handle(call, result: result)
+            }
+            return
+        }
+
         switch call.method {
         case "pickContact":
             pickContact(result: result)
@@ -30,17 +63,16 @@ class ContactPickerPlugin: NSObject, FlutterPlugin, CNContactPickerDelegate {
     }
 
     private func pickContact(result: @escaping FlutterResult) {
-        guard pendingResult == nil else {
+        guard !resultGate.isActive else {
             result(FlutterError(
                 code: "ALREADY_ACTIVE",
-                message: "A contact picker is already open",
+                message: "A contact picker is already active",
                 details: nil
             ))
             return
         }
 
-        // Use scene-based window lookup (required for iOS 15+ / scenes).
-        // Do not retain the result until all presentation preconditions pass.
+        // Do not retain the callback until presentation is actually possible.
         guard let viewController = Self.topViewController() else {
             result(FlutterError(
                 code: "NO_VIEW_CONTROLLER",
@@ -50,9 +82,17 @@ class ContactPickerPlugin: NSObject, FlutterPlugin, CNContactPickerDelegate {
             return
         }
 
+        guard resultGate.begin(result) else {
+            result(FlutterError(
+                code: "ALREADY_ACTIVE",
+                message: "A contact picker is already active",
+                details: nil
+            ))
+            return
+        }
+
         let picker = CNContactPickerViewController()
         picker.delegate = self
-        pendingResult = result
         viewController.present(picker, animated: true)
     }
 
@@ -92,14 +132,14 @@ class ContactPickerPlugin: NSObject, FlutterPlugin, CNContactPickerDelegate {
         if let phone = phone { resultMap["phone"] = phone }
         if let email = email { resultMap["email"] = email }
 
-        let result = pendingResult
-        pendingResult = nil
-        result?(resultMap)
+        resultGate.resolve(resultMap)
     }
 
     func contactPickerDidCancel(_ picker: CNContactPickerViewController) {
-        let result = pendingResult
-        pendingResult = nil
-        result?(FlutterError(code: "CANCELLED", message: "User cancelled", details: nil))
+        resultGate.resolve(FlutterError(
+            code: "CANCELLED",
+            message: "User cancelled",
+            details: nil
+        ))
     }
 }

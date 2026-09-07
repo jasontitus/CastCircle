@@ -1,119 +1,216 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
 import 'package:castcircle/data/services/model_download_service.dart';
+import 'package:crypto/crypto.dart' as crypto;
 import 'package:flutter_test/flutter_test.dart';
+import 'package:path/path.dart' as p;
 
-/// Regression test for the bug that broke Live Line Matching on Android:
-/// the CDN gzips `text/plain` whether or not the client asks, and with
-/// `autoUncompress = false` those 3324 compressed bytes were written to disk
-/// under a name the verifier expected to be 6310 — so tokens.txt failed
-/// verification on every attempt and the feature could never install.
-///
-/// Served from a local HttpServer so the behaviour is pinned here rather than
-/// depending on how a CDN feels today.
 void main() {
-  // The real tokens.txt shape: highly compressible text.
   final payload = utf8.encode(
     List.generate(652, (i) => '▁token$i $i').join('\n'),
   );
+  late Directory documents;
+  HttpServer? server;
 
-  late HttpServer server;
-  late List<String?> seenAcceptEncoding;
+  AiModel modelFor(Uri uri) => AiModel(
+    id: 'test_tokens',
+    name: 'Test tokens',
+    description: 'Local downloader fixture',
+    sizeLabel: '${payload.length} B',
+    sizeBytes: payload.length,
+    exactSizeBytes: payload.length,
+    sha256: crypto.sha256.convert(payload).toString(),
+    downloadUrl: uri.toString(),
+    filename: 'tokens.txt',
+    subdir: 'live_asr',
+  );
 
-  /// [alwaysGzip] models a server that ignores `identity` and compresses
-  /// regardless — the case the defensive decode exists for.
-  Future<Uri> serve({required bool alwaysGzip}) async {
-    seenAcceptEncoding = [];
-    server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
-    server.listen((req) async {
-      final accept = req.headers.value(HttpHeaders.acceptEncodingHeader);
-      seenAcceptEncoding.add(accept);
-      final wantsGzip = alwaysGzip || (accept?.contains('gzip') ?? false);
-      if (wantsGzip) {
-        final gzipped = gzip.encode(payload);
-        req.response.headers.set(HttpHeaders.contentEncodingHeader, 'gzip');
-        req.response.headers.contentLength = gzipped.length;
-        req.response.add(gzipped);
-      } else {
-        req.response.headers.contentLength = payload.length;
-        req.response.add(payload);
-      }
-      await req.response.close();
-    });
-    return Uri.parse('http://${server.address.host}:${server.port}/tokens.txt');
-  }
-
-  tearDown(() async => server.close(force: true));
-
-  /// Mirrors ModelDownloadService._dartDownload's request handling. Kept in
-  /// step with it deliberately: this is the logic that was wrong.
-  Future<List<int>> download(Uri uri) async {
-    final client = HttpClient();
-    client.autoUncompress = false;
-    final req = await client.getUrl(uri);
-    req.followRedirects = false;
-    req.headers.set(HttpHeaders.acceptEncodingHeader, 'identity');
-    final res = await req.close();
-
-    final encoding = res.headers
-        .value(HttpHeaders.contentEncodingHeader)
-        ?.toLowerCase();
-    final compressed = encoding != null && encoding.contains('gzip');
-    Stream<List<int>> body = res;
-    if (compressed) body = gzip.decoder.bind(body);
-
-    final bytes = <int>[];
-    await for (final chunk in body) {
-      bytes.addAll(chunk);
-    }
-    client.close();
-    return bytes;
-  }
-
-  test('asks the server not to compress', () async {
-    final uri = await serve(alwaysGzip: false);
-    final bytes = await download(uri);
-
-    expect(seenAcceptEncoding.single, 'identity');
-    expect(bytes.length, payload.length);
-    expect(bytes, payload);
-  });
-
-  test('decodes anyway when the server compresses regardless', () async {
-    final uri = await serve(alwaysGzip: true);
-    final bytes = await download(uri);
-
-    // The whole bug: without the decode this is the gzip stream's length,
-    // and every size/sha check downstream fails.
-    expect(bytes.length, payload.length);
-    expect(bytes, payload);
-    expect(
-      gzip.encode(payload).length,
-      lessThan(payload.length),
-      reason: 'the fixture must actually compress or this proves nothing',
+  setUp(() async {
+    documents = await Directory.systemTemp.createTemp(
+      'model_download_service_test_',
     );
   });
 
+  tearDown(() async {
+    await server?.close(force: true);
+    server = null;
+    if (await documents.exists()) await documents.delete(recursive: true);
+  });
+
+  Future<(Uri, List<String?>)> serve({required bool alwaysGzip}) async {
+    final seenAcceptEncoding = <String?>[];
+    server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    server!.listen((request) async {
+      final accept = request.headers.value(HttpHeaders.acceptEncodingHeader);
+      seenAcceptEncoding.add(accept);
+      final shouldGzip = alwaysGzip || (accept?.contains('gzip') ?? false);
+      final bytes = shouldGzip ? gzip.encode(payload) : payload;
+      if (shouldGzip) {
+        request.response.headers.set(HttpHeaders.contentEncodingHeader, 'gzip');
+      }
+      request.response.contentLength = bytes.length;
+      request.response.add(bytes);
+      await request.response.close();
+    });
+    return (
+      Uri.parse('http://${server!.address.host}:${server!.port}/tokens.txt'),
+      seenAcceptEncoding,
+    );
+  }
+
+  Future<File> downloadFrom(Uri uri) async {
+    final model = modelFor(uri);
+    final service = ModelDownloadService.forTesting(
+      documentsDirectory: documents.path,
+      models: [model],
+    );
+    await service.download(model);
+    expect(service.getState(model.id).status, ModelStatus.downloaded);
+    return File(p.join(documents.path, 'models', 'live_asr', 'tokens.txt'));
+  }
+
+  test('real service requests identity and persists verified bytes', () async {
+    final (uri, seenAcceptEncoding) = await serve(alwaysGzip: false);
+    final installed = await downloadFrom(uri);
+
+    expect(seenAcceptEncoding, ['identity']);
+    expect(await installed.readAsBytes(), payload);
+  });
+
   test(
-    'the size check that caught it still catches a truncated file',
+    'real service decodes forced gzip before verification and adoption',
     () async {
-      final model = ModelDownloadService.availableModels.firstWhere(
-        (m) => m.id == 'live_asr_tokens',
-      );
-      final dir = await Directory.systemTemp.createTemp('modeldl');
-      addTearDown(() => dir.delete(recursive: true));
+      final (uri, seenAcceptEncoding) = await serve(alwaysGzip: true);
+      final installed = await downloadFrom(uri);
 
-      final short = File('${dir.path}/tokens.txt')
-        ..writeAsBytesSync(gzip.encode(payload));
-      expect(
-        ModelDownloadService.fileProblem(model, short),
-        isNotNull,
-        reason: 'a gzipped body saved as the file must not pass as installed',
+      expect(seenAcceptEncoding, ['identity']);
+      expect(await installed.readAsBytes(), payload);
+      expect(gzip.encode(payload).length, lessThan(payload.length));
+    },
+  );
+
+  test('refresh preserves an active Dart temporary download', () async {
+    final requestStarted = Completer<void>();
+    final finishResponse = Completer<void>();
+    server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    server!.listen((request) async {
+      request.response.contentLength = payload.length;
+      request.response.add(payload.sublist(0, payload.length ~/ 2));
+      await request.response.flush();
+      requestStarted.complete();
+      await finishResponse.future;
+      request.response.add(payload.sublist(payload.length ~/ 2));
+      await request.response.close();
+    });
+    final uri = Uri.parse(
+      'http://${server!.address.host}:${server!.port}/tokens.txt',
+    );
+    final model = modelFor(uri);
+    final service = ModelDownloadService.forTesting(
+      documentsDirectory: documents.path,
+      models: [model],
+    );
+
+    final transfer = service.download(model);
+    await requestStarted.future;
+    final tempFile = File(
+      p.join(documents.path, 'models', 'live_asr', 'tokens.txt.tmp'),
+    );
+    for (var i = 0; i < 100 && !await tempFile.exists(); i++) {
+      await Future<void>.delayed(const Duration(milliseconds: 5));
+    }
+    expect(await tempFile.exists(), isTrue);
+
+    await service.refreshDownloadedStatus();
+    expect(await tempFile.exists(), isTrue);
+    expect(service.getState(model.id).status, ModelStatus.downloading);
+
+    finishResponse.complete();
+    await transfer;
+    expect(service.getState(model.id).status, ModelStatus.downloaded);
+  });
+
+  test('refresh removes an old orphan temporary artifact', () async {
+    final uri = Uri.parse('http://127.0.0.1/unused');
+    final model = modelFor(uri);
+    final service = ModelDownloadService.forTesting(
+      documentsDirectory: documents.path,
+      models: [model],
+    );
+    final orphan = File(
+      p.join(documents.path, 'models', 'live_asr', 'tokens.txt.tmp'),
+    );
+    await orphan.parent.create(recursive: true);
+    await orphan.writeAsBytes([1, 2, 3], flush: true);
+    await orphan.setLastModified(
+      DateTime.now().subtract(const Duration(days: 2)),
+    );
+
+    await service.refreshDownloadedStatus();
+    expect(await orphan.exists(), isFalse);
+  });
+
+  test('bulk download skips a fully verified installed component', () async {
+    var requests = 0;
+    server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    server!.listen((request) async {
+      requests++;
+      request.response.add(utf8.encode('corrupt replacement'));
+      await request.response.close();
+    });
+    final uri = Uri.parse(
+      'http://${server!.address.host}:${server!.port}/tokens.txt',
+    );
+    final model = modelFor(uri);
+    final installed = File(
+      p.join(documents.path, 'models', 'live_asr', 'tokens.txt'),
+    );
+    await installed.parent.create(recursive: true);
+    await installed.writeAsBytes(payload, flush: true);
+    final service = ModelDownloadService.forTesting(
+      documentsDirectory: documents.path,
+      models: [model],
+    );
+
+    await service.downloadAll();
+
+    expect(requests, 0);
+    expect(await installed.readAsBytes(), payload);
+    expect(service.getState(model.id).status, ModelStatus.downloaded);
+  });
+
+  test(
+    'corrupt replacement is discarded without touching prior bytes',
+    () async {
+      final priorBytes = List<int>.filled(payload.length, 0x41);
+      final corruptReplacement = List<int>.filled(payload.length, 0x42);
+      server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      server!.listen((request) async {
+        request.response.contentLength = corruptReplacement.length;
+        request.response.add(corruptReplacement);
+        await request.response.close();
+      });
+      final uri = Uri.parse(
+        'http://${server!.address.host}:${server!.port}/tokens.txt',
+      );
+      final model = modelFor(uri);
+      final installed = File(
+        p.join(documents.path, 'models', 'live_asr', 'tokens.txt'),
+      );
+      await installed.parent.create(recursive: true);
+      await installed.writeAsBytes(priorBytes, flush: true);
+      final service = ModelDownloadService.forTesting(
+        documentsDirectory: documents.path,
+        models: [model],
       );
 
-      final missing = File('${dir.path}/nope.txt');
-      expect(ModelDownloadService.fileProblem(model, missing), 'file missing');
+      await service.downloadAll();
+
+      expect(service.getState(model.id).status, ModelStatus.error);
+      expect(await installed.readAsBytes(), priorBytes);
+      expect(await File('${installed.path}.tmp').exists(), isFalse);
     },
   );
 }

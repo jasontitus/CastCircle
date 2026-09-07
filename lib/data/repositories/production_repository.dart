@@ -1,13 +1,12 @@
 import 'dart:io';
 
 import 'package:drift/drift.dart';
-import 'package:path/path.dart' as p;
-import 'package:path_provider/path_provider.dart';
 
 import '../database/app_database.dart';
 import '../models/cast_member_model.dart' as models;
 import '../models/production_models.dart' as models;
 import '../models/script_models.dart' as models;
+import '../services/debug_log_service.dart';
 
 const guestAccountNamespace = '__guest__';
 
@@ -16,11 +15,19 @@ const guestAccountNamespace = '__guest__';
 class ProductionRepository {
   final AppDatabase _db;
   final String accountNamespace;
+  final Future<void> Function(String path) _deleteRecordingFile;
 
   ProductionRepository(
     this._db, {
     this.accountNamespace = guestAccountNamespace,
-  });
+    Future<void> Function(String path)? deleteRecordingFile,
+  }) : _deleteRecordingFile =
+           deleteRecordingFile ?? _deleteRecordingFileFromDisk;
+
+  static Future<void> _deleteRecordingFileFromDisk(String path) async {
+    final file = File(path);
+    if (await file.exists()) await file.delete();
+  }
 
   // ── Productions ─────────────────────────────────────
 
@@ -30,13 +37,22 @@ class ProductionRepository {
   }
 
   Stream<List<models.Production>> watchAllProductions() {
-    return _db
-        .watchAllProductions(accountNamespace)
-        .map((rows) => rows.map(_productionFromRow).toList());
+    return _db.watchAllProductions(accountNamespace).map(
+      (rows) => rows.map(_productionFromRow).toList(),
+    );
   }
 
   Future<void> saveProduction(models.Production production) async {
-    await _db.insertProduction(
+    await _db.insertProduction(_productionCompanion(production));
+  }
+
+  Future<void> saveProductionPendingCloudCreate(
+    models.Production production,
+  ) async {
+    await _db.insertProductionWithCloudCreate(_productionCompanion(production));
+  }
+
+  ProductionsCompanion _productionCompanion(models.Production production) =>
       ProductionsCompanion(
         id: Value(production.id),
         accountNamespace: Value(accountNamespace),
@@ -47,63 +63,61 @@ class ProductionRepository {
         locale: Value(production.locale),
         joinCode: Value(production.joinCode),
         createdAt: Value(production.createdAt),
-      ),
-    );
-  }
+      );
 
   Future<void> deleteProduction(String id) async {
-    if (await _db.getProduction(id, accountNamespace) == null) return;
     final recordings = await _db.getRecordingsForProduction(id);
+    final paths = recordings.map((recording) => recording.localPath).toList();
 
-    // The relational delete is all-or-nothing. Files are intentionally cleaned
-    // up only after commit: filesystem work cannot participate in SQLite's
-    // transaction, and a failed delete must never leave a half-destroyed DB.
-    await _db.transaction(() async {
-      await _db.deleteRecordingsForProduction(id);
-      await _db.deleteScriptLinesForProduction(id);
-      await _db.deleteScenesForProduction(id);
-      await _db.deleteCastForProduction(id);
-      await _db.deleteProduction(id, accountNamespace);
-    });
+    // The relational state is the source of truth and commits atomically.
+    // Files are only unlinked after commit so a failed transaction leaves a
+    // completely usable production.
+    await _db.deleteProductionWithRelations(id);
 
-    final paths = <String>{
-      for (final recording in recordings) recording.localPath,
-    };
-    try {
-      final docs = await getApplicationDocumentsDirectory();
-      paths.add(p.join(docs.path, 'scripts', '$id.pdf'));
-    } catch (_) {
-      // Resolving Documents is best-effort just like deleting the files.
-    }
-    await _deleteFilesBestEffort(paths.toList());
-  }
-
-  static Future<void> _deleteFilesBestEffort(List<String> paths) async {
-    var next = 0;
-    final workerCount = paths.length < 8 ? paths.length : 8;
-    final workers = List.generate(workerCount, (_) async {
-      while (true) {
-        final index = next++;
-        if (index >= paths.length) return;
-        try {
-          final file = File(paths[index]);
-          if (await file.exists()) await file.delete();
-        } catch (_) {
-          // Local cleanup is best-effort after the database commit.
-        }
+    for (final path in paths) {
+      try {
+        await _deleteRecordingFile(path);
+      } catch (error) {
+        DebugLogService.instance.logError(
+          LogCategory.error,
+          'Production deletion committed, but recording cleanup failed: $path',
+          error,
+        );
       }
-    });
-    await Future.wait(workers);
+    }
   }
+
+  Future<models.Production?> getProduction(String id) async {
+    final row = await _db.getProduction(id, accountNamespace);
+    return row == null ? null : _productionFromRow(row);
+  }
+
+  Future<List<ProductionCloudCreateRow>> getProductionCloudCreates() =>
+      _db.loadProductionCloudCreates();
+
+  Future<void> markProductionCloudCreateFailed(
+    String productionId,
+    Object error,
+  ) => _db.markProductionCloudCreateFailed(productionId, error);
+
+  Future<void> markProductionCloudCreateSynced(String productionId) =>
+      _db.markProductionCloudCreateSynced(productionId);
+
+  Future<void> markProductionCloudDeletionPending(String productionId) =>
+      _db.markProductionCloudDeletionPending(productionId);
+
+  Future<void> resumeProductionCloudCreate(String productionId) =>
+      _db.resumeProductionCloudCreate(productionId);
+
+  Future<void> cancelProductionCloudCreate(String productionId) =>
+      _db.cancelProductionCloudCreate(productionId);
 
   models.Production _productionFromRow(Production row) {
     return models.Production(
       id: row.id,
       title: row.title,
       organizerId: row.organizerId ?? '',
-      status:
-          models.ProductionStatus.values.asNameMap()[row.status] ??
-          models.ProductionStatus.draft,
+      status: models.ProductionStatus.values.byName(row.status),
       scriptPath: row.scriptPath,
       locale: row.locale,
       joinCode: row.joinCode,
@@ -124,38 +138,59 @@ class ProductionRepository {
     await _db.insertCastMember(_castCompanion(member));
   }
 
-  Future<void> applyCastMemberChanges({
-    required List<models.CastMemberModel> upserts,
-    required Set<String> deleteIds,
-  }) async {
-    if (upserts.isEmpty && deleteIds.isEmpty) return;
-    await _db.transaction(() async {
-      for (final id in deleteIds) {
-        await _db.deleteCastMember(id);
-      }
-      for (final member in upserts) {
-        await _db.insertCastMember(_castCompanion(member));
-      }
-    });
-  }
-
-  static CastMembersCompanion _castCompanion(models.CastMemberModel member) {
-    return CastMembersCompanion(
-      id: Value(member.id),
-      productionId: Value(member.productionId),
-      userId: Value(member.userId),
-      characterName: Value(member.characterName),
-      displayName: Value(member.displayName),
-      contactInfo: Value(member.contactInfo),
-      role: Value(member.role.name),
-      invitedAt: Value(member.invitedAt ?? DateTime.now()),
-      joinedAt: Value(member.joinedAt),
-    );
-  }
+  CastMembersCompanion _castCompanion(models.CastMemberModel member) =>
+      CastMembersCompanion(
+        id: Value(member.id),
+        productionId: Value(member.productionId),
+        userId: Value(member.userId),
+        characterName: Value(member.characterName),
+        displayName: Value(member.displayName),
+        role: Value(member.role.name),
+        invitedAt: Value(member.invitedAt ?? DateTime.now()),
+        joinedAt: Value(member.joinedAt),
+      );
 
   Future<void> deleteCastMember(String id) async {
     await _db.deleteCastMember(id);
   }
+
+  Future<void> savePendingCastInvitations(
+    List<models.CastMemberModel> members,
+  ) async {
+    await _db
+        .saveCastMembersWithInvitations(members.map(_castCompanion).toList(), [
+          for (final member in members)
+            PendingCastInvitationRow(
+              localMemberId: member.id,
+              productionId: member.productionId,
+              characterName: member.characterName,
+              displayName: member.displayName,
+              contactInfo: member.contactInfo,
+              role: member.role.name,
+              createdAt: member.invitedAt ?? DateTime.now(),
+            ),
+        ]);
+  }
+
+  Future<List<PendingCastInvitationRow>> getPendingCastInvitations({
+    String? productionId,
+  }) => _db.loadPendingCastInvitations(productionId: productionId);
+
+  Future<void> markCastInvitationFailed(String localMemberId, Object error) =>
+      _db.markCastInvitationFailed(localMemberId, error);
+
+  Future<void> reconcileCastInvitation(
+    String localMemberId,
+    models.CastMemberModel cloudMember,
+  ) => _db.reconcileCastInvitation(localMemberId, _castCompanion(cloudMember));
+
+  Future<void> reconcileCastInvitations(
+    List<({String localMemberId, models.CastMemberModel cloudMember})>
+    reconciliations,
+  ) => _db.reconcileCastInvitations(
+    [for (final item in reconciliations) item.localMemberId],
+    [for (final item in reconciliations) _castCompanion(item.cloudMember)],
+  );
 
   models.CastMemberModel _castMemberFromRow(CastMember row) {
     return models.CastMemberModel(
@@ -164,8 +199,7 @@ class ProductionRepository {
       userId: row.userId,
       characterName: row.characterName,
       displayName: row.displayName,
-      contactInfo: row.contactInfo,
-      role: models.CastRole.fromString(row.role),
+      role: models.CastRole.values.byName(row.role),
       invitedAt: row.invitedAt,
       joinedAt: row.joinedAt,
     );
@@ -182,58 +216,33 @@ class ProductionRepository {
     String productionId,
     List<models.ScriptLine> lines,
   ) async {
-    final existing = await _db.getScriptLines(productionId);
-    final existingById = {for (final row in existing) row.id: row};
-    final incomingIds = {for (final line in lines) line.id};
-    final removedIds = [
-      for (final row in existing)
-        if (!incomingIds.contains(row.id)) row.id,
-    ];
-    final changed = [
-      for (final line in lines)
-        if (existingById[line.id] == null ||
-            !_sameScriptLine(existingById[line.id]!, line))
-          ScriptLinesCompanion(
-            id: Value(line.id),
+    final companions = lines
+        .map(
+          (l) => ScriptLinesCompanion(
+            id: Value(l.id),
             productionId: Value(productionId),
-            act: Value(line.act),
-            scene: Value(line.scene),
-            lineNumber: Value(line.lineNumber),
-            orderIndex: Value(line.orderIndex),
-            character: Value(line.character),
-            lineText: Value(line.text),
-            lineType: Value(line.lineType.name),
-            stageDirection: Value(line.stageDirection),
-            ocrConfidence: Value(line.ocrConfidence),
-            sourcePage: Value(line.sourcePage),
-            sourceLineOnPage: Value(line.sourceLineOnPage),
-            multiCharacters: Value(line.multiCharacters.join(',')),
+            act: Value(l.act),
+            scene: Value(l.scene),
+            lineNumber: Value(l.lineNumber),
+            orderIndex: Value(l.orderIndex),
+            character: Value(l.character),
+            lineText: Value(l.text),
+            lineType: Value(l.lineType.name),
+            stageDirection: Value(l.stageDirection),
+            ocrConfidence: Value(l.ocrConfidence),
+            sourcePage: Value(l.sourcePage),
+            sourceLineOnPage: Value(l.sourceLineOnPage),
+            multiCharacters: Value(l.multiCharacters.join(',')),
           ),
-    ];
-
-    if (removedIds.isEmpty && changed.isEmpty) return;
+        )
+        .toList();
+    // Atomic delete + re-insert: a crash/throw between the two would otherwise
+    // leave the production with ALL its script lines deleted and none restored
+    // (permanent data loss). The transaction makes it all-or-nothing.
     await _db.transaction(() async {
-      // Foreign keys are RESTRICT intentionally. A line removed by an edit
-      // owns its local take, so remove that take in the same transaction.
-      await _db.deleteRecordingsForScriptLines(productionId, removedIds);
-      await _db.deleteScriptLines(productionId, removedIds);
-      await _db.upsertScriptLines(changed);
+      await _db.deleteScriptLinesForProduction(productionId);
+      await _db.insertScriptLines(companions);
     });
-  }
-
-  static bool _sameScriptLine(ScriptLine row, models.ScriptLine line) {
-    return row.act == line.act &&
-        row.scene == line.scene &&
-        row.lineNumber == line.lineNumber &&
-        row.orderIndex == line.orderIndex &&
-        row.character == line.character &&
-        row.lineText == line.text &&
-        row.lineType == line.lineType.name &&
-        row.stageDirection == line.stageDirection &&
-        row.ocrConfidence == line.ocrConfidence &&
-        row.sourcePage == line.sourcePage &&
-        row.sourceLineOnPage == line.sourceLineOnPage &&
-        row.multiCharacters == line.multiCharacters.join(',');
   }
 
   models.ScriptLine _scriptLineFromRow(ScriptLine row) {
@@ -245,9 +254,7 @@ class ProductionRepository {
       orderIndex: row.orderIndex,
       character: row.character,
       text: row.lineText,
-      lineType:
-          models.LineType.values.asNameMap()[row.lineType] ??
-          models.LineType.dialogue,
+      lineType: models.LineType.values.byName(row.lineType),
       stageDirection: row.stageDirection,
       ocrConfidence: row.ocrConfidence,
       sourcePage: row.sourcePage,
@@ -339,24 +346,33 @@ class ProductionRepository {
     );
   }
 
-  Future<void> deleteRecording(String productionId, String recordingId) async {
-    if (await _db.getProduction(productionId, accountNamespace) == null) return;
-    await _db.deleteRecording(productionId, recordingId);
+  Future<void> deleteRecording(String id) async {
+    await _db.deleteRecording(id);
   }
 
-  /// Persist the remote URL on a recording after a successful upload.
-  Future<void> markRecordingUploaded(
+  /// Persist the remote URL when the local take has not been superseded.
+  Future<bool> markRecordingUploaded(
     String productionId,
     String scriptLineId,
-    String recordingId,
-    String remoteUrl,
-  ) async {
-    await _db.markRecordingUploaded(
+    String remoteUrl, {
+    String? expectedRecordingId,
+    DateTime? expectedRecordedAt,
+  }) async {
+    final changed = await _db.markRecordingUploaded(
       productionId,
       scriptLineId,
-      recordingId,
       remoteUrl,
+      expectedRecordingId: expectedRecordingId,
+      expectedRecordedAt: expectedRecordedAt,
     );
+    final guarded = expectedRecordingId != null || expectedRecordedAt != null;
+    if (changed > 1 || (changed == 0 && !guarded)) {
+      throw StateError(
+        'Expected one recording for $productionId/$scriptLineId, '
+        'updated $changed',
+      );
+    }
+    return changed == 1;
   }
 
   models.Recording _recordingFromRow(Recording row) {

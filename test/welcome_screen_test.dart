@@ -1,3 +1,7 @@
+import 'dart:async';
+
+import 'package:go_router/go_router.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:castcircle/features/onboarding/welcome_screen.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -75,5 +79,83 @@ void main() {
       await tester.pumpAndSettle();
     }
     expect(tester.takeException(), isNull);
+  });
+
+  testWidgets(
+    'does not consume welcome offer after initiating context disposes',
+    (tester) async {
+      SharedPreferences.setMockInitialValues({});
+      final prefs = await SharedPreferences.getInstance();
+      final preferences = Completer<SharedPreferences>();
+      late BuildContext initiatingContext;
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Builder(
+            builder: (context) {
+              initiatingContext = context;
+              return const SizedBox();
+            },
+          ),
+        ),
+      );
+
+      final offer = WelcomeScreen.maybeOffer(
+        initiatingContext,
+        preferences: preferences.future,
+      );
+      await tester.pumpWidget(const MaterialApp(home: SizedBox()));
+      preferences.complete(prefs);
+      await offer;
+
+      expect(prefs.getBool('welcome_seen'), isNull);
+    },
+  );
+
+  testWidgets('marks welcome seen only after the walkthrough closes', (
+    tester,
+  ) async {
+    SharedPreferences.setMockInitialValues({});
+    final prefs = await SharedPreferences.getInstance();
+    late BuildContext initiatingContext;
+    final router = GoRouter(
+      initialLocation: '/',
+      routes: [
+        GoRoute(
+          path: '/',
+          builder: (context, state) {
+            initiatingContext = context;
+            return const Scaffold(body: Text('Home'));
+          },
+        ),
+        GoRoute(
+          path: '/welcome',
+          builder: (context, state) => Scaffold(
+            body: TextButton(
+              key: const Key('close-welcome'),
+              onPressed: () => context.pop(),
+              child: const Text('Close welcome'),
+            ),
+          ),
+        ),
+      ],
+    );
+    addTearDown(router.dispose);
+
+    await tester.pumpWidget(MaterialApp.router(routerConfig: router));
+    await tester.pumpAndSettle();
+
+    final offer = WelcomeScreen.maybeOffer(
+      initiatingContext,
+      preferences: Future.value(prefs),
+    );
+    await tester.pumpAndSettle();
+    expect(prefs.getBool('welcome_seen'), isNull);
+
+    await tester.tap(find.byKey(const Key('close-welcome')));
+    await tester.pumpAndSettle();
+    await offer;
+
+    expect(prefs.getBool('welcome_seen'), isTrue);
   });
 }

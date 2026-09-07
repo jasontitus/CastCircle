@@ -1,4 +1,3 @@
-import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
@@ -28,33 +27,13 @@ class ModelSetupScreen extends StatefulWidget {
   static Future<void> maybeOffer(BuildContext context) async {
     // Desktop rehearses with system voices; don't gate anything there.
     if (Platform.isMacOS || Platform.isLinux || Platform.isWindows) return;
-    try {
-      final prefs = await SharedPreferences.getInstance();
-      if (prefs.getBool('screenshot_mode') == true) return;
-      if (prefs.getBool('model_setup_offered') == true) return;
-      final ready = await ModelManager.instance.isAllReady();
-      if (ready || !context.mounted) return;
-
-      // Starting the push successfully means the offer was presented. Mark it
-      // immediately, while the setup route is open, rather than waiting for
-      // that route to be popped or consuming it before navigation.
-      final route = context.push('/setup-models');
-      final saved = await prefs.setBool('model_setup_offered', true);
-      if (!saved) {
-        DebugLogService.instance.logError(
-          LogCategory.error,
-          'Could not persist model setup offer',
-          StateError('SharedPreferences rejected model_setup_offered write'),
-        );
-      }
-      await route;
-    } catch (e) {
-      DebugLogService.instance.logError(
-        LogCategory.error,
-        'Could not offer model setup',
-        e,
-      );
-    }
+    final prefs = await SharedPreferences.getInstance();
+    if (prefs.getBool('screenshot_mode') == true) return;
+    if (prefs.getBool('model_setup_offered') == true) return;
+    final ready = await ModelManager.instance.isAllReady();
+    await prefs.setBool('model_setup_offered', true);
+    if (ready || !context.mounted) return;
+    await context.push('/setup-models');
   }
 
   @override
@@ -87,13 +66,6 @@ class _ModelSetupScreenState extends State<ModelSetupScreen> {
 
   bool _downloading = false;
   bool _statusChecked = false;
-  bool _voiceFilesDownloaded = false;
-  String? _statusError;
-  Timer? _progressUpdateTimer;
-  VoidCallback? _pendingProgressUpdate;
-  static const _progressUpdateInterval = Duration(milliseconds: 200);
-  static const _voiceLoadError =
-      'AI voices could not be loaded. Please try again.';
   final _dlog = DebugLogService.instance;
 
   List<_Item> get _items => [_voices, if (_matching != null) _matching];
@@ -109,126 +81,62 @@ class _ModelSetupScreenState extends State<ModelSetupScreen> {
   @override
   void dispose() {
     ModelDownloadService.instance.removeListener(_onServiceState);
-    _progressUpdateTimer?.cancel();
-    _pendingProgressUpdate = null;
     super.dispose();
   }
 
   Future<void> _refreshStatus() async {
+    final voicesReady = await ModelManager.instance.isKokoroReady();
+    final matchingReady = _matching == null
+        ? true
+        : await ModelDownloadService.instance.isLiveAsrReady();
+    if (!mounted) return;
     setState(() {
-      _statusChecked = false;
-      _statusError = null;
+      _voices.ready = voicesReady;
+      _matching?.ready = matchingReady;
+      _statusChecked = true;
     });
-    try {
-      final voiceFilesReady = Platform.isAndroid
-          ? await ModelManager.instance.isKokoroReady()
-          : await ModelDownloadService.instance.isKokoroReady();
-      final voicesReady = voiceFilesReady && await _tryLoadDownloadedVoices();
-      final matchingReady = _matching == null
-          ? true
-          : await ModelDownloadService.instance.isLiveAsrReady();
-      if (!mounted) return;
-      setState(() {
-        _voiceFilesDownloaded = voiceFilesReady;
-        _voices.ready = voicesReady;
-        _voices.error = voiceFilesReady && !voicesReady
-            ? _voiceLoadError
-            : null;
-        _matching?.ready = matchingReady;
-        _statusChecked = true;
-      });
-    } catch (e) {
-      _dlog.logError(
-        LogCategory.error,
-        'Model setup: readiness check failed',
-        e,
-      );
-      if (!mounted) return;
-      setState(() {
-        _statusChecked = true;
-        _statusError = "Couldn't check installed models. Please try again.";
-      });
-    }
   }
 
   /// iOS/native downloads report through the service's listener; fold the
   /// per-file states into the voices row.
   void _onServiceState() {
     if (!mounted || Platform.isAndroid) return;
-    _scheduleProgressUpdate(() {
-      final svc = ModelDownloadService.instance;
-      final files = ModelDownloadService.availableModels
-          .where((m) => m.subdir == 'kokoro_mlx')
-          .toList();
-      var total = 0, done = 0.0;
-      String? error;
-      for (final m in files) {
-        final s = svc.getState(m.id);
-        total += m.sizeBytes;
-        done +=
-            (s.status == ModelStatus.downloaded ? 1.0 : s.progress) *
-            m.sizeBytes;
-        error ??= s.errorMessage;
-      }
-      _voices.progress = total == 0 ? 0 : done / total;
-      _voiceFilesDownloaded = files.every(
-        (m) => svc.getState(m.id).status == ModelStatus.downloaded,
-      );
-      if (error != null || !_voiceFilesDownloaded) {
-        _voices.error = error;
-      }
-    });
-  }
-
-  Future<bool> _tryLoadDownloadedVoices() async {
-    final loaded = await TtsService.instance.tryLoadKokoro();
-    if (!loaded) {
-      _dlog.logError(
-        LogCategory.tts,
-        'Model setup: downloaded voices failed to load',
-        StateError('tryLoadKokoro returned false'),
-      );
+    final svc = ModelDownloadService.instance;
+    final files = ModelDownloadService.availableModels
+        .where((m) => m.subdir == 'kokoro_mlx')
+        .toList();
+    var total = 0, done = 0.0;
+    String? error;
+    for (final m in files) {
+      final s = svc.getState(m.id);
+      total += m.sizeBytes;
+      done +=
+          (s.status == ModelStatus.downloaded ? 1.0 : s.progress) * m.sizeBytes;
+      error ??= s.errorMessage;
     }
-    return loaded;
-  }
-
-  /// Coalesce native and Dart download notifications so a long transfer does
-  /// not rebuild the entire setup screen for every progress packet.
-  void _scheduleProgressUpdate(VoidCallback update) {
-    _pendingProgressUpdate = update;
-    _progressUpdateTimer ??= Timer(_progressUpdateInterval, () {
-      _progressUpdateTimer = null;
-      final pending = _pendingProgressUpdate;
-      _pendingProgressUpdate = null;
-      if (mounted && pending != null) setState(pending);
+    setState(() {
+      _voices.progress = total == 0 ? 0 : done / total;
+      _voices.error = error;
+      if (files.every(
+        (m) => svc.getState(m.id).status == ModelStatus.downloaded,
+      )) {
+        _voices.ready = true;
+      }
     });
   }
 
   Future<void> _downloadAll() async {
-    // Record consent before starting transfers: the launch-time
-    // auto-downloader only runs for users who chose to download (never for
-    // "Skip for now" users on cellular).
+    // Record consent: the launch-time auto-downloader only runs for users
+    // who chose to download (never for "Skip for now" users on cellular).
+    SharedPreferences.getInstance().then(
+      (p) => p.setBool('models_auto_download_ok', true),
+    );
     setState(() {
       _downloading = true;
       for (final i in _items) {
         i.error = null;
       }
     });
-    try {
-      final prefs = await SharedPreferences.getInstance();
-      final saved = await prefs.setBool('models_auto_download_ok', true);
-      if (!saved) {
-        throw StateError(
-          'SharedPreferences rejected models_auto_download_ok write',
-        );
-      }
-    } catch (e) {
-      _dlog.logError(
-        LogCategory.error,
-        'Could not persist model auto-download consent',
-        e,
-      );
-    }
 
     // Sequential on purpose: one fat download at a time is kinder to the
     // network and gives an honest per-row progress bar.
@@ -237,79 +145,36 @@ class _ModelSetupScreenState extends State<ModelSetupScreen> {
         if (Platform.isAndroid) {
           await ModelManager.instance.downloadKokoro(
             onProgress: (file, progress) {
-              if (mounted) {
-                _scheduleProgressUpdate(() => _voices.progress = progress);
-              }
+              if (mounted) setState(() => _voices.progress = progress);
             },
           );
-          final loaded = await _tryLoadDownloadedVoices();
-          if (mounted) {
-            setState(() {
-              _voices.progress = 1;
-              _voices.ready = loaded;
-              _voices.error = loaded ? null : _voiceLoadError;
-            });
-          }
+          await TtsService.instance.tryLoadKokoro();
+          if (mounted) setState(() => _voices.ready = true);
         } else {
-          final svc = ModelDownloadService.instance;
-          final filesReady = await svc.isKokoroReady();
-          if (filesReady) {
-            // A retry after an engine-load failure must not restart valid
-            // native transfers; retry only the load itself.
-            _voiceFilesDownloaded = true;
-            final loaded = await _tryLoadDownloadedVoices();
-            if (mounted) {
-              setState(() {
-                _voices.progress = 1;
-                _voices.ready = loaded;
-                _voices.error = loaded ? null : _voiceLoadError;
-              });
+          // Native background session; progress arrives via _onServiceState.
+          for (final m in ModelDownloadService.availableModels.where(
+            (m) => m.subdir == 'kokoro_mlx',
+          )) {
+            await ModelDownloadService.instance.download(m);
+          }
+          // Completion also arrives via the listener; poll until settled so
+          // the line-matching row (Android-only today) never runs early.
+          // Deadline: a native download that stalls with no progress, error,
+          // or completion used to spin this loop forever, pinning the button
+          // in "downloading" and blocking the line-matching step behind it.
+          final deadline = DateTime.now().add(const Duration(minutes: 15));
+          while (mounted && !_voices.ready && _voices.error == null) {
+            if (DateTime.now().isAfter(deadline)) {
+              _voices.error =
+                  'Download timed out — check your connection and retry.';
+              break;
             }
-          } else {
-            // Do not let completion state from the previous attempt make this
-            // retry load Kokoro while replacement files are still in flight.
-            _voiceFilesDownloaded = false;
-            // Refresh states for valid files, then start only the missing or
-            // invalid native files. Completion arrives via _onServiceState
-            // after every file has passed verification.
-            await svc.refreshDownloadedStatus();
-            await svc.downloadKokoro();
-            // Time out only when progress has stalled; a healthy slow
-            // transfer may run longer than fifteen minutes.
-            var lastProgress = _voices.progress;
-            var stallDeadline = DateTime.now().add(const Duration(minutes: 15));
-            while (mounted && !_voiceFilesDownloaded && _voices.error == null) {
-              await Future.delayed(const Duration(milliseconds: 500));
-              if (_voices.progress != lastProgress) {
-                lastProgress = _voices.progress;
-                stallDeadline = DateTime.now().add(const Duration(minutes: 15));
-              } else if (DateTime.now().isAfter(stallDeadline)) {
-                setState(() {
-                  _voices.error =
-                      'Download stalled — check your connection and retry.';
-                });
-                break;
-              }
-            }
-            if (mounted && _voiceFilesDownloaded && _voices.error == null) {
-              final loaded = await _tryLoadDownloadedVoices();
-              if (mounted) {
-                setState(() {
-                  _voices.ready = loaded;
-                  _voices.error = loaded ? null : _voiceLoadError;
-                });
-              }
-            }
+            await Future.delayed(const Duration(milliseconds: 500));
           }
         }
       } catch (e) {
         _dlog.logError(LogCategory.error, 'Model setup: voices failed', e);
-        if (mounted) {
-          setState(
-            () => _voices.error =
-                'AI voices could not be installed. Please try again.',
-          );
-        }
+        if (mounted) setState(() => _voices.error = e.toString());
       }
     }
 
@@ -332,9 +197,7 @@ class _ModelSetupScreenState extends State<ModelSetupScreen> {
                 m.sizeBytes;
           }
           if (mounted) {
-            _scheduleProgressUpdate(
-              () => matching.progress = total == 0 ? 0 : done / total,
-            );
+            setState(() => matching.progress = total == 0 ? 0 : done / total);
           }
         }
 
@@ -361,12 +224,7 @@ class _ModelSetupScreenState extends State<ModelSetupScreen> {
         }
       } catch (e) {
         _dlog.logError(LogCategory.error, 'Model setup: matching failed', e);
-        if (mounted) {
-          setState(
-            () => matching.error =
-                'Live line matching could not be installed. Please try again.',
-          );
-        }
+        if (mounted) setState(() => matching.error = e.toString());
       }
     }
 
@@ -384,10 +242,8 @@ class _ModelSetupScreenState extends State<ModelSetupScreen> {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final allReady =
-        _statusChecked && _statusError == null && _items.every((i) => i.ready);
-    final anyMissing =
-        _statusChecked && _statusError == null && _items.any((i) => !i.ready);
+    final allReady = _statusChecked && _items.every((i) => i.ready);
+    final anyMissing = _statusChecked && _items.any((i) => !i.ready);
 
     return Scaffold(
       body: SafeArea(
@@ -485,37 +341,7 @@ class _ModelSetupScreenState extends State<ModelSetupScreen> {
                     ),
                   ),
                 ),
-                if (_statusError != null)
-                  Card(
-                    color: theme.colorScheme.errorContainer,
-                    child: Padding(
-                      padding: const EdgeInsets.all(16),
-                      child: Row(
-                        children: [
-                          Icon(
-                            Icons.error_outline,
-                            color: theme.colorScheme.onErrorContainer,
-                          ),
-                          const SizedBox(width: 12),
-                          Expanded(
-                            child: Text(
-                              _statusError!,
-                              style: TextStyle(
-                                color: theme.colorScheme.onErrorContainer,
-                              ),
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ),
                 const Spacer(),
-                if (_statusError != null)
-                  FilledButton.icon(
-                    onPressed: _refreshStatus,
-                    icon: const Icon(Icons.refresh),
-                    label: const Text('Retry status check'),
-                  ),
                 if (anyMissing)
                   FilledButton.icon(
                     onPressed: _downloading ? null : _downloadAll,

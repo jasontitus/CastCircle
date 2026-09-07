@@ -12,6 +12,7 @@ import 'dart:io';
 
 import '../../core/responsive.dart';
 import '../../core/theme/app_theme.dart';
+import '../../data/database/app_database.dart' show PendingCastInvitationRow;
 import '../../data/models/cast_member_model.dart';
 import '../../data/models/script_models.dart';
 import '../../data/models/voice_preset.dart';
@@ -23,30 +24,6 @@ import '../../data/services/voice_config_service.dart';
 import '../../providers/production_providers.dart';
 import '../../core/toast.dart';
 
-final _recordedCountsByCharacterProvider =
-    Provider.autoDispose<Map<String, int>>((ref) {
-      final script = ref.watch(currentScriptProvider);
-      final recordings = ref.watch(recordingsProvider);
-      if (script == null || recordings.isEmpty) return const {};
-
-      final counts = <String, int>{};
-      for (final line in script.lines) {
-        if (line.lineType != LineType.dialogue ||
-            !recordings.containsKey(line.id)) {
-          continue;
-        }
-        if (line.character.isNotEmpty) {
-          counts[line.character] = (counts[line.character] ?? 0) + 1;
-        }
-        for (final character in line.multiCharacters) {
-          if (character != line.character) {
-            counts[character] = (counts[character] ?? 0) + 1;
-          }
-        }
-      }
-      return counts;
-    });
-
 class CastManagerScreen extends ConsumerStatefulWidget {
   const CastManagerScreen({super.key});
 
@@ -56,12 +33,14 @@ class CastManagerScreen extends ConsumerStatefulWidget {
 
 class _CastManagerScreenState extends ConsumerState<CastManagerScreen> {
   // assignVoicesFromScript memo: a full script walk + graph coloring whose
-  // inputs change rarely, but cast changes still rebuild this screen.
+  // inputs change rarely, but the screen rebuilds on every cast/recording
+  // change.
   Map<String, String>? _assignmentCache;
   Object? _assignmentKey;
 
-  // linesByChar depends only on the script, so cast-member updates should not
-  // re-walk a multi-thousand-line script.
+  // linesByChar depends only on the script, but this screen rebuilds on
+  // every castMembers/recordings sync — a background recording arriving
+  // re-walked a multi-thousand-line script for nothing.
   Map<String, List<ScriptLine>>? _linesByCharCache;
   List<ScriptLine>? _linesByCharKey;
 
@@ -105,43 +84,66 @@ class _CastManagerScreenState extends ConsumerState<CastManagerScreen> {
   VoicePreset _currentPreset = VoicePresets.modernAmerican;
   Map<String, CharacterVoiceConfig> _voiceOverrides = {};
   Map<String, CharacterGender> _genderOverrides = {};
+  bool _castSyncing = false;
+  bool _castSyncFailed = false;
+  int _castSyncGeneration = 0;
+  bool _voiceConfigCorrupt = false;
 
   @override
   void initState() {
     super.initState();
-    WidgetsBinding.instance.addPostFrameCallback((_) async {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
       final production = ref.read(currentProductionProvider);
       if (production != null) {
-        await ref
-            .read(castMembersProvider.notifier)
-            .loadForProduction(production.id);
-        if (!mounted) return;
+        ref.read(castMembersProvider.notifier).loadForProduction(production.id);
         _loadVoiceConfig(production.id);
-        _syncCastFromCloud(production.id);
+        _syncCastFromCloud(
+          production.id,
+          cloudBacked:
+              production.organizerId.isNotEmpty &&
+              production.organizerId != 'local',
+        );
       }
     });
   }
 
   /// Sync cast member statuses from Supabase so we see who has joined.
-  Future<void> _syncCastFromCloud(String productionId) async {
+  Future<void> _syncCastFromCloud(
+    String productionId, {
+    required bool cloudBacked,
+  }) async {
     final supa = SupabaseService.instance;
-    if (!supa.isSignedIn) return;
-    final notifier = ref.read(castMembersProvider.notifier);
+    if (!mounted) return;
+    if (!supa.isSignedIn) {
+      if (cloudBacked) {
+        setState(() {
+          _castSyncFailed = true;
+          _castSyncing = false;
+        });
+      }
+      return;
+    }
+
+    final generation = ++_castSyncGeneration;
+    setState(() => _castSyncing = true);
 
     try {
       final cloudMembers = await supa.fetchCastMembers(productionId);
-      if (!mounted) return;
-      final localById = {
-        for (final member in ref.read(castMembersProvider)) member.id: member,
-      };
-      final upserts = <CastMemberModel>[];
+      if (!mounted || generation != _castSyncGeneration) return;
+      final notifier = ref.read(castMembersProvider.notifier);
+      final cloudIds = <String>{};
+
       for (final cm in cloudMembers) {
+        final cloudId = cm['id'] as String;
+        final charName = cm['character_name'] as String? ?? '';
+        cloudIds.add(cloudId);
+
         final member = CastMemberModel(
-          id: cm['id'] as String,
+          id: cloudId,
           productionId: productionId,
           userId: cm['user_id'] as String?,
-          characterName: cm['character_name'] as String? ?? '',
+          characterName: charName,
           displayName: cm['display_name'] as String? ?? '',
           contactInfo: cm['contact_info'] as String?,
           role: CastRole.fromString(cm['role'] as String? ?? 'actor'),
@@ -152,46 +154,57 @@ class _CastManagerScreenState extends ConsumerState<CastManagerScreen> {
               ? DateTime.tryParse(cm['joined_at'] as String)
               : null,
         );
-        final local = localById[member.id];
-        if (local == null || !_sameCastMember(local, member)) {
-          upserts.add(member);
+        await notifier.save(member);
+        if (!mounted || generation != _castSyncGeneration) return;
+      }
+
+      final localMembers = ref.read(castMembersProvider);
+      final cloudKeys = {
+        for (final cm in cloudMembers)
+          '${cm['character_name']}/'
+              '${CastRole.fromString(cm['role'] as String? ?? 'actor')}',
+      };
+      for (final local in localMembers) {
+        if (cloudIds.contains(local.id)) continue;
+        if (local.role == CastRole.organizer) continue;
+        if (cloudKeys.contains('${local.characterName}/${local.role}')) {
+          await notifier.remove(local.id);
+          if (!mounted || generation != _castSyncGeneration) return;
         }
       }
-      if (upserts.isNotEmpty) {
-        await notifier.applyChanges(upserts: upserts, deleteIds: const {});
-      }
-    } catch (e) {
+
+      setState(() => _castSyncFailed = false);
+    } catch (error, stack) {
       DebugLogService.instance.logError(
         LogCategory.network,
-        'Cast cloud sync failed',
-        e,
+        'Cast cloud sync failed productionId=$productionId',
+        error,
+        stack,
       );
+      if (!mounted || generation != _castSyncGeneration) return;
+      setState(() => _castSyncFailed = true);
+    } finally {
+      if (mounted && generation == _castSyncGeneration) {
+        setState(() => _castSyncing = false);
+      }
     }
   }
 
-  static bool _sameCastMember(CastMemberModel local, CastMemberModel cloud) {
-    return local.productionId == cloud.productionId &&
-        local.userId == cloud.userId &&
-        local.characterName == cloud.characterName &&
-        local.displayName == cloud.displayName &&
-        local.contactInfo == cloud.contactInfo &&
-        local.role == cloud.role &&
-        local.invitedAt == cloud.invitedAt &&
-        local.joinedAt == cloud.joinedAt;
-  }
-
   Future<void> _loadVoiceConfig(String productionId) async {
-    final preset = await _voiceConfig.getPreset(productionId);
-    final overrides = await _voiceConfig.getOverrides(productionId);
-    // Saved gender toggles too — without them the voice shown here diverged
-    // from the voice rehearsal actually plays (rehearsal passes them).
-    final genders = await _voiceConfig.getGenders(productionId);
-    if (mounted) {
+    try {
+      final preset = await _voiceConfig.getPreset(productionId);
+      final overrides = await _voiceConfig.getOverrides(productionId);
+      final genders = await _voiceConfig.getGenders(productionId);
+      if (!mounted) return;
       setState(() {
         _currentPreset = preset;
         _voiceOverrides = overrides;
         _genderOverrides = genders;
+        _voiceConfigCorrupt = false;
       });
+    } on VoiceOverridesCorruptException {
+      if (!mounted) return;
+      setState(() => _voiceConfigCorrupt = true);
     }
   }
 
@@ -200,6 +213,8 @@ class _CastManagerScreenState extends ConsumerState<CastManagerScreen> {
     final script = ref.watch(currentScriptProvider);
     final production = ref.watch(currentProductionProvider);
     final castMembers = ref.watch(castMembersProvider);
+    final recordings = ref.watch(recordingsProvider);
+    final pendingInvitations = ref.watch(pendingCastInvitationProvider);
 
     if (script == null) {
       return Scaffold(
@@ -209,22 +224,36 @@ class _CastManagerScreenState extends ConsumerState<CastManagerScreen> {
     }
 
     final joinCode = production?.joinCode;
+    final pendingForProduction = production == null
+        ? const <PendingCastInvitationRow>[]
+        : pendingInvitations
+              .where((row) => row.productionId == production.id)
+              .toList();
+    final failedInvitationCount = pendingForProduction
+        .where((row) => row.lastError != null)
+        .length;
     final joinedCount = castMembers
         .where((m) => m.hasJoined && m.role != CastRole.organizer)
         .length;
 
     // Adjacency-aware voice assignment — memoized on its actual inputs
-    // (script identity, preset, overrides), so cast updates cannot rerun the
-    // full script walk and graph coloring. Gender overrides keep the voice
-    // shown here aligned with rehearsal playback.
+    // (script identity, preset, overrides): the full script walk + coloring
+    // used to rerun on every castMembers/recordings rebuild that can't
+    // change the assignment. Gender overrides included so the voice shown
+    // here matches what rehearsal actually plays.
     final autoAssignment = _memoAssignment(script);
+    final totalRecordedLines = recordings.length;
     final totalLines = script.lines
         .where((l) => l.lineType == LineType.dialogue)
         .length;
+    final progressPct = totalLines > 0
+        ? (totalRecordedLines / totalLines * 100).round()
+        : 0;
 
     // Per-build indexes: the card builder used to do a linear scan over
     // castMembers (primaryFor/understudyFor) and a full-script
-    // linesForCharacter walk per card.
+    // linesForCharacter walk PER CARD — O(chars × members + chars × lines)
+    // per rebuild, and this screen rebuilds on every cast/recording change.
     final primaryByChar = <String, CastMemberModel>{};
     final understudyByChar = <String, CastMemberModel>{};
     for (final m in castMembers) {
@@ -263,6 +292,66 @@ class _CastManagerScreenState extends ConsumerState<CastManagerScreen> {
       ),
       body: Column(
         children: [
+          if (_castSyncing && !_castSyncFailed) const LinearProgressIndicator(),
+          if (_castSyncFailed)
+            MaterialBanner(
+              content: const Text(
+                'This cast list may be out of date because cloud sync failed.',
+              ),
+              actions: [
+                TextButton(
+                  onPressed: _castSyncing || production == null
+                      ? null
+                      : () async {
+                          await _syncCastFromCloud(
+                            production.id,
+                            cloudBacked:
+                                production.organizerId.isNotEmpty &&
+                                production.organizerId != 'local',
+                          );
+                        },
+                  child: Text(_castSyncing ? 'Retrying…' : 'Retry'),
+                ),
+              ],
+            ),
+          if (pendingForProduction.isNotEmpty)
+            MaterialBanner(
+              content: Text(
+                failedInvitationCount == 0
+                    ? '${pendingForProduction.length} cast invitation(s) '
+                          'are waiting to sync.'
+                    : '$failedInvitationCount of '
+                          '${pendingForProduction.length} cast invitation(s) '
+                          'could not sync and remain retryable.',
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () async {
+                    await ref
+                        .read(pendingCastInvitationProvider.notifier)
+                        .retryAll();
+                  },
+                  child: const Text('Retry'),
+                ),
+              ],
+            ),
+          if (_voiceConfigCorrupt)
+            MaterialBanner(
+              content: const Text(
+                'Saved voice overrides could not be read. The original data '
+                'was preserved and voice edits are blocked.',
+              ),
+              actions: [
+                TextButton(
+                  onPressed: production == null
+                      ? null
+                      : () async {
+                          await _loadVoiceConfig(production.id);
+                        },
+                  child: const Text('Retry'),
+                ),
+              ],
+            ),
           // -- Join code banner --
           if (joinCode != null)
             Container(
@@ -363,49 +452,38 @@ class _CastManagerScreenState extends ConsumerState<CastManagerScreen> {
               ),
             ),
           // -- Summary bar --
-          Consumer(
-            builder: (context, ref, _) {
-              final totalRecordedLines = ref.watch(
-                recordingsProvider.select((recordings) => recordings.length),
-              );
-              final progressPct = totalLines > 0
-                  ? (totalRecordedLines / totalLines * 100).round()
-                  : 0;
-              return Container(
-                padding: const EdgeInsets.all(16),
-                color: Theme.of(context).colorScheme.surfaceContainerHighest,
-                child: Column(
+          Container(
+            padding: const EdgeInsets.all(16),
+            color: Theme.of(context).colorScheme.surfaceContainerHighest,
+            child: Column(
+              children: [
+                Row(
                   children: [
-                    Row(
-                      children: [
-                        Icon(
-                          Icons.people,
-                          color: Theme.of(context).colorScheme.primary,
-                        ),
-                        const SizedBox(width: 12),
-                        Expanded(
-                          child: Text(
-                            '$joinedCount of ${script.characters.length} '
-                            'actors joined · $totalRecordedLines/$totalLines '
-                            'lines recorded ($progressPct%)',
-                            style: Theme.of(context).textTheme.bodySmall,
-                          ),
-                        ),
-                      ],
+                    Icon(
+                      Icons.people,
+                      color: Theme.of(context).colorScheme.primary,
                     ),
-                    if (totalLines > 0) ...[
-                      const SizedBox(height: 8),
-                      LinearProgressIndicator(
-                        value: totalRecordedLines / totalLines,
-                        backgroundColor: Theme.of(
-                          context,
-                        ).colorScheme.primary.withValues(alpha: 0.1),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Text(
+                        '$joinedCount of ${script.characters.length} actors joined'
+                        ' · $totalRecordedLines/$totalLines lines recorded ($progressPct%)',
+                        style: Theme.of(context).textTheme.bodySmall,
                       ),
-                    ],
+                    ),
                   ],
                 ),
-              );
-            },
+                if (totalLines > 0) ...[
+                  const SizedBox(height: 8),
+                  LinearProgressIndicator(
+                    value: totalRecordedLines / totalLines,
+                    backgroundColor: Theme.of(
+                      context,
+                    ).colorScheme.primary.withValues(alpha: 0.1),
+                  ),
+                ],
+              ],
+            ),
           ),
           const Divider(height: 1),
           // -- Character list --
@@ -421,31 +499,25 @@ class _CastManagerScreenState extends ConsumerState<CastManagerScreen> {
                   final primary = primaryByChar[char.name];
                   final understudy = understudyByChar[char.name];
 
+                  // Recording progress for this character
                   final charLines = linesByChar[char.name] ?? const [];
-                  final lineCount = charLines.length;
+                  final recordedCount = charLines
+                      .where((l) => recordings.containsKey(l.id))
+                      .length;
+                  final recordProgress = charLines.isEmpty
+                      ? 0.0
+                      : recordedCount / charLines.length;
 
-                  return Consumer(
-                    builder: (context, ref, _) {
-                      final recordedCount = ref.watch(
-                        _recordedCountsByCharacterProvider.select(
-                          (counts) => counts[char.name] ?? 0,
-                        ),
-                      );
-                      final recordProgress = lineCount == 0
-                          ? 0.0
-                          : recordedCount / lineCount;
-                      return _buildCharacterCard(
-                        context,
-                        char,
-                        primary,
-                        understudy,
-                        color,
-                        recordProgress,
-                        recordedCount,
-                        lineCount,
-                        autoAssignment,
-                      );
-                    },
+                  return _buildCharacterCard(
+                    context,
+                    char,
+                    primary,
+                    understudy,
+                    color,
+                    recordProgress,
+                    recordedCount,
+                    charLines.length,
+                    autoAssignment,
                   );
                 },
               ),
@@ -472,7 +544,6 @@ class _CastManagerScreenState extends ConsumerState<CastManagerScreen> {
     final activeVoice = override?.voiceId ?? presetVoice;
     final activeSpeed = override?.speed ?? _currentPreset.defaultSpeed;
     final voiceLabel = VoicePresets.voiceLabels[activeVoice] ?? activeVoice;
-    final effectiveGender = _genderOverrides[char.name] ?? char.gender;
 
     return Card(
       margin: const EdgeInsets.only(bottom: 12),
@@ -516,15 +587,13 @@ class _CastManagerScreenState extends ConsumerState<CastManagerScreen> {
                 // Gender toggle
                 IconButton(
                   icon: Icon(
-                    _genderIcon(effectiveGender),
-                    color: _genderColor(effectiveGender),
+                    _genderIcon(char.gender),
+                    color: _genderColor(char.gender),
                     size: 22,
                   ),
-                  tooltip: _genderLabel(effectiveGender),
+                  tooltip: _genderLabel(char.gender),
                   visualDensity: VisualDensity.compact,
-                  onPressed: () async {
-                    await _toggleGender(char, effectiveGender);
-                  },
+                  onPressed: () => _toggleGender(char),
                 ),
                 IconButton(
                   icon: const Icon(Icons.person_add_outlined),
@@ -548,8 +617,9 @@ class _CastManagerScreenState extends ConsumerState<CastManagerScreen> {
                 ),
                 Expanded(
                   child: OutlinedButton.icon(
-                    onPressed: () =>
-                        _showVoiceSheet(char, activeVoice, activeSpeed),
+                    onPressed: _voiceConfigCorrupt
+                        ? null
+                        : () => _showVoiceSheet(char, activeVoice, activeSpeed),
                     icon: const Icon(Icons.record_voice_over, size: 16),
                     label: Text(
                       '$voiceLabel  ${activeSpeed.toStringAsFixed(1)}x',
@@ -811,12 +881,15 @@ class _CastManagerScreenState extends ConsumerState<CastManagerScreen> {
                         invitedAt: DateTime.now(),
                       );
 
+                      await ref.read(castMembersProvider.notifier).save(member);
+
+                      // Also save to Supabase if signed in. If the cloud
+                      // insert fails, the join link we're about to share
+                      // points at an invitation that doesn't exist — don't
+                      // share it silently.
+                      var cloudInviteOk = true;
                       final supa = SupabaseService.instance;
-                      final hasCloudBacking =
-                          supa.isSignedIn &&
-                          production.organizerId.isNotEmpty &&
-                          production.organizerId != 'local';
-                      if (hasCloudBacking) {
+                      if (supa.isSignedIn) {
                         try {
                           await supa.createCastInvitation(
                             productionId: production.id,
@@ -824,99 +897,40 @@ class _CastManagerScreenState extends ConsumerState<CastManagerScreen> {
                             displayName: name,
                             contactInfo: contact.isNotEmpty ? contact : null,
                             role: role.toSupabaseString(),
+                            // Reuse the local id so cloud + local stay in sync.
                             id: member.id,
                           );
-                        } on CastPrimaryAlreadyAssignedException {
-                          DebugLogService.instance.log(
-                            LogCategory.network,
-                            'Skipped $characterName primary invitation: '
-                            'already assigned',
-                          );
-                          if (dialogContext.mounted) {
-                            Navigator.pop(dialogContext);
-                          }
-                          if (mounted) {
-                            await _syncCastFromCloud(production.id);
-                          }
-                          if (mounted) {
-                            ScaffoldMessenger.of(context).showAutoToast(
-                              SnackBar(
-                                content: Text(
-                                  '$characterName already has a primary actor',
-                                ),
-                                duration: const Duration(seconds: 5),
-                              ),
-                            );
-                          }
-                          return;
-                        } catch (e, stack) {
+                        } catch (error, stack) {
+                          cloudInviteOk = false;
                           DebugLogService.instance.logError(
                             LogCategory.network,
-                            'Cloud cast invitation failed for "$name"',
-                            e,
+                            'Cloud cast invitation failed',
+                            error,
                             stack,
                           );
-                          if (dialogContext.mounted) {
-                            setDialogState(() => isSubmitting = false);
-                          }
-                          if (mounted) {
-                            ScaffoldMessenger.of(context).showAutoToast(
-                              const SnackBar(
-                                content: Text(
-                                  "Couldn't create the cloud invitation — "
-                                  'check your connection and try again.',
-                                ),
-                                duration: Duration(seconds: 6),
-                              ),
-                            );
-                          }
-                          return;
                         }
-                      }
-
-                      try {
-                        await ref
-                            .read(castMembersProvider.notifier)
-                            .save(member);
-                      } catch (e, stack) {
-                        DebugLogService.instance.logError(
-                          LogCategory.general,
-                          'Saving local cast assignment failed for "$name"',
-                          e,
-                          stack,
-                        );
-                        if (hasCloudBacking) {
-                          try {
-                            await supa.removeCastMember(
-                              castMemberId: member.id,
-                              productionId: production.id,
-                            );
-                          } catch (cleanupError, cleanupStack) {
-                            DebugLogService.instance.logError(
-                              LogCategory.network,
-                              'Rolling back cloud cast invitation failed for '
-                              '"$name"',
-                              cleanupError,
-                              cleanupStack,
-                            );
-                          }
-                        }
-                        if (dialogContext.mounted) {
-                          setDialogState(() => isSubmitting = false);
-                        }
-                        if (mounted) {
-                          ScaffoldMessenger.of(context).showAutoToast(
-                            const SnackBar(
-                              content: Text('Could not save cast assignment'),
-                            ),
-                          );
-                        }
-                        return;
                       }
 
                       if (dialogContext.mounted) {
                         Navigator.pop(dialogContext);
+                        // Dismiss keyboard before sharing
                         FocusScope.of(context).unfocus();
+                      }
+
+                      if (!cloudInviteOk) {
+                        if (mounted) {
+                          ScaffoldMessenger.of(context).showAutoToast(
+                            const SnackBar(
+                              content: Text(
+                                "Couldn't create the cloud invitation — "
+                                'check your connection and tap the share '
+                                'icon to invite once you\'re back online.',
+                              ),
+                              duration: Duration(seconds: 6),
+                            ),
+                          );
+                        }
+                        return;
                       }
 
                       // Delay to let dialog and keyboard fully dismiss
@@ -944,38 +958,19 @@ class _CastManagerScreenState extends ConsumerState<CastManagerScreen> {
   Future<void> _unassignRole(CastMemberModel member) async {
     final who = member.displayName.isNotEmpty ? member.displayName : 'Actor';
     final supa = SupabaseService.instance;
-    final production = ref.read(currentProductionProvider);
-    final cloudBackedProduction =
-        production != null &&
-        production.organizerId.isNotEmpty &&
-        production.organizerId != 'local';
-    if (!supa.isSignedIn && cloudBackedProduction) {
-      ScaffoldMessenger.of(context).showAutoToast(
-        SnackBar(
-          content: Text(
-            "Can't remove $who while offline because the shared cast would "
-            'restore them on the next sync. Reconnect and try again.',
-          ),
-          duration: const Duration(seconds: 6),
-        ),
-      );
-      return;
-    }
 
     // Delete the cloud row FIRST: _syncCastFromCloud re-saves every cloud row
     // locally, so a local-only removal boomerangs back on the next open — and
     // the invite link would still work in the meantime.
-    if (supa.isSignedIn && cloudBackedProduction) {
+    if (supa.isSignedIn) {
       try {
-        await supa.removeCastMember(
-          castMemberId: member.id,
-          productionId: member.productionId,
-        );
-      } catch (e) {
+        await supa.removeCastMember(member.id);
+      } catch (error, stack) {
         DebugLogService.instance.logError(
           LogCategory.network,
-          'Unassign failed for "$who" (${member.characterName})',
-          e,
+          'Cast unassign failed',
+          error,
+          stack,
         );
         if (!mounted) return;
         ScaffoldMessenger.of(context).showAutoToast(
@@ -1000,27 +995,18 @@ class _CastManagerScreenState extends ConsumerState<CastManagerScreen> {
     final production = ref.read(currentProductionProvider);
     final productionTitle = production?.title ?? 'a production';
     final joinCode = production?.joinCode;
-    final supa = SupabaseService.instance;
-    final hasCloudBacking =
-        supa.isSignedIn &&
-        production != null &&
-        production.organizerId.isNotEmpty &&
-        production.organizerId != 'local' &&
-        joinCode != null &&
-        joinCode.isNotEmpty;
 
-    final deepLink = hasCloudBacking
+    final deepLink = joinCode != null
         ? PendingJoin.buildUri(code: joinCode, characterName: characterName)
         : null;
 
-    final shareText = deepLink != null
+    final shareText = joinCode != null
         ? 'You\'re invited to play $characterName in "$productionTitle" '
               'on CastCircle!\n\n'
               'Tap to join: $deepLink\n\n'
               'Or open CastCircle and enter code: $joinCode'
         : 'You\'ve been invited to join "$productionTitle" as $characterName '
-              'on CastCircle! The organizer will send a join code once the '
-              'production is online.';
+              'on CastCircle! Download the app to get started.';
 
     // Get position for iPad share popover
     final box = context.findRenderObject() as RenderBox?;
@@ -1200,9 +1186,14 @@ class _CastManagerScreenState extends ConsumerState<CastManagerScreen> {
             'Or enter code: $joinCode',
         subject: 'CastCircle Invitation',
       );
-    } catch (e) {
+    } catch (error, stack) {
       entry.remove();
-      debugPrint('Invite card share failed: $e');
+      DebugLogService.instance.logError(
+        LogCategory.general,
+        'Invite card share failed type=${error.runtimeType}',
+        null,
+        stack,
+      );
       // Fallback to text
       _shareTextInvite(
         productionTitle: productionTitle,
@@ -1217,36 +1208,25 @@ class _CastManagerScreenState extends ConsumerState<CastManagerScreen> {
     final production = ref.read(currentProductionProvider);
     final title = production?.title ?? 'a production';
 
-    final supa = SupabaseService.instance;
-    final hasCloudBacking =
-        supa.isSignedIn &&
-        production != null &&
-        production.organizerId.isNotEmpty &&
-        production.organizerId != 'local' &&
-        code.isNotEmpty;
-    final deepLink = hasCloudBacking ? PendingJoin.buildUri(code: code) : null;
-    final text = deepLink != null
-        ? 'Join "$title" on CastCircle!\n\n'
-              'Tap to join: $deepLink\n\n'
-              'Or open CastCircle and enter code: $code'
-        : 'You\'re invited to join "$title" on CastCircle! The organizer '
-              'will send a join code once the production is online.';
+    final deepLink = PendingJoin.buildUri(code: code);
 
-    _shareWithOrigin(text, 'CastCircle Join Code');
+    _shareWithOrigin(
+      'Join "$title" on CastCircle!\n\n'
+          'Tap to join: $deepLink\n\n'
+          'Or open CastCircle and enter code: $code',
+      'CastCircle Join Code',
+    );
   }
 
   void _nudge(CastMemberModel member) {
     final production = ref.read(currentProductionProvider);
     final title = production?.title ?? 'the production';
     final code = production?.joinCode ?? '';
-    final supa = SupabaseService.instance;
-    final hasCloudBacking =
-        supa.isSignedIn &&
-        production != null &&
-        production.organizerId.isNotEmpty &&
-        production.organizerId != 'local' &&
-        code.isNotEmpty;
-    final deepLink = hasCloudBacking
+
+    // An empty code yields castcircle://join?code=, which the join screen
+    // rejects — the reminder link would be dead. Match _inviteActor: fall
+    // back to text without the link.
+    final deepLink = code.isNotEmpty
         ? PendingJoin.buildUri(code: code, characterName: member.characterName)
         : null;
 
@@ -1324,56 +1304,43 @@ class _CastManagerScreenState extends ConsumerState<CastManagerScreen> {
     CharacterGender.nonGendered => Colors.purple,
   };
 
-  Future<void> _toggleGender(
-    ScriptCharacter char,
-    CharacterGender currentGender,
-  ) async {
-    final newGender = switch (currentGender) {
+  void _toggleGender(ScriptCharacter char) {
+    final newGender = switch (char.gender) {
       CharacterGender.female => CharacterGender.male,
       CharacterGender.male => CharacterGender.nonGendered,
       CharacterGender.nonGendered => CharacterGender.female,
     };
 
     final production = ref.read(currentProductionProvider);
-    if (production == null) return;
-    try {
-      await VoiceConfigService.instance.setGender(
+    if (production != null) {
+      VoiceConfigService.instance.setGender(
         production.id,
         char.name,
         newGender,
       );
-    } catch (e, stack) {
-      DebugLogService.instance.logError(
-        LogCategory.general,
-        'Saving ${char.name} gender failed',
-        e,
-        stack,
-      );
-      if (mounted) {
-        ScaffoldMessenger.of(context).showAutoToast(
-          const SnackBar(content: Text('Could not save character gender')),
-        );
-      }
-      return;
     }
-    if (!mounted) return;
+    // Keep the in-memory overrides in step so this build's voice assignment
+    // reflects the toggle immediately.
+    _genderOverrides[char.name] = newGender;
 
-    setState(() => _genderOverrides[char.name] = newGender);
     final script = ref.read(currentScriptProvider);
-    if (script == null) return;
-    final updatedCharacters = script.characters.map((c) {
-      if (c.name == char.name) return c.copyWith(gender: newGender);
-      return c;
-    }).toList();
+    if (script != null) {
+      final updatedCharacters = script.characters.map((c) {
+        if (c.name == char.name) return c.copyWith(gender: newGender);
+        return c;
+      }).toList();
 
-    ref.read(currentScriptProvider.notifier).state = ParsedScript(
-      title: script.title,
-      lines: script.lines,
-      characters: updatedCharacters,
-      scenes: script.scenes,
-      rawText: script.rawText,
-    );
-    scheduleScriptSave(ref);
+      ref.read(currentScriptProvider.notifier).state = ParsedScript(
+        title: script.title,
+        lines: script.lines,
+        characters: updatedCharacters,
+        scenes: script.scenes,
+        rawText: script.rawText,
+      );
+      // Editor mutations used to live in memory only — an app kill, or
+      // simply opening another production, silently discarded them.
+      scheduleScriptSave(ref);
+    }
   }
 
   // -- Voice config --
@@ -1388,7 +1355,6 @@ class _CastManagerScreenState extends ConsumerState<CastManagerScreen> {
 
     String selectedVoice = currentVoice;
     double selectedSpeed = currentSpeed;
-    bool isPersisting = false;
 
     showModalBottomSheet(
       context: context,
@@ -1425,87 +1391,39 @@ class _CastManagerScreenState extends ConsumerState<CastManagerScreen> {
                     ),
                     if (_voiceOverrides.containsKey(char.name))
                       TextButton(
-                        onPressed: isPersisting
-                            ? null
-                            : () async {
-                                if (isPersisting) return;
-                                setSheetState(() => isPersisting = true);
-                                try {
-                                  await _voiceConfig.removeOverride(
-                                    production.id,
-                                    char.name,
-                                  );
-                                  final overrides = await _voiceConfig
-                                      .getOverrides(production.id);
-                                  if (mounted) {
-                                    setState(() => _voiceOverrides = overrides);
-                                  }
-                                  if (ctx.mounted) Navigator.pop(ctx);
-                                } catch (e, stack) {
-                                  DebugLogService.instance.logError(
-                                    LogCategory.general,
-                                    'Resetting ${char.name} voice failed',
-                                    e,
-                                    stack,
-                                  );
-                                  if (ctx.mounted) {
-                                    ScaffoldMessenger.of(ctx).showAutoToast(
-                                      const SnackBar(
-                                        content: Text(
-                                          'Could not reset the voice',
-                                        ),
-                                      ),
-                                    );
-                                  }
-                                } finally {
-                                  if (ctx.mounted) {
-                                    setSheetState(() => isPersisting = false);
-                                  }
-                                }
-                              },
+                        onPressed: () async {
+                          await _voiceConfig.removeOverride(
+                            production.id,
+                            char.name,
+                          );
+                          final overrides = await _voiceConfig.getOverrides(
+                            production.id,
+                          );
+                          if (mounted) {
+                            setState(() => _voiceOverrides = overrides);
+                          }
+                          if (ctx.mounted) Navigator.pop(ctx);
+                        },
                         child: const Text('Reset'),
                       ),
                     FilledButton(
-                      onPressed: isPersisting
-                          ? null
-                          : () async {
-                              if (isPersisting) return;
-                              setSheetState(() => isPersisting = true);
-                              try {
-                                await _voiceConfig.setOverride(
-                                  production.id,
-                                  CharacterVoiceConfig(
-                                    characterName: char.name,
-                                    voiceId: selectedVoice,
-                                    speed: selectedSpeed,
-                                  ),
-                                );
-                                final overrides = await _voiceConfig
-                                    .getOverrides(production.id);
-                                if (mounted) {
-                                  setState(() => _voiceOverrides = overrides);
-                                }
-                                if (ctx.mounted) Navigator.pop(ctx);
-                              } catch (e, stack) {
-                                DebugLogService.instance.logError(
-                                  LogCategory.general,
-                                  'Saving ${char.name} voice failed',
-                                  e,
-                                  stack,
-                                );
-                                if (ctx.mounted) {
-                                  ScaffoldMessenger.of(ctx).showAutoToast(
-                                    const SnackBar(
-                                      content: Text('Could not save the voice'),
-                                    ),
-                                  );
-                                }
-                              } finally {
-                                if (ctx.mounted) {
-                                  setSheetState(() => isPersisting = false);
-                                }
-                              }
-                            },
+                      onPressed: () async {
+                        await _voiceConfig.setOverride(
+                          production.id,
+                          CharacterVoiceConfig(
+                            characterName: char.name,
+                            voiceId: selectedVoice,
+                            speed: selectedSpeed,
+                          ),
+                        );
+                        final overrides = await _voiceConfig.getOverrides(
+                          production.id,
+                        );
+                        if (mounted) {
+                          setState(() => _voiceOverrides = overrides);
+                        }
+                        if (ctx.mounted) Navigator.pop(ctx);
+                      },
                       child: const Text('Save'),
                     ),
                   ],

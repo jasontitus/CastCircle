@@ -16,9 +16,27 @@ warn() { echo "⚠ $*"; }
 bad()  { echo "✗ $*"; FAIL=1; }
 ok()   { echo "✓ $*"; }
 
-VERSION_LINE="$(grep '^version:' pubspec.yaml)"
-VERSION_NAME="${VERSION_LINE#version: }"; VERSION_NAME="${VERSION_NAME%%+*}"
-VERSION_CODE="${VERSION_LINE##*+}"
+if ! VERSION_LINE="$(awk '/^version:/ { count++; line=$0 } END { if (count != 1) exit 1; print line }' pubspec.yaml)"; then
+  echo "✗ pubspec.yaml must contain exactly one version: line." >&2
+  exit 1
+fi
+case "$VERSION_LINE" in
+  'version: '*) VERSION_VALUE="${VERSION_LINE#version: }" ;;
+  *) echo "✗ pubspec.yaml version must use 'version: <name>+<numericCode>'." >&2; exit 1 ;;
+esac
+VERSION_NAME="${VERSION_VALUE%%+*}"
+VERSION_CODE="${VERSION_VALUE#*+}"
+if [[ "$VERSION_VALUE" != *+* || "$VERSION_NAME" == "$VERSION_VALUE" ]]; then
+  echo "✗ pubspec.yaml version '$VERSION_VALUE' has no numeric +versionCode." >&2
+  exit 1
+fi
+case "$VERSION_CODE" in
+  ''|*[!0-9]*) echo "✗ pubspec.yaml versionCode must be one decimal integer (got '$VERSION_CODE')." >&2; exit 1 ;;
+esac
+if ! printf '%s\n' "$VERSION_NAME" | grep -E '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z]+([.-][0-9A-Za-z]+)*)?$' >/dev/null; then
+  echo "✗ pubspec.yaml version name is malformed (got '$VERSION_NAME')." >&2
+  exit 1
+fi
 echo "▶ CastCircle $VERSION_NAME (versionCode $VERSION_CODE)"
 echo
 
@@ -68,12 +86,34 @@ fi
 # ── 5. Graphics ───────────────────────────────────────────
 IMG="$MD/images"
 if [[ -f "$IMG/icon.png" ]]; then
-  read -r W Hh <<<"$(sips -g pixelWidth -g pixelHeight "$IMG/icon.png" 2>/dev/null | awk '/pixel/{print $2}' | tr '\n' ' ')"
-  [[ "$W" == "512" && "$Hh" == "512" ]] && ok "icon.png 512×512" || bad "icon.png must be 512×512 (is ${W}×${Hh})"
-  # Play rejects a store icon with an alpha channel.
-  HAS_ALPHA=$(python3 -c "from PIL import Image; print(1 if Image.open('$IMG/icon.png').mode in ('RGBA','LA','P') else 0)" 2>/dev/null || echo 0)
-  if [[ "$HAS_ALPHA" == "1" ]]; then
-    bad "icon.png has an alpha channel — Play rejects it (regenerate: scripts/generate-icons.py)"
+  ICON_INFO=""
+  if ICON_INFO="$(python3 - "$IMG/icon.png" 2>&1 <<'PYEOF'
+import sys
+from PIL import Image
+
+with Image.open(sys.argv[1]) as image:
+    image.load()
+    has_alpha = (
+        image.mode == "P"
+        or "A" in image.getbands()
+        or "transparency" in image.info
+    )
+    print(image.width, image.height, "ALPHA" if has_alpha else "OPAQUE")
+PYEOF
+)"; then
+    read -r W Hh ALPHA_STATUS EXTRA <<< "$ICON_INFO"
+    if [[ -n "${EXTRA:-}" || -z "${W:-}" || -z "${Hh:-}" || -z "${ALPHA_STATUS:-}" ]]; then
+      bad "icon.png verifier returned malformed output"
+    else
+      [[ "$W" == "512" && "$Hh" == "512" ]] && ok "icon.png 512×512" || bad "icon.png must be 512×512 (is ${W}×${Hh})"
+      case "$ALPHA_STATUS" in
+        OPAQUE) ok "icon.png decoded and verified opaque" ;;
+        ALPHA) bad "icon.png has an alpha channel — Play rejects it (regenerate: scripts/generate-icons.py)" ;;
+        *) bad "icon.png verifier returned unknown alpha state '$ALPHA_STATUS'" ;;
+      esac
+    fi
+  else
+    bad "icon.png could not be decoded and verified: $ICON_INFO"
   fi
 else
   bad "$IMG/icon.png missing"

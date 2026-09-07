@@ -1,3 +1,7 @@
+import 'dart:io';
+
+import 'package:castcircle/data/database/app_database.dart';
+import 'package:drift/native.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:castcircle/data/services/stt_adaptation_service.dart';
 
@@ -150,10 +154,23 @@ void main() {
 
   group('SttAdaptationService', () {
     late SttAdaptationService service;
+    late AppDatabase database;
+    late Directory documentsDirectory;
 
-    setUp(() {
-      // Use the singleton but clear state by accessing it fresh
-      service = SttAdaptationService.instance;
+    setUp(() async {
+      documentsDirectory = await Directory.systemTemp.createTemp(
+        'castcircle_stt_test_',
+      );
+      database = AppDatabase.forTesting(NativeDatabase.memory());
+      service = SttAdaptationService(
+        database,
+        documentsDirectory: () async => documentsDirectory,
+      );
+    });
+
+    tearDown(() async {
+      await database.close();
+      await documentsDirectory.delete(recursive: true);
     });
 
     test('getActorProfile returns default for unknown actor', () {
@@ -169,21 +186,37 @@ void main() {
       expect(profile.samples, isEmpty);
     });
 
-    test('addSample populates both actor and production profiles', () {
-      service.addSample(
-        productionId: 'test-prod',
-        actorId: 'ELIZABETH',
-        audioPath: '/test/audio.m4a',
-        transcript: 'What a fine assembly tonight.',
-        durationMs: 5000,
-      );
+    test(
+      'addSample persists one normalized sample without pooled duplication',
+      () async {
+        await service.addSample(
+          productionId: 'test-prod',
+          actorId: 'ELIZABETH',
+          audioPath: '/test/audio.m4a',
+          transcript: 'What a fine assembly tonight.',
+          durationMs: 5000,
+        );
+        await service.addSample(
+          productionId: 'test-prod',
+          actorId: 'ELIZABETH',
+          audioPath: '/test/audio.m4a',
+          transcript: 'Corrected transcript.',
+          durationMs: 6000,
+        );
 
-      final actorProfile = service.getActorProfile('test-prod', 'ELIZABETH');
-      expect(actorProfile.samples.length, greaterThanOrEqualTo(1));
+        final actorProfile = service.getActorProfile('test-prod', 'ELIZABETH');
+        final prodProfile = service.getProductionProfile('test-prod');
+        final stored = await database.loadSttSamples('test-prod');
 
-      final prodProfile = service.getProductionProfile('test-prod');
-      expect(prodProfile.samples.length, greaterThanOrEqualTo(1));
-    });
+        expect(actorProfile.samples, hasLength(1));
+        expect(actorProfile.samples.single.transcript, 'Corrected transcript.');
+        expect(prodProfile.samples, hasLength(1));
+        expect(prodProfile.totalAudioSeconds, 6);
+        expect(stored, hasLength(1));
+        expect(stored.single.actorId, 'ELIZABETH');
+        expect(stored.single.durationMs, 6000);
+      },
+    );
 
     test('recommendStrategy returns notReady with no data', () {
       final strategy = service.recommendStrategy('empty-prod');

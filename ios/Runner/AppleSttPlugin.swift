@@ -7,6 +7,325 @@ import UIKit
 import Speech
 import AVFoundation
 import Accelerate
+import Darwin
+
+/// Serializes append/end without ever waiting in the realtime callback.
+/// Teardown may wait for an in-flight append; the render thread only try-locks
+/// and drops input if teardown owns the gate.
+private final class RecognitionInputGate {
+    private let request: SFSpeechAudioBufferRecognitionRequest
+    private var mutex = pthread_mutex_t()
+    private var acceptingInput = true
+
+    init(request: SFSpeechAudioBufferRecognitionRequest) {
+        self.request = request
+        pthread_mutex_init(&mutex, nil)
+    }
+
+    deinit {
+        pthread_mutex_destroy(&mutex)
+    }
+
+    func append(_ buffer: AVAudioPCMBuffer) {
+        guard pthread_mutex_trylock(&mutex) == 0 else { return }
+        if acceptingInput {
+            request.append(buffer)
+        }
+        pthread_mutex_unlock(&mutex)
+    }
+
+    func endAudio() {
+        pthread_mutex_lock(&mutex)
+        guard acceptingInput else {
+            pthread_mutex_unlock(&mutex)
+            return
+        }
+        acceptingInput = false
+        request.endAudio()
+        pthread_mutex_unlock(&mutex)
+    }
+}
+
+private final class AppleSttSession {
+    let generation: UInt64
+    let input: RecognitionInputGate
+    var recognitionTask: SFSpeechRecognitionTask?
+    var terminalEventSent = false
+
+    private var levelMutex = pthread_mutex_t()
+    private var latestLevel = 0.0
+    private var hasLevel = false
+    private let levelSource: DispatchSourceUserDataAdd
+
+    init(
+        generation: UInt64,
+        request: SFSpeechAudioBufferRecognitionRequest,
+        onLevel: @escaping (UInt64, Double) -> Void
+    ) {
+        self.generation = generation
+        input = RecognitionInputGate(request: request)
+        levelSource = DispatchSource.makeUserDataAddSource(queue: .main)
+        pthread_mutex_init(&levelMutex, nil)
+        levelSource.setEventHandler { [weak self] in
+            guard let self = self else { return }
+            pthread_mutex_lock(&self.levelMutex)
+            let shouldEmit = self.hasLevel
+            let value = self.latestLevel
+            self.hasLevel = false
+            pthread_mutex_unlock(&self.levelMutex)
+            if shouldEmit {
+                onLevel(self.generation, value)
+            }
+        }
+        levelSource.resume()
+    }
+
+    deinit {
+        levelSource.cancel()
+        pthread_mutex_destroy(&levelMutex)
+    }
+
+    func publishLevel(_ value: Double) {
+        guard pthread_mutex_trylock(&levelMutex) == 0 else { return }
+        latestLevel = value
+        hasLevel = true
+        pthread_mutex_unlock(&levelMutex)
+        levelSource.add(data: 1)
+    }
+
+    func stop() {
+        input.endAudio()
+        recognitionTask?.cancel()
+        recognitionTask = nil
+    }
+}
+
+final class RecordingBufferSlot {
+    let buffer: AVAudioPCMBuffer
+    var state = 0 // 0 = free, 1 = ready, 2 = writer owns it
+    var enqueueSequence: UInt64 = 0
+
+    init(buffer: AVAudioPCMBuffer) {
+        self.buffer = buffer
+    }
+}
+
+func oldestReadyRecordingSlot(
+    in slots: [RecordingBufferSlot]
+) -> RecordingBufferSlot? {
+    var oldest: RecordingBufferSlot?
+    for slot in slots where slot.state == 1 {
+        if oldest == nil
+            || slot.enqueueSequence < oldest!.enqueueSequence {
+            oldest = slot
+        }
+    }
+    return oldest
+}
+
+private final class RealtimeRecordingPipeline {
+    struct FinishedCapture {
+        let cafURL: URL
+        let writeError: Error?
+    }
+
+    private let writerQueue = DispatchQueue(
+        label: "com.lineguide.stt.audiofile",
+        qos: .userInitiated
+    )
+    private var source: DispatchSourceUserDataAdd!
+    private var mutex = pthread_mutex_t()
+    private var slots: [RecordingBufferSlot] = []
+    private var format: AVAudioFormat?
+    private var file: AVAudioFile?
+    private var cafURL: URL?
+    private var acceptingInput = false
+    private var writeError: Error?
+    private var finishHandler: ((FinishedCapture) -> Void)?
+    private var nextEnqueueSequence: UInt64 = 0
+    private(set) var droppedBuffers: UInt64 = 0
+
+    init() {
+        pthread_mutex_init(&mutex, nil)
+        source = DispatchSource.makeUserDataAddSource(queue: writerQueue)
+        source.setEventHandler { [weak self] in
+            self?.drain()
+        }
+        source.resume()
+    }
+
+    deinit {
+        source.cancel()
+        pthread_mutex_destroy(&mutex)
+    }
+
+    func prepare(format newFormat: AVAudioFormat, frameCapacity: AVAudioFrameCount) -> Bool {
+        pthread_mutex_lock(&mutex)
+        defer { pthread_mutex_unlock(&mutex) }
+
+        if let format = format,
+           format.isEqual(newFormat),
+           slots.first?.buffer.frameCapacity ?? 0 >= frameCapacity {
+            return true
+        }
+        guard file == nil, slots.allSatisfy({ $0.state == 0 }) else {
+            return false
+        }
+
+        var prepared: [RecordingBufferSlot] = []
+        prepared.reserveCapacity(8)
+        for _ in 0..<8 {
+            guard let buffer = AVAudioPCMBuffer(
+                pcmFormat: newFormat,
+                frameCapacity: frameCapacity
+            ) else {
+                return false
+            }
+            prepared.append(RecordingBufferSlot(buffer: buffer))
+        }
+        slots = prepared
+        format = newFormat
+        return true
+    }
+
+    func start(file newFile: AVAudioFile, cafURL newURL: URL) -> Bool {
+        pthread_mutex_lock(&mutex)
+        defer { pthread_mutex_unlock(&mutex) }
+        guard file == nil, finishHandler == nil,
+              slots.allSatisfy({ $0.state == 0 }) else {
+            return false
+        }
+        file = newFile
+        cafURL = newURL
+        writeError = nil
+        acceptingInput = true
+        droppedBuffers = 0
+        nextEnqueueSequence = 0
+        return true
+    }
+
+    func enqueue(_ input: AVAudioPCMBuffer) {
+        guard pthread_mutex_trylock(&mutex) == 0 else { return }
+        guard acceptingInput, file != nil else {
+            pthread_mutex_unlock(&mutex)
+            return
+        }
+        guard let slot = slots.first(where: { $0.state == 0 }),
+              Self.copy(input, into: slot.buffer) else {
+            droppedBuffers &+= 1
+            pthread_mutex_unlock(&mutex)
+            return
+        }
+        slot.enqueueSequence = nextEnqueueSequence
+        nextEnqueueSequence &+= 1
+        slot.state = 1
+        pthread_mutex_unlock(&mutex)
+        source.add(data: 1)
+    }
+
+    func finish(_ completion: @escaping (FinishedCapture) -> Void) -> Bool {
+        pthread_mutex_lock(&mutex)
+        guard file != nil, cafURL != nil, finishHandler == nil else {
+            pthread_mutex_unlock(&mutex)
+            return false
+        }
+        acceptingInput = false
+        finishHandler = completion
+        pthread_mutex_unlock(&mutex)
+        source.add(data: 1)
+        return true
+    }
+
+    private func drain() {
+        while true {
+            pthread_mutex_lock(&mutex)
+
+            if writeError != nil {
+                for slot in slots where slot.state == 1 {
+                    slot.state = 0
+                }
+            }
+
+            guard let slot = oldestReadyRecordingSlot(in: slots),
+                  let currentFile = file else {
+                let hasOwnedSlot = slots.contains(where: { $0.state != 0 })
+                if !hasOwnedSlot,
+                   let completion = finishHandler,
+                   let cafURL = cafURL {
+                    let capture = FinishedCapture(
+                        cafURL: cafURL,
+                        writeError: writeError
+                    )
+                    file = nil
+                    self.cafURL = nil
+                    finishHandler = nil
+                    pthread_mutex_unlock(&mutex)
+                    DispatchQueue.main.async {
+                        completion(capture)
+                    }
+                } else {
+                    pthread_mutex_unlock(&mutex)
+                }
+                return
+            }
+
+            slot.state = 2
+            pthread_mutex_unlock(&mutex)
+
+            var failure: Error?
+            do {
+                try currentFile.write(from: slot.buffer)
+            } catch {
+                failure = error
+            }
+
+            pthread_mutex_lock(&mutex)
+            slot.state = 0
+            if let failure = failure {
+                writeError = failure
+                acceptingInput = false
+            }
+            pthread_mutex_unlock(&mutex)
+        }
+    }
+
+    private static func copy(
+        _ input: AVAudioPCMBuffer,
+        into destination: AVAudioPCMBuffer
+    ) -> Bool {
+        guard input.format.isEqual(destination.format),
+              input.frameLength <= destination.frameCapacity else {
+            return false
+        }
+
+        destination.frameLength = destination.frameCapacity
+        let sourceBuffers = UnsafeMutableAudioBufferListPointer(
+            UnsafeMutablePointer(mutating: input.audioBufferList)
+        )
+        let destinationBuffers = UnsafeMutableAudioBufferListPointer(
+            destination.mutableAudioBufferList
+        )
+        guard sourceBuffers.count == destinationBuffers.count else {
+            destination.frameLength = 0
+            return false
+        }
+
+        for index in 0..<sourceBuffers.count {
+            let source = sourceBuffers[index]
+            let capacity = Int(destinationBuffers[index].mDataByteSize)
+            let byteCount = Int(source.mDataByteSize)
+            guard byteCount <= capacity,
+                  let sourceData = source.mData,
+                  let destinationData = destinationBuffers[index].mData else {
+                destination.frameLength = 0
+                return false
+            }
+            memcpy(destinationData, sourceData, byteCount)
+        }
+        destination.frameLength = input.frameLength
+        return true
+    }
+}
 
 /// Native Apple SFSpeechRecognizer plugin with contextualStrings support.
 /// Provides real-time streaming STT with vocabulary hinting.
@@ -18,101 +337,18 @@ import Accelerate
 class AppleSttPlugin: NSObject {
     private let channel: FlutterMethodChannel
     private var recognizer: SFSpeechRecognizer?
-    private var recognitionRequest: SFSpeechAudioBufferRecognitionRequest?
-    private let recognitionRequestLock = NSLock()
-    private var recognitionTask: SFSpeechRecognitionTask?
+    private static let captureFinalizationQueue = DispatchQueue(
+        label: "com.lineguide.stt.finalization",
+        qos: .userInitiated
+    )
     private let audioEngine = AVAudioEngine()
+    private let recordingPipeline = RealtimeRecordingPipeline()
+    private var activeSession: AppleSttSession?
+    private var nextGeneration: UInt64 = 0
     private var authorized = false
-    /// Main-queue generation token. Late callbacks from a stopped recognizer
-    /// must not tear down a newer session.
-    private var sessionGeneration: UInt = 0
-    private var hasInstalledTap = false
-
-    // Concurrent audio recording during STT
-    /// The file itself is queue-confined. The small buffer-pool lock only
-    /// protects render-thread buffer ownership and the recording-active flag;
-    /// disk I/O never runs while that lock is held.
-    private var audioFile: AVAudioFile?
-    private let audioFileQueue = DispatchQueue(label: "com.lineguide.stt.audiofile")
-    private let recordingBufferLock = NSLock()
-    private var recordingActive = false
-    private var recordingBufferPool: [AVAudioPCMBuffer] = []
-    private static let tapBufferSize: AVAudioFrameCount = 4096
-    private static let recordingBufferPoolSize = 8
-
     private var recordingStartTime: Date?
     private var recordingPath: String?
-    private var recordingCafPath: String?
     private var tapFormat: AVAudioFormat?
-
-    /// Copy into a preallocated buffer. The tap's source buffer is reused as
-    /// soon as its callback returns.
-    private static func copyBuffer(
-        _ source: AVAudioPCMBuffer,
-        into destination: AVAudioPCMBuffer
-    ) -> Bool {
-        guard destination.frameCapacity >= source.frameLength else { return false }
-        destination.frameLength = source.frameLength
-        if let src = source.floatChannelData, let dst = destination.floatChannelData {
-            for channel in 0..<Int(source.format.channelCount) {
-                dst[channel].update(from: src[channel], count: Int(source.frameLength))
-            }
-            return true
-        }
-        if let src = source.int16ChannelData, let dst = destination.int16ChannelData {
-            for channel in 0..<Int(source.format.channelCount) {
-                dst[channel].update(from: src[channel], count: Int(source.frameLength))
-            }
-            return true
-        }
-        return false
-    }
-
-    private func appendToRecognitionRequest(
-        _ buffer: AVAudioPCMBuffer,
-        request: SFSpeechAudioBufferRecognitionRequest
-    ) {
-        recognitionRequestLock.lock()
-        if recognitionRequest === request {
-            request.append(buffer)
-        }
-        recognitionRequestLock.unlock()
-    }
-
-    private func enqueueRecordingBuffer(_ source: AVAudioPCMBuffer) {
-        recordingBufferLock.lock()
-        guard recordingActive, let destination = recordingBufferPool.popLast() else {
-            recordingBufferLock.unlock()
-            return
-        }
-        guard Self.copyBuffer(source, into: destination) else {
-            recordingBufferPool.append(destination)
-            recordingBufferLock.unlock()
-            return
-        }
-
-        // Enqueue while holding the ownership lock. stopRecording first takes
-        // this lock to disable capture, then drains audioFileQueue, so no tap
-        // write can arrive after the drain.
-        audioFileQueue.async { [weak self] in
-            guard let self else { return }
-            if let file = self.audioFile {
-                do {
-                    try file.write(from: destination)
-                } catch {
-                    NSLog("AppleStt: audioFile.write FAILED: \(error)")
-                    self.audioFile = nil
-                    self.recordingBufferLock.lock()
-                    self.recordingActive = false
-                    self.recordingBufferLock.unlock()
-                }
-            }
-            self.recordingBufferLock.lock()
-            self.recordingBufferPool.append(destination)
-            self.recordingBufferLock.unlock()
-        }
-        recordingBufferLock.unlock()
-    }
 
     init(messenger: FlutterBinaryMessenger) {
         channel = FlutterMethodChannel(
@@ -170,6 +406,20 @@ class AppleSttPlugin: NSObject {
     #endif
 
     func handle(_ call: FlutterMethodCall, result: @escaping FlutterResult) {
+        guard Thread.isMainThread else {
+            DispatchQueue.main.async { [weak self] in
+                guard let self = self else {
+                    result(FlutterError(
+                        code: "PLUGIN_UNAVAILABLE",
+                        message: "Speech plugin was released",
+                        details: nil
+                    ))
+                    return
+                }
+                self.handle(call, result: result)
+            }
+            return
+        }
         switch call.method {
         case "initialize":
             let args = call.arguments as? [String: Any] ?? [:]
@@ -177,24 +427,10 @@ class AppleSttPlugin: NSObject {
             initialize(locale: locale, result: result)
         case "listen":
             let args = call.arguments as? [String: Any] ?? [:]
-            guard let sessionId = args["sessionId"] as? Int else {
-                result(FlutterError(
-                    code: "INVALID_ARGS",
-                    message: "Missing sessionId",
-                    details: nil
-                ))
-                return
-            }
             let hints = args["contextualStrings"] as? [String] ?? []
             let onDevice = args["onDevice"] as? Bool ?? false
             let locale = args["locale"] as? String
-            listen(
-                contextualStrings: hints,
-                onDevice: onDevice,
-                locale: locale,
-                sessionId: sessionId,
-                result: result
-            )
+            listen(contextualStrings: hints, onDevice: onDevice, locale: locale, result: result)
         case "stop":
             stopListening(result: result)
         case "startRecording":
@@ -252,166 +488,143 @@ class AppleSttPlugin: NSObject {
         contextualStrings: [String],
         onDevice: Bool,
         locale: String?,
-        sessionId: Int,
         result: @escaping FlutterResult
     ) {
-        // Always fully stop any previous session first to prevent
-        // "tap already installed" crash from rapid jump-backs
         stopCurrentSession()
 
-        // If a different locale is requested, recreate the recognizer
-        if let locale = locale {
-            let newRecognizer = SFSpeechRecognizer(locale: Locale(identifier: locale))
-            if newRecognizer != nil {
-                recognizer = newRecognizer
-                NSLog("AppleStt: Switched locale to \(locale)")
-            }
+        if let locale = locale,
+           let newRecognizer = SFSpeechRecognizer(
+               locale: Locale(identifier: locale)
+           ) {
+            recognizer = newRecognizer
+            NSLog("AppleStt: Switched locale to \(locale)")
         }
 
         guard authorized, let recognizer = recognizer, recognizer.isAvailable else {
-            result(FlutterError(code: "NOT_READY", message: "Speech recognizer not available", details: nil))
-            return
-        }
-        guard !onDevice || recognizer.supportsOnDeviceRecognition else {
             result(FlutterError(
-                code: "ON_DEVICE_UNAVAILABLE",
-                message: "On-device speech recognition is not available",
+                code: "NOT_READY",
+                message: "Speech recognizer not available",
                 details: nil
             ))
             return
         }
 
-        // Configure audio session (iOS only — macOS has no AVAudioSession;
-        // AVAudioEngine uses the default input device directly).
         #if os(iOS)
         let audioSession = AVAudioSession.sharedInstance()
         do {
-            try audioSession.setCategory(.record, mode: .default, options: .duckOthers)
-            try audioSession.setActive(true, options: .notifyOthersOnDeactivation)
+            try audioSession.setCategory(
+                .record,
+                mode: .default,
+                options: .duckOthers
+            )
+            try audioSession.setActive(
+                true,
+                options: .notifyOthersOnDeactivation
+            )
         } catch {
             NSLog("AppleStt: Audio session error: \(error)")
-            result(FlutterError(code: "AUDIO_ERROR", message: error.localizedDescription, details: nil))
+            result(FlutterError(
+                code: "AUDIO_ERROR",
+                message: error.localizedDescription,
+                details: nil
+            ))
             return
         }
         #endif
 
         let request = SFSpeechAudioBufferRecognitionRequest()
-
         request.shouldReportPartialResults = true
         request.taskHint = .dictation
-
-        // When Dart requires offline recognition, fail above if the selected
-        // recognizer cannot honor it rather than silently sending audio to a
-        // server.
-        request.requiresOnDeviceRecognition = onDevice
-
-        // Vocabulary hints — the key feature for script line matching
+        if onDevice, recognizer.supportsOnDeviceRecognition {
+            request.requiresOnDeviceRecognition = false
+        }
         if !contextualStrings.isEmpty {
             request.contextualStrings = contextualStrings
-            NSLog("AppleStt: Set \(contextualStrings.count) contextual strings")
+            // Script text is private. Release diagnostics retain only metadata.
+            NSLog(
+                "AppleStt: Set %d contextual strings for locale %@",
+                contextualStrings.count,
+                recognizer.locale.identifier
+            )
         }
-
-        // Auto-punctuation (iOS 16+ / macOS 13+)
         if #available(iOS 16.0, macOS 13.0, *) {
-            request.addsPunctuation = false // Don't add punctuation for line matching
+            request.addsPunctuation = false
         }
 
-        recognitionRequestLock.lock()
-        recognitionRequest = request
-        recognitionRequestLock.unlock()
-        let generation = sessionGeneration
-
-        // Speech invokes this handler on an internal queue. Marshal every
-        // session-state mutation and Flutter event onto the main queue, and
-        // ignore callbacks belonging to an already-stopped session.
-        recognitionTask = recognizer.recognitionTask(with: request) {
-            [weak self] recognitionResult, error in
-            let text = recognitionResult?.bestTranscription.formattedString
-            let isFinal = recognitionResult?.isFinal ?? false
-            let errorDescription = error?.localizedDescription
-
-            DispatchQueue.main.async { [weak self] in
-                guard let self, self.sessionGeneration == generation else { return }
-
-                if let text {
-                    self.channel.invokeMethod("onResult", arguments: [
-                        "text": text,
-                        "isFinal": isFinal,
-                        "sessionId": sessionId,
-                    ])
-                }
-
-                if let errorDescription {
-                    NSLog("AppleStt: Recognition error: \(errorDescription)")
-                    self.stopCurrentSession()
-                    self.channel.invokeMethod("onError", arguments: [
-                        "error": errorDescription,
-                        "sessionId": sessionId,
-                    ])
-                    self.channel.invokeMethod(
-                        "onDone",
-                        arguments: ["sessionId": sessionId]
-                    )
-                } else if isFinal {
-                    self.stopCurrentSession()
-                    self.channel.invokeMethod(
-                        "onDone",
-                        arguments: ["sessionId": sessionId]
-                    )
-                }
-            }
-        }
-
-        // Install audio tap and start engine
         let inputNode = audioEngine.inputNode
+        if audioEngine.isRunning {
+            audioEngine.stop()
+        }
+        inputNode.removeTap(onBus: 0)
 
         let recordingFormat = inputNode.outputFormat(forBus: 0)
-        tapFormat = recordingFormat // cache for startRecording
+        guard recordingPipeline.prepare(
+            format: recordingFormat,
+            frameCapacity: 4_096
+        ) else {
+            result(FlutterError(
+                code: "RECORDING_BUSY",
+                message: "Active recording format cannot be replaced",
+                details: nil
+            ))
+            return
+        }
+        tapFormat = recordingFormat
 
-        // The mic tap: feed the recognizer, mirror buffers to the recording
-        // file, and report mic energy. Defined once so both the iOS
-        // (exception-guarded) and macOS install paths share it.
-        let tapBlock: AVAudioNodeTapBlock = { [weak self] buffer, _ in
-            guard let self else { return }
-            self.appendToRecognitionRequest(buffer, request: request)
-            // Concurrent recording uses a bounded pool allocated by
-            // startRecording. The render thread only copies into a free
-            // buffer; the file queue owns that buffer until the write ends.
-            self.enqueueRecordingBuffer(buffer)
-            // Mic energy for Dart-side endpointing and level UI.
-            // ~12 events/sec at 4096 frames — cheap enough to send raw.
-            let level = AppleSttPlugin.rmsLevel(buffer: buffer)
-            DispatchQueue.main.async { [weak self] in
-                guard let self, self.sessionGeneration == generation else { return }
-                self.channel.invokeMethod("onLevel", arguments: [
-                    "level": level,
-                    "sessionId": sessionId,
-                ])
+        nextGeneration &+= 1
+        let generation = nextGeneration
+        let session = AppleSttSession(
+            generation: generation,
+            request: request
+        ) { [weak self] callbackGeneration, level in
+            guard let self = self,
+                  self.activeSession?.generation == callbackGeneration else {
+                return
             }
+            self.channel.invokeMethod("onLevel", arguments: level)
+        }
+        activeSession = session
+
+        session.recognitionTask = recognizer.recognitionTask(
+            with: request
+        ) { [weak self, weak session] recognitionResult, error in
+            DispatchQueue.main.async {
+                guard let self = self, let session = session else { return }
+                self.handleRecognitionCallback(
+                    recognitionResult,
+                    error: error,
+                    session: session
+                )
+            }
+        }
+
+        let recordingPipeline = self.recordingPipeline
+        let tapBlock: AVAudioNodeTapBlock = { [weak session] buffer, _ in
+            guard let session = session else { return }
+            session.input.append(buffer)
+            recordingPipeline.enqueue(buffer)
+            session.publishLevel(Self.rmsLevel(buffer: buffer))
         }
 
         var tapInstalled = false
         #if os(iOS)
-        // installTap throws an ObjC NSException (not a Swift error) if a tap
-        // is already installed. Wrap in the ObjC exception catcher (reachable
-        // via the iOS bridging header).
         ObjCExceptionCatcher.try({
             inputNode.installTap(
                 onBus: 0,
-                bufferSize: Self.tapBufferSize,
+                bufferSize: 4_096,
                 format: recordingFormat,
                 block: tapBlock
             )
             tapInstalled = true
         }, catch: { exception in
-            NSLog("AppleStt: installTap exception: \(String(describing: exception))")
+            NSLog(
+                "AppleStt: installTap exception: \(String(describing: exception))"
+            )
         })
         #else
-        // macOS has no Runner bridging header for ObjCExceptionCatcher. We
-        // already stop the engine and removeTap above, so install directly.
         inputNode.installTap(
             onBus: 0,
-            bufferSize: Self.tapBufferSize,
+            bufferSize: 4_096,
             format: recordingFormat,
             block: tapBlock
         )
@@ -419,23 +632,76 @@ class AppleSttPlugin: NSObject {
         #endif
 
         guard tapInstalled else {
-            NSLog("AppleStt: Failed to install tap, aborting listen")
-            stopCurrentSession()
-            result(FlutterError(code: "TAP_FAILED", message: "Could not install audio tap", details: nil))
+            stopCurrentSession(ifActive: session)
+            result(FlutterError(
+                code: "TAP_FAILED",
+                message: "Could not install audio tap",
+                details: nil
+            ))
             return
         }
-        hasInstalledTap = true
 
         do {
             audioEngine.prepare()
             try audioEngine.start()
-            NSLog("AppleStt: Listening started")
+            NSLog("AppleStt: Listening started (generation \(generation))")
             result(true)
         } catch {
             NSLog("AppleStt: Engine start error: \(error)")
-            stopCurrentSession()
-            result(FlutterError(code: "ENGINE_ERROR", message: error.localizedDescription, details: nil))
+            stopCurrentSession(ifActive: session)
+            result(FlutterError(
+                code: "ENGINE_ERROR",
+                message: error.localizedDescription,
+                details: nil
+            ))
         }
+    }
+
+    private func handleRecognitionCallback(
+        _ recognitionResult: SFSpeechRecognitionResult?,
+        error: Error?,
+        session: AppleSttSession
+    ) {
+        guard activeSession === session,
+              !session.terminalEventSent else {
+            return
+        }
+
+        if let recognitionResult = recognitionResult {
+            channel.invokeMethod("onResult", arguments: [
+                "text": recognitionResult.bestTranscription.formattedString,
+                "isFinal": recognitionResult.isFinal,
+            ])
+            if recognitionResult.isFinal {
+                finish(session: session, error: nil)
+                return
+            }
+        }
+
+        if let error = error {
+            finish(session: session, error: error)
+        }
+    }
+
+    private func finish(session: AppleSttSession, error: Error?) {
+        guard activeSession === session,
+              !session.terminalEventSent else {
+            return
+        }
+        session.terminalEventSent = true
+        stopCurrentSession(ifActive: session)
+        if let error = error {
+            NSLog(
+                "AppleStt: Recognition error in generation %llu: %@",
+                session.generation,
+                error.localizedDescription
+            )
+            channel.invokeMethod(
+                "onError",
+                arguments: error.localizedDescription
+            )
+        }
+        channel.invokeMethod("onDone", arguments: nil)
     }
 
     private func stopListening(result: @escaping FlutterResult) {
@@ -448,62 +714,59 @@ class AppleSttPlugin: NSObject {
     /// Start recording audio to a file alongside STT.
     /// The audio is captured from the same AVAudioEngine tap.
     private func startRecording(path: String, result: @escaping FlutterResult) {
-        // tapFormat is cached from any PREVIOUS session, so it being non-nil
-        // doesn't mean audio is flowing — require the engine to actually be
-        // running or we'd report success while capturing nothing.
-        guard audioEngine.isRunning, let format = tapFormat else {
-            NSLog("AppleStt: startRecording FAILED — engine not running or no tap format")
-            result(false)
-            return
-        }
-        guard recordingPath == nil else {
-            NSLog("AppleStt: startRecording FAILED — a recording is already active")
-            result(false)
-            return
-        }
-
-        // Allocate the bounded pool away from the render callback.
-        let buffers = (0..<Self.recordingBufferPoolSize).compactMap { _ in
-            AVAudioPCMBuffer(
-                pcmFormat: format,
-                frameCapacity: Self.tapBufferSize
+        guard audioEngine.isRunning, activeSession != nil,
+              let format = tapFormat else {
+            NSLog(
+                "AppleStt: startRecording FAILED — engine not running or no tap format"
             )
+            result(false)
+            return
         }
-        guard buffers.count == Self.recordingBufferPoolSize else {
+        guard !path.isEmpty,
+              URL(fileURLWithPath: path).pathExtension.lowercased() == "m4a"
+        else {
             result(FlutterError(
-                code: "RECORD_ERROR",
-                message: "Could not allocate recording buffers",
+                code: "INVALID_RECORDING_PATH",
+                message: "Recording destination must use an .m4a extension",
                 details: nil
             ))
             return
         }
 
-        // Each stopped take keeps its own immutable CAF while conversion runs.
-        // Re-recording the same destination can therefore start immediately
-        // without rewriting an earlier export's input asset.
-        let cafPath = path + ".\(UUID().uuidString).caf"
+
+        let destinationURL = URL(fileURLWithPath: path)
+        let cafURL = destinationURL
+            .deletingLastPathComponent()
+            .appendingPathComponent(
+                ".\(destinationURL.lastPathComponent).\(UUID().uuidString).recovery.caf"
+            )
+
         do {
             let file = try AVAudioFile(
-                forWriting: URL(fileURLWithPath: cafPath),
+                forWriting: cafURL,
                 settings: format.settings,
                 commonFormat: format.commonFormat,
                 interleaved: format.isInterleaved
             )
-            audioFileQueue.sync { audioFile = file }
-
-            recordingBufferLock.lock()
-            recordingBufferPool = buffers
-            recordingActive = true
-            recordingBufferLock.unlock()
-
+            guard recordingPipeline.start(file: file, cafURL: cafURL) else {
+                try? FileManager.default.removeItem(at: cafURL)
+                result(FlutterError(
+                    code: "ALREADY_RECORDING",
+                    message: "A recording is already active",
+                    details: nil
+                ))
+                return
+            }
             recordingPath = path
-            recordingCafPath = cafPath
             recordingStartTime = Date()
-            NSLog("AppleStt: Recording started → \(cafPath) (PCM \(format.sampleRate)Hz \(format.channelCount)ch)")
+            NSLog(
+                "AppleStt: Recording started (PCM %.0fHz %uch)",
+                format.sampleRate,
+                format.channelCount
+            )
             result(true)
         } catch {
             NSLog("AppleStt: Failed to create audio file: \(error)")
-            audioFileQueue.sync { audioFile = nil }
             result(FlutterError(
                 code: "RECORD_ERROR",
                 message: error.localizedDescription,
@@ -512,168 +775,227 @@ class AppleSttPlugin: NSObject {
         }
     }
 
-    /// Stop recording, convert CAF→M4A, return {path, durationMs}.
+    /// Drains the bounded writer and converts its recovery CAF to a validated
+    /// temporary M4A. Only an atomic rename may replace the prior take.
     private func stopRecording(result: @escaping FlutterResult) {
-        guard let destPath = recordingPath, let cafPath = recordingCafPath else {
+        guard let destinationPath = recordingPath else {
             result(nil)
             return
         }
-
-        let wallDurationMs = Int(
-            (Date().timeIntervalSince(recordingStartTime ?? Date())) * 1000
+        let durationMs = Int(
+            Date().timeIntervalSince(recordingStartTime ?? Date()) * 1_000
         )
 
-        // Disable capture while holding the ownership lock. A render callback
-        // that obtained a pool buffer earlier enqueues its write before
-        // releasing this lock, so the following queue sync drains every write.
-        recordingBufferLock.lock()
-        recordingActive = false
-        recordingBufferLock.unlock()
-        let hadAudioFile = audioFileQueue.sync {
-            let hadAudioFile = audioFile != nil
-            audioFile = nil
-            return hadAudioFile
-        }
-
-        recordingBufferLock.lock()
-        recordingBufferPool.removeAll(keepingCapacity: false)
-        recordingBufferLock.unlock()
-        recordingStartTime = nil
-        recordingPath = nil
-        recordingCafPath = nil
-
-        guard hadAudioFile else {
-            try? FileManager.default.removeItem(atPath: cafPath)
-            result(nil)
-            return
-        }
-
-        let cafSize = (
-            try? FileManager.default.attributesOfItem(atPath: cafPath)[.size] as? Int
-        ) ?? 0
-        NSLog("AppleStt: PCM captured → \(cafPath) (\(wallDurationMs)ms, \(cafSize / 1024)KB)")
-
-        if cafSize < 100 {
-            // Return nil, NOT a success-shaped map: destPath may still hold a
-            // previous capture, and success would save stale audio as this take.
-            NSLog("AppleStt: PCM file too small, discarding")
-            try? FileManager.default.removeItem(atPath: cafPath)
-            result(nil)
-            return
-        }
-
-        // Convert PCM CAF → AAC M4A.
-        DispatchQueue.global(qos: .userInitiated).async {
-            let cafUrl = URL(fileURLWithPath: cafPath)
-            let destUrl = URL(fileURLWithPath: destPath)
-            let asset = AVAsset(url: cafUrl)
-            let sourceDurationMs = Self.milliseconds(
-                for: asset.duration,
-                fallback: wallDurationMs
+        guard recordingPipeline.finish({ capture in
+            if let writeError = capture.writeError {
+                NSLog(
+                    "AppleStt: Recording writer stopped after error: \(writeError)"
+                )
+                Self.completeCaptureFailure(
+                    code: "RECORD_WRITE_FAILED",
+                    message: "Audio capture could not be completed",
+                    cafURL: capture.cafURL,
+                    destinationURL: URL(fileURLWithPath: destinationPath),
+                    result: result
+                )
+                return
+            }
+            Self.finalizeCapture(
+                cafURL: capture.cafURL,
+                destinationURL: URL(fileURLWithPath: destinationPath),
+                durationMs: durationMs,
+                result: result
             )
-            try? FileManager.default.removeItem(at: destUrl)
+        }) else {
+            result(nil)
+            return
+        }
 
-            guard let exportSession = AVAssetExportSession(
-                asset: asset,
-                presetName: AVAssetExportPresetAppleM4A
-            ) else {
-                NSLog("AppleStt: No export session available, keeping CAF")
-                Self.finishWithCaf(
-                    cafUrl: cafUrl,
-                    destUrl: destUrl,
-                    destPath: destPath,
-                    durationMs: sourceDurationMs,
+        recordingPath = nil
+        recordingStartTime = nil
+    }
+
+    private static func finalizeCapture(
+        cafURL: URL,
+        destinationURL: URL,
+        durationMs: Int,
+        result: @escaping FlutterResult
+    ) {
+        captureFinalizationQueue.async {
+            let attributes = try? FileManager.default.attributesOfItem(
+                atPath: cafURL.path
+            )
+            let cafSize = (attributes?[.size] as? NSNumber)?.int64Value ?? 0
+            guard cafSize >= 100 else {
+                completeCaptureFailure(
+                    code: "CAPTURE_INVALID",
+                    message: "Captured audio is empty or invalid",
+                    cafURL: cafURL,
+                    destinationURL: destinationURL,
                     result: result
                 )
                 return
             }
 
-            exportSession.outputURL = destUrl
-            exportSession.outputFileType = .m4a
-
-            // Trim leading and trailing silence by analyzing audio amplitude.
-            let timeRange = Self.detectSpeechRange(in: asset)
-            let outputDurationMs: Int
-            if let timeRange {
-                exportSession.timeRange = timeRange
-                let startMs = Self.milliseconds(for: timeRange.start, fallback: 0)
-                let endMs = Self.milliseconds(
-                    for: CMTimeAdd(timeRange.start, timeRange.duration),
-                    fallback: sourceDurationMs
+            let temporaryURL = destinationURL
+                .deletingLastPathComponent()
+                .appendingPathComponent(
+                    ".\(destinationURL.lastPathComponent).\(UUID().uuidString).tmp.m4a"
                 )
-                outputDurationMs = Self.milliseconds(
-                    for: timeRange.duration,
-                    fallback: sourceDurationMs
+            let sourceAsset = AVAsset(url: cafURL)
+            guard let exportSession = AVAssetExportSession(
+                asset: sourceAsset,
+                presetName: AVAssetExportPresetAppleM4A
+            ) else {
+                completeCaptureFailure(
+                    code: "EXPORT_UNAVAILABLE",
+                    message: "M4A conversion is unavailable",
+                    cafURL: cafURL,
+                    destinationURL: destinationURL,
+                    result: result
                 )
-                NSLog("AppleStt: Trimming silence — speech at \(startMs)ms-\(endMs)ms of \(sourceDurationMs)ms")
-            } else {
-                outputDurationMs = sourceDurationMs
+                return
             }
 
+            exportSession.outputURL = temporaryURL
+            exportSession.outputFileType = .m4a
+            if let timeRange = detectSpeechRange(in: sourceAsset) {
+                exportSession.timeRange = timeRange
+            }
+
+            let exportFinished = DispatchSemaphore(value: 0)
             exportSession.exportAsynchronously {
-                if exportSession.status == .completed {
-                    try? FileManager.default.removeItem(at: cafUrl)
-                    let m4aSize = (
-                        try? FileManager.default.attributesOfItem(atPath: destPath)[.size] as? Int
-                    ) ?? 0
-                    DispatchQueue.main.async {
-                        NSLog("AppleStt: Converted → \(destPath) (\(m4aSize / 1024)KB M4A)")
-                        result(["path": destPath, "durationMs": outputDurationMs])
-                    }
-                } else {
-                    // Preserve the untrimmed CAF if conversion fails, and
-                    // report its actual source duration rather than a trim.
-                    NSLog("AppleStt: Export failed: \(exportSession.error?.localizedDescription ?? "unknown") — keeping raw CAF")
-                    try? FileManager.default.removeItem(at: destUrl)
-                    Self.finishWithCaf(
-                        cafUrl: cafUrl,
-                        destUrl: destUrl,
-                        destPath: destPath,
-                        durationMs: sourceDurationMs,
+                defer { exportFinished.signal() }
+                guard exportSession.status == .completed else {
+                    try? FileManager.default.removeItem(at: temporaryURL)
+                    completeCaptureFailure(
+                        code: "EXPORT_FAILED",
+                        message: exportSession.error?.localizedDescription
+                            ?? "M4A conversion failed",
+                        cafURL: cafURL,
+                        destinationURL: destinationURL,
                         result: result
                     )
+                    return
                 }
+
+                guard validateM4A(at: temporaryURL) else {
+                    try? FileManager.default.removeItem(at: temporaryURL)
+                    completeCaptureFailure(
+                        code: "EXPORT_INVALID",
+                        message: "Converted M4A failed validation",
+                        cafURL: cafURL,
+                        destinationURL: destinationURL,
+                        result: result
+                    )
+                    return
+                }
+
+                guard let replacementError = atomicallyReplace(
+                    temporaryURL: temporaryURL,
+                    destinationURL: destinationURL
+                ) else {
+                    try? FileManager.default.removeItem(at: cafURL)
+                    DispatchQueue.main.async {
+                        result([
+                            "path": destinationURL.path,
+                            "durationMs": durationMs,
+                            "format": "m4a",
+                        ])
+                    }
+                    return
+                }
+                let failure = String(
+                    cString: strerror(replacementError)
+                )
+                try? FileManager.default.removeItem(at: temporaryURL)
+                completeCaptureFailure(
+                    code: "REPLACE_FAILED",
+                    message: "Could not adopt converted M4A: \(failure)",
+                    cafURL: cafURL,
+                    destinationURL: destinationURL,
+                    result: result
+                )
+            }
+            exportFinished.wait()
+        }
+    }
+
+    /// POSIX rename replaces a same-volume destination atomically: a failure
+    /// leaves the existing destination untouched.
+    static func atomicallyReplace(
+        temporaryURL: URL,
+        destinationURL: URL
+    ) -> Int32? {
+        temporaryURL.path.withCString { source in
+            destinationURL.path.withCString { destination in
+                guard Darwin.rename(source, destination) != 0 else {
+                    return nil
+                }
+                return errno
             }
         }
     }
 
-    private static func milliseconds(for duration: CMTime, fallback: Int) -> Int {
-        let seconds = CMTimeGetSeconds(duration)
-        guard seconds.isFinite, seconds >= 0 else { return fallback }
-        return Int((seconds * 1000).rounded())
+    private static func validateM4A(at url: URL) -> Bool {
+        guard let handle = try? FileHandle(forReadingFrom: url) else {
+            return false
+        }
+        let header = handle.readData(ofLength: 12)
+        try? handle.close()
+        guard header.count >= 12,
+              String(
+                  data: header.subdata(in: 4..<8),
+                  encoding: .ascii
+              ) == "ftyp",
+              let file = try? AVAudioFile(forReading: url) else {
+            return false
+        }
+        return file.length > 0 && file.processingFormat.channelCount > 0
     }
 
-    private static func finishWithCaf(
-        cafUrl: URL,
-        destUrl: URL,
-        destPath: String,
-        durationMs: Int,
+    private static func completeCaptureFailure(
+        code: String,
+        message: String,
+        cafURL: URL,
+        destinationURL: URL,
         result: @escaping FlutterResult
     ) {
-        do {
-            try FileManager.default.moveItem(at: cafUrl, to: destUrl)
-            DispatchQueue.main.async {
-                result(["path": destPath, "durationMs": durationMs])
-            }
-        } catch {
-            NSLog("AppleStt: CAF fallback move failed: \(error)")
-            try? FileManager.default.removeItem(at: cafUrl)
-            DispatchQueue.main.async { result(nil) }
+        NSLog(
+            "AppleStt: %@; recovery CAF retained at %@",
+            message,
+            cafURL.lastPathComponent
+        )
+        DispatchQueue.main.async {
+            result(FlutterError(
+                code: code,
+                message: message,
+                details: [
+                    "destinationPath": destinationURL.path,
+                    "recovery": [
+                        "path": cafURL.path,
+                        "format": "caf",
+                    ],
+                ]
+            ))
         }
     }
 
     /// Analyze audio to find where speech starts and ends.
     /// Returns a time range excluding leading/trailing silence,
     /// with a small padding to avoid cutting off speech edges.
-    private static func detectSpeechRange(in asset: AVAsset) -> CMTimeRange? {
-        guard let track = asset.tracks(withMediaType: .audio).first else { return nil }
+    static func detectSpeechRange(in asset: AVAsset) -> CMTimeRange? {
+        guard let track = asset.tracks(withMediaType: .audio).first else {
+            return nil
+        }
 
         let totalDuration = asset.duration
         let totalSeconds = CMTimeGetSeconds(totalDuration)
-        if totalSeconds < 1.0 { return nil } // too short to trim
+        guard totalSeconds.isFinite, totalSeconds >= 1.0,
+              let reader = try? AVAssetReader(asset: asset) else {
+            return nil
+        }
 
-        // Read audio samples
-        guard let reader = try? AVAssetReader(asset: asset) else { return nil }
         let outputSettings: [String: Any] = [
             AVFormatIDKey: Int(kAudioFormatLinearPCM),
             AVLinearPCMBitDepthKey: 16,
@@ -681,105 +1003,120 @@ class AppleSttPlugin: NSObject {
             AVLinearPCMIsBigEndianKey: false,
             AVLinearPCMIsNonInterleaved: false,
         ]
-        let output = AVAssetReaderTrackOutput(track: track, outputSettings: outputSettings)
+        let output = AVAssetReaderTrackOutput(
+            track: track,
+            outputSettings: outputSettings
+        )
+        guard reader.canAdd(output) else { return nil }
         reader.add(output)
-        reader.startReading()
+        guard reader.startReading() else { return nil }
 
-        // Analyze in 50ms windows — find RMS amplitude per window.
-        // Sample rate from the actual track: mic taps are frequently 48 kHz,
-        // and assuming 44.1k drifted every "50ms" window by ~9%, shifting the
-        // trim boundaries and clipping the first speech edge after long
-        // leading silence.
-        let sampleRate: Double = {
-            let native = track.naturalTimeScale
-            return native > 0 ? Double(native) : 44100.0
-        }()
-        let windowSamples = Int(sampleRate * 0.05) // 50ms
+        var sampleRate = 0.0
+        var channelCount = 0
+        var windowFrames = 0
+        var framesInWindow = 0
+        var squareSum = 0.0
         var windowRMS: [Float] = []
-        // Partial window carried across sample-buffer boundaries.
-        var carry: [Float] = []
-        carry.reserveCapacity(windowSamples)
 
-        while let buffer = output.copyNextSampleBuffer() {
-            guard let blockBuffer = CMSampleBufferGetDataBuffer(buffer) else { continue }
-            var length = 0
+        while let sampleBuffer = output.copyNextSampleBuffer() {
+            if windowFrames == 0,
+               let description = CMSampleBufferGetFormatDescription(
+                   sampleBuffer
+               ),
+               let stream = CMAudioFormatDescriptionGetStreamBasicDescription(
+                   description
+               )?.pointee {
+                sampleRate = stream.mSampleRate
+                channelCount = Int(stream.mChannelsPerFrame)
+                windowFrames = max(1, Int(sampleRate * 0.05))
+            }
+            guard sampleRate > 0, channelCount > 0, windowFrames > 0,
+                  let blockBuffer = CMSampleBufferGetDataBuffer(sampleBuffer)
+            else {
+                continue
+            }
+
+            var byteLength = 0
             var dataPointer: UnsafeMutablePointer<Int8>?
-            CMBlockBufferGetDataPointer(blockBuffer, atOffset: 0, lengthAtOffsetOut: nil,
-                                        totalLengthOut: &length, dataPointerOut: &dataPointer)
-            guard let ptr = dataPointer else { continue }
-
-            let count = length / 2
-            if count == 0 { continue }
-
-            var floats = [Float](repeating: 0, count: count)
-            ptr.withMemoryRebound(to: Int16.self, capacity: count) { int16Ptr in
-                vDSP_vflt16(int16Ptr, 1, &floats, 1, vDSP_Length(count))
+            let pointerStatus = CMBlockBufferGetDataPointer(
+                blockBuffer,
+                atOffset: 0,
+                lengthAtOffsetOut: nil,
+                totalLengthOut: &byteLength,
+                dataPointerOut: &dataPointer
+            )
+            guard pointerStatus == kCMBlockBufferNoErr,
+                  let dataPointer = dataPointer else {
+                continue
             }
 
-            var start = 0
-            if !carry.isEmpty {
-                let need = windowSamples - carry.count
-                if count < need {
-                    carry.append(contentsOf: floats)
-                    continue
+            let availableSamples = byteLength / MemoryLayout<Int16>.size
+            let declaredFrames = CMSampleBufferGetNumSamples(sampleBuffer)
+            let frameCount = min(
+                declaredFrames,
+                availableSamples / channelCount
+            )
+            let samples = dataPointer.withMemoryRebound(
+                to: Int16.self,
+                capacity: availableSamples
+            ) { $0 }
+
+            for frame in 0..<frameCount {
+                let frameOffset = frame * channelCount
+                for channel in 0..<channelCount {
+                    let value = Double(samples[frameOffset + channel])
+                    squareSum += value * value
                 }
-                carry.append(contentsOf: floats[0..<need])
-                var rms: Float = 0
-                vDSP_rmsqv(carry, 1, &rms, vDSP_Length(windowSamples))
-                windowRMS.append(rms)
-                carry.removeAll(keepingCapacity: true)
-                start = need
-            }
+                framesInWindow += 1
 
-            floats.withUnsafeBufferPointer { buf in
-                var offset = start
-                while offset + windowSamples <= count {
-                    var rms: Float = 0
-                    vDSP_rmsqv(buf.baseAddress! + offset, 1, &rms, vDSP_Length(windowSamples))
-                    windowRMS.append(rms)
-                    offset += windowSamples
+                if framesInWindow == windowFrames {
+                    let divisor = Double(windowFrames * channelCount)
+                    windowRMS.append(Float((squareSum / divisor).squareRoot()))
+                    framesInWindow = 0
+                    squareSum = 0
                 }
-                start = offset
-            }
-            if start < count {
-                carry.append(contentsOf: floats[start...])
             }
         }
-
         reader.cancelReading()
 
-        if windowRMS.isEmpty { return nil }
-
-        // Find silence threshold: use 5% of peak RMS
+        guard !windowRMS.isEmpty else { return nil }
         let peakRMS = windowRMS.max() ?? 0
         let threshold = peakRMS * 0.05
-        if threshold < 10 { return nil } // entire recording is silent
+        guard threshold >= 10 else { return nil }
 
-        // Find first and last windows above threshold
-        var firstSpeech = 0
-        var lastSpeech = windowRMS.count - 1
-
-        for i in 0..<windowRMS.count {
-            if windowRMS[i] > threshold { firstSpeech = i; break }
-        }
-        for i in stride(from: windowRMS.count - 1, through: 0, by: -1) {
-            if windowRMS[i] > threshold { lastSpeech = i; break }
+        guard let firstDetected = windowRMS.firstIndex(
+            where: { $0 > threshold }
+        ), let lastDetected = windowRMS.lastIndex(
+            where: { $0 > threshold }
+        ) else {
+            return nil
         }
 
-        // Add 150ms padding on each side to avoid cutting off speech edges
-        let windowDuration = 0.05 // 50ms per window
-        let paddingWindows = 3 // 150ms
-        firstSpeech = max(0, firstSpeech - paddingWindows)
-        lastSpeech = min(windowRMS.count - 1, lastSpeech + paddingWindows)
+        let paddingWindows = 3
+        let firstSpeech = max(0, firstDetected - paddingWindows)
+        let lastSpeech = min(
+            windowRMS.count - 1,
+            lastDetected + paddingWindows
+        )
+        let windowDuration = Double(windowFrames) / sampleRate
+        let startTime = CMTime(
+            seconds: Double(firstSpeech) * windowDuration,
+            preferredTimescale: 1_000
+        )
+        let rawEnd = CMTime(
+            seconds: Double(lastSpeech + 1) * windowDuration,
+            preferredTimescale: 1_000
+        )
+        let endTime = CMTimeCompare(rawEnd, totalDuration) > 0
+            ? totalDuration
+            : rawEnd
 
-        let startTime = CMTime(seconds: Double(firstSpeech) * windowDuration, preferredTimescale: 1000)
-        let endTime = CMTime(seconds: Double(lastSpeech + 1) * windowDuration, preferredTimescale: 1000)
-
-        // Only trim if we'd remove at least 300ms total
         let trimmedStart = CMTimeGetSeconds(startTime)
-        let trimmedEnd = totalSeconds - CMTimeGetSeconds(endTime)
-        if trimmedStart + trimmedEnd < 0.3 { return nil }
-
+        let trimmedEnd = max(0, totalSeconds - CMTimeGetSeconds(endTime))
+        guard trimmedStart + trimmedEnd >= 0.3,
+              CMTimeCompare(endTime, startTime) > 0 else {
+            return nil
+        }
         return CMTimeRange(start: startTime, end: endTime)
     }
 
@@ -796,34 +1133,26 @@ class AppleSttPlugin: NSObject {
         return Double(sqrt(sum / Float(frames)))
     }
 
-    private func stopCurrentSession() {
-        // Invalidate this session before cancel/endAudio can trigger callbacks.
-        // All callers and recognition callback state mutations run on main.
-        sessionGeneration &+= 1
+    private func stopCurrentSession(
+        ifActive expectedSession: AppleSttSession? = nil
+    ) {
+        if let expectedSession = expectedSession,
+           activeSession !== expectedSession {
+            return
+        }
+        guard let session = activeSession else { return }
 
-        // Stop producing buffers and remove the tap before ending the request.
-        // hasInstalledTap also covers engine-start failures, where isRunning is
-        // false even though installTap already succeeded.
+        // Invalidate ownership first so already-queued recognition/level
+        // callbacks become stale before cancellation can trigger them.
+        activeSession = nil
         if audioEngine.isRunning {
             audioEngine.stop()
         }
-        if hasInstalledTap {
-            audioEngine.inputNode.removeTap(onBus: 0)
-            hasInstalledTap = false
-        }
+        audioEngine.inputNode.removeTap(onBus: 0)
+        session.stop()
         tapFormat = nil
 
-        recognitionRequestLock.lock()
-        recognitionRequest?.endAudio()
-        recognitionRequest = nil
-        recognitionRequestLock.unlock()
-
-        recognitionTask?.cancel()
-        recognitionTask = nil
-
         // Do NOT deactivate the audio session here. TTS reconfigures it to
-        // .playback in KokoroMLXService.synthesize(). Deferred deactivation
-        // caused a race condition: it would fire ~2s after STT stopped, killing
-        // the audio session right as TTS playback was starting.
+        // playback, and deferred deactivation can kill a new playback session.
     }
 }

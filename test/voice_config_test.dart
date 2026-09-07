@@ -1,6 +1,9 @@
-import 'package:flutter_test/flutter_test.dart';
-import 'package:castcircle/data/models/script_models.dart';
+import 'dart:convert';
+
 import 'package:castcircle/data/services/voice_config_service.dart';
+import 'package:castcircle/features/cast_manager/voice_config_screen.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'package:flutter_test/flutter_test.dart';
 import 'package:castcircle/data/models/voice_preset.dart';
 
 void main() {
@@ -98,101 +101,204 @@ void main() {
     });
   });
 
-  group('VoiceConfigService.assignVoicesFromScript', () {
-    test('assigns characters from their gender-specific pools', () {
-      const characters = [
-        ScriptCharacter(
-          name: 'ELIZABETH',
-          colorIndex: 0,
-          lineCount: 2,
-          gender: CharacterGender.female,
-        ),
-        ScriptCharacter(
-          name: 'DARCY',
-          colorIndex: 1,
-          lineCount: 2,
-          gender: CharacterGender.male,
-        ),
-      ];
+  group('VoiceConfigService persistence', () {
+    final service = VoiceConfigService.instance;
 
-      final assignments = VoiceConfigService.assignVoicesFromScript(
-        lines: const [],
-        characters: characters,
-        femaleVoices: const ['female-1'],
-        maleVoices: const ['male-1'],
-      );
-
-      expect(assignments, {'ELIZABETH': 'female-1', 'DARCY': 'male-1'});
+    setUp(() {
+      service.resetForTesting();
     });
 
-    test('adjacent speakers receive different voices when possible', () {
-      const characters = [
-        ScriptCharacter(name: 'A', colorIndex: 0, lineCount: 2),
-        ScriptCharacter(name: 'B', colorIndex: 1, lineCount: 2),
-        ScriptCharacter(name: 'C', colorIndex: 2, lineCount: 2),
-      ];
-      const lines = [
-        ScriptLine(
-          id: '1',
-          act: 'ACT I',
-          scene: 'Scene 1',
-          lineNumber: 1,
-          orderIndex: 1,
-          character: 'A',
-          text: 'First',
-          lineType: LineType.dialogue,
-        ),
-        ScriptLine(
-          id: '2',
-          act: 'ACT I',
-          scene: 'Scene 1',
-          lineNumber: 2,
-          orderIndex: 2,
-          character: 'B',
-          text: 'Second',
-          lineType: LineType.dialogue,
-        ),
-        ScriptLine(
-          id: '3',
-          act: 'ACT I',
-          scene: 'Scene 1',
-          lineNumber: 3,
-          orderIndex: 3,
-          character: 'C',
-          text: 'Third',
-          lineType: LineType.dialogue,
-        ),
-      ];
+    test(
+      'malformed overrides are quarantined and cannot be overwritten',
+      () async {
+        const productionId = 'corrupt-production';
+        const original = '{"BROKEN":';
+        SharedPreferences.setMockInitialValues({
+          'voice_overrides_$productionId': original,
+        });
 
-      final assignments = VoiceConfigService.assignVoicesFromScript(
-        lines: lines,
-        characters: characters,
-        femaleVoices: const ['voice-1', 'voice-2'],
-        maleVoices: const [],
-        window: 1,
+        await expectLater(
+          service.getOverrides(productionId),
+          throwsA(isA<VoiceOverridesCorruptException>()),
+        );
+
+        var prefs = await SharedPreferences.getInstance();
+        expect(prefs.getString('voice_overrides_$productionId'), original);
+        expect(
+          prefs.getString('voice_overrides_quarantine_$productionId'),
+          original,
+        );
+
+        await expectLater(
+          service.setOverride(
+            productionId,
+            const CharacterVoiceConfig(
+              characterName: 'JANE',
+              voiceId: 'af_heart',
+            ),
+          ),
+          throwsA(isA<VoiceOverridesCorruptException>()),
+        );
+
+        prefs = await SharedPreferences.getInstance();
+        expect(prefs.getString('voice_overrides_$productionId'), original);
+      },
+    );
+
+    test('legacy direct map migrates without losing prior overrides', () async {
+      const productionId = 'legacy-production';
+      final legacy = {
+        'DARCY': const CharacterVoiceConfig(
+          characterName: 'DARCY',
+          voiceId: 'bm_daniel',
+          speed: 0.9,
+        ).toJson(),
+        'JANE': const CharacterVoiceConfig(
+          characterName: 'JANE',
+          voiceId: 'af_heart',
+          speed: 1.1,
+        ).toJson(),
+      };
+      SharedPreferences.setMockInitialValues({
+        'voice_overrides_$productionId': jsonEncode(legacy),
+      });
+
+      final loaded = await service.getOverrides(productionId);
+      expect(loaded.keys, containsAll(['DARCY', 'JANE']));
+
+      await service.setOverride(
+        productionId,
+        const CharacterVoiceConfig(
+          characterName: 'BINGLEY',
+          voiceId: 'am_adam',
+        ),
       );
 
-      expect(assignments['A'], isNot(assignments['B']));
-      expect(assignments['B'], isNot(assignments['C']));
-      expect(assignments['A'], assignments['C']);
+      final prefs = await SharedPreferences.getInstance();
+      final encoded = prefs.getString('voice_overrides_$productionId')!;
+      final migrated = jsonDecode(encoded) as Map<String, dynamic>;
+      expect(migrated['version'], 1);
+      expect(
+        (migrated['overrides'] as Map<String, dynamic>).keys,
+        containsAll(['DARCY', 'JANE', 'BINGLEY']),
+      );
     });
 
-    test('gender overrides change the selected voice pool', () {
-      const character = ScriptCharacter(
-        name: 'PAGE',
-        colorIndex: 0,
-        lineCount: 1,
-      );
+    test(
+      'pending cloud sync survives reload until explicitly cleared',
+      () async {
+        const productionId = 'pending-production';
+        SharedPreferences.setMockInitialValues({});
 
-      final assignments = VoiceConfigService.assignVoicesFromScript(
-        lines: const [],
-        characters: const [character],
-        femaleVoices: const ['female-1'],
-        maleVoices: const ['male-1'],
-        genderOverrides: const {'PAGE': CharacterGender.male},
-      );
+        await service.markVoiceCloudSyncPending(
+          productionId,
+          presetId: 'victorian_english',
+          locale: 'en-GB',
+        );
+        service.resetForTesting();
 
-      expect(assignments['PAGE'], 'male-1');
+        final pending = await service.getPendingVoiceCloudSync(productionId);
+        expect(pending, isNotNull);
+        expect(pending!.presetId, 'victorian_english');
+        expect(pending.locale, 'en-GB');
+
+        expect(
+          await service.clearPendingVoiceCloudSyncIfMatches(
+            productionId,
+            presetId: 'victorian_english',
+            locale: 'en-GB',
+          ),
+          isTrue,
+        );
+        expect(await service.getPendingVoiceCloudSync(productionId), isNull);
+      },
+    );
+
+    test(
+      'older sync completion does not clear a newer pending selection',
+      () async {
+        const productionId = 'overlapping-sync-production';
+        SharedPreferences.setMockInitialValues({});
+        await service.markVoiceCloudSyncPending(
+          productionId,
+          presetId: 'modern_american',
+        );
+
+        expect(
+          await service.clearPendingVoiceCloudSyncIfMatches(
+            productionId,
+            presetId: 'victorian_english',
+            locale: 'en-GB',
+          ),
+          isFalse,
+        );
+        final pending = await service.getPendingVoiceCloudSync(productionId);
+        expect(pending?.presetId, 'modern_american');
+        expect(pending?.locale, isNull);
+      },
+    );
+
+    test('offline cloud-backed productions retain a pending sync', () {
+      expect(
+        shouldTrackVoiceCloudSync(
+          isSignedIn: false,
+          requireCloud: false,
+          hadPending: false,
+          organizerId: 'remote-organizer-id',
+        ),
+        isTrue,
+      );
+      expect(
+        shouldTrackVoiceCloudSync(
+          isSignedIn: false,
+          requireCloud: false,
+          hadPending: false,
+          organizerId: 'local',
+        ),
+        isFalse,
+      );
+    });
+  });
+
+  group('Voice pool gender assignment', () {
+    test('female character gets female voice from pool', () {
+      final preset = VoicePresets.victorianEnglish;
+      // isFemale=true → use femaleVoices pool
+      final voice = preset.femaleVoices[0 % preset.femaleVoices.length];
+      expect(
+        voice.startsWith('bf_'),
+        true,
+        reason: 'Victorian English female voice should be British female',
+      );
+    });
+
+    test('male character gets male voice from pool', () {
+      final preset = VoicePresets.victorianEnglish;
+      // isFemale=false → use maleVoices pool
+      final voice = preset.maleVoices[0 % preset.maleVoices.length];
+      expect(
+        voice.startsWith('bm_'),
+        true,
+        reason: 'Victorian English male voice should be British male',
+      );
+    });
+
+    test('round-robin assigns different voices', () {
+      final preset = VoicePresets.modernAmerican;
+      final voices = List.generate(
+        preset.femaleVoices.length,
+        (i) => preset.femaleVoices[i % preset.femaleVoices.length],
+      );
+      // All voices should be unique since we haven't wrapped around
+      expect(voices.toSet().length, preset.femaleVoices.length);
+    });
+
+    test('round-robin wraps correctly', () {
+      final preset = VoicePresets.modernAmerican;
+      final poolSize = preset.maleVoices.length;
+      // Index beyond pool size should wrap
+      final voice = preset.maleVoices[(poolSize + 1) % poolSize];
+      expect(voice, preset.maleVoices[1]);
     });
   });
 }

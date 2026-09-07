@@ -1,10 +1,9 @@
 import 'dart:async';
+import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
-
-import 'dart:io';
 
 import '../../core/responsive.dart';
 
@@ -14,11 +13,11 @@ import 'package:share_plus/share_plus.dart';
 
 import '../../core/theme/app_theme.dart';
 import '../../data/models/script_models.dart';
-import '../../data/models/production_models.dart';
 import '../../data/services/model_manager.dart';
+import '../../data/services/model_download_service.dart';
 import '../../data/services/script_export.dart';
 import '../../data/services/supabase_service.dart';
-import '../../data/services/debug_log_service.dart';
+import '../../data/services/tts_service.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../../providers/production_providers.dart';
@@ -37,111 +36,135 @@ class ProductionHubScreen extends ConsumerStatefulWidget {
 class _ProductionHubScreenState extends ConsumerState<ProductionHubScreen> {
   bool _checkedModels = false;
   bool _modelsReady = false;
+  bool _modelDownloadStarted = false;
+  bool _modelDownloadErrorShown = false;
   String? _filterAct;
-  ProviderSubscription<ParsedScript?>? _scriptSubscription;
-  ProviderSubscription<Production?>? _productionSubscription;
-  String? _productionId;
-  bool _awaitingProductionScript = false;
-  bool _loadingSavedCharacter = false;
-  int _characterLoadGeneration = 0;
 
   @override
   void initState() {
     super.initState();
-    _productionId = ref.read(currentProductionProvider)?.id;
     _checkModels();
-    _productionSubscription = ref.listenManual<Production?>(
-      currentProductionProvider,
-      (_, production) {
-        final productionId = production?.id;
-        if (productionId == _productionId) return;
-        _productionId = productionId;
-        _filterAct = null;
-        _awaitingProductionScript = true;
-        _characterLoadGeneration++;
-      },
-    );
-    _scriptSubscription = ref.listenManual<ParsedScript?>(
-      currentScriptProvider,
-      (_, script) {
-        if (_awaitingProductionScript) {
-          if (script == null) return;
-          _awaitingProductionScript = false;
-          unawaited(_loadSavedCharacter());
-          return;
-        }
-        if (!_loadingSavedCharacter) _clearInvalidCharacter(script);
-      },
-    );
-    _awaitingProductionScript = ref.read(currentScriptProvider) == null;
-    if (!_awaitingProductionScript) unawaited(_loadSavedCharacter());
+    _loadSavedCharacter();
+    ModelDownloadService.instance.addListener(_onModelDownloadState);
   }
 
-  void _clearInvalidCharacter(ParsedScript? script) {
-    if (script == null) return;
-    if (ref.read(currentProductionProvider)?.id != _productionId) return;
-    final selected = ref.read(rehearsalCharacterProvider);
-    if (selected == null ||
-        script.characters.any((character) => character.name == selected)) {
+  @override
+  void dispose() {
+    ModelDownloadService.instance.removeListener(_onModelDownloadState);
+    super.dispose();
+  }
+
+  void _onModelDownloadState() {
+    if (!mounted ||
+        !_modelDownloadStarted ||
+        _modelsReady ||
+        Platform.isAndroid) {
       return;
     }
+    final service = ModelDownloadService.instance;
+    final files = ModelDownloadService.availableModels
+        .where((model) => model.subdir == 'kokoro_mlx')
+        .toList();
+    final ready = files.every(
+      (model) => service.getState(model.id).status == ModelStatus.downloaded,
+    );
+    final error = files
+        .map((model) => service.getState(model.id).errorMessage)
+        .whereType<String>()
+        .firstOrNull;
+    if (ready) {
+      setState(() {
+        _modelsReady = true;
+        _modelDownloadStarted = false;
+      });
+      ScaffoldMessenger.of(context).showAutoToast(
+        const SnackBar(content: Text('AI models downloaded — rehearsal ready')),
+      );
+    } else if (error != null && !_modelDownloadErrorShown) {
+      _modelDownloadErrorShown = true;
+      ScaffoldMessenger.of(context).showAutoToast(
+        SnackBar(content: Text('AI model download failed: $error')),
+      );
+    }
+  }
 
-    ref.read(rehearsalCharacterProvider.notifier).state = null;
-    unawaited(_saveCharacterChoice(null));
+  Future<void> _startModelDownloads() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool('models_auto_download_ok', true);
+    if (!mounted) return;
+    setState(() {
+      _modelDownloadStarted = true;
+      _modelDownloadErrorShown = false;
+    });
+    ScaffoldMessenger.of(
+      context,
+    ).showAutoToast(const SnackBar(content: Text('AI model download started')));
+
+    try {
+      if (Platform.isAndroid) {
+        await ModelManager.instance.downloadKokoro();
+        await TtsService.instance.tryLoadKokoro();
+        await ModelDownloadService.instance.downloadLiveAsr();
+        final ready = await ModelManager.instance.isAllReady();
+        if (mounted) {
+          setState(() {
+            _modelsReady = ready;
+            _modelDownloadStarted = !ready;
+          });
+          if (ready) {
+            ScaffoldMessenger.of(context).showAutoToast(
+              const SnackBar(
+                content: Text('AI models downloaded — rehearsal ready'),
+              ),
+            );
+          }
+        }
+        return;
+      }
+      for (final model in ModelDownloadService.availableModels.where(
+        (model) => model.subdir == 'kokoro_mlx',
+      )) {
+        await ModelDownloadService.instance.download(model);
+      }
+    } catch (error) {
+      if (!mounted) return;
+      _modelDownloadErrorShown = true;
+      ScaffoldMessenger.of(context).showAutoToast(
+        SnackBar(content: Text('AI model download failed: $error')),
+      );
+    }
   }
 
   Future<void> _loadSavedCharacter() async {
     final production = ref.read(currentProductionProvider);
-    if (production == null || production.id != _productionId) return;
-    final generation = ++_characterLoadGeneration;
-    _loadingSavedCharacter = true;
-
-    try {
-      final prefs = await SharedPreferences.getInstance();
-      if (!_isCurrentProduction(production.id) ||
-          generation != _characterLoadGeneration) {
-        return;
-      }
-      final preferenceKey = 'rehearsal_character_${production.id}';
-      final saved = prefs.getString(preferenceKey);
+    if (production == null) return;
+    final prefs = await SharedPreferences.getInstance();
+    final saved = prefs.getString('rehearsal_character_${production.id}');
+    if (saved != null && mounted) {
       final script = ref.read(currentScriptProvider);
-      if (script == null) {
-        _awaitingProductionScript = true;
+      if (script != null && script.characters.any((c) => c.name == saved)) {
+        ref.read(rehearsalCharacterProvider.notifier).state = saved;
         return;
       }
-      if (saved != null) {
-        if (script.characters.any((c) => c.name == saved)) {
-          ref.read(rehearsalCharacterProvider.notifier).state = saved;
-          return;
-        }
-        await prefs.remove(preferenceKey);
-        if (!_isCurrentProduction(production.id) ||
-            generation != _characterLoadGeneration) {
-          return;
-        }
-      }
+    }
 
-      // Fallback: auto-select from cast membership.
+    // Fallback: auto-select from cast membership
+    if (mounted) {
       final castMembers = ref.read(castMembersProvider);
-      final userId = SupabaseService.instance.currentUser?.id;
-      if (userId == null) return;
-      final myMembership = castMembers.where(
-        (member) => member.userId == userId && member.characterName.isNotEmpty,
-      );
-      if (myMembership.isEmpty) return;
-
-      final charName = myMembership.first.characterName;
-      final currentScript = ref.read(currentScriptProvider);
-      if (currentScript != null &&
-          currentScript.characters.any((c) => c.name == charName)) {
-        ref.read(rehearsalCharacterProvider.notifier).state = charName;
-        unawaited(_saveCharacterChoice(charName));
-      }
-    } finally {
-      if (generation == _characterLoadGeneration) {
-        _loadingSavedCharacter = false;
-        if (_isCurrentProduction(production.id)) {
-          _clearInvalidCharacter(ref.read(currentScriptProvider));
+      final supa = SupabaseService.instance;
+      final userId = supa.currentUser?.id;
+      if (userId != null) {
+        final myMembership = castMembers.where(
+          (m) => m.userId == userId && m.characterName.isNotEmpty,
+        );
+        if (myMembership.isNotEmpty) {
+          final charName = myMembership.first.characterName;
+          final script = ref.read(currentScriptProvider);
+          if (script != null &&
+              script.characters.any((c) => c.name == charName)) {
+            ref.read(rehearsalCharacterProvider.notifier).state = charName;
+            _saveCharacterChoice(charName);
+          }
         }
       }
     }
@@ -156,13 +179,6 @@ class _ProductionHubScreenState extends ConsumerState<ProductionHubScreen> {
     } else {
       await prefs.remove('rehearsal_character_${production.id}');
     }
-  }
-
-  @override
-  void dispose() {
-    _scriptSubscription?.close();
-    _productionSubscription?.close();
-    super.dispose();
   }
 
   Future<void> _checkModels() async {
@@ -198,37 +214,9 @@ class _ProductionHubScreenState extends ConsumerState<ProductionHubScreen> {
   void _showModelPrompt() {
     showDialog(
       context: context,
-      builder: (ctx) => AlertDialog(
-        icon: const Icon(Icons.smart_toy, size: 48),
-        title: const Text('Download AI Models'),
-        content: Text(
-          Platform.isAndroid
-              ? 'CastCircle uses on-device AI for natural-sounding voices and '
-                    'to follow your lines as you speak during rehearsal. '
-                    'Download the models now (one-time) for the best '
-                    'experience.\n\n'
-                    'Without them, rehearsal audio and live line matching '
-                    'won\'t be available.'
-              : 'CastCircle uses on-device AI for natural-sounding voices '
-                    'during rehearsal. Download the voice models now (~180 MB, '
-                    'one-time) for the best experience.\n\n'
-                    'Without them, rehearsal audio won\'t be available.',
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx),
-            child: const Text('Later'),
-          ),
-          FilledButton.icon(
-            onPressed: () async {
-              Navigator.pop(ctx);
-              await context.push('/ai-models');
-              _checkModels();
-            },
-            icon: const Icon(Icons.download),
-            label: const Text('Download Now'),
-          ),
-        ],
+      builder: (context) => ModelDownloadPrompt(
+        isAndroid: Platform.isAndroid,
+        onDownload: () => unawaited(_startModelDownloads()),
       ),
     );
   }
@@ -240,6 +228,9 @@ class _ProductionHubScreenState extends ConsumerState<ProductionHubScreen> {
     final myCharacter = ref.watch(rehearsalCharacterProvider);
 
     if (production == null) {
+      debugPrint(
+        'ProductionHub.build: production is NULL — showing placeholder',
+      );
       return Scaffold(
         appBar: AppBar(title: const Text('Production')),
         body: const Center(child: Text('No production selected')),
@@ -302,7 +293,9 @@ class _ProductionHubScreenState extends ConsumerState<ProductionHubScreen> {
                     const SizedBox(width: 12),
                     Expanded(
                       child: Text(
-                        'AI models not downloaded — tap to download',
+                        _modelDownloadStarted
+                            ? 'AI model download started — tap for progress'
+                            : 'AI models not downloaded — tap to download',
                         style: theme.textTheme.bodySmall?.copyWith(
                           color: theme.colorScheme.onTertiaryContainer,
                         ),
@@ -703,20 +696,20 @@ class _ProductionHubScreenState extends ConsumerState<ProductionHubScreen> {
           _drawerSection('Script'),
           if (!hasScript)
             _drawerItem(Icons.upload_file, 'Import Script', () {
-              _closeDrawerIfOpen(context);
+              Navigator.pop(context);
               context.push('/import');
             })
           else ...[
             _drawerItem(Icons.edit_note, 'Edit Script', () {
-              _closeDrawerIfOpen(context);
+              Navigator.pop(context);
               context.push('/editor');
             }),
             _drawerItem(Icons.person_search, 'Characters', () {
-              _closeDrawerIfOpen(context);
+              Navigator.pop(context);
               context.push('/characters');
             }),
             _drawerItem(Icons.auto_awesome_mosaic, 'Scenes', () {
-              _closeDrawerIfOpen(context);
+              Navigator.pop(context);
               context.push('/scenes');
             }),
           ],
@@ -724,17 +717,17 @@ class _ProductionHubScreenState extends ConsumerState<ProductionHubScreen> {
           // ── Cast & Recording ──
           _drawerSection('Cast & Recording'),
           _drawerItem(Icons.people_outline, 'Manage Cast', () {
-            _closeDrawerIfOpen(context);
+            Navigator.pop(context);
             context.push('/cast');
           }),
           if (hasScript)
             _drawerItem(Icons.mic, 'Record Lines', () {
-              _closeDrawerIfOpen(context);
+              Navigator.pop(context);
               context.push('/record');
             }),
           if (hasScript)
             _drawerItem(Icons.library_music, 'Browse Recordings', () {
-              _closeDrawerIfOpen(context);
+              Navigator.pop(context);
               context.push('/recordings');
             }),
           const Divider(),
@@ -742,11 +735,11 @@ class _ProductionHubScreenState extends ConsumerState<ProductionHubScreen> {
           if (isSignedIn) ...[
             _drawerSection('Cloud'),
             _drawerItem(Icons.cloud_upload, 'Push Script to Cloud', () {
-              _closeDrawerIfOpen(context);
+              Navigator.pop(context);
               _pushToCloud(context);
             }),
             _drawerItem(Icons.cloud_download, 'Pull from Cloud', () {
-              _closeDrawerIfOpen(context);
+              Navigator.pop(context);
               _syncFromCloud(context);
             }),
             const Divider(),
@@ -755,31 +748,31 @@ class _ProductionHubScreenState extends ConsumerState<ProductionHubScreen> {
           if (hasScript) ...[
             _drawerSection('Export'),
             _drawerItem(Icons.text_snippet, 'Export as Text', () {
-              _closeDrawerIfOpen(context);
+              Navigator.pop(context);
               _export(context, 'plain');
             }),
             _drawerItem(Icons.article, 'Export as Markdown', () {
-              _closeDrawerIfOpen(context);
+              Navigator.pop(context);
               _export(context, 'markdown');
             }),
             const Divider(),
           ],
           // ── Voices & History ──
           _drawerItem(Icons.record_voice_over, 'Voice Preset & Config', () {
-            _closeDrawerIfOpen(context);
+            Navigator.pop(context);
             context.push('/voice-config');
           }),
           _drawerItem(Icons.history, 'Rehearsal History', () {
-            _closeDrawerIfOpen(context);
+            Navigator.pop(context);
             context.push('/history');
           }),
           _drawerItem(Icons.smart_toy, 'AI Models', () async {
-            _closeDrawerIfOpen(context);
+            Navigator.pop(context);
             await context.push('/ai-models');
             _checkModels();
           }),
           _drawerItem(Icons.settings, 'Settings', () {
-            _closeDrawerIfOpen(context);
+            Navigator.pop(context);
             context.push('/settings');
           }),
         ],
@@ -798,14 +791,6 @@ class _ProductionHubScreenState extends ConsumerState<ProductionHubScreen> {
         ),
       ),
     );
-  }
-
-  void _closeDrawerIfOpen(BuildContext context) {
-    // ResponsiveScaffold embeds this drawer on wide layouts. On compact
-    // layouts an action can only be tapped while the modal drawer is open.
-    if (!Responsive.isWide(context)) {
-      Navigator.pop(context);
-    }
   }
 
   Widget _drawerItem(IconData icon, String label, VoidCallback onTap) {
@@ -872,39 +857,21 @@ class _ProductionHubScreenState extends ConsumerState<ProductionHubScreen> {
           ),
         );
       }
-    } catch (e, stack) {
-      DebugLogService.instance.logError(
-        LogCategory.network,
-        'Pushing the script to cloud failed',
-        e,
-        stack,
-      );
+    } catch (e) {
       if (context.mounted) {
-        ScaffoldMessenger.of(context).showAutoToast(
-          const SnackBar(
-            content: Text(
-              'Couldn\'t push the script. Check your connection and try again.',
-            ),
-          ),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showAutoToast(SnackBar(content: Text('Push failed: $e')));
       }
     }
-  }
-
-  bool _isCurrentProduction(String productionId) {
-    return mounted &&
-        _productionId == productionId &&
-        ref.read(currentProductionProvider)?.id == productionId;
   }
 
   Future<void> _syncFromCloud(BuildContext context) async {
     final production = ref.read(currentProductionProvider);
     if (production == null) return;
-    final scriptNotifier = ref.read(currentScriptProvider.notifier);
 
     try {
       final cloudLines = await fetchCloudScriptLines(production.id);
-      if (!_isCurrentProduction(production.id)) return;
       if (cloudLines == null || cloudLines.isEmpty) {
         if (context.mounted) {
           ScaffoldMessenger.of(
@@ -919,7 +886,6 @@ class _ProductionHubScreenState extends ConsumerState<ProductionHubScreen> {
         cloudLines,
         production.id,
       );
-      if (!_isCurrentProduction(production.id)) return;
       final localScript = ref.read(currentScriptProvider);
 
       if (localScript != null &&
@@ -943,7 +909,6 @@ class _ProductionHubScreenState extends ConsumerState<ProductionHubScreen> {
           cloudLines: cloudScript.lines,
         );
         shouldReplaceLocal = choice == true;
-        if (!_isCurrentProduction(production.id)) return;
       }
 
       if (!shouldReplaceLocal) {
@@ -955,13 +920,11 @@ class _ProductionHubScreenState extends ConsumerState<ProductionHubScreen> {
         return;
       }
 
-      if (!_isCurrentProduction(production.id)) return;
-      scriptNotifier.state = cloudScript;
+      ref.read(currentScriptProvider.notifier).state = cloudScript;
       // Local-only: this script just came FROM the cloud — persistScript
       // would push it straight back (an unnecessary delete+reinsert window
       // for the whole cast).
       await persistScriptLocally(ref, production.id, cloudScript);
-      if (!_isCurrentProduction(production.id)) return;
 
       if (context.mounted) {
         ScaffoldMessenger.of(context).showAutoToast(
@@ -970,21 +933,11 @@ class _ProductionHubScreenState extends ConsumerState<ProductionHubScreen> {
           ),
         );
       }
-    } catch (e, stack) {
-      DebugLogService.instance.logError(
-        LogCategory.network,
-        'Pulling the script from cloud failed',
-        e,
-        stack,
-      );
+    } catch (e) {
       if (context.mounted) {
-        ScaffoldMessenger.of(context).showAutoToast(
-          const SnackBar(
-            content: Text(
-              'Couldn\'t pull the script. Check your connection and try again.',
-            ),
-          ),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showAutoToast(SnackBar(content: Text('Sync failed: $e')));
       }
     }
   }
@@ -997,13 +950,10 @@ class _ProductionHubScreenState extends ConsumerState<ProductionHubScreen> {
     try {
       String content;
       String fileName;
-      final sanitizedName = production.title
+      final safeName = production.title
           .replaceAll(RegExp(r'[^\w\s-]'), '')
           .replaceAll(RegExp(r'\s+'), '_')
           .toLowerCase();
-      final safeName = sanitizedName.isEmpty
-          ? 'export_${production.id}'
-          : sanitizedName;
 
       switch (format) {
         case 'markdown':
@@ -1032,19 +982,58 @@ class _ProductionHubScreenState extends ConsumerState<ProductionHubScreen> {
             ? box.localToGlobal(Offset.zero) & box.size
             : Rect.zero,
       );
-    } catch (e, stack) {
-      DebugLogService.instance.logError(
-        LogCategory.error,
-        'Exporting the script failed',
-        e,
-        stack,
-      );
+    } catch (e) {
       if (!context.mounted) return;
-      ScaffoldMessenger.of(context).showAutoToast(
-        const SnackBar(
-          content: Text('Couldn\'t export the script. Try again.'),
-        ),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showAutoToast(SnackBar(content: Text('Export failed: $e')));
     }
+  }
+}
+
+@visibleForTesting
+class ModelDownloadPrompt extends StatelessWidget {
+  const ModelDownloadPrompt({
+    required this.isAndroid,
+    required this.onDownload,
+    super.key,
+  });
+
+  final bool isAndroid;
+  final VoidCallback onDownload;
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      icon: const Icon(Icons.smart_toy, size: 48),
+      title: const Text('Download AI Models'),
+      content: Text(
+        isAndroid
+            ? 'CastCircle uses on-device AI for natural-sounding voices and '
+                  'to follow your lines as you speak during rehearsal. '
+                  'Download the models now (one-time) for the best '
+                  'experience.\n\n'
+                  'Without them, rehearsal audio and live line matching '
+                  'won\'t be available.'
+            : 'CastCircle uses on-device AI for natural-sounding voices '
+                  'during rehearsal. Download the voice models now (~180 MB, '
+                  'one-time) for the best experience.\n\n'
+                  'Without them, rehearsal audio won\'t be available.',
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('Later'),
+        ),
+        FilledButton.icon(
+          onPressed: () {
+            Navigator.pop(context);
+            onDownload();
+          },
+          icon: const Icon(Icons.download),
+          label: const Text('Download Now'),
+        ),
+      ],
+    );
   }
 }

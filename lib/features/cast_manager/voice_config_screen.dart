@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/responsive.dart';
@@ -11,6 +12,17 @@ import '../../data/services/tts_service.dart';
 import '../../data/services/voice_config_service.dart';
 import '../../providers/production_providers.dart';
 import '../../core/toast.dart';
+
+bool shouldTrackVoiceCloudSync({
+  required bool isSignedIn,
+  required bool requireCloud,
+  required bool hadPending,
+  required String organizerId,
+}) =>
+    isSignedIn ||
+    requireCloud ||
+    hadPending ||
+    (organizerId.isNotEmpty && organizerId != 'local');
 
 /// Screen for configuring production voice preset and per-character overrides.
 class VoiceConfigScreen extends ConsumerStatefulWidget {
@@ -26,6 +38,11 @@ class _VoiceConfigScreenState extends ConsumerState<VoiceConfigScreen> {
   Map<String, CharacterVoiceConfig> _overrides = {};
   Map<String, CharacterGender> _genderOverrides = {};
   bool _loading = true;
+  bool _syncingVoiceSettings = false;
+  String? _voiceSettingsError;
+  Future<void> Function()? _retryVoiceSettings;
+  String? _loadError;
+  String? _overrideLoadError;
 
   @override
   void initState() {
@@ -37,32 +54,70 @@ class _VoiceConfigScreenState extends ConsumerState<VoiceConfigScreen> {
     final production = ref.read(currentProductionProvider);
     if (production == null) return;
 
-    final preset = await _voiceConfig.getPreset(production.id);
-    final overrides = await _voiceConfig.getOverrides(production.id);
-    // Saved gender toggles too — without them the voice shown here diverged
-    // from the voice rehearsal actually plays (rehearsal passes them).
-    final genders = await _voiceConfig.getGenders(production.id);
-    if (!mounted) return;
-    setState(() {
-      _currentPreset = preset;
-      _overrides = overrides;
-      _genderOverrides = genders;
-      _loading = false;
-    });
+    try {
+      final preset = await _voiceConfig.getPreset(production.id);
+      final genders = await _voiceConfig.getGenders(production.id);
+      final pending = await _voiceConfig.getPendingVoiceCloudSync(
+        production.id,
+      );
+      var overrides = <String, CharacterVoiceConfig>{};
+      String? overrideLoadError;
+      try {
+        overrides = await _voiceConfig.getOverrides(production.id);
+      } on VoiceOverridesCorruptException catch (error, stack) {
+        overrideLoadError = error.toString();
+        DebugLogService.instance.logError(
+          LogCategory.general,
+          'Character voice overrides are unreadable',
+          error,
+          stack,
+        );
+      }
+      if (!mounted) return;
+      setState(() {
+        _currentPreset = preset;
+        _overrides = overrides;
+        _genderOverrides = genders;
+        _overrideLoadError = overrideLoadError;
+        _loadError = null;
+        _loading = false;
+        if (pending != null) {
+          _voiceSettingsError =
+              'A voice settings change still needs to finish and sync to '
+              'the cast.';
+          _retryVoiceSettings = pending.locale == null
+              ? () => _savePreset(
+                  production.id,
+                  pending.presetId,
+                  requireCloud: true,
+                )
+              : () => _saveDialect(
+                  production,
+                  pending.locale!,
+                  requireCloud: true,
+                );
+        }
+      });
+    } catch (error, stack) {
+      DebugLogService.instance.logError(
+        LogCategory.general,
+        'Voice settings load failed',
+        error,
+        stack,
+      );
+      if (!mounted) return;
+      setState(() {
+        _loadError = 'Voice settings could not be loaded.';
+        _loading = false;
+      });
+    }
   }
 
   @override
   Widget build(BuildContext context) {
     final script = ref.watch(currentScriptProvider);
     final production = ref.watch(currentProductionProvider);
-    final supa = SupabaseService.instance;
-    final canEditProductionVoice =
-        production == null ||
-        production.organizerId.isEmpty ||
-        production.organizerId == 'local' ||
-        production.organizerId == supa.currentUser?.id;
-    final syncProductionVoice =
-        supa.isSignedIn && production?.organizerId == supa.currentUser?.id;
+
     if (script == null || production == null) {
       return Scaffold(
         appBar: AppBar(title: const Text('Voice Settings')),
@@ -74,29 +129,70 @@ class _VoiceConfigScreenState extends ConsumerState<VoiceConfigScreen> {
       appBar: AppBar(title: const Text('Voice Settings')),
       body: _loading
           ? const Center(child: CircularProgressIndicator())
+          : _loadError != null
+          ? Center(
+              child: Padding(
+                padding: const EdgeInsets.all(24),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Icon(Icons.warning_amber_rounded, size: 40),
+                    const SizedBox(height: 12),
+                    Text(_loadError!, textAlign: TextAlign.center),
+                    const SizedBox(height: 16),
+                    OutlinedButton(
+                      onPressed: () {
+                        setState(() => _loading = true);
+                        _loadConfig();
+                      },
+                      child: const Text('Retry'),
+                    ),
+                  ],
+                ),
+              ),
+            )
           : ContentConstraint(
               maxWidth: 700,
               child: ListView(
                 children: [
-                  if (!canEditProductionVoice)
+                  if (_overrideLoadError != null)
                     Padding(
-                      padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
-                      child: Text(
-                        'Only the production organizer can change the shared '
-                        'dialect and voice style.',
-                        style: TextStyle(
-                          color: Theme.of(context).colorScheme.error,
-                          fontSize: 13,
-                        ),
+                      padding: const EdgeInsets.all(16),
+                      child: Row(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          const Icon(Icons.warning_amber_rounded),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: Text(
+                              'Saved character voice overrides could not '
+                              'be read and were left unchanged. Preset and '
+                              'dialect controls remain available; '
+                              'character voice editing is disabled.',
+                            ),
+                          ),
+                        ],
                       ),
                     ),
+                  if (_voiceSettingsError != null)
+                    MaterialBanner(
+                      content: Text(_voiceSettingsError!),
+                      actions: [
+                        TextButton(
+                          onPressed: _syncingVoiceSettings
+                              ? null
+                              : () async {
+                                  final retry = _retryVoiceSettings;
+                                  if (retry != null) await retry();
+                                },
+                          child: const Text('Retry'),
+                        ),
+                      ],
+                    ),
+                  if (_syncingVoiceSettings) const LinearProgressIndicator(),
                   // Dialect selector
                   _sectionHeader(context, 'Script Dialect'),
-                  _buildDialectSelector(
-                    context,
-                    production,
-                    canEdit: canEditProductionVoice,
-                  ),
+                  _buildDialectSelector(context, production),
                   const Divider(height: 32),
 
                   // Production preset section
@@ -111,12 +207,7 @@ class _VoiceConfigScreenState extends ConsumerState<VoiceConfigScreen> {
                   ),
                   const SizedBox(height: 8),
                   ...VoicePresets.all.map(
-                    (preset) => _buildPresetTile(
-                      preset,
-                      production.id,
-                      canEdit: canEditProductionVoice,
-                      syncToCloud: syncProductionVoice,
-                    ),
+                    (preset) => _buildPresetTile(preset, production.id),
                   ),
                   const Divider(height: 32),
 
@@ -125,14 +216,15 @@ class _VoiceConfigScreenState extends ConsumerState<VoiceConfigScreen> {
                   Padding(
                     padding: const EdgeInsets.symmetric(horizontal: 16),
                     child: Text(
-                      'Tap a character to assign a specific voice and speed.',
+                      _overrideLoadError == null
+                          ? 'Tap a character to assign a specific voice '
+                                'and speed.'
+                          : 'Character voice editing is unavailable '
+                                'because saved overrides could not be read.',
                       style: TextStyle(color: Colors.grey[500], fontSize: 13),
                     ),
                   ),
                   const SizedBox(height: 8),
-                  // Assignment computed ONCE for all tiles (it walks every
-                  // script line), with gender overrides so the shown voice
-                  // matches rehearsal playback.
                   ...script.characters.map(
                     (char) => _buildCharacterTile(
                       char,
@@ -173,12 +265,7 @@ class _VoiceConfigScreenState extends ConsumerState<VoiceConfigScreen> {
     );
   }
 
-  Widget _buildPresetTile(
-    VoicePreset preset,
-    String productionId, {
-    required bool canEdit,
-    required bool syncToCloud,
-  }) {
+  Widget _buildPresetTile(VoicePreset preset, String productionId) {
     final isSelected = _currentPreset.id == preset.id;
     return RadioListTile<String>(
       value: preset.id,
@@ -191,56 +278,95 @@ class _VoiceConfigScreenState extends ConsumerState<VoiceConfigScreen> {
               color: Theme.of(context).colorScheme.primary,
             )
           : null,
-      onChanged: !canEdit
+      onChanged: _syncingVoiceSettings
           ? null
           : (value) async {
               if (value == null) return;
-              try {
-                await _voiceConfig.setPreset(productionId, value);
-              } catch (e, stack) {
-                DebugLogService.instance.logError(
-                  LogCategory.general,
-                  'Saving the production voice preset failed',
-                  e,
-                  stack,
-                );
-                if (mounted) {
-                  ScaffoldMessenger.of(context).showAutoToast(
-                    const SnackBar(content: Text('Could not save voice style')),
-                  );
-                }
-                return;
-              }
-              if (!mounted) return;
-              setState(() => _currentPreset = VoicePresets.byId(value));
-
-              final supa = SupabaseService.instance;
-              if (!syncToCloud) return;
-              try {
-                await supa.saveVoicePreset(
-                  productionId: productionId,
-                  presetId: value,
-                );
-              } catch (e, stack) {
-                DebugLogService.instance.logError(
-                  LogCategory.network,
-                  'Syncing the production voice preset failed',
-                  e,
-                  stack,
-                );
-                if (mounted) {
-                  ScaffoldMessenger.of(context).showAutoToast(
-                    const SnackBar(
-                      content: Text(
-                        'Voice style saved on this device, but cloud sync '
-                        'failed',
-                      ),
-                    ),
-                  );
-                }
-              }
+              await _savePreset(productionId, value);
             },
     );
+  }
+
+  Future<void> _savePreset(
+    String productionId,
+    String presetId, {
+    bool requireCloud = false,
+  }) async {
+    if (mounted) {
+      setState(() {
+        _syncingVoiceSettings = true;
+        _voiceSettingsError = null;
+      });
+    }
+    var localSaved = false;
+    final supa = SupabaseService.instance;
+
+    try {
+      final hadPending =
+          await _voiceConfig.getPendingVoiceCloudSync(productionId) != null;
+      final production = ref.read(currentProductionProvider);
+      final cloudBacked =
+          production?.id == productionId &&
+          production!.organizerId.isNotEmpty &&
+          production.organizerId != 'local';
+      final shouldTrackCloudSync = shouldTrackVoiceCloudSync(
+        isSignedIn: supa.isSignedIn,
+        requireCloud: requireCloud,
+        hadPending: hadPending,
+        organizerId: cloudBacked ? production.organizerId : '',
+      );
+      if (shouldTrackCloudSync) {
+        await _voiceConfig.markVoiceCloudSyncPending(
+          productionId,
+          presetId: presetId,
+        );
+      }
+      await _voiceConfig.setPreset(productionId, presetId);
+      localSaved = true;
+      if (mounted) {
+        setState(() => _currentPreset = VoicePresets.byId(presetId));
+      }
+
+      if (!supa.isSignedIn && shouldTrackCloudSync) {
+        throw StateError('Sign in is required to finish voice sync');
+      }
+      if (supa.isSignedIn) {
+        await supa.saveVoicePreset(
+          productionId: productionId,
+          presetId: presetId,
+        );
+        await _voiceConfig.clearPendingVoiceCloudSyncIfMatches(
+          productionId,
+          presetId: presetId,
+        );
+      }
+      if (!mounted) return;
+      setState(() {
+        _retryVoiceSettings = null;
+        _voiceSettingsError = null;
+      });
+    } catch (error, stack) {
+      DebugLogService.instance.logError(
+        LogCategory.network,
+        'Voice preset sync failed',
+        error,
+        stack,
+      );
+      if (!mounted) return;
+      setState(() {
+        _voiceSettingsError = localSaved
+            ? 'The voice style was saved on this device but could not be '
+                  'synced to the cast.'
+            : 'The voice style could not be saved. Your prior setting is '
+                  'still active.';
+        _retryVoiceSettings = () =>
+            _savePreset(productionId, presetId, requireCloud: true);
+      });
+    } finally {
+      if (mounted) {
+        setState(() => _syncingVoiceSettings = false);
+      }
+    }
   }
 
   Widget _buildCharacterTile(
@@ -288,38 +414,31 @@ class _VoiceConfigScreenState extends ConsumerState<VoiceConfigScreen> {
             IconButton(
               icon: const Icon(Icons.undo, size: 18),
               tooltip: 'Reset to preset',
-              onPressed: () async {
-                try {
-                  await _voiceConfig.removeOverride(productionId, char.name);
-                } catch (e, stack) {
-                  DebugLogService.instance.logError(
-                    LogCategory.general,
-                    'Resetting ${char.name} voice failed',
-                    e,
-                    stack,
-                  );
-                  if (mounted) {
-                    ScaffoldMessenger.of(context).showAutoToast(
-                      const SnackBar(
-                        content: Text('Could not reset character voice'),
-                      ),
-                    );
-                  }
-                  return;
-                }
-                if (!mounted) return;
-                setState(() => _overrides.remove(char.name));
-              },
+              onPressed: _overrideLoadError != null
+                  ? null
+                  : () async {
+                      await _voiceConfig.removeOverride(
+                        productionId,
+                        char.name,
+                      );
+                      if (!mounted) return;
+                      setState(() => _overrides.remove(char.name));
+                    },
             ),
-          const Icon(Icons.chevron_right, size: 18),
+          Icon(
+            _overrideLoadError == null ? Icons.chevron_right : Icons.lock,
+            size: 18,
+          ),
         ],
       ),
-      onTap: () => _showCharacterVoiceDialog(
-        char,
-        productionId,
-        activeVoice,
-        activeSpeed,
-      ),
+      onTap: _overrideLoadError != null
+          ? null
+          : () => _showCharacterVoiceDialog(
+              char,
+              productionId,
+              activeVoice,
+              activeSpeed,
+            ),
     );
   }
 
@@ -331,7 +450,6 @@ class _VoiceConfigScreenState extends ConsumerState<VoiceConfigScreen> {
   ) {
     String selectedVoice = currentVoice;
     double selectedSpeed = currentSpeed;
-    bool isSaving = false;
 
     showModalBottomSheet(
       context: context,
@@ -379,48 +497,21 @@ class _VoiceConfigScreenState extends ConsumerState<VoiceConfigScreen> {
                       ),
                     ),
                     FilledButton(
-                      onPressed: isSaving
-                          ? null
-                          : () async {
-                              if (isSaving) return;
-                              setSheetState(() => isSaving = true);
-                              try {
-                                await _voiceConfig.setOverride(
-                                  productionId,
-                                  CharacterVoiceConfig(
-                                    characterName: char.name,
-                                    voiceId: selectedVoice,
-                                    speed: selectedSpeed,
-                                  ),
-                                );
-                                final overrides = await _voiceConfig
-                                    .getOverrides(productionId);
-                                if (mounted) {
-                                  setState(() => _overrides = overrides);
-                                }
-                                if (ctx.mounted) Navigator.pop(ctx);
-                              } catch (e, stack) {
-                                DebugLogService.instance.logError(
-                                  LogCategory.general,
-                                  'Saving ${char.name} voice failed',
-                                  e,
-                                  stack,
-                                );
-                                if (ctx.mounted) {
-                                  ScaffoldMessenger.of(ctx).showAutoToast(
-                                    const SnackBar(
-                                      content: Text(
-                                        'Could not save character voice',
-                                      ),
-                                    ),
-                                  );
-                                }
-                              } finally {
-                                if (ctx.mounted) {
-                                  setSheetState(() => isSaving = false);
-                                }
-                              }
-                            },
+                      onPressed: () async {
+                        await _voiceConfig.setOverride(
+                          productionId,
+                          CharacterVoiceConfig(
+                            characterName: char.name,
+                            voiceId: selectedVoice,
+                            speed: selectedSpeed,
+                          ),
+                        );
+                        final overrides = await _voiceConfig.getOverrides(
+                          productionId,
+                        );
+                        if (mounted) setState(() => _overrides = overrides);
+                        if (ctx.mounted) Navigator.pop(ctx);
+                      },
                       child: const Text('Save'),
                     ),
                   ],
@@ -513,13 +604,7 @@ class _VoiceConfigScreenState extends ConsumerState<VoiceConfigScreen> {
       const previewChar = '__voice_preview__';
       tts.assignVoice(previewChar, 0, voiceId: voiceId, speed: speed);
       await tts.speak(sampleText, character: previewChar);
-    } catch (e, stack) {
-      DebugLogService.instance.logError(
-        LogCategory.tts,
-        'Voice preview failed for $characterName',
-        e,
-        stack,
-      );
+    } on PlatformException {
       if (mounted) {
         ScaffoldMessenger.of(
           context,
@@ -533,11 +618,7 @@ class _VoiceConfigScreenState extends ConsumerState<VoiceConfigScreen> {
     'en-GB': 'British English',
   };
 
-  Widget _buildDialectSelector(
-    BuildContext context,
-    Production production, {
-    required bool canEdit,
-  }) {
+  Widget _buildDialectSelector(BuildContext context, Production production) {
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 16),
       child: Column(
@@ -556,80 +637,102 @@ class _VoiceConfigScreenState extends ConsumerState<VoiceConfigScreen> {
                   .map((e) => ButtonSegment(value: e.key, label: Text(e.value)))
                   .toList(),
               selected: {production.locale},
-              onSelectionChanged: !canEdit
+              onSelectionChanged: _syncingVoiceSettings
                   ? null
                   : (selected) async {
-                      final locale = selected.first;
-                      final updated = production.copyWith(locale: locale);
-                      final presetId = locale == 'en-GB'
-                          ? 'victorian_english'
-                          : 'modern_american';
-                      try {
-                        await ref
-                            .read(productionsProvider.notifier)
-                            .update(updated);
-                        await _voiceConfig.setPreset(production.id, presetId);
-                      } catch (e, stack) {
-                        DebugLogService.instance.logError(
-                          LogCategory.general,
-                          'Saving the production dialect failed',
-                          e,
-                          stack,
-                        );
-                        if (mounted) {
-                          ScaffoldMessenger.of(context).showAutoToast(
-                            const SnackBar(
-                              content: Text('Could not save script dialect'),
-                            ),
-                          );
-                        }
-                        return;
-                      }
-                      if (!mounted) return;
-                      ref.read(currentProductionProvider.notifier).state =
-                          updated;
-                      setState(
-                        () => _currentPreset = VoicePresets.byId(presetId),
-                      );
-
-                      final supa = SupabaseService.instance;
-                      if (!supa.isSignedIn ||
-                          production.organizerId != supa.currentUser?.id) {
-                        return;
-                      }
-                      try {
-                        await supa.saveLocale(
-                          productionId: production.id,
-                          locale: locale,
-                        );
-                        await supa.saveVoicePreset(
-                          productionId: production.id,
-                          presetId: presetId,
-                        );
-                      } catch (e, stack) {
-                        DebugLogService.instance.logError(
-                          LogCategory.network,
-                          'Syncing the production dialect failed',
-                          e,
-                          stack,
-                        );
-                        if (mounted) {
-                          ScaffoldMessenger.of(context).showAutoToast(
-                            const SnackBar(
-                              content: Text(
-                                'Dialect saved on this device, but cloud sync '
-                                'failed',
-                              ),
-                            ),
-                          );
-                        }
-                      }
+                      await _saveDialect(production, selected.first);
                     },
             ),
           ),
         ],
       ),
     );
+  }
+
+  Future<void> _saveDialect(
+    Production production,
+    String locale, {
+    bool requireCloud = false,
+  }) async {
+    final presetId = locale == 'en-GB'
+        ? 'victorian_english'
+        : 'modern_american';
+    final updated = production.copyWith(locale: locale);
+    final productionsNotifier = ref.read(productionsProvider.notifier);
+    final currentProduction = ref.read(currentProductionProvider.notifier);
+
+    setState(() {
+      _syncingVoiceSettings = true;
+      _voiceSettingsError = null;
+    });
+    var localSaved = false;
+    final supa = SupabaseService.instance;
+
+    try {
+      final hadPending =
+          await _voiceConfig.getPendingVoiceCloudSync(production.id) != null;
+      final shouldTrackCloudSync = shouldTrackVoiceCloudSync(
+        isSignedIn: supa.isSignedIn,
+        requireCloud: requireCloud,
+        hadPending: hadPending,
+        organizerId: production.organizerId,
+      );
+      if (shouldTrackCloudSync) {
+        await _voiceConfig.markVoiceCloudSyncPending(
+          production.id,
+          presetId: presetId,
+          locale: locale,
+        );
+      }
+      currentProduction.state = updated;
+      await productionsNotifier.update(updated);
+      await _voiceConfig.setPreset(production.id, presetId);
+      localSaved = true;
+      if (mounted) {
+        setState(() => _currentPreset = VoicePresets.byId(presetId));
+      }
+
+      if (!supa.isSignedIn && shouldTrackCloudSync) {
+        throw StateError('Sign in is required to finish voice sync');
+      }
+      if (supa.isSignedIn) {
+        await Future.wait<void>([
+          supa.saveLocale(productionId: production.id, locale: locale),
+          supa.saveVoicePreset(productionId: production.id, presetId: presetId),
+        ]);
+        await _voiceConfig.clearPendingVoiceCloudSyncIfMatches(
+          production.id,
+          presetId: presetId,
+          locale: locale,
+        );
+      }
+      if (!mounted) return;
+      setState(() {
+        _retryVoiceSettings = null;
+        _voiceSettingsError = null;
+      });
+    } catch (error, stack) {
+      DebugLogService.instance.logError(
+        LogCategory.network,
+        'Voice dialect sync failed',
+        error,
+        stack,
+      );
+      if (!mounted) return;
+      setState(() {
+        _voiceSettingsError = localSaved
+            ? 'The dialect was saved on this device but could not be synced '
+                  'completely to the cast.'
+            : 'The dialect could not be saved completely. Retry to finish '
+                  'the change.';
+        _retryVoiceSettings = () =>
+            _saveDialect(production, locale, requireCloud: true);
+      });
+    } finally {
+      if (mounted) {
+        setState(() => _syncingVoiceSettings = false);
+      }
+    }
   }
 
   Widget _sectionHeader(BuildContext context, String title) {

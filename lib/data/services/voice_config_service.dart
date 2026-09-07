@@ -5,13 +5,29 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/script_models.dart';
 import '../models/voice_preset.dart';
+import 'debug_log_service.dart';
+
+class VoiceOverridesCorruptException implements Exception {
+  const VoiceOverridesCorruptException();
+
+  @override
+  String toString() =>
+      'Voice overrides could not be read. The original settings were preserved.';
+}
+
+class PendingVoiceCloudSync {
+  const PendingVoiceCloudSync({required this.presetId, this.locale});
+
+  final String presetId;
+  final String? locale;
+}
 
 /// Service for persisting per-production voice presets and per-character
 /// voice overrides via SharedPreferences.
 ///
 /// Keys:
 ///   - `voice_preset_<productionId>` → preset ID string
-///   - `voice_overrides_<productionId>` → JSON-encoded map of character overrides
+///   - `voice_overrides_<productionId>` → versioned JSON override envelope
 class VoiceConfigService {
   VoiceConfigService._();
   static final instance = VoiceConfigService._();
@@ -37,31 +53,26 @@ class VoiceConfigService {
     return _prefs!;
   }
 
-  Future<Map<String, dynamic>?> _loadStoredMap(
+  Future<void> _storeString(
+    SharedPreferences prefs,
     String key,
-    String label, {
-    required bool rejectCorrupt,
-  }) async {
-    final prefs = await _preferences;
-    final raw = prefs.getString(key);
-    if (raw == null) return null;
-
-    try {
-      final decoded = jsonDecode(raw);
-      if (decoded is! Map) {
-        throw const FormatException('stored value is not an object');
-      }
-      return Map<String, dynamic>.from(decoded);
-    } catch (e) {
-      debugPrint('VoiceConfig: Failed to parse $label: $e');
-      if (rejectCorrupt) {
-        throw FormatException(
-          'Refusing to overwrite corrupt voice $label',
-          raw,
-        );
-      }
-      return null;
+    String value,
+  ) async {
+    if (!await prefs.setString(key, value)) {
+      throw StateError('Voice settings storage rejected a write');
     }
+  }
+
+  Future<void> _removeKey(SharedPreferences prefs, String key) async {
+    if (!await prefs.remove(key)) {
+      throw StateError('Voice settings storage rejected a removal');
+    }
+  }
+
+  @visibleForTesting
+  void resetForTesting() {
+    _prefs = null;
+    _mutationChains.clear();
   }
 
   // ── Production Voice Preset ─────────────────────────────
@@ -85,46 +96,127 @@ class VoiceConfigService {
   /// Set the voice preset for a production.
   Future<void> setPreset(String productionId, String presetId) async {
     final prefs = await _preferences;
-    await prefs.setString('voice_preset_$productionId', presetId);
-    debugPrint('VoiceConfig: Set preset for $productionId → $presetId');
+    await _storeString(prefs, 'voice_preset_$productionId', presetId);
+    debugPrint('VoiceConfig: voice preset saved');
   }
+
+  Future<void> markVoiceCloudSyncPending(
+    String productionId, {
+    required String presetId,
+    String? locale,
+  }) => _serialized(productionId, () async {
+    final prefs = await _preferences;
+    await _storeString(
+      prefs,
+      'voice_cloud_sync_pending_$productionId',
+      jsonEncode({
+        'version': 1,
+        'presetId': presetId,
+        if (locale != null) 'locale': locale,
+      }),
+    );
+  });
+
+  Future<PendingVoiceCloudSync?> getPendingVoiceCloudSync(
+    String productionId,
+  ) async {
+    final prefs = await _preferences;
+    final encoded = prefs.getString('voice_cloud_sync_pending_$productionId');
+    if (encoded == null) return null;
+    final decoded = jsonDecode(encoded);
+    if (decoded is! Map<String, dynamic> ||
+        decoded['version'] != 1 ||
+        decoded['presetId'] is! String ||
+        (decoded['locale'] != null && decoded['locale'] is! String)) {
+      throw const FormatException('invalid pending voice sync record');
+    }
+    return PendingVoiceCloudSync(
+      presetId: decoded['presetId'] as String,
+      locale: decoded['locale'] as String?,
+    );
+  }
+
+  Future<bool> clearPendingVoiceCloudSyncIfMatches(
+    String productionId, {
+    required String presetId,
+    String? locale,
+  }) => _serialized(productionId, () async {
+    final pending = await getPendingVoiceCloudSync(productionId);
+    if (pending == null ||
+        pending.presetId != presetId ||
+        pending.locale != locale) {
+      return false;
+    }
+    final prefs = await _preferences;
+    await _removeKey(prefs, 'voice_cloud_sync_pending_$productionId');
+    return true;
+  });
 
   // ── Per-Character Voice Overrides ───────────────────────
 
-  /// Get all valid character voice overrides for a production.
+  /// Get all character voice overrides for a production.
   ///
-  /// Malformed entries are ignored individually. A wholly corrupt preference
-  /// remains readable as an empty map, but mutators reject corruption so they
-  /// never overwrite the undecodable raw value with that fallback.
-  Future<Map<String, CharacterVoiceConfig>> getOverrides(String productionId) =>
-      _loadOverrides(productionId);
+  /// The original blob is retained and copied to a quarantine key when it
+  /// cannot be decoded. Callers must surface [VoiceOverridesCorruptException];
+  /// returning an empty map here would let the next edit erase recoverable
+  /// settings.
+  Future<Map<String, CharacterVoiceConfig>> getOverrides(
+    String productionId,
+  ) async {
+    final prefs = await _preferences;
+    final key = 'voice_overrides_$productionId';
+    final encoded = prefs.getString(key);
+    if (encoded == null) return {};
 
-  Future<Map<String, CharacterVoiceConfig>> _loadOverrides(
-    String productionId, {
-    bool rejectCorrupt = false,
-  }) async {
-    final map = await _loadStoredMap(
-      'voice_overrides_$productionId',
-      'overrides',
-      rejectCorrupt: rejectCorrupt,
-    );
-    if (map == null) return {};
+    try {
+      final decoded = jsonDecode(encoded);
+      if (decoded is! Map<String, dynamic>) {
+        throw const FormatException('override root is not an object');
+      }
 
-    final overrides = <String, CharacterVoiceConfig>{};
-    for (final entry in map.entries) {
-      try {
-        final value = entry.value;
-        if (value is! Map<String, dynamic>) {
-          throw const FormatException('override is not an object');
+      Map<String, dynamic> values;
+      final isVersionedEnvelope = decoded['version'] is int;
+      if (isVersionedEnvelope) {
+        if (decoded['version'] != 1 ||
+            decoded['overrides'] is! Map<String, dynamic>) {
+          throw const FormatException('unsupported override format');
         }
-        overrides[entry.key] = CharacterVoiceConfig.fromJson(value);
-      } catch (e) {
-        debugPrint(
-          'VoiceConfig: Ignoring malformed override "${entry.key}": $e',
+        values = decoded['overrides'] as Map<String, dynamic>;
+      } else {
+        // Version 0 was the original direct character-name → config map.
+        // It remains readable and is migrated to v1 on the next mutation.
+        values = decoded;
+      }
+
+      return values.map((key, value) {
+        if (value is! Map<String, dynamic>) {
+          throw const FormatException('override entry is not an object');
+        }
+        return MapEntry(key, CharacterVoiceConfig.fromJson(value));
+      });
+    } catch (error, stack) {
+      try {
+        await _storeString(
+          prefs,
+          'voice_overrides_quarantine_$productionId',
+          encoded,
+        );
+      } catch (quarantineError, quarantineStack) {
+        DebugLogService.instance.logError(
+          LogCategory.general,
+          'Voice override quarantine write failed',
+          quarantineError,
+          quarantineStack,
         );
       }
+      DebugLogService.instance.logError(
+        LogCategory.general,
+        'Voice overrides quarantined after decode failure',
+        error,
+        stack,
+      );
+      throw const VoiceOverridesCorruptException();
     }
-    return overrides;
   }
 
   /// Get the voice override for a specific character, or null if using preset.
@@ -139,37 +231,50 @@ class VoiceConfigService {
   /// Set a voice override for a specific character.
   Future<void> setOverride(String productionId, CharacterVoiceConfig config) =>
       _serialized(productionId, () async {
-        final overrides = await _loadOverrides(
-          productionId,
-          rejectCorrupt: true,
-        );
+        final overrides = await getOverrides(productionId);
         overrides[config.characterName] = config;
         await _saveOverrides(productionId, overrides);
-        debugPrint(
-          'VoiceConfig: Override ${config.characterName} → ${config.voiceId}',
-        );
+        debugPrint('VoiceConfig: character override saved');
       });
 
   /// Remove a character's voice override (revert to preset).
   Future<void> removeOverride(String productionId, String characterName) =>
       _serialized(productionId, () async {
-        final overrides = await _loadOverrides(
-          productionId,
-          rejectCorrupt: true,
-        );
+        final overrides = await getOverrides(productionId);
         overrides.remove(characterName);
         await _saveOverrides(productionId, overrides);
       });
+
+  /// Clear every per-character setting for [characterName]: voice override,
+  /// gender and locale. Called when a character is removed from the script,
+  /// so its stored settings don't resurface if a name is ever reused.
+  Future<void> removeCharacterSettings(
+    String productionId,
+    String characterName,
+  ) => _serialized(productionId, () async {
+    final overrides = await getOverrides(productionId);
+    final genders = await getGenders(productionId);
+    final locales = await getLocales(productionId);
+
+    overrides.remove(characterName);
+    genders.remove(characterName);
+    locales.remove(characterName);
+
+    await _saveOverrides(productionId, overrides);
+    await _saveGenders(productionId, genders);
+    await _saveLocales(productionId, locales);
+  });
 
   Future<void> _saveOverrides(
     String productionId,
     Map<String, CharacterVoiceConfig> overrides,
   ) async {
     final prefs = await _preferences;
-    final json = jsonEncode(
-      overrides.map((key, value) => MapEntry(key, value.toJson())),
-    );
-    await prefs.setString('voice_overrides_$productionId', json);
+    final encoded = jsonEncode({
+      'version': 1,
+      'overrides': overrides.map((key, value) => MapEntry(key, value.toJson())),
+    });
+    await _storeString(prefs, 'voice_overrides_$productionId', encoded);
   }
 
   // ── Adjacency-Aware Voice Assignment ─────────────────────
@@ -279,38 +384,28 @@ class VoiceConfigService {
 
   // ── Character Gender ──────────────────────────────────────
 
-  /// Get all valid character genders for a production.
-  Future<Map<String, CharacterGender>> getGenders(String productionId) =>
-      _loadGenders(productionId);
+  /// Get all character genders for a production.
+  Future<Map<String, CharacterGender>> getGenders(String productionId) async {
+    final prefs = await _preferences;
+    final json = prefs.getString('character_genders_$productionId');
+    if (json == null) return {};
 
-  Future<Map<String, CharacterGender>> _loadGenders(
-    String productionId, {
-    bool rejectCorrupt = false,
-  }) async {
-    final map = await _loadStoredMap(
-      'character_genders_$productionId',
-      'genders',
-      rejectCorrupt: rejectCorrupt,
-    );
-    if (map == null) return {};
-
-    final genders = <String, CharacterGender>{};
-    for (final entry in map.entries) {
-      final gender = switch (entry.value) {
-        'female' => CharacterGender.female,
-        'male' => CharacterGender.male,
-        'nonGendered' => CharacterGender.nonGendered,
-        _ => null,
-      };
-      if (gender == null) {
-        debugPrint(
-          'VoiceConfig: Ignoring malformed gender "${entry.key}": ${entry.value}',
-        );
-      } else {
-        genders[entry.key] = gender;
-      }
+    try {
+      final map = jsonDecode(json) as Map<String, dynamic>;
+      return map.map(
+        (key, value) => MapEntry(key, switch (value) {
+          'male' => CharacterGender.male,
+          'nonGendered' => CharacterGender.nonGendered,
+          _ => CharacterGender.female,
+        }),
+      );
+    } catch (e) {
+      DebugLogService.instance.logError(
+        LogCategory.general,
+        'Voice gender settings decode failed type=${e.runtimeType}',
+      );
+      return {};
     }
-    return genders;
   }
 
   /// Set the gender for a specific character.
@@ -319,7 +414,7 @@ class VoiceConfigService {
     String characterName,
     CharacterGender gender,
   ) => _serialized(productionId, () async {
-    final genders = await _loadGenders(productionId, rejectCorrupt: true);
+    final genders = await getGenders(productionId);
     genders[characterName] = gender;
     await _saveGenders(productionId, genders);
   });
@@ -332,39 +427,28 @@ class VoiceConfigService {
     final json = jsonEncode(
       genders.map((key, value) => MapEntry(key, value.name)),
     );
-    await prefs.setString('character_genders_$productionId', json);
+    await _storeString(prefs, 'character_genders_$productionId', json);
   }
 
   // ── Per-Character Locale Override ────────────────────────
 
-  /// Get all valid character locale overrides for a production.
+  /// Get all character locale overrides for a production.
   /// Characters without an override use the production's default locale.
-  Future<Map<String, String>> getLocales(String productionId) =>
-      _loadLocales(productionId);
+  Future<Map<String, String>> getLocales(String productionId) async {
+    final prefs = await _preferences;
+    final json = prefs.getString('character_locales_$productionId');
+    if (json == null) return {};
 
-  Future<Map<String, String>> _loadLocales(
-    String productionId, {
-    bool rejectCorrupt = false,
-  }) async {
-    final map = await _loadStoredMap(
-      'character_locales_$productionId',
-      'locales',
-      rejectCorrupt: rejectCorrupt,
-    );
-    if (map == null) return {};
-
-    final locales = <String, String>{};
-    for (final entry in map.entries) {
-      final value = entry.value;
-      if (value is String) {
-        locales[entry.key] = value;
-      } else {
-        debugPrint(
-          'VoiceConfig: Ignoring malformed locale "${entry.key}": $value',
-        );
-      }
+    try {
+      final map = jsonDecode(json) as Map<String, dynamic>;
+      return map.map((key, value) => MapEntry(key, value as String));
+    } catch (e) {
+      DebugLogService.instance.logError(
+        LogCategory.general,
+        'Voice locale settings decode failed type=${e.runtimeType}',
+      );
+      return {};
     }
-    return locales;
   }
 
   /// Get the locale for a specific character, or null (use production default).
@@ -379,7 +463,7 @@ class VoiceConfigService {
     String characterName,
     String? locale,
   ) => _serialized(productionId, () async {
-    final locales = await _loadLocales(productionId, rejectCorrupt: true);
+    final locales = await getLocales(productionId);
     if (locale == null) {
       locales.remove(characterName);
     } else {
@@ -393,32 +477,12 @@ class VoiceConfigService {
     Map<String, String> locales,
   ) async {
     final prefs = await _preferences;
-    await prefs.setString(
+    await _storeString(
+      prefs,
       'character_locales_$productionId',
       jsonEncode(locales),
     );
   }
-
-  /// Remove every persisted setting keyed by [characterName].
-  ///
-  /// All preference families are decoded before any write so a corrupt blob
-  /// cannot cause partial cleanup or be overwritten with an empty fallback.
-  Future<void> removeCharacterSettings(
-    String productionId,
-    String characterName,
-  ) => _serialized(productionId, () async {
-    final overrides = await _loadOverrides(productionId, rejectCorrupt: true);
-    final genders = await _loadGenders(productionId, rejectCorrupt: true);
-    final locales = await _loadLocales(productionId, rejectCorrupt: true);
-
-    overrides.remove(characterName);
-    genders.remove(characterName);
-    locales.remove(characterName);
-
-    await _saveOverrides(productionId, overrides);
-    await _saveGenders(productionId, genders);
-    await _saveLocales(productionId, locales);
-  });
 
   // ── Character Rename / Merge ─────────────────────────────
 
@@ -446,13 +510,7 @@ class VoiceConfigService {
     String oldName,
     String newName,
   ) async {
-    // Decode every family before writing any of them. If one raw preference is
-    // corrupt, reject the whole rename rather than partially re-key settings or
-    // overwrite the corrupt blob with an empty fallback.
-    final overrides = await _loadOverrides(productionId, rejectCorrupt: true);
-    final genders = await _loadGenders(productionId, rejectCorrupt: true);
-    final locales = await _loadLocales(productionId, rejectCorrupt: true);
-
+    final overrides = await getOverrides(productionId);
     final movedOverride = overrides.remove(oldName);
     if (movedOverride != null && !overrides.containsKey(newName)) {
       overrides[newName] = CharacterVoiceConfig(
@@ -461,18 +519,19 @@ class VoiceConfigService {
         speed: movedOverride.speed,
       );
     }
+    await _saveOverrides(productionId, overrides);
 
+    final genders = await getGenders(productionId);
     final movedGender = genders.remove(oldName);
     if (movedGender != null) genders.putIfAbsent(newName, () => movedGender);
+    await _saveGenders(productionId, genders);
 
+    final locales = await getLocales(productionId);
     final movedLocale = locales.remove(oldName);
     if (movedLocale != null) locales.putIfAbsent(newName, () => movedLocale);
-
-    await _saveOverrides(productionId, overrides);
-    await _saveGenders(productionId, genders);
     await _saveLocales(productionId, locales);
 
-    debugPrint('VoiceConfig: Re-keyed "$oldName" → "$newName"');
+    debugPrint('VoiceConfig: character settings re-keyed');
   }
 
   // ── Resolved Voice Assignment ───────────────────────────

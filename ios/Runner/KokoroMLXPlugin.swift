@@ -44,8 +44,15 @@ class KokoroMLXPlugin: NSObject {
 
         case "synthesize":
             guard let args = call.arguments as? [String: Any],
-                  let text = args["text"] as? String else {
-                result(FlutterError(code: "INVALID_ARGS", message: "Missing 'text'", details: nil))
+                  let text = args["text"] as? String,
+                  let requestGroup = args["requestGroup"] as? String,
+                  !requestGroup.isEmpty,
+                  let urgent = args["urgent"] as? Bool else {
+                result(FlutterError(
+                    code: "INVALID_ARGS",
+                    message: "Missing 'text', nonempty 'requestGroup', or 'urgent'",
+                    details: nil
+                ))
                 return
             }
             let voice = args["voice"] as? String ?? "af_heart"
@@ -67,7 +74,11 @@ class KokoroMLXPlugin: NSObject {
 
                 do {
                     let audioPath = try await kokoroService.synthesize(
-                        text: text, voice: voice, speed: Float(speed)
+                        text: text,
+                        voice: voice,
+                        speed: Float(speed),
+                        requestGroup: requestGroup,
+                        urgent: urgent
                     )
                     DispatchQueue.main.async { result(audioPath) }
                 } catch {
@@ -85,6 +96,26 @@ class KokoroMLXPlugin: NSObject {
                         UIApplication.shared.endBackgroundTask(bgTask)
                     }
                 }
+            }
+
+        case "releaseSynthesis":
+            guard let args = call.arguments as? [String: Any],
+                  let path = args["path"] as? String else {
+                result(FlutterError(
+                    code: "INVALID_ARGS",
+                    message: "Missing 'path'",
+                    details: nil
+                ))
+                return
+            }
+            do {
+                result(try kokoroService.releaseDelivery(atPath: path))
+            } catch {
+                result(FlutterError(
+                    code: "RELEASE_FAILED",
+                    message: error.localizedDescription,
+                    details: nil
+                ))
             }
 
         case "getVoices":

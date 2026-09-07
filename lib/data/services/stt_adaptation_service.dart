@@ -1,13 +1,11 @@
-import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
-import 'package:flutter/widgets.dart';
 
-import 'debug_log_service.dart';
+import '../database/app_database.dart';
 
 /// Training sample: an audio clip paired with its transcript.
 class TrainingSample {
@@ -51,7 +49,6 @@ class SttProfile {
   final String actorId; // character name or user ID
   final String productionId;
   final List<TrainingSample> samples;
-  final int? _cachedDurationMs;
   final SttAdaptationStatus status;
   final String? adapterPath; // path to LoRA adapter weights
   final DateTime? lastTrainedAt;
@@ -61,19 +58,15 @@ class SttProfile {
     required this.actorId,
     required this.productionId,
     required this.samples,
-    int? totalDurationMs,
     this.status = SttAdaptationStatus.needsData,
     this.adapterPath,
     this.lastTrainedAt,
     this.wordErrorRate,
-  }) : _cachedDurationMs = totalDurationMs;
+  });
 
-  /// Total duration of retained training audio.
-  int get totalDurationMs =>
-      _cachedDurationMs ??
-      samples.fold<int>(0, (sum, sample) => sum + sample.durationMs);
-
-  double get totalAudioSeconds => totalDurationMs / 1000.0;
+  /// Total duration of training audio in seconds.
+  double get totalAudioSeconds =>
+      samples.fold<int>(0, (sum, s) => sum + s.durationMs) / 1000.0;
 
   /// Minimum audio needed for useful adaptation (60 seconds).
   static const double minAudioSeconds = 60.0;
@@ -92,25 +85,15 @@ class SttProfile {
     String? actorId,
     String? productionId,
     List<TrainingSample>? samples,
-    int? totalDurationMs,
     SttAdaptationStatus? status,
     String? adapterPath,
     DateTime? lastTrainedAt,
     double? wordErrorRate,
   }) {
-    final nextSamples = samples ?? this.samples;
     return SttProfile(
       actorId: actorId ?? this.actorId,
       productionId: productionId ?? this.productionId,
-      samples: nextSamples,
-      totalDurationMs:
-          totalDurationMs ??
-          (samples == null
-              ? _cachedDurationMs
-              : nextSamples.fold<int>(
-                  0,
-                  (sum, sample) => sum + sample.durationMs,
-                )),
+      samples: samples ?? this.samples,
       status: status ?? this.status,
       adapterPath: adapterPath ?? this.adapterPath,
       lastTrainedAt: lastTrainedAt ?? this.lastTrainedAt,
@@ -147,285 +130,213 @@ enum SttAdaptationStatus {
 ///
 /// The service automatically decides which strategy to use based on
 /// how much per-actor data is available.
-class SttAdaptationService with WidgetsBindingObserver {
-  SttAdaptationService._();
-  static final instance = SttAdaptationService._();
+class SttAdaptationService {
+  SttAdaptationService(
+    this._database, {
+    Future<Directory> Function()? documentsDirectory,
+  }) : _documentsDirectory =
+           documentsDirectory ?? getApplicationDocumentsDirectory;
+
+  final AppDatabase _database;
+  final Future<Directory> Function() _documentsDirectory;
 
   /// Per-actor profiles, keyed by "productionId:actorId".
   final Map<String, SttProfile> _actorProfiles = {};
 
   /// Per-production pooled profile, keyed by productionId.
   final Map<String, SttProfile> _productionProfiles = {};
+  final Map<String, int> _productionSampleCounts = {};
+  final Map<String, int> _productionDurationMs = {};
 
+  final Map<String, int> _actorSampleCounts = {};
+  final Map<String, int> _actorDurationMs = {};
+  final Map<String, Map<String, TrainingSample>> _samplesByProductionPath = {};
   // ── Persistence ────────────────────────────────────────
-  //
-  // Profiles used to be memory-only: every collected sample, status and
-  // adapter path vanished on restart, so an actor could never accumulate
-  // the 60s+ needed for readyToTrain across sessions. Profiles now persist
-  // as JSON under the production's adapter dir and hydrate lazily.
 
   final Map<String, Future<void>> _hydrations = {};
-  final Set<String> _failedHydrations = {};
-  Timer? _persistDebounce;
-  Future<void>? _flushInFlight;
-  bool _flushAgain = false;
-  final Map<String, int> _dirtyProductions = {};
-  final _dlog = DebugLogService.instance;
-  String? _persistenceWarning;
-  bool _observesLifecycle = false;
 
-  /// Register lifecycle flushing after Flutter has installed its binding.
-  /// Construction stays binding-free so the singleton is safe in tests and
-  /// during pre-runApp service initialization.
-  void initializeLifecycle() {
-    if (_observesLifecycle) return;
-    WidgetsBinding.instance.addObserver(this);
-    _observesLifecycle = true;
+  /// Hydrate normalized rows, migrating the historical profiles.json exactly
+  /// once. Failed migration/loading propagates so a recording is never
+  /// reported as durably adapted when its row was not stored.
+  Future<void> ensureLoaded(String productionId) async {
+    final existing = _hydrations[productionId];
+    if (existing != null) {
+      await existing;
+      return;
+    }
+    final loading = _loadProduction(productionId);
+    _hydrations[productionId] = loading;
+    try {
+      await loading;
+    } catch (_) {
+      if (identical(_hydrations[productionId], loading)) {
+        _hydrations.remove(productionId);
+      }
+      rethrow;
+    }
   }
-
-  /// Last durable-write failure, if any. Calling [flush] retries dirty data.
-  String? get persistenceWarning => _persistenceWarning;
-
-  /// Hydrate a production's profiles from disk (idempotent, lazy).
-  Future<void> ensureLoaded(String productionId) =>
-      _hydrations[productionId] ??= _loadProduction(productionId);
 
   Future<void> _loadProduction(String productionId) async {
-    try {
-      final file = File(
-        p.join(await _adapterDir(productionId), 'profiles.json'),
-      );
-      if (!await file.exists()) {
-        _failedHydrations.remove(productionId);
-        return;
-      }
-      final decoded = jsonDecode(await file.readAsString());
-      if (decoded is! Map) {
-        throw const FormatException('profile root is not an object');
-      }
-      final data = Map<String, dynamic>.from(decoded);
-      final actors = data['actors'];
-      if (actors != null && actors is! List) {
-        throw const FormatException('actors is not a list');
-      }
+    await _migrateLegacyProfiles(productionId);
+    final sampleRows = await _database.loadSttSamples(productionId);
+    final metadataRows = await _database.loadSttProfileMetadata(productionId);
 
-      for (final entry in actors as List? ?? const []) {
-        final profile = await _decodeProfile(entry, productionId);
-        if (profile == null || profile.actorId.isEmpty) continue;
-        final key = '$productionId:${profile.actorId}';
-        _actorProfiles[key] = _mergeProfiles(profile, _actorProfiles[key]);
-      }
-      final production = await _decodeProfile(data['production'], productionId);
-      if (production != null) {
-        _productionProfiles[productionId] = _mergeProfiles(
-          production,
-          _productionProfiles[productionId],
-        );
-      }
-      _failedHydrations.remove(productionId);
-    } catch (e, stack) {
-      _failedHydrations.add(productionId);
-      _dlog.logError(
-        LogCategory.stt,
-        'SttAdaptation: hydrate failed for $productionId; '
-        'refusing to replace its snapshot',
-        e,
-        stack,
-      );
-    }
-  }
-
-  Future<SttProfile?> _decodeProfile(dynamic value, String productionId) async {
-    if (value == null) return null;
-    if (value is! Map) {
-      _dlog.logError(
-        LogCategory.stt,
-        'SttAdaptation: skipped malformed profile entry',
-      );
-      return null;
-    }
-
-    try {
-      final data = Map<String, dynamic>.from(value);
-      final rawSamples = data['samples'];
-      if (rawSamples != null && rawSamples is! List) {
-        throw const FormatException('samples is not a list');
-      }
-      final decodedNewestFirst = <TrainingSample>[];
-      var malformedSamples = 0;
-      // Legacy snapshots may be unbounded. Walk newest-first and stop as soon
-      // as the retained cap is full, rather than creating one Future and file
-      // metadata request for every historical entry.
-      for (final sampleJson in (rawSamples as List? ?? const []).reversed) {
-        if (decodedNewestFirst.length >= _maxSamplesPerProfile) break;
-        try {
-          if (sampleJson is! Map) {
-            throw const FormatException('sample is not an object');
-          }
-          final sample = TrainingSample.fromJson(
-            Map<String, dynamic>.from(sampleJson),
-          );
-          if (await File(sample.audioPath).exists()) {
-            decodedNewestFirst.add(sample);
-          }
-        } catch (_) {
-          malformedSamples++;
-        }
-      }
-      if (malformedSamples > 0) {
-        _dlog.logError(
-          LogCategory.stt,
-          'SttAdaptation: skipped $malformedSamples malformed training samples',
-        );
-      }
-      final samples = List<TrainingSample>.unmodifiable(
-        decodedNewestFirst.reversed,
-      );
-      return SttProfile(
-        actorId: data['actor_id'] as String? ?? '',
-        productionId: productionId,
-        samples: samples,
-        totalDurationMs: _sampleDurationMs(samples),
-        status:
-            SttAdaptationStatus.values.asNameMap()[data['status'] as String? ??
-                ''] ??
-            SttAdaptationStatus.needsData,
-        adapterPath: data['adapter_path'] as String?,
-        lastTrainedAt: DateTime.tryParse(
-          data['last_trained_at'] as String? ?? '',
+    _actorProfiles.removeWhere((key, _) => key.startsWith('$productionId:'));
+    final samplesByActor = <String, List<TrainingSample>>{};
+    for (final row in sampleRows) {
+      (samplesByActor[row.actorId] ??= <TrainingSample>[]).add(
+        TrainingSample(
+          audioPath: row.audioPath,
+          transcript: row.transcript,
+          character: row.actorId,
+          durationMs: row.durationMs,
+          recordedAt: row.recordedAt,
         ),
-        wordErrorRate: (data['wer'] as num?)?.toDouble(),
       );
-    } catch (e) {
-      _dlog.logError(
-        LogCategory.stt,
-        'SttAdaptation: skipped malformed profile',
-        e,
+    }
+    final metadataByActor = {for (final row in metadataRows) row.actorId: row};
+    for (final entry in samplesByActor.entries) {
+      final metadata = metadataByActor[entry.key];
+      final profile = SttProfile(
+        actorId: entry.key,
+        productionId: productionId,
+        samples: entry.value,
+        status: _statusFromName(metadata?.status),
+        adapterPath: metadata?.adapterPath,
+        lastTrainedAt: metadata?.lastTrainedAt,
+        wordErrorRate: metadata?.wordErrorRate,
       );
-      return null;
+      _actorProfiles['$productionId:${entry.key}'] = profile.copyWith(
+        status: _computeStatus(
+          profile.samples.length,
+          profile.totalAudioSeconds,
+          profile.adapterPath,
+        ),
+      );
     }
-  }
-
-  SttProfile _mergeProfiles(SttProfile disk, SttProfile? live) {
-    if (live == null) return disk;
-    final livePaths = {for (final sample in live.samples) sample.audioPath};
-    final samples = _trimSamples([
-      ...disk.samples.where((sample) => !livePaths.contains(sample.audioPath)),
-      ...live.samples,
-    ]);
-    final merged = live.copyWith(
-      samples: samples,
-      totalDurationMs: _sampleDurationMs(samples),
-      adapterPath: live.adapterPath ?? disk.adapterPath,
-      lastTrainedAt: live.lastTrainedAt ?? disk.lastTrainedAt,
-      wordErrorRate: live.wordErrorRate ?? disk.wordErrorRate,
-    );
-    return merged.copyWith(
-      status: _computeStatus(merged.totalAudioSeconds, merged.adapterPath),
-    );
-  }
-
-  void _schedulePersist(String productionId) {
-    _dirtyProductions[productionId] =
-        (_dirtyProductions[productionId] ?? 0) + 1;
-    if (_flushInFlight != null) _flushAgain = true;
-    _persistDebounce?.cancel();
-    _persistDebounce = Timer(
-      const Duration(seconds: 2),
-      () => unawaited(flush()),
-    );
-  }
-
-  /// Persist every dirty production now. Failed writes remain dirty so callers
-  /// or a later lifecycle transition can retry without losing samples.
-  Future<void> flush() {
-    if (_flushInFlight != null) {
-      _flushAgain = true;
-      return _flushInFlight!;
-    }
-    late final Future<void> future;
-    future = _flushUntilSettled().whenComplete(() {
-      if (identical(_flushInFlight, future)) _flushInFlight = null;
-    });
-    return _flushInFlight = future;
-  }
-
-  Future<void> _flushUntilSettled() async {
-    do {
-      _flushAgain = false;
-      await _flushDirty();
-    } while (_flushAgain);
-  }
-
-  /// Retry hydration failures first, then retry every pending write.
-  Future<void> retryPersistence() async {
-    final failed = _failedHydrations
-        .where(_dirtyProductions.containsKey)
-        .toList(growable: false);
-    for (final productionId in failed) {
-      _hydrations.remove(productionId);
-      await ensureLoaded(productionId);
-    }
-    await flush();
-  }
-
-  Future<void> _flushDirty() async {
-    _persistDebounce?.cancel();
-    _persistDebounce = null;
-    final dirty = _dirtyProductions.entries.toList(growable: false);
-    await Future.wait([
-      for (final entry in dirty) _persistProduction(entry.key, entry.value),
-    ]);
-  }
-
-  @override
-  void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state == AppLifecycleState.inactive ||
-        state == AppLifecycleState.paused ||
-        state == AppLifecycleState.hidden ||
-        state == AppLifecycleState.detached) {
-      unawaited(flush());
-    }
-  }
-
-  Future<void> _persistProduction(String productionId, int version) async {
-    try {
-      await ensureLoaded(productionId);
-      if (_failedHydrations.contains(productionId)) {
-        throw StateError('existing profile snapshot could not be hydrated');
+    for (final metadata in metadataRows) {
+      if (metadata.actorId == '_production' ||
+          samplesByActor.containsKey(metadata.actorId)) {
+        continue;
       }
-
-      Map<String, dynamic> encode(SttProfile profile) => {
-        'actor_id': profile.actorId,
-        'samples': profile.samples.map((sample) => sample.toJson()).toList(),
-        'status': profile.status.name,
-        'adapter_path': profile.adapterPath,
-        'last_trained_at': profile.lastTrainedAt?.toIso8601String(),
-        'wer': profile.wordErrorRate,
-      };
-      final payload = <String, dynamic>{
-        'actors': [
-          for (final entry in _actorProfiles.entries)
-            if (entry.key.startsWith('$productionId:')) encode(entry.value),
-        ],
-        'production': _productionProfiles[productionId] == null
-            ? null
-            : encode(_productionProfiles[productionId]!),
-      };
-      final snapshot = await compute(_encodeProfileSnapshot, payload);
-      final path = p.join(await _adapterDir(productionId), 'profiles.json');
-      final tmp = File('$path.tmp');
-      await tmp.writeAsString(snapshot, flush: true);
-      await tmp.rename(path);
-      if (_dirtyProductions[productionId] == version) {
-        _dirtyProductions.remove(productionId);
-      }
-      if (_dirtyProductions.isEmpty) _persistenceWarning = null;
-    } catch (e, stack) {
-      _persistenceWarning =
-          'Could not save speech adaptation data for $productionId';
-      _dlog.logError(LogCategory.stt, _persistenceWarning!, e, stack);
+      _actorProfiles['$productionId:${metadata.actorId}'] = SttProfile(
+        actorId: metadata.actorId,
+        productionId: productionId,
+        samples: <TrainingSample>[],
+        status: _statusFromName(metadata.status),
+        adapterPath: metadata.adapterPath,
+        lastTrainedAt: metadata.lastTrainedAt,
+        wordErrorRate: metadata.wordErrorRate,
+      );
     }
+
+    final productionMetadata = metadataByActor['_production'];
+    _productionProfiles[productionId] = SttProfile(
+      actorId: '_production',
+      productionId: productionId,
+      samples: const [],
+      status: _statusFromName(productionMetadata?.status),
+      adapterPath: productionMetadata?.adapterPath,
+      lastTrainedAt: productionMetadata?.lastTrainedAt,
+      wordErrorRate: productionMetadata?.wordErrorRate,
+    );
+    _actorSampleCounts.removeWhere(
+      (key, _) => key.startsWith('$productionId:'),
+    );
+    _actorDurationMs.removeWhere((key, _) => key.startsWith('$productionId:'));
+    for (final entry in samplesByActor.entries) {
+      final key = '$productionId:${entry.key}';
+      _actorSampleCounts[key] = entry.value.length;
+      _actorDurationMs[key] = entry.value.fold(
+        0,
+        (total, sample) => total + sample.durationMs,
+      );
+    }
+    _samplesByProductionPath[productionId] = {
+      for (final sample in sampleRows)
+        sample.audioPath: TrainingSample(
+          audioPath: sample.audioPath,
+          transcript: sample.transcript,
+          character: sample.actorId,
+          durationMs: sample.durationMs,
+          recordedAt: sample.recordedAt,
+        ),
+    };
+    _productionSampleCounts[productionId] = sampleRows.length;
+    _productionDurationMs[productionId] = sampleRows.fold(
+      0,
+      (total, sample) => total + sample.durationMs,
+    );
+  }
+
+  SttAdaptationStatus _statusFromName(String? value) =>
+      SttAdaptationStatus.values.asNameMap()[value] ??
+      SttAdaptationStatus.needsData;
+
+  Future<void> _migrateLegacyProfiles(String productionId) async {
+    if (await _database.hasSttLegacyMigration(productionId)) return;
+    final file = File(p.join(await _adapterDir(productionId), 'profiles.json'));
+    if (!await file.exists()) {
+      await _database.migrateLegacySttProfiles(
+        productionId,
+        const [],
+        const [],
+      );
+      return;
+    }
+
+    final decoded = jsonDecode(await file.readAsString());
+    if (decoded is! Map) {
+      throw const FormatException('Legacy STT profile root is not an object');
+    }
+    final samplesByPath = <String, SttSampleRow>{};
+    final metadata = <SttProfileMetadataRow>[];
+
+    void collect(dynamic value, {required bool productionProfile}) {
+      if (value is! Map) return;
+      final json = Map<String, dynamic>.from(value);
+      final actorId = productionProfile
+          ? '_production'
+          : (json['actor_id'] as String? ?? '');
+      if (actorId.isEmpty) return;
+      metadata.add(
+        SttProfileMetadataRow(
+          productionId: productionId,
+          actorId: actorId,
+          status: json['status'] as String? ?? 'needsData',
+          adapterPath: json['adapter_path'] as String?,
+          lastTrainedAt: DateTime.tryParse(
+            json['last_trained_at'] as String? ?? '',
+          ),
+          wordErrorRate: (json['wer'] as num?)?.toDouble(),
+        ),
+      );
+      if (productionProfile) return;
+      for (final rawSample in (json['samples'] as List? ?? const [])) {
+        if (rawSample is! Map) continue;
+        final sample = TrainingSample.fromJson(
+          Map<String, dynamic>.from(rawSample),
+        );
+        samplesByPath[sample.audioPath] = SttSampleRow(
+          productionId: productionId,
+          actorId: actorId,
+          audioPath: sample.audioPath,
+          transcript: sample.transcript,
+          durationMs: sample.durationMs,
+          recordedAt: sample.recordedAt,
+        );
+      }
+    }
+
+    for (final actor in (decoded['actors'] as List? ?? const [])) {
+      collect(actor, productionProfile: false);
+    }
+    collect(decoded['production'], productionProfile: true);
+    await _database.migrateLegacySttProfiles(
+      productionId,
+      samplesByPath.values.toList(),
+      metadata,
+    );
   }
 
   // ── Profile Management ─────────────────────────────────
@@ -438,19 +349,36 @@ class SttAdaptationService with WidgetsBindingObserver {
           actorId: actorId,
           productionId: productionId,
           samples: const [],
-          totalDurationMs: 0,
         );
   }
 
-  /// Get per-production pooled profile.
+  /// Get per-production pooled profile. Samples are derived from actor
+  /// profiles instead of being duplicated in memory and persistence.
   SttProfile getProductionProfile(String productionId) {
-    return _productionProfiles[productionId] ??
+    final metadata =
+        _productionProfiles[productionId] ??
         SttProfile(
           actorId: '_production',
           productionId: productionId,
           samples: const [],
-          totalDurationMs: 0,
         );
+    final samples = _actorProfiles.entries
+        .where((entry) => entry.key.startsWith('$productionId:'))
+        .expand((entry) => entry.value.samples)
+        .toList(growable: false);
+    final pooled = metadata.copyWith(samples: samples);
+    return pooled.copyWith(
+      status: _computeStatus(
+        _productionSampleCounts[productionId] ?? samples.length,
+        (_productionDurationMs[productionId] ??
+                samples.fold<int>(
+                  0,
+                  (sum, sample) => sum + sample.durationMs,
+                )) /
+            1000,
+        pooled.adapterPath,
+      ),
+    );
   }
 
   /// Get all actor profiles for a production.
@@ -466,98 +394,156 @@ class SttAdaptationService with WidgetsBindingObserver {
   /// Add a training sample from a recording. Called automatically when
   /// a cast member records a line — the recording + its transcript
   /// become training data for STT adaptation.
-  void addSample({
+  Future<void> addSample({
     required String productionId,
     required String actorId,
     required String audioPath,
     required String transcript,
     required int durationMs,
-  }) {
-    // Kick hydration so samples from previous runs merge in (they combine
-    // by audioPath, so adding before the disk snapshot lands is safe).
-    unawaited(ensureLoaded(productionId));
+  }) async {
+    await ensureLoaded(productionId);
+    final recordedAt = DateTime.now();
     final sample = TrainingSample(
       audioPath: audioPath,
       transcript: transcript,
       character: actorId,
       durationMs: durationMs,
-      recordedAt: DateTime.now(),
+      recordedAt: recordedAt,
     );
-
-    // Add to per-actor profile
     final actorKey = '$productionId:$actorId';
+    final existing = _samplesByProductionPath[productionId]?[audioPath];
+    final existingActorKey = existing == null
+        ? null
+        : '$productionId:${existing.character}';
+    final replacesSameActor = existingActorKey == actorKey;
+    final actorCount =
+        (_actorSampleCounts[actorKey] ?? 0) + (replacesSameActor ? 0 : 1);
+    final actorDuration =
+        (_actorDurationMs[actorKey] ?? 0) +
+        durationMs -
+        (replacesSameActor ? existing!.durationMs : 0);
+    final productionCount =
+        (_productionSampleCounts[productionId] ?? 0) +
+        (existing == null ? 1 : 0);
+    final productionDuration =
+        (_productionDurationMs[productionId] ?? 0) +
+        durationMs -
+        (existing?.durationMs ?? 0);
+
     final actorProfile =
         _actorProfiles[actorKey] ??
         SttProfile(
           actorId: actorId,
           productionId: productionId,
-          samples: const [],
-          totalDurationMs: 0,
+          samples: <TrainingSample>[],
         );
-    final actorAppend = _appendSample(actorProfile, sample);
-    final actorSeconds = actorAppend.durationMs / 1000.0;
-    _actorProfiles[actorKey] = actorProfile.copyWith(
-      samples: actorAppend.samples,
-      totalDurationMs: actorAppend.durationMs,
-      status: _computeStatus(actorSeconds, actorProfile.adapterPath),
+    final actorStatus = _computeStatus(
+      actorCount,
+      actorDuration / 1000,
+      actorProfile.adapterPath,
     );
-
-    // Also add to pooled production profile
-    final prodProfile =
+    final productionProfile =
         _productionProfiles[productionId] ??
         SttProfile(
           actorId: '_production',
           productionId: productionId,
           samples: const [],
-          totalDurationMs: 0,
         );
-    final productionAppend = _appendSample(prodProfile, sample);
-    _productionProfiles[productionId] = prodProfile.copyWith(
-      samples: productionAppend.samples,
-      totalDurationMs: productionAppend.durationMs,
-      status: _computeStatus(
-        productionAppend.durationMs / 1000.0,
-        prodProfile.adapterPath,
-      ),
+    final productionStatus = _computeStatus(
+      productionCount,
+      productionDuration / 1000,
+      productionProfile.adapterPath,
     );
+    final metadata = <SttProfileMetadataRow>[
+      _metadataRow(actorProfile.copyWith(status: actorStatus)),
+      _metadataRow(productionProfile.copyWith(status: productionStatus)),
+    ];
+    if (existing != null &&
+        existingActorKey != null &&
+        existingActorKey != actorKey) {
+      final oldProfile = _actorProfiles[existingActorKey];
+      if (oldProfile != null) {
+        final oldCount = (_actorSampleCounts[existingActorKey] ?? 1) - 1;
+        final oldDuration =
+            (_actorDurationMs[existingActorKey] ?? existing.durationMs) -
+            existing.durationMs;
+        metadata.add(
+          _metadataRow(
+            oldProfile.copyWith(
+              status: _computeStatus(
+                oldCount,
+                oldDuration / 1000,
+                oldProfile.adapterPath,
+              ),
+            ),
+          ),
+        );
+      }
+    }
+
+    await _database.upsertSttSampleWithMetadata(
+      SttSampleRow(
+        productionId: productionId,
+        actorId: actorId,
+        audioPath: audioPath,
+        transcript: transcript,
+        durationMs: durationMs,
+        recordedAt: recordedAt,
+      ),
+      metadata,
+    );
+
+    if (existing != null) {
+      final oldKey = '$productionId:${existing.character}';
+      final oldProfile = _actorProfiles[oldKey];
+      oldProfile?.samples.removeWhere((item) => item.audioPath == audioPath);
+      if (oldKey != actorKey) {
+        final oldCount = (_actorSampleCounts[oldKey] ?? 1) - 1;
+        final oldDuration =
+            (_actorDurationMs[oldKey] ?? existing.durationMs) -
+            existing.durationMs;
+        _actorSampleCounts[oldKey] = oldCount;
+        _actorDurationMs[oldKey] = oldDuration;
+        if (oldProfile != null) {
+          _actorProfiles[oldKey] = oldProfile.copyWith(
+            status: _computeStatus(
+              oldCount,
+              oldDuration / 1000,
+              oldProfile.adapterPath,
+            ),
+          );
+        }
+      }
+    }
+    actorProfile.samples.add(sample);
+    _actorProfiles[actorKey] = actorProfile.copyWith(status: actorStatus);
+    _actorSampleCounts[actorKey] = actorCount;
+    _actorDurationMs[actorKey] = actorDuration;
+    _productionProfiles[productionId] = productionProfile.copyWith(
+      status: productionStatus,
+    );
+    _productionSampleCounts[productionId] = productionCount;
+    _productionDurationMs[productionId] = productionDuration;
+    (_samplesByProductionPath[productionId] ??= {})[audioPath] = sample;
 
     debugPrint(
-      'SttAdaptation: Added sample for $actorId '
-      '(${actorAppend.samples.length} samples, '
-      '${actorSeconds.toStringAsFixed(0)}s total)',
-    );
-    _schedulePersist(productionId);
-  }
-
-  static const _maxSamplesPerProfile = 500;
-
-  static List<TrainingSample> _trimSamples(List<TrainingSample> samples) {
-    final first = samples.length > _maxSamplesPerProfile
-        ? samples.length - _maxSamplesPerProfile
-        : 0;
-    return List<TrainingSample>.unmodifiable(samples.skip(first));
-  }
-
-  static int _sampleDurationMs(Iterable<TrainingSample> samples) =>
-      samples.fold<int>(0, (sum, sample) => sum + sample.durationMs);
-
-  static ({List<TrainingSample> samples, int durationMs}) _appendSample(
-    SttProfile profile,
-    TrainingSample sample,
-  ) {
-    final evictedDuration = profile.samples.length >= _maxSamplesPerProfile
-        ? profile.samples.first.durationMs
-        : 0;
-    final samples = profile.samples.length >= _maxSamplesPerProfile
-        ? [...profile.samples.skip(1), sample]
-        : [...profile.samples, sample];
-    return (
-      samples: List<TrainingSample>.unmodifiable(samples),
-      durationMs: profile.totalDurationMs + sample.durationMs - evictedDuration,
+      'SttAdaptation: Added sample '
+      '($actorCount actor samples, ${actorDuration ~/ 1000}s total)',
     );
   }
+
+  SttProfileMetadataRow _metadataRow(SttProfile profile) =>
+      SttProfileMetadataRow(
+        productionId: profile.productionId,
+        actorId: profile.actorId,
+        status: profile.status.name,
+        adapterPath: profile.adapterPath,
+        lastTrainedAt: profile.lastTrainedAt,
+        wordErrorRate: profile.wordErrorRate,
+      );
 
   SttAdaptationStatus _computeStatus(
+    int sampleCount,
     double totalSeconds,
     String? existingAdapter,
   ) {
@@ -600,68 +586,37 @@ class SttAdaptationService with WidgetsBindingObserver {
     final profile = _actorProfiles[key];
     if (profile == null || !profile.hasEnoughData) return;
 
-    _actorProfiles[key] = profile.copyWith(
-      status: SttAdaptationStatus.training,
+    // Cloud training is not yet dispatched here; persist the durable
+    // ready-to-train state without transient in-memory-only transitions.
+    final updated = profile.copyWith(status: SttAdaptationStatus.readyToTrain);
+    await _database.upsertSttProfileMetadata(_metadataRow(updated));
+    _actorProfiles[key] = updated;
+    debugPrint(
+      'SttAdaptation: actor profile ready '
+      '(${profile.samples.length} samples, '
+      '${profile.totalAudioSeconds.toStringAsFixed(0)}s audio)',
     );
-
-    try {
-      // Phase 1: Cloud training
-      // POST /api/stt/train
-      // Body: {
-      //   production_id, actor_id,
-      //   samples: [{audio_url, transcript}...],
-      //   base_model: "whisper-small",
-      //   strategy: "lora",
-      //   lora_rank: 8,
-      // }
-      // Response: { job_id, estimated_time_minutes }
-      //
-      // Phase 2: Poll for completion, download adapter
-      // GET /api/stt/train/{job_id}
-      // Response: { status: "complete", adapter_url: "..." }
-
-      debugPrint(
-        'SttAdaptation: Would train LoRA for $actorId '
-        '(${profile.samples.length} samples, '
-        '${profile.totalAudioSeconds.toStringAsFixed(0)}s audio)',
-      );
-
-      // Placeholder: mark as not yet trained
-      _actorProfiles[key] = profile.copyWith(
-        status: SttAdaptationStatus.readyToTrain,
-      );
-    } catch (e) {
-      _actorProfiles[key] = profile.copyWith(
-        status: SttAdaptationStatus.failed,
-      );
-      debugPrint('SttAdaptation: Training failed for $actorId: $e');
-    }
   }
 
   /// Request training for a pooled production adapter.
   Future<void> requestProductionTraining({required String productionId}) async {
-    final profile = _productionProfiles[productionId];
-    if (profile == null || !profile.hasEnoughData) return;
-
-    _productionProfiles[productionId] = profile.copyWith(
-      status: SttAdaptationStatus.training,
+    final pooled = getProductionProfile(productionId);
+    if (!pooled.hasEnoughData) return;
+    final metadata =
+        (_productionProfiles[productionId] ??
+                SttProfile(
+                  actorId: '_production',
+                  productionId: productionId,
+                  samples: const [],
+                ))
+            .copyWith(status: SttAdaptationStatus.readyToTrain);
+    await _database.upsertSttProfileMetadata(_metadataRow(metadata));
+    _productionProfiles[productionId] = metadata;
+    debugPrint(
+      'SttAdaptation: production profile ready '
+      '(${pooled.samples.length} samples, '
+      '${pooled.totalAudioSeconds.toStringAsFixed(0)}s audio)',
     );
-
-    try {
-      debugPrint(
-        'SttAdaptation: Would train production LoRA '
-        '(${profile.samples.length} samples from all actors, '
-        '${profile.totalAudioSeconds.toStringAsFixed(0)}s audio)',
-      );
-
-      _productionProfiles[productionId] = profile.copyWith(
-        status: SttAdaptationStatus.readyToTrain,
-      );
-    } catch (e) {
-      _productionProfiles[productionId] = profile.copyWith(
-        status: SttAdaptationStatus.failed,
-      );
-    }
   }
 
   // ── Inference ──────────────────────────────────────────
@@ -688,40 +643,40 @@ class SttAdaptationService with WidgetsBindingObserver {
 
   /// Local directory for storing adapter weights.
   Future<String> _adapterDir(String productionId) async {
-    final dir = await getApplicationDocumentsDirectory();
+    final dir = await _documentsDirectory();
     final adapterDir = Directory(
       p.join(dir.path, 'stt_adapters', productionId),
     );
-    if (!await adapterDir.exists()) {
-      await adapterDir.create(recursive: true);
+    if (!adapterDir.existsSync()) {
+      adapterDir.createSync(recursive: true);
     }
     return adapterDir.path;
   }
 
   /// Clear all adaptation data for a production.
   Future<void> clearProduction(String productionId) async {
+    await _database.clearSttAdaptation(productionId);
     _hydrations.remove(productionId);
-    _failedHydrations.remove(productionId);
-    _dirtyProductions.remove(productionId);
-    // Remove actor profiles
     _actorProfiles.removeWhere((key, _) => key.startsWith('$productionId:'));
-
-    // Remove production profile
+    _actorSampleCounts.removeWhere(
+      (key, _) => key.startsWith('$productionId:'),
+    );
+    _actorDurationMs.removeWhere((key, _) => key.startsWith('$productionId:'));
+    _samplesByProductionPath.remove(productionId);
+    _productionSampleCounts.remove(productionId);
+    _productionDurationMs.remove(productionId);
     _productionProfiles.remove(productionId);
 
     // Delete adapter files
-    final dir = await getApplicationDocumentsDirectory();
+    final dir = await _documentsDirectory();
     final adapterDir = Directory(
       p.join(dir.path, 'stt_adapters', productionId),
     );
-    if (await adapterDir.exists()) {
+    if (adapterDir.existsSync()) {
       await adapterDir.delete(recursive: true);
     }
   }
 }
-
-String _encodeProfileSnapshot(Map<String, dynamic> payload) =>
-    jsonEncode(payload);
 
 /// Strategy recommendation for STT training.
 enum TrainingStrategy {

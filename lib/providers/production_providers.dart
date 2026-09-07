@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:isolate';
 import 'dart:convert';
 
+import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:flutter/material.dart' show SnackBar, Text;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_riverpod/legacy.dart';
@@ -10,11 +11,14 @@ import '../data/services/debug_log_service.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:uuid/uuid.dart';
 
+import '../data/database/app_database.dart'
+    show PendingCastInvitationRow, ProductionCloudCreateRow;
 import '../data/models/cast_member_model.dart';
 import '../data/models/production_models.dart';
 import '../data/models/script_models.dart';
 import '../data/repositories/production_repository.dart';
 import '../data/services/deep_link_service.dart';
+import '../data/services/demo_production_service.dart';
 import '../data/services/script_import_service.dart';
 import '../data/services/script_parser.dart';
 import '../data/services/voice_config_service.dart';
@@ -32,39 +36,6 @@ const _maxBackupBytes = 5 * 1024 * 1024; // 5 MB
 /// Pending join data from a deep link. Consumed by the join screen.
 final pendingJoinProvider = StateProvider<PendingJoin?>((ref) => null);
 
-final activeAccountNamespaceProvider = StateProvider<String>(
-  (ref) => guestAccountNamespace,
-);
-
-int _identityGeneration = 0;
-
-Future<void> setAccountIdentity(WidgetRef ref, String? userId) async {
-  final generation = ++_identityGeneration;
-  final namespace = userId == null || userId.isEmpty
-      ? guestAccountNamespace
-      : userId;
-  final notifier = ref.read(activeAccountNamespaceProvider.notifier);
-  if (namespace == guestAccountNamespace) {
-    if (generation == _identityGeneration && notifier.state != namespace) {
-      notifier.state = namespace;
-    }
-    return;
-  }
-
-  final database = ref.read(databaseProvider);
-  // Publish the user's namespace FIRST so any production the user creates
-  // from here on is attributed to them, then reconcile guest-namespace rows a
-  // prior guest session (or the sign-in transition) left behind. The
-  // reconciliation is unconditional: the previous once-per-user gate left
-  // guest-created (organizer_id='local') and race-created productions
-  // permanently invisible after sign-in.
-  if (generation == _identityGeneration && notifier.state != namespace) {
-    notifier.state = namespace;
-  }
-  if (generation != _identityGeneration) return;
-  await database.claimLegacyProductions(namespace);
-}
-
 /// Provider for the character the user is rehearsing as.
 final rehearsalCharacterProvider = StateProvider<String?>((ref) => null);
 
@@ -81,83 +52,306 @@ final rehearsalModeProvider = StateProvider<RehearsalMode>(
 /// When true, the actor's upcoming lines are hidden (blind rehearsal).
 final hideMyLinesProvider = StateProvider<bool>((ref) => false);
 
+/// The account namespace every local query is scoped to: the signed-in user
+/// id, or '__guest__' when signed out. Guest rows are claimed into the user's
+/// namespace by [setAccountIdentity] on sign-in.
+final activeAccountNamespaceProvider = StateProvider<String>(
+  (ref) => guestAccountNamespace,
+);
+
+int _identityGeneration = 0;
+
+/// Rebind every repository query to [userId]'s account namespace.
+///
+/// Publishes the namespace FIRST so any production the user creates from here
+/// on is attributed to them, then claims guest-namespace rows a prior guest
+/// session (or the sign-in transition) left behind — organizer rows, joined
+/// rows, and rows created signed-out (organizer_id='local'). The claim is
+/// unconditional: a once-per-user gate left those rows permanently invisible.
+Future<void> setAccountIdentity(WidgetRef ref, String? userId) async {
+  final generation = ++_identityGeneration;
+  final namespace = userId == null || userId.isEmpty
+      ? guestAccountNamespace
+      : userId;
+  final notifier = ref.read(activeAccountNamespaceProvider.notifier);
+  if (namespace == guestAccountNamespace) {
+    if (generation == _identityGeneration && notifier.state != namespace) {
+      notifier.state = namespace;
+    }
+    return;
+  }
+
+  final database = ref.read(databaseProvider);
+  if (generation == _identityGeneration && notifier.state != namespace) {
+    notifier.state = namespace;
+  }
+  if (generation != _identityGeneration) return;
+  await database.claimLegacyProductions(namespace);
+}
+
 /// Repository provider — bridges Drift DB with domain models.
 final productionRepositoryProvider = Provider<ProductionRepository>((ref) {
-  final db = ref.watch(databaseProvider);
+  final db = ref.read(databaseProvider);
   final accountNamespace = ref.watch(activeAccountNamespaceProvider);
   return ProductionRepository(db, accountNamespace: accountNamespace);
 });
+final connectivityChangesProvider = Provider<Stream<List<ConnectivityResult>>>(
+  (ref) => Connectivity().onConnectivityChanged,
+);
+
+final productionCloudCreationProvider =
+    StateNotifierProvider<
+      ProductionCloudCreationNotifier,
+      Map<String, ProductionCloudCreateRow>
+    >(
+      (ref) => ProductionCloudCreationNotifier(
+        ref.read(productionRepositoryProvider),
+        ref.read(connectivityChangesProvider),
+      ),
+    );
 
 /// The list of productions the user has.
 final productionsProvider =
     StateNotifierProvider<ProductionsNotifier, List<Production>>((ref) {
-      final repo = ref.watch(productionRepositoryProvider);
-      return ProductionsNotifier(repo);
+      final repo = ref.read(productionRepositoryProvider);
+      final cloudCreates = ref.read(productionCloudCreationProvider.notifier);
+      return ProductionsNotifier(repo, cloudCreates);
     });
 
 class ProductionsNotifier extends StateNotifier<List<Production>> {
   final ProductionRepository _repo;
-  int _generation = 0;
+  final ProductionCloudCreationNotifier _cloudCreates;
 
-  ProductionsNotifier(this._repo) : super([]) {
+  ProductionsNotifier(this._repo, this._cloudCreates) : super([]) {
+    _cloudCreates.onProductionDeleted = (id) {
+      state = state.where((production) => production.id != id).toList();
+    };
     _load();
   }
 
   Future<void> _load() async {
-    final generation = _generation;
-    final loaded = await _repo.getAllProductions();
-    if (generation == _generation) state = loaded;
+    state = await _repo.getAllProductions();
   }
 
   /// Save [productions] to Drift and reload once. Used by the cloud restore.
   Future<void> addAll(List<Production> productions) async {
-    final generation = _generation;
     for (final production in productions) {
       await _repo.saveProduction(production);
     }
-    final loaded = await _repo.getAllProductions();
-    if (generation == _generation) state = loaded;
+    state = await _repo.getAllProductions();
   }
 
   Future<void> add(Production production) async {
-    final generation = _generation;
     final dlog = DebugLogService.instance;
     dlog.log(
       LogCategory.general,
-      'ProductionsNotifier.add: "${production.title}" id=${production.id}, '
-      'state has ${state.length} items, ids=${state.map((p) => p.id).toList()}',
+      'ProductionsNotifier.add: saving local production; '
+      'current_count=${state.length}',
     );
     await _repo.saveProduction(production);
-    final loaded = await _repo.getAllProductions();
-    if (generation != _generation) return;
-    state = loaded;
+    // Reload from DB to guarantee no duplicates (DB uses insertOrReplace).
+    state = await _repo.getAllProductions();
     dlog.log(
       LogCategory.general,
       'ProductionsNotifier.add: after reload, state has ${state.length} items',
     );
   }
 
+  /// Atomically save the optimistic local row and its durable cloud outbox
+  /// entry before returning control to the UI.
+  Future<void> addPendingCloudCreation(Production production) async {
+    await _repo.saveProductionPendingCloudCreate(production);
+    state = await _repo.getAllProductions();
+    await _cloudCreates.reload();
+    unawaited(_cloudCreates.retry(production.id));
+  }
+
   Future<void> update(Production production) async {
-    final generation = _generation;
     await _repo.saveProduction(production);
-    if (generation != _generation) return;
     state = [
       for (final p in state)
         if (p.id == production.id) production else p,
     ];
   }
 
+  /// Must complete before the caller deletes the cloud row. It blocks new
+  /// create retries and joins any create already in flight.
+  Future<void> prepareForDeletion(String id) => _cloudCreates.beginDeletion(id);
+
+  Future<void> cancelPreparedDeletion(String id) =>
+      _cloudCreates.cancelDeletion(id);
+
+  /// Call immediately after the cloud delete commits, before fallible local
+  /// cleanup, so an app restart cannot replay the create outbox.
+  Future<void> cloudDeletionCommitted(String id) =>
+      _cloudCreates.cloudDeletionCommitted(id);
+
   Future<void> remove(String id) async {
-    final generation = _generation;
+    await _cloudCreates.beginDeletion(id);
     await _repo.deleteProduction(id);
-    if (generation == _generation) {
-      state = state.where((p) => p.id != id).toList();
+    _cloudCreates.completeDeletion(id);
+    state = state.where((p) => p.id != id).toList();
+  }
+
+  /// Wipe the in-memory list without touching persisted rows (sign-out).
+  void clear() {
+    state = const [];
+  }
+}
+
+class ProductionCloudCreationNotifier
+    extends StateNotifier<Map<String, ProductionCloudCreateRow>> {
+  ProductionCloudCreationNotifier(this._repo, this._connectivityChanges)
+    : super({}) {
+    unawaited(_initialize());
+  }
+
+  final ProductionRepository _repo;
+  final Stream<List<ConnectivityResult>> _connectivityChanges;
+  StreamSubscription<List<ConnectivityResult>>? _connectivitySubscription;
+  bool _retrying = false;
+  final Map<String, Future<bool>> _inFlight = {};
+  final Set<String> _deleting = {};
+  void Function(String productionId)? onProductionDeleted;
+
+  Future<void> _initialize() async {
+    await reload();
+    await retryAll();
+    _connectivitySubscription = _connectivityChanges.listen((results) {
+      if (results.any((result) => result != ConnectivityResult.none)) {
+        unawaited(retryAll());
+      }
+    });
+  }
+
+  Future<void> reload() async {
+    final rows = await _repo.getProductionCloudCreates();
+    state = {for (final row in rows) row.productionId: row};
+  }
+
+  Future<void> retryAll() async {
+    if (_retrying || !SupabaseService.instance.isSignedIn) return;
+    _retrying = true;
+    try {
+      for (final productionId in state.keys.toList()) {
+        final row = state[productionId];
+        if (row?.status == 'deleting') {
+          if (!_deleting.contains(productionId)) {
+            await _resumeDeletion(productionId);
+          }
+        } else {
+          await retry(productionId);
+        }
+      }
+    } finally {
+      _retrying = false;
     }
   }
 
-  void clear() {
-    _generation++;
-    state = [];
+  Future<void> _resumeDeletion(String productionId) async {
+    try {
+      await SupabaseService.instance.deleteProductionEverywhere(productionId);
+      await _repo.deleteProduction(productionId);
+      state = Map.from(state)..remove(productionId);
+      onProductionDeleted?.call(productionId);
+    } catch (error) {
+      DebugLogService.instance.logError(
+        LogCategory.network,
+        'Pending production deletion will retry',
+        error,
+      );
+    }
+  }
+
+  /// Returns true only after the server confirms the original id and join code.
+  Future<bool> retry(String productionId) {
+    if (_deleting.contains(productionId)) return Future.value(false);
+    final active = _inFlight[productionId];
+    if (active != null) return active;
+    final retry = _retry(productionId);
+    _inFlight[productionId] = retry;
+    return retry.whenComplete(() {
+      if (identical(_inFlight[productionId], retry)) {
+        _inFlight.remove(productionId);
+      }
+    });
+  }
+
+  Future<void> beginDeletion(String productionId) async {
+    _deleting.add(productionId);
+    try {
+      final active = _inFlight[productionId];
+      if (active != null) await active;
+      await _repo.markProductionCloudDeletionPending(productionId);
+      await reload();
+    } catch (_) {
+      _deleting.remove(productionId);
+      rethrow;
+    }
+  }
+
+  Future<void> cloudDeletionCommitted(String productionId) async {
+    await _repo.cancelProductionCloudCreate(productionId);
+    if (state.containsKey(productionId)) {
+      state = Map.from(state)..remove(productionId);
+    }
+  }
+
+  void completeDeletion(String productionId) {
+    _deleting.remove(productionId);
+    if (state.containsKey(productionId)) {
+      state = Map.from(state)..remove(productionId);
+    }
+  }
+
+  Future<void> cancelDeletion(String productionId) async {
+    if (!_deleting.remove(productionId)) return;
+    await _repo.resumeProductionCloudCreate(productionId);
+    await reload();
+    if (state.containsKey(productionId)) {
+      unawaited(retry(productionId));
+    }
+  }
+
+  Future<bool> _retry(String productionId) async {
+    if (_deleting.contains(productionId)) return false;
+    if (!state.containsKey(productionId)) return true;
+    if (state[productionId]?.status == 'deleting') return false;
+    if (!SupabaseService.instance.isSignedIn) return false;
+    final production = await _repo.getProduction(productionId);
+    if (production == null) return false;
+    try {
+      final confirmed = await SupabaseService.instance.createProduction(
+        title: production.title,
+        id: production.id,
+        joinCode: production.joinCode,
+      );
+      if (confirmed['id'] != production.id ||
+          confirmed['join_code'] != production.joinCode) {
+        throw StateError(
+          'Cloud create confirmed different production identity/code',
+        );
+      }
+      await _repo.markProductionCloudCreateSynced(productionId);
+      state = Map.from(state)..remove(productionId);
+      return true;
+    } catch (error) {
+      await _repo.markProductionCloudCreateFailed(productionId, error);
+      await reload();
+      DebugLogService.instance.logError(
+        LogCategory.network,
+        'Cloud production create remains pending',
+        error,
+      );
+      return false;
+    }
+  }
+
+  @override
+  void dispose() {
+    final subscription = _connectivitySubscription;
+    if (subscription != null) unawaited(subscription.cancel());
+    super.dispose();
   }
 }
 
@@ -175,64 +369,39 @@ final scriptImportServiceProvider = Provider<ScriptImportService>((ref) {
 /// All recordings for the current production, keyed by script line ID.
 final recordingsProvider =
     StateNotifierProvider<RecordingsNotifier, Map<String, Recording>>((ref) {
-      final repo = ref.watch(productionRepositoryProvider);
+      final repo = ref.read(productionRepositoryProvider);
       return RecordingsNotifier(repo);
     });
 
 class RecordingsNotifier extends StateNotifier<Map<String, Recording>> {
   final ProductionRepository _repo;
   String? _productionId;
-  int _generation = 0;
 
   RecordingsNotifier(this._repo) : super({});
 
   /// Load recordings for a given production from the database.
   Future<void> loadForProduction(String productionId) async {
-    final generation = ++_generation;
     _productionId = productionId;
-    final loaded = await _repo.getRecordings(productionId);
-    if (generation == _generation && _productionId == productionId) {
-      state = loaded;
-    }
+    state = await _repo.getRecordings(productionId);
   }
 
   Future<void> add(Recording recording) async {
-    final generation = _generation;
-    final productionId = _productionId;
-    if (productionId != null) {
-      await _repo.saveRecording(productionId, recording);
+    if (_productionId != null) {
+      await _repo.saveRecording(_productionId!, recording);
     }
-    if (generation == _generation) {
-      state = {...state, recording.scriptLineId: recording};
-    }
+    state = {...state, recording.scriptLineId: recording};
   }
 
   Future<void> remove(String scriptLineId) async {
-    final productionId = _productionId;
     final recording = state[scriptLineId];
-    // State first, synchronously: Dismissible requires the row to leave in the
-    // current frame. The exact production/id delete follows.
+    // State first, synchronously: the recordings browser calls this from
+    // Dismissible.onDismissed, and the row must leave the tree this frame
+    // or Flutter throws "A dismissed Dismissible widget is still part of
+    // the tree". The DB row follows; if that fails the row simply
+    // reappears on the next load instead of dangling file-less.
     state = Map.from(state)..remove(scriptLineId);
-    if (productionId != null && recording != null) {
-      await _repo.deleteRecording(productionId, recording.id);
-    }
-  }
-
-  Future<void> removeRecording(
-    String productionId,
-    String scriptLineId,
-    String recordingId,
-  ) async {
-    await _repo.deleteRecording(productionId, recordingId);
-    final loaded = state[scriptLineId];
-    if (_productionId == productionId && loaded?.id == recordingId) {
-      state = Map.from(state)..remove(scriptLineId);
-    }
-  }
-
-  void removeFromMap(String scriptLineId) {
-    if (state.containsKey(scriptLineId)) {
-      state = Map.from(state)..remove(scriptLineId);
+    if (recording != null) {
+      await _repo.deleteRecording(recording.id);
     }
   }
 
@@ -241,30 +410,35 @@ class RecordingsNotifier extends StateNotifier<Map<String, Recording>> {
     state = {...state, ...recordings};
   }
 
-  /// Persist the remote URL after a successful cloud upload so the app
-  /// knows the recording is synced (and won't re-upload it).
+  /// Persist the remote URL after a successful cloud upload. Queue uploads
+  /// carry the immutable recording id; [expectedRecordedAt] supports queues
+  /// persisted by older app versions before that id was serialized.
   Future<void> markUploaded(
     String productionId,
     String scriptLineId,
-    String recordingId,
-    String remoteUrl,
-  ) async {
-    await _repo.markRecordingUploaded(
+    String remoteUrl, {
+    String? expectedRecordingId,
+    DateTime? expectedRecordedAt,
+  }) async {
+    final changed = await _repo.markRecordingUploaded(
       productionId,
       scriptLineId,
-      recordingId,
       remoteUrl,
+      expectedRecordingId: expectedRecordingId,
+      expectedRecordedAt: expectedRecordedAt,
     );
+    if (!changed) return;
     final existing = state[scriptLineId];
-    if (existing != null &&
-        existing.id == recordingId &&
-        _productionId == productionId) {
+    final identityMatches = expectedRecordingId != null
+        ? existing?.id == expectedRecordingId
+        : expectedRecordedAt == null ||
+              existing?.recordedAt == expectedRecordedAt;
+    if (existing != null && _productionId == productionId && identityMatches) {
       state = {...state, scriptLineId: existing.copyWith(remoteUrl: remoteUrl)};
     }
   }
 
   void clear() {
-    _generation++;
     _productionId = null;
     state = {};
   }
@@ -275,42 +449,48 @@ class RecordingsNotifier extends StateNotifier<Map<String, Recording>> {
 /// when the primary actor hasn't recorded a line.
 final understudyRecordingsProvider =
     StateNotifierProvider<RecordingsNotifier, Map<String, Recording>>((ref) {
-      final repo = ref.watch(productionRepositoryProvider);
+      final repo = ref.read(productionRepositoryProvider);
       return RecordingsNotifier(repo);
     });
 
 /// Character being recorded in the recording studio.
 final recordingCharacterProvider = StateProvider<String?>((ref) => null);
 
+final pendingCastInvitationProvider =
+    StateNotifierProvider<
+      PendingCastInvitationNotifier,
+      List<PendingCastInvitationRow>
+    >(
+      (ref) => PendingCastInvitationNotifier(
+        ref.read(productionRepositoryProvider),
+        ref.read(connectivityChangesProvider),
+      ),
+    );
+
 /// Cast members for the current production, backed by Drift + Supabase sync.
 final castMembersProvider =
     StateNotifierProvider<CastMembersNotifier, List<CastMemberModel>>((ref) {
-      final repo = ref.watch(productionRepositoryProvider);
-      return CastMembersNotifier(repo);
+      final repo = ref.read(productionRepositoryProvider);
+      final pending = ref.read(pendingCastInvitationProvider.notifier);
+      return CastMembersNotifier(repo, pending);
     });
 
 class CastMembersNotifier extends StateNotifier<List<CastMemberModel>> {
   final ProductionRepository _repo;
+  final PendingCastInvitationNotifier _pendingInvitations;
   String? _productionId;
-  int _generation = 0;
 
-  CastMembersNotifier(this._repo) : super([]);
+  CastMembersNotifier(this._repo, this._pendingInvitations) : super([]);
 
   /// Load cast members from Drift for the given production.
   Future<void> loadForProduction(String productionId) async {
-    final generation = ++_generation;
     _productionId = productionId;
-    final loaded = await _repo.getCastMembers(productionId);
-    if (generation == _generation && _productionId == productionId) {
-      state = loaded;
-    }
+    state = await _repo.getCastMembers(productionId);
   }
 
   /// Add or update a cast member in Drift and state.
   Future<void> save(CastMemberModel member) async {
-    final generation = _generation;
     await _repo.saveCastMember(member);
-    if (generation != _generation) return;
     final idx = state.indexWhere((m) => m.id == member.id);
     if (idx >= 0) {
       state = [
@@ -322,28 +502,64 @@ class CastMembersNotifier extends StateNotifier<List<CastMemberModel>> {
     }
   }
 
-  Future<void> applyChanges({
-    required List<CastMemberModel> upserts,
-    required Set<String> deleteIds,
-  }) async {
-    final generation = _generation;
-    await _repo.applyCastMemberChanges(upserts: upserts, deleteIds: deleteIds);
-    if (generation != _generation) return;
-    final next = {
-      for (final member in state)
-        if (!deleteIds.contains(member.id)) member.id: member,
-      for (final member in upserts) member.id: member,
+  /// Save a bulk setup as one transaction and emit one state change. Each
+  /// member remains backed by an inspectable invitation outbox row until the
+  /// cloud returns its canonical id.
+  Future<void> savePendingInvitations(List<CastMemberModel> members) async {
+    if (members.isEmpty) return;
+    final productionIds = members.map((member) => member.productionId).toSet();
+    if (productionIds.length != 1) {
+      throw ArgumentError('Bulk invitations must belong to one production');
+    }
+    final productionId = productionIds.single;
+    if (_productionId != null && _productionId != productionId) {
+      throw StateError('Cast notifier is loaded for another production');
+    }
+    _productionId = productionId;
+    await _repo.savePendingCastInvitations(members);
+    final byId = {for (final member in state) member.id: member};
+    for (final member in members) {
+      byId[member.id] = member;
+    }
+    state = byId.values.toList();
+    await _pendingInvitations.reload();
+    unawaited(_pendingInvitations.retryAll());
+  }
+
+  Future<List<PendingCastInvitationRow>> pendingInvitations() =>
+      _productionId == null
+      ? Future.value(const [])
+      : _repo.getPendingCastInvitations(productionId: _productionId);
+
+  Future<void> markInvitationFailed(String localMemberId, Object error) =>
+      _repo.markCastInvitationFailed(localMemberId, error);
+
+  Future<void> reconcileInvitation(
+    String localMemberId,
+    CastMemberModel cloudMember,
+  ) => reconcileInvitations([
+    (localMemberId: localMemberId, cloudMember: cloudMember),
+  ]);
+
+  Future<void> reconcileInvitations(
+    List<({String localMemberId, CastMemberModel cloudMember})> reconciliations,
+  ) async {
+    if (reconciliations.isEmpty) return;
+    await _repo.reconcileCastInvitations(reconciliations);
+    final replacedIds = {
+      for (final item in reconciliations) item.localMemberId,
     };
-    state = next.values.toList();
+    state = [
+      for (final member in state)
+        if (!replacedIds.contains(member.id)) member,
+      for (final item in reconciliations) item.cloudMember,
+    ];
   }
 
   /// Remove a cast member.
   Future<void> remove(String id) async {
-    final generation = _generation;
     await _repo.deleteCastMember(id);
-    if (generation == _generation) {
-      state = state.where((m) => m.id != id).toList();
-    }
+    state = state.where((m) => m.id != id).toList();
   }
 
   /// Get the primary actor for a character.
@@ -370,65 +586,239 @@ class CastMembersNotifier extends StateNotifier<List<CastMemberModel>> {
   }
 
   void clear() {
-    _generation++;
     _productionId = null;
     state = [];
   }
 }
 
-/// Persist the current script to the local database, SharedPreferences backup,
-/// and push to cloud. Three layers: Drift DB -> SharedPreferences -> Supabase.
-/// Call after updating currentScriptProvider when you want changes saved.
-Future<void> persistScript(WidgetRef ref) async {
-  final accountEpoch = _accountEpoch;
-  final trace = PerfService.instance.startTrace('persist_script');
-  final script = ref.read(currentScriptProvider);
-  final production = ref.read(currentProductionProvider);
-  if (script == null || production == null) {
-    trace?.stop();
-    return;
-  }
-
-  await persistScriptLocally(ref, production.id, script);
-  if (accountEpoch != _accountEpoch) {
-    trace?.stop();
-    return;
-  }
-
-  final myUserId = SupabaseService.instance.currentUser?.id;
-  if (myUserId == null || production.organizerId != myUserId) {
-    DebugLogService.instance.log(
-      LogCategory.network,
-      'Script cloud push skipped — not the organizer '
-      '(edits stay on this device)',
+typedef PendingInvitationSender =
+    Future<({String localMemberId, CastMemberModel cloudMember})?> Function(
+      PendingCastInvitationRow invitation,
     );
-    trace?.stop();
-    return;
+
+class PendingCastInvitationNotifier
+    extends StateNotifier<List<PendingCastInvitationRow>> {
+  PendingCastInvitationNotifier(
+    this._repo,
+    this._connectivityChanges, {
+    PendingInvitationSender? sendInvitation,
+    bool Function()? isSignedIn,
+  }) : _sendInvitation = sendInvitation,
+       _isSignedIn = isSignedIn,
+       super([]) {
+    unawaited(_initialize());
   }
-  try {
-    final outcome = await pushScriptToCloud(ref);
-    if (outcome == ScriptCloudPushOutcome.complete) {
-      AnalyticsService.instance.logCloudSynced(direction: 'push');
+
+  final ProductionRepository _repo;
+  final Stream<List<ConnectivityResult>> _connectivityChanges;
+  final PendingInvitationSender? _sendInvitation;
+  final bool Function()? _isSignedIn;
+  StreamSubscription<List<ConnectivityResult>>? _connectivitySubscription;
+  Future<void>? _retryFuture;
+  bool _retryRequested = false;
+  Future<void> _initialize() async {
+    await reload();
+    await retryAll();
+    _connectivitySubscription = _connectivityChanges.listen((results) {
+      if (results.any((result) => result != ConnectivityResult.none)) {
+        unawaited(retryAll());
+      }
+    });
+  }
+
+  Future<void> reload() async {
+    state = await _repo.getPendingCastInvitations();
+  }
+
+  Future<void> retryAll() {
+    final active = _retryFuture;
+    if (active != null) {
+      _retryRequested = true;
+      return active;
     }
-  } catch (e) {
-    DebugLogService.instance.logError(
-      LogCategory.network,
-      'Script cloud push failed — castmates will not see these edits '
-      'until the next successful save',
-      e,
-    );
-    rootScaffoldMessengerKey.currentState?.showAutoToast(
-      const SnackBar(
-        content: Text(
-          "Couldn't sync script changes to the cast — check your "
-          'connection. Your edits are saved on this device and will push on '
-          'the next save.',
-        ),
-        duration: Duration(seconds: 6),
-      ),
-    );
+    if (state.isEmpty || !_signedIn) return Future.value();
+
+    _retryRequested = true;
+    final drain = _drainRetryRequests();
+    late final Future<void> owner;
+    owner = drain.whenComplete(() async {
+      // A caller can arrive after [drain] completes but before this completion
+      // listener runs. Drain that tail request before releasing ownership.
+      while (_retryRequested) {
+        await _drainRetryRequests();
+      }
+      if (identical(_retryFuture, owner)) _retryFuture = null;
+    });
+    _retryFuture = owner;
+    return owner;
   }
-  trace?.stop();
+
+  bool get _signedIn =>
+      _isSignedIn?.call() ?? SupabaseService.instance.isSignedIn;
+
+  Future<void> _drainRetryRequests() async {
+    while (_retryRequested) {
+      _retryRequested = false;
+      if (state.isEmpty || !_signedIn) return;
+      await _retryAllPending();
+    }
+  }
+
+  Future<void> _retryAllPending() async {
+    final successes = <({String localMemberId, CastMemberModel cloudMember})>[];
+    for (var offset = 0; offset < state.length; offset += 4) {
+      final candidateEnd = offset + 4;
+      final end = candidateEnd < state.length ? candidateEnd : state.length;
+      final batch = state.sublist(offset, end);
+      final results = await Future.wait([
+        for (final invitation in batch)
+          _sendInvitation?.call(invitation) ?? _send(invitation),
+      ]);
+      for (final result in results) {
+        if (result != null) successes.add(result);
+      }
+    }
+    if (successes.isNotEmpty) {
+      await _repo.reconcileCastInvitations(successes);
+    }
+    await reload();
+  }
+
+  Future<bool> retry(String localMemberId) async {
+    final active = _retryFuture;
+    if (active != null) {
+      await active;
+      return !state.any((row) => row.localMemberId == localMemberId);
+    }
+    final matches = state
+        .where((row) => row.localMemberId == localMemberId)
+        .toList();
+    if (matches.isEmpty || !_signedIn) return false;
+    final result =
+        await (_sendInvitation?.call(matches.single) ?? _send(matches.single));
+    if (result == null) {
+      await reload();
+      return false;
+    }
+    await _repo.reconcileCastInvitations([result]);
+    await reload();
+    return true;
+  }
+
+  Future<({String localMemberId, CastMemberModel cloudMember})?> _send(
+    PendingCastInvitationRow invitation,
+  ) async {
+    try {
+      final role = CastRole.values.byName(invitation.role);
+      final row = await SupabaseService.instance.createCastInvitation(
+        productionId: invitation.productionId,
+        characterName: invitation.characterName,
+        displayName: invitation.displayName,
+        contactInfo: invitation.contactInfo,
+        role: role.toSupabaseString(),
+        id: invitation.localMemberId,
+      );
+      if (row['id'] != invitation.localMemberId ||
+          row['production_id'] != invitation.productionId) {
+        throw StateError('Cloud invitation confirmed a different identity');
+      }
+      return (
+        localMemberId: invitation.localMemberId,
+        cloudMember: CastMemberModel(
+          id: row['id'] as String,
+          productionId: row['production_id'] as String,
+          userId: row['user_id'] as String?,
+          characterName:
+              row['character_name'] as String? ?? invitation.characterName,
+          displayName: row['display_name'] as String? ?? invitation.displayName,
+          contactInfo: row['contact_info'] as String?,
+          role: CastRole.fromString(row['role'] as String? ?? invitation.role),
+          invitedAt:
+              DateTime.tryParse(row['invited_at'] as String? ?? '') ??
+              invitation.createdAt,
+          joinedAt: DateTime.tryParse(row['joined_at'] as String? ?? ''),
+        ),
+      );
+    } catch (_, stack) {
+      await _repo.markCastInvitationFailed(
+        invitation.localMemberId,
+        'retry_pending',
+      );
+      DebugLogService.instance.logError(
+        LogCategory.network,
+        'Cast invitation retry remains pending',
+        null,
+        stack,
+      );
+      return null;
+    }
+  }
+
+  @override
+  void dispose() {
+    final subscription = _connectivitySubscription;
+    if (subscription != null) unawaited(subscription.cancel());
+    super.dispose();
+  }
+}
+
+enum ScriptPersistStatus {
+  nothingToSave,
+  cloudSkipped,
+  cloudSynced,
+  cloudFailed,
+}
+
+class ScriptPersistResult {
+  final ScriptPersistStatus status;
+  final Object? cloudError;
+
+  const ScriptPersistResult(this.status, {this.cloudError});
+
+  bool get localSaved => status != ScriptPersistStatus.nothingToSave;
+}
+
+/// Persist the current script locally, then return a truthful cloud outcome.
+/// Local persistence failures throw. Cloud failures are returned to the caller
+/// so each UI operation can render exactly one result message.
+Future<ScriptPersistResult> persistScript(WidgetRef ref) async {
+  final trace = PerfService.instance.startTrace('persist_script');
+  try {
+    final script = ref.read(currentScriptProvider);
+    final production = ref.read(currentProductionProvider);
+    if (script == null || production == null) {
+      return const ScriptPersistResult(ScriptPersistStatus.nothingToSave);
+    }
+
+    await persistScriptLocally(ref, production.id, script);
+
+    final myUserId = SupabaseService.instance.currentUser?.id;
+    if (myUserId == null || production.organizerId != myUserId) {
+      DebugLogService.instance.log(
+        LogCategory.network,
+        'Script cloud push skipped — not the organizer',
+      );
+      return const ScriptPersistResult(ScriptPersistStatus.cloudSkipped);
+    }
+
+    try {
+      await pushScriptToCloud(ref);
+      AnalyticsService.instance.logCloudSynced(direction: 'push');
+      return const ScriptPersistResult(ScriptPersistStatus.cloudSynced);
+    } catch (error) {
+      DebugLogService.instance.logError(
+        LogCategory.network,
+        'Script cloud push failed — local save remains durable',
+        error,
+      );
+      return ScriptPersistResult(
+        ScriptPersistStatus.cloudFailed,
+        cloudError: error,
+      );
+    }
+  } finally {
+    trace?.stop();
+  }
 }
 
 // ── Script edit autosave ───────────────────────────────
@@ -441,8 +831,6 @@ Future<void> persistScript(WidgetRef ref) async {
 Timer? _scriptSaveTimer;
 bool _scriptSaveInFlight = false;
 bool _scriptSaveQueued = false;
-int _accountEpoch = 0;
-int _scriptSaveGeneration = 0;
 
 /// Persist the current script soon (debounced). Safe to call on every edit.
 void scheduleScriptSave(
@@ -475,86 +863,46 @@ Future<void> flushScriptSave(WidgetRef ref) async {
 }
 
 Future<void> _runScriptSave(WidgetRef ref) async {
-  final generation = _scriptSaveGeneration;
   if (_scriptSaveInFlight) {
     _scriptSaveQueued = true;
     return;
   }
   _scriptSaveInFlight = true;
   try {
-    await persistScript(ref);
-  } catch (e) {
-    if (generation == _scriptSaveGeneration) {
-      DebugLogService.instance.logError(
-        LogCategory.error,
-        'Script autosave failed',
-        e,
-      );
+    final result = await persistScript(ref);
+    if (result.status == ScriptPersistStatus.cloudFailed) {
       rootScaffoldMessengerKey.currentState?.showAutoToast(
         const SnackBar(
           content: Text(
-            "Couldn't save script changes — they're still on screen; "
-            'try again or check your connection.',
+            "Couldn't sync script changes to the cast — your edits "
+            'are saved on this device and will retry on the next save.',
           ),
           duration: Duration(seconds: 6),
         ),
       );
     }
+  } catch (e) {
+    DebugLogService.instance.logError(
+      LogCategory.error,
+      'Script autosave failed',
+      e,
+    );
+    rootScaffoldMessengerKey.currentState?.showAutoToast(
+      const SnackBar(
+        content: Text(
+          "Couldn't save script changes — they're still on screen; "
+          'try again or check your connection.',
+        ),
+        duration: Duration(seconds: 6),
+      ),
+    );
   } finally {
-    if (generation == _scriptSaveGeneration) {
-      _scriptSaveInFlight = false;
-      if (_scriptSaveQueued) {
-        _scriptSaveQueued = false;
-        unawaited(_runScriptSave(ref));
-      }
+    _scriptSaveInFlight = false;
+    if (_scriptSaveQueued) {
+      _scriptSaveQueued = false;
+      unawaited(_runScriptSave(ref));
     }
   }
-}
-
-/// Invalidate all account-scoped work and state before authentication changes.
-/// Every provider dependency is captured before the first await so this remains
-/// safe if the settings route is disposed while teardown is running.
-Future<void> teardownAccountState(WidgetRef ref) async {
-  final productions = ref.read(productionsProvider.notifier);
-  final currentProduction = ref.read(currentProductionProvider.notifier);
-  final currentScript = ref.read(currentScriptProvider.notifier);
-  final recordings = ref.read(recordingsProvider.notifier);
-  final understudy = ref.read(understudyRecordingsProvider.notifier);
-  final cast = ref.read(castMembersProvider.notifier);
-  final recordingCharacter = ref.read(recordingCharacterProvider.notifier);
-  final rehearsalCharacter = ref.read(rehearsalCharacterProvider.notifier);
-  final selectedScene = ref.read(selectedSceneProvider.notifier);
-  final rehearsalMode = ref.read(rehearsalModeProvider.notifier);
-  final hideMyLines = ref.read(hideMyLinesProvider.notifier);
-  final pendingJoin = ref.read(pendingJoinProvider.notifier);
-  final accountNamespace = ref.read(activeAccountNamespaceProvider.notifier);
-  final recordingSync = RecordingSyncService.instance;
-  final syncQueue = SyncQueue.instance;
-
-  _accountEpoch++;
-  _scriptSaveTimer?.cancel();
-  _scriptSaveTimer = null;
-  _scriptSaveQueued = false;
-  _scriptSaveGeneration++;
-  _scriptSaveInFlight = false;
-
-  productions.clear();
-  currentProduction.state = null;
-  currentScript.state = null;
-  recordings.clear();
-  understudy.clear();
-  cast.clear();
-  recordingCharacter.state = null;
-  rehearsalCharacter.state = null;
-  selectedScene.state = null;
-  rehearsalMode.state = RehearsalMode.sceneReadthrough;
-  hideMyLines.state = false;
-  pendingJoin.state = null;
-
-  final recordingTeardown = recordingSync.teardownAccount();
-  final queueTeardown = syncQueue.teardownAccount();
-  accountNamespace.state = guestAccountNamespace;
-  await Future.wait([recordingTeardown, queueTeardown]);
 }
 
 /// Save [script] to Drift and the SharedPreferences backup WITHOUT pushing to
@@ -609,29 +957,43 @@ Future<void> persistScriptLocally(
 /// production hub's init so it covers BOTH entry paths — opening a production
 /// from the home screen AND joining one (the join screen uses `context.go`,
 /// which disposes it, so it can't own the long-lived sync work itself).
+bool shouldSyncRecordingsForProduction(String productionId) =>
+    productionId != DemoProductionService.productionId;
+
 int activateRecordingProduction(String? productionId) => productionId == null
     ? RecordingSyncService.instance.deactivateProduction()
     : RecordingSyncService.instance.activateProduction(productionId);
 
 void launchRecordingSync(WidgetRef ref, String productionId, int runToken) {
-  final accountEpoch = _accountEpoch;
-  final userId = SupabaseService.instance.currentUser?.id;
-  final recordingsNotifier = ref.read(recordingsProvider.notifier);
-  final understudyNotifier = ref.read(understudyRecordingsProvider.notifier);
-  final localRecordings = ref.read(recordingsProvider);
-  final sync = RecordingSyncService.instance;
-
   bool isCurrent() =>
-      accountEpoch == _accountEpoch &&
-      sync.isProductionRunCurrent(productionId, runToken);
-  if (!isCurrent()) return;
+      RecordingSyncService.instance.isProductionRunCurrent(
+        productionId,
+        runToken,
+      );
+  // The built-in demo is local-only and deliberately uses a readable,
+  // non-UUID id. Sending it to Supabase produces a PostgreSQL UUID error and
+  // a false connection warning during first-run model setup.
+  if (!shouldSyncRecordingsForProduction(productionId)) {
+    RecordingSyncService.instance.unsubscribe();
+    return;
+  }
+  final userId = SupabaseService.instance.currentUser?.id;
 
-  SyncQueue.instance.onUploaded = (prodId, lineId, recordingId, url) async {
-    if (!isCurrent()) return;
-    await recordingsNotifier.markUploaded(prodId, lineId, recordingId, url);
-  };
+  // Persist remote URLs locally when queued uploads complete so recordings
+  // aren't re-uploaded and sync status stays accurate.
+  SyncQueue.instance.onUploaded = (job, url) => ref
+      .read(recordingsProvider.notifier)
+      .markUploaded(
+        job.productionId,
+        job.lineId,
+        url,
+        expectedRecordingId: job.recordingId,
+        expectedRecordedAt: job.recordedAt,
+      );
+
+  // A recording the queue abandons after all retries never reaches castmates —
+  // that must be loud, not just a debug-log line.
   SyncQueue.instance.onGaveUp = (job, error) {
-    if (!isCurrent()) return;
     rootScaffoldMessengerKey.currentState?.showAutoToast(
       SnackBar(
         content: Text(
@@ -642,76 +1004,70 @@ void launchRecordingSync(WidgetRef ref, String productionId, int runToken) {
       ),
     );
   };
-  unawaited(SyncQueue.instance.processQueue());
 
-  void onReady(String callbackProductionId, String lineId, String path) {
-    if (!isCurrent() || callbackProductionId != productionId) return;
-    final rec = sync.getCachedRecording(productionId, lineId);
-    if (rec != null) {
-      understudyNotifier.loadFromMap({lineId: rec});
+  RecordingSyncService.instance
+    ..onRecordingReady = (lineId, path) {
+      // Add just the recording that arrived — rebuilding the full cache map
+      // stats every cached file per download, which during a big first sync
+      // is O(n²) file stats plus n map copies.
+      final rec = RecordingSyncService.instance.getCachedRecording(
+        lineId,
+        productionId: productionId,
+      );
+      if (rec != null) {
+        ref.read(understudyRecordingsProvider.notifier).loadFromMap({
+          lineId: rec,
+        });
+      }
     }
-  }
-
-  void onEvicted(String callbackProductionId, String lineId) {
-    if (isCurrent() && callbackProductionId == productionId) {
-      understudyNotifier.removeFromMap(lineId);
+    ..onLocalUploaded = (lineId, url) async {
+      await ref
+          .read(recordingsProvider.notifier)
+          .markUploaded(productionId, lineId, url);
     }
-  }
+    ..subscribe(productionId: productionId, myUserId: userId);
 
-  Future<void> onLocalUploaded(
-    String callbackProductionId,
-    String lineId,
-    String recordingId,
-    String url,
-  ) async {
-    if (!isCurrent() || callbackProductionId != productionId) return;
-    await recordingsNotifier.markUploaded(
-      productionId,
-      lineId,
-      recordingId,
-      url,
-    );
-  }
-
-  sync.subscribe(
-    productionId: productionId,
-    runToken: runToken,
-    myUserId: userId,
-    onRecordingReady: onReady,
-    onRecordingEvicted: onEvicted,
-  );
-
+  // Full sync in the background — don't block. The caller (app.dart's
+  // currentProductionProvider listener) awaits the Drift load before invoking
+  // this, so recordingsProvider already holds this production's recordings —
+  // no arbitrary sleep needed (a slow load used to make sync see an empty map
+  // and re-download/skip-upload recordings it already had).
   Future(() async {
-    await sync.hydrateCache();
+    // Surface recordings already downloaded to disk (previous runs) BEFORE
+    // the network sync — so castmates' takes play even when offline.
+    await RecordingSyncService.instance.hydrateCache();
     if (!isCurrent()) return;
-    final hydrated = await sync.getCachedRecordings(productionId);
-    if (!isCurrent()) return;
+    final hydrated = RecordingSyncService.instance.getCachedRecordings(
+      productionId,
+    );
     if (hydrated.isNotEmpty) {
-      understudyNotifier.loadFromMap(hydrated);
+      ref.read(understudyRecordingsProvider.notifier).loadFromMap(hydrated);
     }
 
-    final downloaded = await sync.syncForProduction(
+    final localRecordings = ref.read(recordingsProvider);
+
+    final downloaded = await RecordingSyncService.instance.syncForProduction(
       productionId: productionId,
-      runToken: runToken,
       localRecordings: localRecordings,
       myUserId: userId,
-      onRecordingReady: onReady,
-      onRecordingEvicted: onEvicted,
-      onLocalUploaded: onLocalUploaded,
     );
     if (!isCurrent()) return;
+
     if (downloaded > 0) {
-      final cached = await sync.getCachedRecordings(productionId);
-      if (isCurrent()) understudyNotifier.loadFromMap(cached);
+      final cached = RecordingSyncService.instance.getCachedRecordings(
+        productionId,
+      );
+      ref.read(understudyRecordingsProvider.notifier).loadFromMap(cached);
     }
   }).catchError((Object e) {
-    if (isCurrent()) {
-      DebugLogService.instance.logError(
-        LogCategory.network,
-        'Background recording sync failed',
-        e,
-      );
-    }
+    // Fire-and-forget: an uncaught throw here would surface as an unhandled
+    // zone error (crash in debug, bare Crashlytics noise in release) with no
+    // sign that recording sync failed.
+    DebugLogService.instance.logError(
+      LogCategory.network,
+      'Background recording sync failed',
+      e,
+    );
   });
 }
 
@@ -725,13 +1081,11 @@ void launchRecordingSync(WidgetRef ref, String productionId, int runToken) {
 Future<void> restoreCloudProductions(WidgetRef ref) async {
   final supa = SupabaseService.instance;
   if (!supa.isInitialized || !supa.isSignedIn) return;
-  final namespace = ref.read(activeAccountNamespaceProvider);
-  final namespaceController = ref.read(activeAccountNamespaceProvider.notifier);
-  final productions = ref.read(productionsProvider.notifier);
-  final localIds = ref.read(productionsProvider).map((p) => p.id).toSet();
   try {
     final rows = await supa.fetchMyProductions();
-    if (namespaceController.state != namespace || rows.isEmpty) return;
+    if (rows.isEmpty) return;
+
+    final localIds = ref.read(productionsProvider).map((p) => p.id).toSet();
     final missing = rows
         .where((row) => !localIds.contains(row['id'] as String?))
         .map(
@@ -748,14 +1102,12 @@ Future<void> restoreCloudProductions(WidgetRef ref) async {
           ),
         )
         .toList();
-    if (missing.isEmpty || namespaceController.state != namespace) {
-      return;
-    }
-    await productions.addAll(missing);
+    if (missing.isEmpty) return;
+
+    await ref.read(productionsProvider.notifier).addAll(missing);
     DebugLogService.instance.log(
       LogCategory.network,
-      'Restored ${missing.length} production(s) from the cloud '
-      '(${missing.map((p) => p.title).join(', ')})',
+      'Cloud production restore complete; restored_count=${missing.length}',
     );
   } catch (e) {
     DebugLogService.instance.logError(
@@ -809,20 +1161,13 @@ Future<List<ScriptLine>?> fetchCloudScriptLines(String productionId) async {
   }
 }
 
-enum ScriptCloudPushOutcome { skipped, complete, scenesFailed }
-
 /// Push the current script to the cloud.
-Future<ScriptCloudPushOutcome> pushScriptToCloud(WidgetRef ref) async {
-  final accountEpoch = _accountEpoch;
+Future<void> pushScriptToCloud(WidgetRef ref) async {
   final script = ref.read(currentScriptProvider);
   final production = ref.read(currentProductionProvider);
   final supa = SupabaseService.instance;
-  if (script == null || production == null) {
-    return ScriptCloudPushOutcome.skipped;
-  }
-  if (!supa.isInitialized || !supa.isSignedIn) {
-    return ScriptCloudPushOutcome.skipped;
-  }
+  if (script == null || production == null) return;
+  if (!supa.isInitialized || !supa.isSignedIn) return;
 
   try {
     final rows = script.lines
@@ -854,14 +1199,6 @@ Future<ScriptCloudPushOutcome> pushScriptToCloud(WidgetRef ref) async {
         )
         .toList();
 
-    await supa.saveScriptLines(productionId: production.id, lines: rows);
-    if (accountEpoch != _accountEpoch) {
-      return ScriptCloudPushOutcome.skipped;
-    }
-
-    // Scene metadata too: without this, custom scene names/descriptions
-    // from the scene editor lived only in local Drift — every cloud pull
-    // regenerated scenes from line tags and silently discarded them.
     final sceneRows = script.scenes
         .asMap()
         .entries
@@ -880,22 +1217,12 @@ Future<ScriptCloudPushOutcome> pushScriptToCloud(WidgetRef ref) async {
           },
         )
         .toList();
-    try {
-      await supa.saveScriptScenes(
-        productionId: production.id,
-        scenes: sceneRows,
-      );
-      return ScriptCloudPushOutcome.complete;
-    } catch (e) {
-      // Tolerated separately: the script_scenes table may not exist yet on
-      // an un-migrated backend, and lines (the critical payload) are saved.
-      DebugLogService.instance.logError(
-        LogCategory.network,
-        'Cloud scene push failed for ${production.id} (lines saved)',
-        e,
-      );
-      return ScriptCloudPushOutcome.scenesFailed;
-    }
+
+    await supa.saveScript(
+      productionId: production.id,
+      lines: rows,
+      scenes: sceneRows,
+    );
   } catch (e) {
     DebugLogService.instance.logError(
       LogCategory.network,
@@ -1187,4 +1514,48 @@ Future<ParsedScript?> loadPersistedScript(
     scenes: effectiveScenes,
     rawText: '',
   );
+}
+
+/// Wipe every in-memory account-scoped provider and pause background sync
+/// before sign-out. Persisted artifacts (Drift rows, queue jobs, upload
+/// checkpoints) are account-namespaced and intentionally survive.
+Future<void> teardownAccountState(WidgetRef ref) async {
+  final productions = ref.read(productionsProvider.notifier);
+  final currentProduction = ref.read(currentProductionProvider.notifier);
+  final currentScript = ref.read(currentScriptProvider.notifier);
+  final recordings = ref.read(recordingsProvider.notifier);
+  final understudy = ref.read(understudyRecordingsProvider.notifier);
+  final cast = ref.read(castMembersProvider.notifier);
+  final recordingCharacter = ref.read(recordingCharacterProvider.notifier);
+  final rehearsalCharacter = ref.read(rehearsalCharacterProvider.notifier);
+  final selectedScene = ref.read(selectedSceneProvider.notifier);
+  final rehearsalMode = ref.read(rehearsalModeProvider.notifier);
+  final hideMyLines = ref.read(hideMyLinesProvider.notifier);
+  final pendingJoin = ref.read(pendingJoinProvider.notifier);
+  final accountNamespace = ref.read(activeAccountNamespaceProvider.notifier);
+  final recordingSync = RecordingSyncService.instance;
+  final syncQueue = SyncQueue.instance;
+
+  _scriptSaveTimer?.cancel();
+  _scriptSaveTimer = null;
+  _scriptSaveQueued = false;
+  _scriptSaveInFlight = false;
+
+  productions.clear();
+  currentProduction.state = null;
+  currentScript.state = null;
+  recordings.clear();
+  understudy.clear();
+  cast.clear();
+  recordingCharacter.state = null;
+  rehearsalCharacter.state = null;
+  selectedScene.state = null;
+  rehearsalMode.state = RehearsalMode.sceneReadthrough;
+  hideMyLines.state = false;
+  pendingJoin.state = null;
+
+  final recordingTeardown = recordingSync.teardownAccount();
+  final queueTeardown = syncQueue.teardownAccount();
+  accountNamespace.state = guestAccountNamespace;
+  await Future.wait([recordingTeardown, queueTeardown]);
 }
