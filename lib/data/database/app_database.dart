@@ -211,7 +211,7 @@ class AppDatabase extends _$AppDatabase {
   AppDatabase.forTesting(super.e);
 
   @override
-  int get schemaVersion => 11;
+  int get schemaVersion => 12;
 
   Future<bool> _columnExists(String table, String column) async {
     final rows = await customSelect('PRAGMA table_info("$table")').get();
@@ -542,7 +542,7 @@ class AppDatabase extends _$AppDatabase {
       // The review branch shipped schema 10 without account_namespace.
       // Main shipped schema 9 with it, then the merge kept version 10.
       // Repair both histories, including devices already on the merged build.
-      if (from < 11) {
+      if (from < 12) {
         await _ensureColumn(
           'productions',
           'account_namespace',
@@ -554,6 +554,17 @@ class AppDatabase extends _$AppDatabase {
           const ['account_namespace', 'created_at'],
           () => migrator.createIndex(idxProductionsAccountCreated),
         );
+      }
+      // The old unscoped branch could cache productions from several users.
+      // Do not expose those rows as guest data while waiting for sign-in.
+      // Ownership/cast membership is checked when claiming the legacy bucket.
+      if (from < 12) {
+        await customStatement("""
+          UPDATE productions SET account_namespace = '__legacy__'
+          WHERE account_namespace = '__guest__'
+            AND organizer_id IS NOT NULL
+            AND organizer_id NOT IN ('', 'local')
+        """);
       }
       await _ensureAuxiliarySchema();
     },
@@ -623,7 +634,7 @@ class AppDatabase extends _$AppDatabase {
         }
       });
 
-  /// Move guest-namespace productions into [userId]'s namespace after sign-in.
+  /// Move guest and unclaimed legacy productions into [userId]'s namespace after sign-in.
   /// Claims rows the user organizes, rows they joined as cast, and rows
   /// created signed-out (organizer_id='local'), which cannot match any user
   /// id but belong to whoever signs in on this device.
@@ -633,7 +644,7 @@ class AppDatabase extends _$AppDatabase {
         '''
           UPDATE productions
           SET account_namespace = ?
-          WHERE account_namespace = '__guest__'
+          WHERE account_namespace IN ('__guest__', '__legacy__')
             AND (
               organizer_id = ?
               OR organizer_id = 'local'

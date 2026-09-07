@@ -908,20 +908,51 @@ class ScriptParser {
     // Strip table of contents + Dramatis Personæ preamble. A TOC repeats the
     // first real act/scene header; _stripPreamble selects that second copy.
     text = _stripPreamble(text);
-    // Publisher biographies after an explicit end marker are not dialogue.
-    // Require both standalone markers; spoken mentions of either stay intact.
-    final playEnd = RegExp(
+    // A spoken "End of Play" can appear well before the actual ending.
+    // Only trim a final marker directly followed by author matter, allowing
+    // known page furniture in between, never intervening dialogue or scenes.
+    final endings = RegExp(
       r'^[ \t]*End of Play\.?[ \t]*\r?$',
       multiLine: true,
       caseSensitive: false,
-    ).firstMatch(text);
-    if (playEnd != null &&
-        RegExp(
-          r'^[ \t]*About the Authors?[ \t]*\r?$',
-          multiLine: true,
-          caseSensitive: false,
-        ).hasMatch(text.substring(playEnd.end))) {
-      text = text.substring(0, playEnd.start);
+    ).allMatches(text).toList();
+    final authorHeading = RegExp(
+      r'^[ \t]*About the Authors?[ \t]*\r?$',
+      multiLine: true,
+      caseSensitive: false,
+    );
+    if (endings.isEmpty) return text;
+    final lineCounts = <String, int>{};
+    for (final line in text.split('\n')) {
+      final value = line.trim();
+      lineCounts[value] = (lineCounts[value] ?? 0) + 1;
+    }
+    // Examine only the final marker. Retain ambiguous text rather than
+    // searching backwards and repeatedly rescanning a potentially huge tail.
+    final ending = endings.last;
+    final before = text.substring(0, ending.start).trimRight();
+    final previous = before.substring(before.lastIndexOf('\n') + 1).trim();
+    // A separate speaker cue owns the following line, even at the ending.
+    if (previous.endsWith(':') ||
+        RegExp(r'^[A-Z][A-Z .\-]+$').hasMatch(previous)) {
+      return text;
+    }
+    final after = text.substring(ending.end);
+    final author = authorHeading.firstMatch(after);
+    if (author == null) return text;
+    final gap = _stripPublisherWatermarks(after.substring(0, author.start));
+    final onlyFurniture = gap.split('\n').every((line) {
+      final value = line.trim();
+      if (value.isEmpty || RegExp(r'^\d{1,4}$').hasMatch(value)) return true;
+      return value.length >= 8 &&
+          value.length <= 60 &&
+          value.contains(' ') &&
+          value != value.toUpperCase() &&
+          !RegExp(r'[:.!?()]').hasMatch(value) &&
+          (lineCounts[value] ?? 0) >= 3;
+    });
+    if (onlyFurniture) {
+      text = text.substring(0, ending.start);
     }
     return text;
   }

@@ -9,6 +9,20 @@ are described in detail; older history is condensed from commit notes.
 
 ---
 
+## 0.1.1+167 — 2026-09-07
+
+### Adversarial review follow-up
+- Keep unclaimed legacy account productions out of the signed-out guest
+  list; schema 12 lets the matching organizer or cast member claim them on
+  sign-in. Preserve existing account assignments and production data.
+- A spoken `End of Play` no longer removes intervening scenes simply because
+  an author biography occurs later. Only the final unambiguous ending is
+  eligible, and the check avoids repeated scans of large document tails.
+- Match colon-prefixed speaker cues and exact short dialogue bodies when
+  locating source text, while retaining rejection of weak short-text matches.
+- Validation: 698 tests passed, one existing test skipped, including the
+  real Wrinkle PDF and failure/retry migration fixtures for versions 9–11.
+
 ## 0.1.1+166 — 2026-09-07
 
 ### Keep publisher text out of dialogue

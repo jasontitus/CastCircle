@@ -26,7 +26,7 @@ class OcrHighlightMatcher {
   // The lazy version stripped only "MR. ", leaving "BENNET" to break
   // containment against the parsed line — the single biggest cause of
   // mis-mapped pages (measured on the P&P corpus).
-  static final _cueRe = RegExp(r"^[A-Z][A-Z .,&']{1,30}\.\s+");
+  static final _cueRe = RegExp(r"^[A-Z][A-Z .,&']{1,30}[.:]\s+");
 
   static String stripCue(String s) {
     final m = _cueRe.firstMatch(s);
@@ -266,6 +266,10 @@ class OcrHighlightMatcher {
     String normLine,
     Set<String> lineTokens,
   ) {
+    // Exact short bodies ("No.", "Yes.") are valid; fuzzy overlap on
+    // short text remains rejected below.
+    if (normTarget.isNotEmpty && normTarget == normLine) return 1.0;
+
     // Strong: substantial containment either way. A candidate fragment
     // contained in a long target earns perfection only when it covers a
     // meaningful share of the target's words; generic fragments otherwise

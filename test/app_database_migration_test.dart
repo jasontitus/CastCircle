@@ -26,7 +26,119 @@ void main() {
     return rows.map((row) => row.read<String>('name')).toList();
   }
 
-  for (final previousVersion in [9, 10]) {
+  for (final previousVersion in [9, 10, 11]) {
+    test(
+      'v$previousVersion preserves assigned accounts, script data, and repeated opens',
+      () async {
+        final file = File('${tempDir.path}/assigned-$previousVersion.sqlite');
+        var db = open(file);
+        await db.customStatement(
+          "INSERT INTO productions (id, title, organizer_id, account_namespace, created_at) "
+          "VALUES ('alice', 'Alice script', 'alice', 'alice', 1700000000), "
+          "('bob', 'Bob script', 'bob', 'bob', 1700000000), "
+          "('joined', 'Joined script', 'other-owner', '__guest__', 1700000000)",
+        );
+        await db.customStatement(
+          "INSERT INTO script_lines (id, production_id, line_number, order_index, line_text, line_type) "
+          "VALUES ('line', 'alice', 1, 0, 'Keep this dialogue.', 'dialogue')",
+        );
+        await db.customStatement(
+          "INSERT INTO cast_members (id, production_id, user_id, character_name, role) "
+          "VALUES ('member', 'joined', 'alice', 'CALVIN', 'primary')",
+        );
+        await db.customStatement('PRAGMA user_version = $previousVersion');
+        await db.close();
+        for (var attempt = 0; attempt < 2; attempt++) {
+          db = open(file);
+          expect(await db.getAllProductions('__guest__'), isEmpty);
+          await db.claimLegacyProductions('alice');
+          expect(
+            (await db.getAllProductions('alice')).map((p) => p.id),
+            unorderedEquals(['alice', 'joined']),
+          );
+          expect((await db.getAllProductions('bob')).single.id, 'bob');
+          expect(
+            (await db.getScriptLines('alice')).single.lineText,
+            'Keep this dialogue.',
+          );
+          await db.close();
+        }
+      },
+    );
+  }
+
+  test('bad namespace index does not advance version or erase rows', () async {
+    final file = File('${tempDir.path}/namespace-index-failure.sqlite');
+    var db = open(file);
+    await db.customStatement(
+      "INSERT INTO productions (id, title) VALUES ('keep', 'Keep me')",
+    );
+    await db.customStatement('DROP INDEX idx_productions_account_created');
+    await db.customStatement(
+      'CREATE INDEX idx_productions_account_created ON productions (title)',
+    );
+    await db.customStatement('PRAGMA user_version = 10');
+    await db.close();
+    db = open(file);
+    await expectLater(db.getAllProductions('__guest__'), throwsStateError);
+    await db.close();
+    int? observedVersion;
+    db = AppDatabase.forTesting(
+      NativeDatabase(
+        file,
+        setup: (raw) {
+          observedVersion = raw.userVersion;
+          raw.execute('DROP INDEX idx_productions_account_created');
+        },
+      ),
+    );
+    addTearDown(db.close);
+    expect((await db.getAllProductions('__guest__')).single.id, 'keep');
+    expect(observedVersion, 10);
+    expect(await indexColumns(db, 'idx_productions_account_created'), [
+      'account_namespace',
+      'created_at',
+    ]);
+  });
+
+  test(
+    'migration does not expose legacy account rows to a guest or another user',
+    () async {
+      final file = File('${tempDir.path}/legacy-accounts.sqlite');
+      var db = open(file);
+      for (final row in [
+        ['guest', 'local'],
+        ['alice', 'alice'],
+        ['bob', 'bob'],
+      ]) {
+        await db.customStatement(
+          'INSERT INTO productions (id, title, organizer_id, created_at) VALUES (?, ?, ?, ?)',
+          [row[0], row[0], row[1], 1700000000],
+        );
+      }
+      await db.customStatement('DROP INDEX idx_productions_account_created');
+      await db.customStatement(
+        'ALTER TABLE productions DROP COLUMN account_namespace',
+      );
+      await db.customStatement('PRAGMA user_version = 10');
+      await db.close();
+      db = open(file);
+      addTearDown(db.close);
+      expect((await db.getAllProductions('__guest__')).map((p) => p.id), [
+        'guest',
+      ]);
+      await db.claimLegacyProductions('alice');
+      expect(
+        (await db.getAllProductions('alice')).map((p) => p.id),
+        unorderedEquals(['guest', 'alice']),
+      );
+      expect(await db.getAllProductions('__guest__'), isEmpty);
+      await db.claimLegacyProductions('bob');
+      expect((await db.getAllProductions('bob')).map((p) => p.id), ['bob']);
+    },
+  );
+
+  for (final previousVersion in [9, 10, 11]) {
     test(
       'repairs branch schema v$previousVersion without losing productions',
       () async {
