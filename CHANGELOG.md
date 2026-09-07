@@ -9,6 +9,17 @@ are described in detail; older history is condensed from commit notes.
 
 ---
 
+## 0.1.1+166 — 2026-09-07
+
+### Keep publisher text out of dialogue
+- Strip complete Stage Partners copyright/website and license footer lines,
+  including PDFKit's combined footer columns. Preserve page-number evidence
+  until running-title detection finishes, then discard the numbers as noise.
+- Exclude author biographies following an explicit end-of-play marker.
+- The real Wrinkle PDF regression now checks Calvin's exact clean line and
+  source page 14, plus absence of publisher footers and running titles across
+  the imported script. Already imported scripts need to be imported again.
+
 ## 0.1.1+165 — 2026-09-07
 
 ### Restore production creation after switching beta branches

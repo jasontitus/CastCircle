@@ -56,11 +56,72 @@ void main() {
       expect(dialogue.length, greaterThan(500));
       expect(dialogue.first.sourcePage, 6);
       expect(dialogue.last.sourcePage, greaterThanOrEqualTo(53));
+      final calvin = dialogue.singleWhere(
+        (l) => l.character == 'CALVIN' && l.text.startsWith('I wasn’t hiding.'),
+      );
+      expect(calvin.text, 'I wasn’t hiding.');
+      expect(calvin.sourcePage, 14);
+      for (final line in script.lines) {
+        expect(line.text, isNot(contains('Stage Partners')));
+        expect(line.text, isNot(contains('yourstagepartners.com')));
+        expect(line.text, isNot(contains('FOR USE BY')));
+        expect(line.text, isNot(contains('adapted by James Sie')));
+      }
     },
     skip: realPagesPath.isEmpty
         ? 'Supply WRINKLE_PDFKIT_PAGES for licensed local PDF'
         : false,
   );
+
+  test('author biographies after an explicit play ending are excluded', () {
+    final script = ScriptParser().parse("""
+ACT I
+CALVIN: I read about the authors yesterday.
+MEG: Is this the end of play?
+(The lights go out.)
+End of Play.
+About the Authors
+This biography should not become dialogue.
+""");
+    expect(
+      script.lines.where((l) => l.lineType == LineType.dialogue),
+      hasLength(2),
+    );
+    expect(script.lines.last.text, contains('lights go out'));
+    expect(script.rawText, isNot(contains('This biography')));
+  });
+
+  test('publisher furniture does not enter dialogue across page breaks', () {
+    final text = StringBuffer('ACT I\n');
+    for (var page = 1; page <= 4; page++) {
+      text.writeln('A Sample Play adapted by Example Author');
+      text.writeln('CALVIN: I was not hiding.');
+      text.writeln('MEG: Then why are you following us?');
+      text.writeln('CALVIN: I came to see the house.');
+      text.writeln('MEG: There is nothing to see.');
+      text.writeln('CALVIN: Just the trees.');
+      text.writeln(page);
+      text.writeln('© Stage Partners yourstagepartners.com');
+      text.writeln(
+        'FOR USE BY SAMPLE ACTOR, EXAMPLE SCHOOL ONLY. Stage Partners Order #12345.',
+      );
+    }
+    final script = ScriptParser().parse(text.toString());
+    expect(
+      script.lines.where((l) => l.lineType == LineType.dialogue),
+      hasLength(20),
+    );
+    for (final line in script.lines) {
+      expect(line.text, isNot(contains('Stage Partners')));
+      expect(line.text, isNot(contains('FOR USE BY')));
+      expect(line.text, isNot(contains('adapted by')));
+    }
+    final spoken = ScriptParser().parse(
+      'CALVIN: I found it on yourstagepartners.com.\nMEG: Stage Partners published it.',
+    );
+    expect(spoken.lines.first.text, contains('yourstagepartners.com'));
+    expect(spoken.lines.last.text, contains('Stage Partners'));
+  });
 
   test(
     'combined act and scene headings retain two acts and thirteen scenes',

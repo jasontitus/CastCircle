@@ -68,6 +68,19 @@ class ScriptParser {
     caseSensitive: false,
   );
 
+  // Match complete publisher furniture lines, never a cue or a spoken
+  // sentence mentioning the publisher. PDFKit joins the two footer columns.
+  static final _stagePartnersCopyrightRe = RegExp(
+    r'^[ \t]*©[ \t]*(?:\d{4}[ \t]+)?Stage Partners(?:[ \t]+(?:(?:https?://)?(?:www\.)?yourstagepartners\.com/?|\d+))*[ \t]*\r?$',
+    multiLine: true,
+    caseSensitive: false,
+  );
+  static final _stagePartnersLicenseRe = RegExp(
+    r'^[ \t]*FOR USE BY [^\r\n]+ ONLY\.[ \t]+Stage Partners Order[ \t]+#\d+\.?[ \t]*\r?$',
+    multiLine: true,
+    caseSensitive: false,
+  );
+
   static String _normalizeForHeader(String s) => s
       .toLowerCase()
       .replaceAll(_nonAlnumSpaceRe, '')
@@ -895,6 +908,21 @@ class ScriptParser {
     // Strip table of contents + Dramatis Personæ preamble. A TOC repeats the
     // first real act/scene header; _stripPreamble selects that second copy.
     text = _stripPreamble(text);
+    // Publisher biographies after an explicit end marker are not dialogue.
+    // Require both standalone markers; spoken mentions of either stay intact.
+    final playEnd = RegExp(
+      r'^[ \t]*End of Play\.?[ \t]*\r?$',
+      multiLine: true,
+      caseSensitive: false,
+    ).firstMatch(text);
+    if (playEnd != null &&
+        RegExp(
+          r'^[ \t]*About the Authors?[ \t]*\r?$',
+          multiLine: true,
+          caseSensitive: false,
+        ).hasMatch(text.substring(playEnd.end))) {
+      text = text.substring(0, playEnd.start);
+    }
     return text;
   }
 
@@ -1004,7 +1032,10 @@ class ScriptParser {
   }
 
   static String _stripPublisherWatermarks(String text) {
-    return text.replaceAll(_stagePartnersFooterRe, '');
+    return text
+        .replaceAll(_stagePartnersFooterRe, '')
+        .replaceAll(_stagePartnersCopyrightRe, '')
+        .replaceAll(_stagePartnersLicenseRe, '');
   }
 
   /// Dehyphenate OCR line breaks: "dan-\ngerous" → "dangerous".

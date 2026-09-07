@@ -272,8 +272,9 @@ class ScriptImportService {
       '',
     );
 
-    // Remove bare page numbers on their own line
-    cleaned = cleaned.replaceAll(RegExp(r'^\d{1,3}\s*$', multiLine: true), '');
+    // Keep bare page numbers until ScriptParser detects running titles:
+    // adjacency to a page number distinguishes headers from spoken refrains.
+    // The parser's noise filter removes the numbers after header detection.
 
     // Collapse 3+ blank lines to 2
     cleaned = cleaned.replaceAll(RegExp(r'\n{3,}'), '\n\n');
