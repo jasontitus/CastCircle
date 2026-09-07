@@ -3076,7 +3076,7 @@ abstract class _$AppDatabase extends GeneratedDatabase {
   late final $CastMembersTable castMembers = $CastMembersTable(this);
   late final Index idxProductionsAccountCreated = Index(
     'idx_productions_account_created',
-    'CREATE INDEX idx_productions_account_created ON script_lines ()',
+    'CREATE INDEX idx_productions_account_created ON productions (account_namespace, created_at)',
   );
   late final Index idxScriptLinesProductionOrder = Index(
     'idx_script_lines_production_order',

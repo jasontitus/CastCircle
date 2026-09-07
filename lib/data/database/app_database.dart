@@ -11,6 +11,10 @@ part 'app_database.g.dart';
 
 // ── Table Definitions ───────────────────────────────────
 
+@TableIndex(
+  name: 'idx_productions_account_created',
+  columns: {#accountNamespace, #createdAt},
+)
 class Productions extends Table {
   TextColumn get id => text()();
   TextColumn get accountNamespace =>
@@ -26,11 +30,6 @@ class Productions extends Table {
   @override
   Set<Column> get primaryKey => {id};
 }
-
-@TableIndex(
-  name: 'idx_productions_account_created',
-  columns: {#accountNamespace, #createdAt},
-)
 
 @TableIndex(
   name: 'idx_script_lines_production_order',
