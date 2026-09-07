@@ -205,10 +205,18 @@ class PendingCastInvitationRow {
   tables: [Productions, ScriptLines, Scenes, Recordings, CastMembers],
 )
 class AppDatabase extends _$AppDatabase {
-  AppDatabase() : super(_openConnection());
+  // The UI and process-wide sync queue must share the same connection and
+  // migration lifecycle. Separate background connections can race during WAL
+  // setup, leaving one Drift executor permanently failed after startup.
+  factory AppDatabase() => _shared;
+  static final AppDatabase _shared = AppDatabase._();
+  AppDatabase._() : super(_openConnection());
 
   // For testing
   AppDatabase.forTesting(super.e);
+
+  // Exercise the production background-isolate setup against a fixture file.
+  AppDatabase.forTestingFile(File file) : super(_openDatabaseFile(file));
 
   @override
   int get schemaVersion => 12;
@@ -1197,18 +1205,18 @@ LazyDatabase _openConnection() {
   return LazyDatabase(() async {
     final dir = await getApplicationDocumentsDirectory();
     final file = File(p.join(dir.path, 'lineguide.sqlite'));
-    return NativeDatabase.createInBackground(
-      file,
-      setup: (db) {
-        // WAL: readers don't block the per-line recording writes during
-        // rehearsal, and commits stop paying a full-journal fsync.
-        // synchronous=NORMAL is the standard WAL pairing (durable to app
-        // crash; an OS crash can lose the last transactions — acceptable for
-        // re-syncable local state). busy_timeout beats sporadic SQLITE_BUSY.
-        db.execute('PRAGMA journal_mode=WAL;');
-        db.execute('PRAGMA synchronous=NORMAL;');
-        db.execute('PRAGMA busy_timeout=3000;');
-      },
-    );
+    return _openDatabaseFile(file);
   });
+}
+
+QueryExecutor _openDatabaseFile(File file) {
+  return NativeDatabase.createInBackground(
+    file,
+    setup: (db) {
+      // Install the busy handler before any statement that can acquire locks.
+      db.execute('PRAGMA busy_timeout=3000;');
+      db.execute('PRAGMA journal_mode=WAL;');
+      db.execute('PRAGMA synchronous=NORMAL;');
+    },
+  );
 }

@@ -12,6 +12,8 @@ are described in detail; older history is condensed from commit notes.
 ## 0.1.1+167 — 2026-09-07
 
 ### Adversarial review follow-up
+- Fix startup database contention: UI and sync queue share one connection;
+  install the lock timeout before enabling WAL. Preserve existing productions.
 - Keep unclaimed legacy account productions out of the signed-out guest
   list; schema 12 lets the matching organizer or cast member claim them on
   sign-in. Preserve existing account assignments and production data.
@@ -20,8 +22,9 @@ are described in detail; older history is condensed from commit notes.
   eligible, and the check avoids repeated scans of large document tails.
 - Match colon-prefixed speaker cues and exact short dialogue bodies when
   locating source text, while retaining rejection of weak short-text matches.
-- Validation: 698 tests passed, one existing test skipped, including the
-  real Wrinkle PDF and failure/retry migration fixtures for versions 9–11.
+- Validation: 701 tests passed, one existing test skipped, including the
+  real Wrinkle PDF, failure/retry migration fixtures for versions 9–11, and
+  actual SQLite startup contention and concurrent production/sync writes.
 
 ## 0.1.1+166 — 2026-09-07
 

@@ -22,11 +22,10 @@ import 'data/services/frame_stats_service.dart';
 import 'data/services/sync_queue.dart';
 import 'firebase_options.dart';
 
-/// Global database instance, provided via Riverpod.
+/// Process-owned database, also used by the sync queue.
 final databaseProvider = Provider<AppDatabase>((ref) {
-  final db = AppDatabase();
-  ref.onDispose(() => db.close());
-  return db;
+  // Provider disposal must not close the process-wide sync queue connection.
+  return AppDatabase();
 });
 
 /// SharedPreferences instance, initialized before runApp.

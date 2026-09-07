@@ -8,6 +8,25 @@ not an independent multi-agent audit. No live database was modified.
 
 ## Confirmed findings and applied fixes
 
+### P1 — Competing database opens fail before the lock timeout is installed
+
+Build 166 device logs identify the failing statement as PRAGMA journal_mode=WAL.
+The UI provider and singleton sync queue constructed separate background database
+connections. Both could initialize/migrate the same file concurrently, and WAL
+setup ran before busy_timeout. A failed opening continued to reject later saves.
+
+Fix: default AppDatabase callers share one process-owned instance and startup.
+Provider disposal no longer closes the sync queue's connection. Install the busy
+handler before WAL setup. Testing constructors retain independent connections.
+
+Verification: a real SQLite EXCLUSIVE transaction held by another connection
+reproduced the WAL setup exception before the fix. The identical test now waits
+for that transaction, reads the preserved production, and creates another.
+Concurrent production transactions and sync queue writes also preserve all rows.
+The timeout remains bounded at three seconds; this is not a guarantee against
+arbitrarily long external locks. No database, journal, or user records are deleted.
+The pending build 167 release was stopped before upload to include this repair.
+
 ### P1 — Legacy account rows became guest-visible during upgrade
 
 Reproducer: an unscoped v10 database contains a local guest production and
@@ -66,7 +85,7 @@ not prove every source-page assignment is exact.
 
 ## Validation and limits
 
-- Full Flutter test suite: 698 passed, one existing skipped test.
+- Full Flutter test suite: 701 passed, one existing skipped test.
 - Real local PDFKit extraction: 55 pages, 2 acts, 13 scenes, 1,130 dialogue
   lines, 22 characters; Calvin's exact line maps to page 14. All imported
   lines are checked for the reported publisher/footer/running-title text.
