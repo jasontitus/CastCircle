@@ -149,3 +149,32 @@ only check that catches Swift mismatch; `flutter test` does not.
 2. CHANGELOG.md / fastlane changelogs still end at 155 / 159.
 3. Branch + snapshot tags cleanup (pi-review-ultra is fully merged).
 4. Untracked licensed PDF + stray requirements.txt (never commit the PDF).
+
+---
+
+## Build 165 repair — 2026-09-06
+
+Source fix: `9f3f406` on `main`. Build 165 was uploaded successfully with
+Delivery UUID `7a37b7c2-1afd-4710-a292-6bf3077e4017`.
+
+The production-creation failure persisted because build 164 did not contain
+the local repair. The two branch histories also collided at the database
+version: review shipped schema 10 without `account_namespace`, main shipped
+schema 9 with it, and the merge kept schema 10 and a `from < 9` guard. Schema
+11 now ensures the column/index for upgrades from either history, preserving
+existing production rows. Regression tests reproduce the missing column at
+versions 9 and 10, then verify guest creation and signed-in cloud-create outbox
+persistence after repair.
+
+The Wrinkle PDF has 13 combined act/scene headings. Treating each entire
+heading as an act made the import quality gate reject embedded text (>10
+acts) and launch OCR. The parser now separates act identity from scene. A
+full import using native Apple PDFKit extraction of the local 55-page PDF
+returns 2 acts, 13 scenes, 1,140 dialogue lines, and 22 characters.
+
+Validation: 687 tests passed, one existing test skipped; analyzer has no
+errors/warnings (existing informational lints remain). The release iOS build
+and archive succeeded, archive CFBundleVersion verified as 165, signed export
+succeeded, and Apple's uploader reported success. The licensed PDF and its
+extracted text were not committed. Device debug-log retrieval failed because
+the configured phone was unavailable; on-phone confirmation remains needed.
