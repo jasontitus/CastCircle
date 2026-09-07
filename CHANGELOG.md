@@ -9,6 +9,23 @@ are described in detail; older history is condensed from commit notes.
 
 ---
 
+## 0.1.1+165 — 2026-09-07
+
+### Restore production creation after switching beta branches
+- Database schema 11 repairs the missing `productions.account_namespace`
+  column and index on databases from the review branch (schema 10), including
+  those subsequently opened by main or the merged build. Existing production
+  rows are retained; guest and signed-in creation are covered by upgrade tests.
+
+### Import A Wrinkle in Time without unnecessary OCR
+- Combined headings such as `Act I Scene 2` now retain a shared act identity
+  and a separate scene. Previously all 13 scenes counted as separate acts,
+  causing the PDF quality check to reject valid embedded text and fall back
+  to OCR. Apple PDFKit extraction of the local 55-page script now passes the
+  full import pipeline with 2 acts, 13 scenes, and 1,140 dialogue lines.
+- Validation: 687 tests passed, one existing test skipped; no analyzer errors
+  or warnings. The licensed PDF and its extracted text are not committed.
+
 ## 0.1.1+155 — 2026-08-14
 
 ### A gender you set now stays set

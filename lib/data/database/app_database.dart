@@ -211,7 +211,7 @@ class AppDatabase extends _$AppDatabase {
   AppDatabase.forTesting(super.e);
 
   @override
-  int get schemaVersion => 10;
+  int get schemaVersion => 11;
 
   Future<bool> _columnExists(String table, String column) async {
     final rows = await customSelect('PRAGMA table_info("$table")').get();
@@ -539,7 +539,10 @@ class AppDatabase extends _$AppDatabase {
           () => migrator.addColumn(scriptLines, scriptLines.multiCharacters),
         );
       }
-      if (from < 9) {
+      // The review branch shipped schema 10 without account_namespace.
+      // Main shipped schema 9 with it, then the merge kept version 10.
+      // Repair both histories, including devices already on the merged build.
+      if (from < 11) {
         await _ensureColumn(
           'productions',
           'account_namespace',

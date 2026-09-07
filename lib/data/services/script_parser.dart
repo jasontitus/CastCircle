@@ -1832,10 +1832,19 @@ class ScriptParser {
       final actMatch = isRunningHeader ? null : _actHeaderRe.firstMatch(line);
       if (actMatch != null) {
         flushDialogue();
-        currentAct = line.trim();
-        currentScene = '';
+        // Stage Partners puts the act and scene on the same line. Keep
+        // the act identity separate so thirteen scenes remain two acts,
+        // rather than failing the PDF importer's excessive-act guard.
+        final afterAct = line
+            .substring(actMatch.end)
+            .replaceFirst(RegExp(r'^[\s,.:;\-–—]+'), '');
+        final hasScene = _sceneHeaderRe.hasMatch(afterAct);
+        final nextAct = hasScene ? actMatch.group(0)!.trim() : line.trim();
+        final actChanged = nextAct != currentAct;
+        currentAct = nextAct;
+        currentScene = hasScene ? afterAct : '';
         sceneLineNum = 0;
-        sceneCounter = 0;
+        sceneCounter = hasScene ? (actChanged ? 1 : sceneCounter + 1) : 0;
         currentCharacter = '';
         dialogueParts = [];
         orderIndex++;
@@ -1843,11 +1852,11 @@ class ScriptParser {
           ScriptLine(
             id: _uuid.v4(),
             act: currentAct,
-            scene: '',
+            scene: currentScene,
             lineNumber: 0,
             orderIndex: orderIndex,
             character: '',
-            text: currentAct,
+            text: line.trim(),
             lineType: LineType.header,
           ),
         );
