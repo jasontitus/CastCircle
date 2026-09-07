@@ -183,3 +183,33 @@ App Store Connect subsequently confirmed build 165 has `processingState=VALID`
 and `internalBuildState=IN_BETA_TESTING`. Crashlytics symbols uploaded
 successfully. Internal TestFlight testers can install build 165; external
 status remains `READY_FOR_BETA_SUBMISSION` (no external review submitted).
+
+---
+
+## Build 166 publisher-text repair — 2026-09-06
+
+Source commit: `84a25f5`. Uploaded build 166 successfully with delivery UUID
+`e2becda9-bf09-4764-b032-5f2eb955c0ff`.
+
+After build 165 restored importing, the user reported Calvin's "I wasn’t
+hiding." included the Stage Partners copyright, website, named license
+footer, and next page's running title. Reproduced exactly using the real
+Apple PDFKit page extraction. The contaminated text also mapped to page 13
+instead of its true source page 14.
+
+Fixes: recognize the complete combined copyright/website and license footer
+lines; keep page numbers until running-header detection has used them as
+boundary evidence; remove biographies following both a standalone End of
+Play marker and an About the Author(s) heading. Matching publisher mentions
+inside spoken dialogue remain intact.
+
+Full regression suite: 689 passed, one existing skip. Real PDF result:
+2 acts, 13 scenes, 1,130 dialogue lines, 22 characters. Assertions check the
+exact Calvin line, page 14, and no publisher/footer/title contamination across
+all imported lines. Release build, archive (verified version 166), signed
+export, and upload succeeded. The source PDF remains uncommitted.
+
+Existing imported/edited scripts are not automatically rewritten. For a
+fully clean copy after installing 166, import the PDF again (a new production
+preserves the existing production and edits). Calvin's existing entry can
+also be corrected directly in the line editor.
