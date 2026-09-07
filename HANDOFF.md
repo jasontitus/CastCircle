@@ -213,3 +213,6 @@ Existing imported/edited scripts are not automatically rewritten. For a
 fully clean copy after installing 166, import the PDF again (a new production
 preserves the existing production and edits). Calvin's existing entry can
 also be corrected directly in the line editor.
+
+App Store Connect confirmed build 166 is `VALID` and `IN_BETA_TESTING` for
+internal testers. Crashlytics symbol upload also succeeded.
