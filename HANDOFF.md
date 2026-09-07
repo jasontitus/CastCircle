@@ -178,3 +178,8 @@ and archive succeeded, archive CFBundleVersion verified as 165, signed export
 succeeded, and Apple's uploader reported success. The licensed PDF and its
 extracted text were not committed. Device debug-log retrieval failed because
 the configured phone was unavailable; on-phone confirmation remains needed.
+
+App Store Connect subsequently confirmed build 165 has `processingState=VALID`
+and `internalBuildState=IN_BETA_TESTING`. Crashlytics symbols uploaded
+successfully. Internal TestFlight testers can install build 165; external
+status remains `READY_FOR_BETA_SUBMISSION` (no external review submitted).
