@@ -94,3 +94,58 @@ flutter analyze              # 0 errors/warnings (134 info lints, pre-existing)
 git log --oneline -5         # 8359a74 fix, 0a62231 index fix, 789b4f5 merge
 supabase migration list      # remote == local (20260830120000 applied)
 ```
+
+---
+
+# ADDENDUM — final ship (2026-09-06, later same day)
+
+After the handoff was first drafted, the ship surfaced two more merge gaps —
+both native Swift, both the same class of defect: **main's plugin kept, branch's
+service adopted**. Both fixed and re-shipped.
+
+## Build history this session
+
+- build 162: FAILED to compile — `KokoroMLXService.modelStatus()` missing
+  (branch service adopted; method existed only on main's service).
+  Fixed in `e7d4ed6` — ported `modelStatus()` routed through the branch's
+  `synthQueue`.
+- build 163 (aborted): `Cannot call value of non-function type 'Bool'` —
+  merged plugin kept main's `await kokoroService.isModelLoaded()` call syntax
+  while the merged service's `isModelLoaded` is a plain Bool property.
+  Fixed in `bea0430` — plugin reads the property directly.
+- **build 164 shipped OK** — Delivery UUID `614038d3-6ae8-4509-827e-96fc8327cf96`.
+  dSYMs pushed to Crashlytics.
+
+## Final state
+
+- `origin/main` = `f92e65d` (`Bump TestFlight build to 0.1.1+164`), clean tree.
+- **TestFlight build 164** is the ship. Builds 160–163 were wasted numbers;
+  nothing reuses them.
+- Suite: **682 tests pass**; analyze 0 errors/warnings.
+- "Encountered error while creating the IPA: exportArchive Copy failed" in the
+  ship log is the KNOWN EXPECTED step-3 failure (see ship-testflight.sh header)
+  — the archive is still produced and uploaded.
+
+## Method note for future native merges
+
+The plugin↔service call surface is where merges fail: the merge may keep one
+side's plugin and the other side's service. After any native merge, grep both
+directions before building:
+
+```
+grep -nE "kokoroService\.[a-zA-Z]+" ios/Runner/KokoroMLXPlugin.swift
+grep -nE "    func |    var " ios/Runner/KokoroMLXService.swift
+```
+
+and confirm every plugin call resolves. `flutter build ios --release` is the
+only check that catches Swift mismatch; `flutter test` does not.
+
+## Updated open items
+
+1. Three review agents (ReviewNamespace/ReviewBackend/ReviewParserOCR) were
+   cancelled before reporting; their areas were covered by the compile break
+   discoveries above plus the full suite, but a fresh reviewer pass on HEAD is
+   still worthwhile.
+2. CHANGELOG.md / fastlane changelogs still end at 155 / 159.
+3. Branch + snapshot tags cleanup (pi-review-ultra is fully merged).
+4. Untracked licensed PDF + stray requirements.txt (never commit the PDF).
