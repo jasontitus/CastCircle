@@ -59,6 +59,7 @@ class SupabaseService {
       publishableKey: publishableKey,
     );
     try {
+      await initFuture.timeout(const Duration(seconds: 5));
       _initialized = true;
       _completeInitialization(true);
     } on TimeoutException {

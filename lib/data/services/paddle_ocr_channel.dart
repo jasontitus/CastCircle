@@ -141,6 +141,10 @@ class PaddleOcrChannel {
       () {
         _requestsById.remove(requestId);
         request.progress.value = null;
+        // Clear the class-wide mirror too, or the import screen's
+        // ValueListenableBuilder shows a stale "Reading page X of Y" bar
+        // for the previous PDF at the start of the next import.
+        progress.value = null;
       },
     );
     return job;
