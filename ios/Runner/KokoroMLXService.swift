@@ -56,11 +56,25 @@ class KokoroMLXService {
 
     var isModelLoaded: Bool { ttsEngine != nil && !voices.isEmpty }
 
-    var isModelDownloaded: Bool {
-        let modelURL = modelDirectory.appendingPathComponent("kokoro-v1_0.safetensors")
-        let voicesURL = modelDirectory.appendingPathComponent("voices.npz")
-        return FileManager.default.fileExists(atPath: modelURL.path)
-            && FileManager.default.fileExists(atPath: voicesURL.path)
+    /// Plugin-side status snapshot, mirrored from the loaded/downloaded
+    /// properties under the synth queue (properties are not Sendable-safe to
+    /// read from an arbitrary task).
+    func modelStatus() async -> (loaded: Bool, downloaded: Bool) {
+        await withCheckedContinuation { continuation in
+            synthQueue.async {
+                let loaded = self.ttsEngine != nil && !self.voices.isEmpty
+                let modelURL = self.modelDirectory.appendingPathComponent(
+                    "kokoro-v1_0.safetensors"
+                )
+                let voicesURL = self.modelDirectory.appendingPathComponent(
+                    "voices.npz"
+                )
+                let downloaded = FileManager.default.fileExists(
+                    atPath: modelURL.path
+                ) && FileManager.default.fileExists(atPath: voicesURL.path)
+                continuation.resume(returning: (loaded, downloaded))
+            }
+        }
     }
 
     // MARK: - Background state
