@@ -216,3 +216,43 @@ also be corrected directly in the line editor.
 
 App Store Connect confirmed build 166 is `VALID` and `IN_BETA_TESTING` for
 internal testers. Crashlytics symbol upload also succeeded.
+
+---
+
+## Build 167 startup repair and adversarial review — 2026-09-06
+
+Source commits: `679c8b4` (review fixes), `05e54b8` (startup contention).
+Uploaded build 167 successfully, delivery UUID
+`778d6b96-0a13-424f-acb9-568e4c7aa3ae`.
+
+The user's build 166 log pinpointed SQLite busy/locked at
+`PRAGMA journal_mode=WAL` during opening. UI and sync queue each created a
+background database connection, and setup installed busy_timeout only after
+WAL. Default callers now share a process-owned database; provider disposal
+must not close the queue's shared connection. Timeout is installed before WAL.
+A real external exclusive transaction reproduces the original setup failure;
+the repaired setup waits, preserves the existing production, and saves a new
+one after lock release. Nothing deletes the database or its journals.
+
+The earlier build 167 archive was stopped before upload when this log arrived;
+the uploaded archive includes the startup fix. Archive version verified as 167,
+signed export and Apple upload succeeded.
+
+Adversarial review also fixed legacy account rows leaking into the guest list
+(schema 12, owner/member claim recovery), spoken ending markers truncating
+later scenes, and colon/short dialogue source matching. Details and limitations:
+`docs/reviews/2026-09-07-builds-165-166-adversarial.md`.
+
+Validation: 701 tests passed, one existing skip, including the actual Wrinkle
+PDF, migration faults/retry, startup contention, and concurrent sync/production
+writes. Analyzer: no errors, 129 infos and five preexisting warnings. This
+corrects the earlier build 165 note claiming there were no warnings.
+
+Physical-device confirmation remains needed. The separate STT EXPORT_FAILED
+recording issue in the supplied logs has not been fixed by this release.
+Existing imported scripts are not rewritten; import a fresh copy to apply
+parser fixes. Source PDF and extracted licensed text remain uncommitted.
+
+App Store Connect confirmed build 167 is `VALID` and `IN_BETA_TESTING` for
+internal testers. Crashlytics symbols uploaded successfully. External status
+is `READY_FOR_BETA_SUBMISSION`; no external review was submitted.
