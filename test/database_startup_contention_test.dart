@@ -68,4 +68,34 @@ void main() {
       expect(await db.loadSyncQueueRows(), hasLength(20));
     },
   );
+  test(
+    'failed production transaction does not roll back concurrent sync writes',
+    () async {
+      final dir = await Directory.systemTemp.createTemp('castcircle-rollback');
+      addTearDown(() => dir.delete(recursive: true));
+      final db = AppDatabase.forTestingFile(
+        File('${dir.path}/database.sqlite'),
+      );
+      addTearDown(db.close);
+      await db.customStatement(
+        "INSERT INTO productions (id, title) VALUES ('keep', 'Existing')",
+      );
+      final failedWrite = db.transaction(() async {
+        await db.customStatement(
+          "INSERT INTO productions (id, title) VALUES ('discard', 'Failed')",
+        );
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+        throw StateError('Injected production failure');
+      });
+      final failure = expectLater(failedWrite, throwsStateError);
+      final sync = db.upsertSyncQueueRow(
+        const SyncQueueRow(key: 'keep-upload', payload: '{}', state: 'pending'),
+      );
+      await Future.wait([failure, sync]);
+      expect((await db.getAllProductions('__guest__')).map((p) => p.id), [
+        'keep',
+      ]);
+      expect((await db.loadSyncQueueRows()).map((r) => r.key), ['keep-upload']);
+    },
+  );
 }
