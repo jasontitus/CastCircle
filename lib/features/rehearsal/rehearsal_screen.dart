@@ -165,9 +165,9 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
   /// time — without ever requiring quiet.
   Timer? _strongMatchDeadline;
 
-  /// Invalidates delayed recognition/timer callbacks whenever the active line
-  /// changes or the session pauses. A state check alone is insufficient:
-  /// jump/restart can put a different line back into listeningForMe while an
+  /// Invalidates delayed starts/recognition/timers whenever an attempt starts
+  /// or ends, the active line changes, or the session pauses. A state check
+  /// alone is insufficient: retry/jump can return to listeningForMe while an
   /// old callback is still waiting for audio-session release.
   int _lineGeneration = 0;
 
@@ -620,6 +620,8 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
 
   void _invalidateLineSession() {
     _lineGeneration++;
+    _deferredProcess?.cancel();
+    _deferredProcess = null;
     _silenceTimer?.cancel();
     _silenceTimer = null;
     _matchConfirmTimer?.cancel();
@@ -1954,6 +1956,10 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
 
   /// Process the current line: play audio/TTS for others, or start listening for me.
   void _processCurrentLine() {
+    // A delayed autoplay request must not restart an already active attempt.
+    if (!mounted || ref.read(rehearsalStateProvider) != RehearsalState.ready) {
+      return;
+    }
     if (_processingLine) {
       // A LEGITIMATE advance can land inside the debounce window — an
       // all-stage-direction line's completion arrives while the previous
@@ -1961,19 +1967,11 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
       // call silently hung the rehearsal (field: stuck dead after
       // "(To audience: ...)" until the actor gave up). Defer instead of
       // dropping; duplicates coalesce into one deferred run.
+      final generation = _lineGeneration;
       _deferredProcess ??= Timer(const Duration(milliseconds: 60), () {
         _deferredProcess = null;
-        if (mounted) _processCurrentLine();
+        if (_isCurrentLineSession(generation)) _processCurrentLine();
       });
-      return;
-    }
-    // Delayed callbacks (inter-line pacing, advance, jump-back) land here after
-    // the user may have tapped Pause — honor it instead of resuming playback.
-    if (ref.read(rehearsalStateProvider) == RehearsalState.paused) {
-      _dlog.log(
-        LogCategory.rehearsal,
-        'processCurrentLine: paused — not starting the next line',
-      );
       return;
     }
     _processingLine = true;
@@ -2014,6 +2012,9 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
       _completeScene(dialogueLines);
       return;
     }
+
+    // Claim this attempt, invalidating other delayed starts for the same line.
+    _invalidateLineSession();
 
     final line = dialogueLines[currentIdx];
     final mode = ref.read(rehearsalModeProvider);
@@ -2444,6 +2445,7 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
       return;
     }
     _invalidateLineSession();
+    ref.read(rehearsalStateProvider.notifier).state = RehearsalState.ready;
     _dlog.log(LogCategory.rehearsal, 'Other line finished, advancing');
 
     final script = ref.read(currentScriptProvider);
@@ -2622,6 +2624,11 @@ class _RehearsalScreenState extends ConsumerState<RehearsalScreen>
         if (!_isCurrentLineSession(generation)) return;
         // Listening ended but no match — stay on this line, let user retry or skip
         if (ref.read(rehearsalStateProvider) == RehearsalState.listeningForMe) {
+          // A failed start/restart must not leave a recording running, or let
+          // the pending listen() continuation start one after recognition ended.
+          _invalidateLineSession();
+          _stopCaptureForLine(line);
+          _stt.stop(discard: true);
           ref.read(rehearsalStateProvider.notifier).state =
               RehearsalState.ready;
         }

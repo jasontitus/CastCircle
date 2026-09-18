@@ -256,3 +256,89 @@ parser fixes. Source PDF and extracted licensed text remain uncommitted.
 App Store Connect confirmed build 167 is `VALID` and `IN_BETA_TESTING` for
 internal testers. Crashlytics symbols uploaded successfully. External status
 is `READY_FOR_BETA_SUBMISSION`; no external review was submitted.
+
+## STT capture repair — confirmed on physical iOS 27
+
+Apple recognition callbacks now carry the Dart session ID and use the map
+payloads expected by `SttChannel`; previously results were filtered out and
+level/completion payloads had incompatible shapes. The native on-device option
+now actually enables on-device recognition when supported.
+
+Recording now splits oversized tap buffers across preallocated slots rather
+than dropping any buffer larger than 4096 frames. CAF finalization explicitly
+closes the writer on supported OS versions and validates decoded frames before
+M4A export. Empty capture preserves the previous take and recovery CAF.
+The affected device's delivered frame size was not logged, so oversized buffers
+remain a reproduced failure mechanism rather than a measured device root cause.
+
+Rehearsal starts now require ready state and claim a generation; deferred starts
+cannot restart an active line. Playback completion leaves playing state before
+pacing, and terminal recognition failure invalidates pending capture startup.
+
+Verification: actual plugin compiled against macOS AVFoundation/FlutterMacOS;
+4800/19200-frame stereo input captured completely and exported to validated M4A.
+Restoring the prior capacity rejection reproduced zero captured frames for
+4800-frame input. Empty-capture smoke preserved the prior take and recovery CAF.
+Native terminal callbacks retained session ownership and emitted once.
+Extracted Dart lifecycle smoke passed duplicate-start, rapid-advance, paced
+duplicate-completion, failure-cleanup and retry scenarios. Added an iOS native
+regression for oversized stereo capture; the iOS XCTest target was not run.
+Two independent adversarial reviews (native capture and Dart lifecycle) found
+no actionable patch-introduced defects. All 44 focused Flutter tests passed.
+The native plugin typechecked targeting iOS 26.0; actual capture/export smoke
+passed on iOS 26.3.1 with planar and interleaved stereo and empty-capture recovery.
+Physical iOS 27 verification and the user's success confirmation are below.
+
+### Local phone deployment attempt — 2026-09-17
+
+Xcode 27 rejected dependency deployment targets below iOS 15. The Podfile
+post-install hook now raises older pod targets to the app's existing iOS 18
+minimum, preserving any higher dependency minimum. Full unsigned release build
+passed: `flutter build ios --release --no-pub --no-codesign`.
+
+The signing failure was execution-session-specific, not a demonstrated locked
+keychain. `launchctl managername` reported Background; codesign returned
+`errSecInternalComponent`, and keychain queries returned `User interaction is
+not allowed`. Running the same codesign command as a temporary one-shot job in
+the logged-in user's `gui/501` launchd domain succeeded without changing
+keychain permissions. Do not ask the user to unlock/reset the keychain based
+on that error alone. The existing `scripts/deploy.sh` succeeded in that GUI
+domain: signed release built, installed in place on the iPhone 17 Pro Max, and
+launched (local build number remains 167; no TestFlight upload).
+
+On-device verification after installation: Runner remained running. The app
+log recorded successful `STT.stopRecording` with a 7955ms, 226434-byte take
+saved, followed by a new actor-line capture and an STT first result. This
+confirms recording export and recognition callbacks are operating on the
+physical iOS 27 phone, not merely in the simulator. Temporary launchd jobs
+were removed after deployment.
+
+The user confirmed the deployed fix worked.
+
+### Repeating a release from a Background session
+
+Use `scripts/deploy.sh` for direct phone installation and
+`scripts/ship-testflight.sh` for a version-bumped TestFlight upload. Do not use
+the legacy Fastlane beta lane: it mutates Flutter version configuration and
+does not solve the Background signing-session problem.
+
+When `launchctl managername` is `Background` and signing fails, run the script
+as a temporary, one-shot LaunchAgent in the logged-in user's GUI domain:
+
+1. Create a plist in a private temporary directory with a unique `Label`,
+   `ProgramArguments` of `/bin/bash` plus the script's absolute path,
+   `WorkingDirectory` set to the repository, and `RunAtLoad` set to true.
+2. Set `EnvironmentVariables` for `HOME`, `LANG=en_US.UTF-8`, and `PATH` with
+   Flutter's bin directory, `/usr/bin:/bin:/usr/sbin:/sbin`, and
+   `/opt/homebrew/bin`. Put `StandardOutPath` and `StandardErrorPath` in that
+   temporary directory. Do not put credentials into the plist: the release
+   script loads the existing App Store Connect configuration itself.
+3. Run `launchctl bootstrap gui/$(id -u) /absolute/path/job.plist`.
+4. Inspect `launchctl print gui/$(id -u)/JOB_LABEL` and both logs; require exit
+   code zero and actual install/upload confirmation. For TestFlight also
+   verify the archive build number and Apple's processing status.
+5. Run `launchctl bootout gui/$(id -u)/JOB_LABEL` after completion, then remove
+   the temporary directory. Never leave a persistent signing helper installed.
+
+This uses the existing desktop signing context; it does not unlock keychains,
+export private keys, modify key ACLs, or require new Apple credentials.

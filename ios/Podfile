@@ -43,5 +43,14 @@ end
 post_install do |installer|
   installer.pods_project.targets.each do |target|
     flutter_additional_ios_build_settings(target)
+    # Keep dependency targets within the SDK's supported range. The app's
+    # minimum is iOS 18, even when a pod declares an older minimum.
+    target.build_configurations.each do |config|
+      minimum = Gem::Version.new('18.0')
+      declared = config.build_settings['IPHONEOS_DEPLOYMENT_TARGET']
+      if declared.nil? || Gem::Version.new(declared) < minimum
+        config.build_settings['IPHONEOS_DEPLOYMENT_TARGET'] = minimum.to_s
+      end
+    end
   end
 end

@@ -47,6 +47,66 @@ class RunnerTests: XCTestCase {
         XCTAssertTrue(oldestReadyRecordingSlot(in: slots) === slots[0])
     }
 
+    func testRecordingDrainsOversizedTapBufferBeforeClosingCAF() throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let cafURL = directory.appendingPathComponent("oversized-tap.caf")
+        let format = try XCTUnwrap(AVAudioFormat(
+            standardFormatWithSampleRate: 48_000,
+            channels: 2
+        ))
+        let pipeline = RealtimeRecordingPipeline()
+        XCTAssertTrue(pipeline.prepare(format: format, frameCapacity: 4_096))
+        let file = try AVAudioFile(
+            forWriting: cafURL,
+            settings: format.settings,
+            commonFormat: format.commonFormat,
+            interleaved: format.isInterleaved
+        )
+        XCTAssertTrue(pipeline.start(file: file, cafURL: cafURL))
+
+        // The tap's minimum supported duration (100ms at 48kHz) exceeds
+        // the requested 4096 frames. Neither channel may be dropped/truncated.
+        let buffer = try XCTUnwrap(AVAudioPCMBuffer(
+            pcmFormat: format,
+            frameCapacity: 4_800
+        ))
+        buffer.frameLength = 4_800
+        let samples = try XCTUnwrap(buffer.floatChannelData)
+        for frame in 0..<4_800 {
+            samples[0][frame] = Float(frame) / 4_800
+            samples[1][frame] = -Float(frame) / 4_800
+        }
+        pipeline.enqueue(buffer)
+
+        let finished = expectation(description: "CAF drained and finalized")
+        XCTAssertTrue(pipeline.finish { capture in
+            defer { finished.fulfill() }
+            XCTAssertNil(capture.writeError)
+            do {
+                let recorded = try AVAudioFile(forReading: capture.cafURL)
+                XCTAssertEqual(recorded.length, 4_800)
+                let decoded = try XCTUnwrap(AVAudioPCMBuffer(
+                    pcmFormat: recorded.processingFormat,
+                    frameCapacity: 4_800
+                ))
+                try recorded.read(into: decoded)
+                XCTAssertEqual(decoded.frameLength, 4_800)
+                let actual = try XCTUnwrap(decoded.floatChannelData)
+                for frame in 0..<Int(decoded.frameLength) {
+                    XCTAssertEqual(actual[0][frame], samples[0][frame])
+                    XCTAssertEqual(actual[1][frame], samples[1][frame])
+                }
+            } catch {
+                XCTFail("Could not read finalized capture: \(error)")
+            }
+        })
+        // Finalization must not depend on ARC releasing every writer reference.
+        withExtendedLifetime((file, pipeline, buffer)) {
+            wait(for: [finished], timeout: 5)
+        }
+    }
+
     func testKokoroRequestGateKeepsSiblingsAndCancelsOnlyOlderGroups() {
         let gate = KokoroRequestGate()
 

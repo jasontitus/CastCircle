@@ -48,6 +48,7 @@ private final class RecognitionInputGate {
 
 private final class AppleSttSession {
     let generation: UInt64
+    let sessionId: Int
     let input: RecognitionInputGate
     var recognitionTask: SFSpeechRecognitionTask?
     var terminalEventSent = false
@@ -59,10 +60,12 @@ private final class AppleSttSession {
 
     init(
         generation: UInt64,
+        sessionId: Int,
         request: SFSpeechAudioBufferRecognitionRequest,
         onLevel: @escaping (UInt64, Double) -> Void
     ) {
         self.generation = generation
+        self.sessionId = sessionId
         input = RecognitionInputGate(request: request)
         levelSource = DispatchSource.makeUserDataAddSource(queue: .main)
         pthread_mutex_init(&levelMutex, nil)
@@ -123,7 +126,7 @@ func oldestReadyRecordingSlot(
     return oldest
 }
 
-private final class RealtimeRecordingPipeline {
+final class RealtimeRecordingPipeline {
     struct FinishedCapture {
         let cafURL: URL
         let writeError: Error?
@@ -210,15 +213,42 @@ private final class RealtimeRecordingPipeline {
             pthread_mutex_unlock(&mutex)
             return
         }
-        guard let slot = slots.first(where: { $0.state == 0 }),
-              Self.copy(input, into: slot.buffer) else {
+        guard input.frameLength > 0 else {
+            pthread_mutex_unlock(&mutex)
+            return
+        }
+        let availableFrames = slots.reduce(0) {
+            $0 + ($1.state == 0 ? Int($1.buffer.frameCapacity) : 0)
+        }
+        guard availableFrames >= Int(input.frameLength) else {
             droppedBuffers &+= 1
             pthread_mutex_unlock(&mutex)
             return
         }
-        slot.enqueueSequence = nextEnqueueSequence
-        nextEnqueueSequence &+= 1
-        slot.state = 1
+
+        // A tap's requested buffer size is not a delivery guarantee. Split
+        // larger hardware buffers across the bounded, preallocated slots.
+        var frameOffset: AVAudioFrameCount = 0
+        for slot in slots where slot.state == 0 {
+            let frameCount = min(
+                input.frameLength - frameOffset,
+                slot.buffer.frameCapacity
+            )
+            guard Self.copy(
+                input,
+                frameOffset: frameOffset,
+                frameCount: frameCount,
+                into: slot.buffer
+            ) else {
+                droppedBuffers &+= 1
+                break
+            }
+            slot.enqueueSequence = nextEnqueueSequence
+            nextEnqueueSequence &+= 1
+            slot.state = 1
+            frameOffset += frameCount
+            if frameOffset == input.frameLength { break }
+        }
         pthread_mutex_unlock(&mutex)
         source.add(data: 1)
     }
@@ -256,6 +286,11 @@ private final class RealtimeRecordingPipeline {
                         cafURL: cafURL,
                         writeError: writeError
                     )
+                    // Update the CAF header before any reader/exporter opens it,
+                    // even if another scope still retains the AVAudioFile.
+                    if #available(iOS 18.0, macOS 15.0, *) {
+                        file?.close()
+                    }
                     file = nil
                     self.cafURL = nil
                     finishHandler = nil
@@ -291,10 +326,14 @@ private final class RealtimeRecordingPipeline {
 
     private static func copy(
         _ input: AVAudioPCMBuffer,
+        frameOffset: AVAudioFrameCount,
+        frameCount: AVAudioFrameCount,
         into destination: AVAudioPCMBuffer
     ) -> Bool {
         guard input.format.isEqual(destination.format),
-              input.frameLength <= destination.frameCapacity else {
+              frameCount <= destination.frameCapacity,
+              frameOffset <= input.frameLength,
+              frameCount <= input.frameLength - frameOffset else {
             return false
         }
 
@@ -310,19 +349,22 @@ private final class RealtimeRecordingPipeline {
             return false
         }
 
+        let bytesPerFrame = Int(input.format.streamDescription.pointee.mBytesPerFrame)
+        let byteOffset = Int(frameOffset) * bytesPerFrame
+        let byteCount = Int(frameCount) * bytesPerFrame
         for index in 0..<sourceBuffers.count {
             let source = sourceBuffers[index]
             let capacity = Int(destinationBuffers[index].mDataByteSize)
-            let byteCount = Int(source.mDataByteSize)
             guard byteCount <= capacity,
+                  byteOffset + byteCount <= Int(source.mDataByteSize),
                   let sourceData = source.mData,
                   let destinationData = destinationBuffers[index].mData else {
                 destination.frameLength = 0
                 return false
             }
-            memcpy(destinationData, sourceData, byteCount)
+            memcpy(destinationData, sourceData.advanced(by: byteOffset), byteCount)
         }
-        destination.frameLength = input.frameLength
+        destination.frameLength = frameCount
         return true
     }
 }
@@ -430,7 +472,16 @@ class AppleSttPlugin: NSObject {
             let hints = args["contextualStrings"] as? [String] ?? []
             let onDevice = args["onDevice"] as? Bool ?? false
             let locale = args["locale"] as? String
-            listen(contextualStrings: hints, onDevice: onDevice, locale: locale, result: result)
+            guard let sessionId = args["sessionId"] as? Int else {
+                result(FlutterError(
+                    code: "INVALID_SESSION",
+                    message: "Recognition requires a sessionId",
+                    details: nil
+                ))
+                return
+            }
+            listen(contextualStrings: hints, onDevice: onDevice, locale: locale,
+                   sessionId: sessionId, result: result)
         case "stop":
             stopListening(result: result)
         case "startRecording":
@@ -488,6 +539,7 @@ class AppleSttPlugin: NSObject {
         contextualStrings: [String],
         onDevice: Bool,
         locale: String?,
+        sessionId: Int,
         result: @escaping FlutterResult
     ) {
         stopCurrentSession()
@@ -536,7 +588,7 @@ class AppleSttPlugin: NSObject {
         request.shouldReportPartialResults = true
         request.taskHint = .dictation
         if onDevice, recognizer.supportsOnDeviceRecognition {
-            request.requiresOnDeviceRecognition = false
+            request.requiresOnDeviceRecognition = true
         }
         if !contextualStrings.isEmpty {
             request.contextualStrings = contextualStrings
@@ -575,13 +627,17 @@ class AppleSttPlugin: NSObject {
         let generation = nextGeneration
         let session = AppleSttSession(
             generation: generation,
+            sessionId: sessionId,
             request: request
         ) { [weak self] callbackGeneration, level in
             guard let self = self,
                   self.activeSession?.generation == callbackGeneration else {
                 return
             }
-            self.channel.invokeMethod("onLevel", arguments: level)
+            self.channel.invokeMethod("onLevel", arguments: [
+                "sessionId": sessionId,
+                "level": level,
+            ])
         }
         activeSession = session
 
@@ -669,6 +725,7 @@ class AppleSttPlugin: NSObject {
 
         if let recognitionResult = recognitionResult {
             channel.invokeMethod("onResult", arguments: [
+                "sessionId": session.sessionId,
                 "text": recognitionResult.bestTranscription.formattedString,
                 "isFinal": recognitionResult.isFinal,
             ])
@@ -698,10 +755,15 @@ class AppleSttPlugin: NSObject {
             )
             channel.invokeMethod(
                 "onError",
-                arguments: error.localizedDescription
+                arguments: [
+                    "sessionId": session.sessionId,
+                    "error": error.localizedDescription,
+                ]
             )
         }
-        channel.invokeMethod("onDone", arguments: nil)
+        channel.invokeMethod("onDone", arguments: [
+            "sessionId": session.sessionId,
+        ])
     }
 
     private func stopListening(result: @escaping FlutterResult) {
@@ -822,11 +884,11 @@ class AppleSttPlugin: NSObject {
         result: @escaping FlutterResult
     ) {
         captureFinalizationQueue.async {
-            let attributes = try? FileManager.default.attributesOfItem(
-                atPath: cafURL.path
-            )
-            let cafSize = (attributes?[.size] as? NSNumber)?.int64Value ?? 0
-            guard cafSize >= 100 else {
+            guard let capturedFile = try? AVAudioFile(forReading: cafURL),
+                  capturedFile.length > 0,
+                  capturedFile.processingFormat.sampleRate.isFinite,
+                  capturedFile.processingFormat.sampleRate > 0,
+                  capturedFile.processingFormat.channelCount > 0 else {
                 completeCaptureFailure(
                     code: "CAPTURE_INVALID",
                     message: "Captured audio is empty or invalid",
@@ -1077,7 +1139,7 @@ class AppleSttPlugin: NSObject {
                 }
             }
         }
-        reader.cancelReading()
+        guard reader.status == .completed else { return nil }
 
         guard !windowRMS.isEmpty else { return nil }
         let peakRMS = windowRMS.max() ?? 0
