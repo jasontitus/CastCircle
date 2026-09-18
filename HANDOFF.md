@@ -342,3 +342,21 @@ as a temporary, one-shot LaunchAgent in the logged-in user's GUI domain:
 
 This uses the existing desktop signing context; it does not unlock keychains,
 export private keys, modify key ACLs, or require new Apple credentials.
+
+### TestFlight build 168 — 2026-09-17
+
+Repair source and deployment procedure pushed to `main` in `6491bf8`.
+`scripts/ship-testflight.sh` ran successfully in the GUI signing context and
+bumped the release to `0.1.1+168`. The archive's version/build were verified
+before export. Apple accepted the IPA with delivery UUID
+`f4290bd4-5ad4-4152-b670-7fdc36c610a0`.
+
+App Store Connect confirmed build 168 is `VALID` and `IN_BETA_TESTING`, with
+automatic tester notification enabled. Internal testers can install it.
+External status is `READY_FOR_BETA_SUBMISSION`; no external review submitted.
+Apple reports minimum iOS version 18.0.
+
+Crashlytics symbol upload completed, including Runner and App dSYMs. The upload
+reported one empty-symbol warning for `FirebaseCoreExtension.framework.dSYM`;
+stack frames from that dependency may remain unsymbolicated. Temporary GUI
+release job removed after successful upload.
